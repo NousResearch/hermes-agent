@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -98,6 +99,21 @@ def _format_lateness(seconds: float) -> str:
     days, hours = divmod(hours, 24)
     parts = [(days, "d"), (hours, "h"), (minutes if not days else 0, "m")]
     return " ".join(f"{n}{unit}" for n, unit in parts if n) or "0m"
+
+
+def _next_run_overdue_seconds(next_run_at: str) -> Optional[float]:
+    """Seconds the timestamp has already been in the past; None if malformed.
+
+    next_run_at is written as timezone-aware ISO strings; a naive value only ever comes
+    from a hand-edited jobs.json and is read as UTC.
+    """
+    try:
+        dt = datetime.fromisoformat(str(next_run_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds()
 
 
 def _dispatch_display(dispatch: dict) -> Optional[str]:
@@ -443,6 +459,15 @@ def cron_status():
             _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+            # When scheduling last worked before the host went away: without this, a
+            # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+            with contextlib.suppress(Exception):
+                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                hb_age = get_ticker_heartbeat_age()
+                if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
+                    print(color("  Scheduler last ticked "
+                                f"{_format_lateness(hb_age)} ago — jobs that came due "
+                                "since then have not fired.", Colors.YELLOW))
             print("\n  To enable automatic execution:\n"
                   "    hermes gateway install    # Install as a user service\n"
                   "    sudo hermes gateway install --system  "
@@ -462,7 +487,16 @@ def _print_active_jobs_summary(jobs) -> None:
     next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        print(f"  Next run: {min(next_runs)}")
+        earliest = min(next_runs)
+        overdue_by = _next_run_overdue_seconds(earliest)
+        if overdue_by is not None and overdue_by > 0:
+            # #114309: a dead scheduler leaves next_run_at stranded in the past; presenting it
+            # as an upcoming "Next run" hides the outage.
+            print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
+                        f"{_format_lateness(overdue_by)} ago but the job has not fired "
+                        "(is the scheduler running?)", Colors.YELLOW))
+        else:
+            print(f"  Next run: {earliest}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
     late = [j for j in jobs if isinstance(j.get("last_dispatch"), dict)
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]

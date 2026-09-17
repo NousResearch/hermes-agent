@@ -7,10 +7,10 @@
  *
  * Calls share a one-at-a-time queue. Multi-image attach flows must not keep
  * dozens of decoded full-resolution bitmaps alive concurrently while their
- * 512px thumbnails are produced.
+ * bounded thumbnails are produced.
  *
  * @param dataUrl  The full-resolution data URL (data:image/...;base64,...)
- * @param maxLongEdge  Maximum pixel dimension on the longest side (default 512)
+ * @param maxLongEdge  Maximum pixel dimension on the longest side (default 1536)
  * @returns A downscaled PNG data URL, the original if already small enough, or
  *          a 1×1 transparent PNG placeholder if downscaling fails.
  */
@@ -19,10 +19,14 @@
 const FALLBACK_PLACEHOLDER =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
-// Composer pills render at 32 CSS pixels. A 512px source stays sharp on
-// high-density displays while keeping a square RGBA decode to 1 MiB. A 2048px
-// thumbnail can decode to 16 MiB and reproduce Chromium's paint-op pressure.
-const DEFAULT_MAX_LONG_EDGE = 512
+// Attachment previews render up to ~740 logical px wide in the chat column
+// (bubble row / lightbox fallback) and 32 px in the composer pill. On a 2x
+// Retina display the bubble path needs a ~1480px source to stay sharp, so the
+// long edge caps at 1536: sharp at every render site, while a square RGBA
+// decode stays ~9 MiB and the one-at-a-time queue keeps only one full bitmap
+// alive. The old 512 cap predates the full-resolution-on-demand split and
+// made sent-image bubbles visibly blurry on high-density displays.
+const DEFAULT_MAX_LONG_EDGE = 1536
 
 let resizeQueue = Promise.resolve()
 

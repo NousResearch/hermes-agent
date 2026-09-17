@@ -96,8 +96,8 @@ describe('downscaleDataUrlForPreview', () => {
       // and the bitmap was closed.
       const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL)
 
-      // scale = 512 / 4000 = 0.128 → width=512, height=384
-      expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 512, 384)
+      // scale = 1536 / 4000 = 0.384 → width=1536, height=1152
+      expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1536, 1152)
       expect(close).toHaveBeenCalled()
 
       // Result should be the downscaled data URL (from our mocked blob),
@@ -114,7 +114,7 @@ describe('downscaleDataUrlForPreview', () => {
       await Promise.all(Array.from({ length: 72 }, () => downscaleDataUrlForPreview(TINY_PNG_DATA_URL)))
 
       expect(canvasSizes).toHaveLength(72)
-      expect(canvasSizes.every(([width, height]) => width === 512 && height === 512)).toBe(true)
+      expect(canvasSizes.every(([width, height]) => width === 1536 && height === 1536)).toBe(true)
       expect(drawImage).toHaveBeenCalledTimes(72)
       expect(maxActiveBitmaps()).toBe(1)
     })

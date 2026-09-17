@@ -16,6 +16,7 @@ from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
+from gateway.matrix_tool_activity import matrix_tool_activity_bodies
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import typing_metadata_for_turn
@@ -339,6 +340,9 @@ class GatewayTurnProgressMixin:
             cmd_short = cmd_short[:cap - 3] + "..."
         elif len(lines) > 1:
             cmd_short += " ..."
+        if self._ctx.source.platform == Platform.MATRIX:
+            # Every list item needs its own label; headerless fenced blocks are discarded.
+            return f"{emoji} {tool_name}: {lines[0]}", f"{emoji} {tool_name}: {cmd_short}"
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
 
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
@@ -640,6 +644,7 @@ class GatewayTurnProgressMixin:
         # (``raw_response["undelivered_chunks"]``): only that tail is retried, ahead of newer lines.
         owed_tail: Any = None
         owed_tail_failures: int = 0
+        is_matrix: bool = False
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -663,6 +668,7 @@ class GatewayTurnProgressMixin:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            is_matrix=(getattr(adapter, "name", "") == "matrix" or ctx.source.platform == Platform.MATRIX),
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
@@ -670,7 +676,9 @@ class GatewayTurnProgressMixin:
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
-        if st._edit_accepts_metadata:
+        if st.is_matrix:
+            kwargs["content"], kwargs["metadata"] = self._matrix_progress_payload(st.progress_lines)
+        elif st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
         return await st.adapter.edit_message(**kwargs)
 
@@ -701,10 +709,19 @@ class GatewayTurnProgressMixin:
             current = candidate
         return groups + ([current] if current else [])
 
+    def _matrix_progress_payload(self, lines):
+        body, html = matrix_tool_activity_bodies(lines)
+        return body, {**(self._ctx._progress_metadata or {}), "matrix_formatted_body": html,
+                      "matrix_formatted_body_unprefixed": True, "_interim_send": True}
+
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
+        metadata = ctx._progress_metadata
+        # Native task-card fallback shares this sender but has no editable-list state.
+        if isinstance(st, self._ProgressEditState) and st.is_matrix:
+            text, metadata = self._matrix_progress_payload(st.progress_lines if st.can_edit else [text])
         result = await st.adapter.send(
-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=metadata,
         )
         self._track_progress_result(result)
         return result
@@ -761,7 +778,7 @@ class GatewayTurnProgressMixin:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
-        if not st.progress_lines or not st.can_edit or _in_flood_window(st):
+        if st.is_matrix or not st.progress_lines or not st.can_edit or _in_flood_window(st):
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
@@ -893,6 +910,9 @@ class GatewayTurnProgressMixin:
                 # bills every call against the open penalty and escalates it (#76494). The buffer
                 # stays intact; a later tick (or the final flush) edits the same bubble.
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
+                return False
+            # Never turn a failed Matrix edit into a stream of new roots.
+            if st.is_matrix:
                 return False
             st.can_edit = False
             result = await self._send_progress_text(st, msg)

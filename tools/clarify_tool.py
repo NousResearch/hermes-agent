@@ -98,7 +98,20 @@ def _clean_choices(choices: list) -> Optional[List[str]]:
 
 
 def _is_timeout(raw) -> bool:
-    return raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE)
+    if raw is None:
+        return True
+    if not isinstance(raw, str):
+        return False
+    value = raw.strip()
+    if value == TIMEOUT_RESPONSE:
+        return True
+    prefix = "[user did not respond within "
+    if not value.startswith(prefix) or not value.endswith("m]"):
+        return False
+    minutes = value[len(prefix):-2]
+    return minutes.isascii() and minutes.isdigit() and (
+        minutes == "0" or not minutes.startswith("0")
+    )
 
 
 # ============================================================================= Batch (multi-question)

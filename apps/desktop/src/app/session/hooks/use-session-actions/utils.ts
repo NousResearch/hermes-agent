@@ -842,6 +842,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     // timeline projection history uses instead of as a user bubble (#112144).
     // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
     const displayKind = projection.inflight?.display_kind
+
     const typed = displayKind
       ? toChatMessages([
           {

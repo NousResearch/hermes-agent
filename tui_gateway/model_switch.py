@@ -177,7 +177,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=None)
+    runtime = resolve_runtime_provider(requested=None, target_model=current_model or None)
     # Keep a callable api_key (Azure Entra bearer) unchanged: ``str()`` would
     # yield "<function ...>" and poison switch_model validation.
     key = runtime.get("api_key", "")

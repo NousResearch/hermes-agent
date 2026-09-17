@@ -842,14 +842,32 @@ def resolve_compression_fallback_route() -> Optional[dict]:
     return None
 
 
+def _stall_retry_routes(escalate_deterministic: bool) -> list:
+    """Pinned routes for the stall retry, in order: the configured chain entry, then (only once a
+    stall-class backoff has already burned a window in this session) the deterministic fallback summary."""
+    routes = [route for route in (resolve_compression_fallback_route(),) if route is not None]
+    if escalate_deterministic:
+        from agent.context_compressor import DETERMINISTIC_SUMMARY_ROUTE
+        routes.append(dict(DETERMINISTIC_SUMMARY_ROUTE))
+    return routes
+
+
+def _prior_timeout_failures(agent: Any) -> int:
+    """Timeout-class failures this session that no healthy summary has cleared yet (type-pinned)."""
+    count = getattr(getattr(agent, "context_compressor", None), "_consecutive_timeout_failures", 0)
+    return count if isinstance(count, int) and not isinstance(count, bool) else 0
+
+
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], Tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     on_timeout_cause: Optional[Callable[[bool, bool], None]] = None, telemetry_agent: Any = None,
-    new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    new_fence: Optional[Callable[[], CompressionCommitFence]] = None, escalate_deterministic: bool = False,
 ) -> Optional[Tuple[list, str]]:
-    """Re-run an aborted compression once with the summary route pinned.
+    """Re-run an aborted compression with the summary route pinned: once on the configured chain entry,
+    then — when ``escalate_deterministic`` (a stall backoff already burned one idle window this session,
+    #112420) — once with the summary LLM skipped so compress() commits its deterministic fallback summary.
     Returns ``(messages, system_prompt)`` on real compression, else ``None`` and the caller degrades as
     before. The entry's ``timeout`` sets the idle window. Re-runs the whole worker, so pre-compression
     callbacks must be idempotent.
@@ -868,10 +886,25 @@ def _retry_compression_on_fallback_chain(
     hard_cancel = getattr(telemetry_agent, "_hard_interrupt_requested", None)
     if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
         return None
-    route = resolve_compression_fallback_route()
-    if route is None:
-        return None
+    for route in _stall_retry_routes(escalate_deterministic):
+        recovered = _run_pinned_compression_retry(
+            route, worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
+            idle_timeout_seconds=idle_timeout_seconds, total_ceiling_seconds=total_ceiling_seconds,
+            on_commit_overrun=on_commit_overrun, on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent,
+            new_fence=new_fence,
+        )
+        if recovered is not None:
+            return recovered
+    return None
 
+
+def _run_pinned_compression_retry(
+    route: dict, *, worker: Callable[[CompressionCommitFence], Tuple[list, str]], messages: list,
+    system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
+    on_commit_overrun: Optional[Callable[[float, float], None]], on_timeout_cause: Optional[Callable[[bool, bool], None]],
+    telemetry_agent: Any, new_fence: Optional[Callable[[], CompressionCommitFence]],
+) -> Optional[Tuple[list, str]]:
+    """One bounded re-run of ``worker`` with ``route`` pinned; ``None`` when it produced no compression."""
     # The aborted fence refuses all commits; mint a fresh one via the host factory
     # so a /stop during the retry serializes against THIS attempt's commit boundary.
     retry_fence = None
@@ -892,10 +925,19 @@ def _retry_compression_on_fallback_chain(
         retry_fence = CompressionCommitFence()
     idle = float(route.get("timeout") or idle_timeout_seconds)
     ceiling = max(float(total_ceiling_seconds), idle)
-    logger.warning(
-        "Context compression stalled on the configured summary route — "
-        "retrying once on %s (%s) before continuing without compression", route["label"], route["model"],
-    )
+    deterministic = route.get("deterministic") is True
+    if deterministic:
+        logger.warning(
+            "Context compression stalled again after a stall backoff — committing the %s (no summary model) "
+            "before continuing without compression", route["label"],
+        )
+    else:
+        logger.warning(
+            "Context compression stalled on the configured summary route — "
+            "retrying once on %s (%s) before continuing without compression", route["label"], route["model"],
+        )
+    compressor = getattr(telemetry_agent, "context_compressor", None)
+    streak_before = getattr(compressor, "_fallback_compression_streak", 0)
     try:
         from agent.context_compressor import pin_summary_route
         with pin_summary_route(route):
@@ -917,7 +959,16 @@ def _retry_compression_on_fallback_chain(
             route["label"],
         )
         return None
-    logger.info("Context compression recovered on %s after the primary summary route stalled", route["label"])
+    # A pinned summary call that failed still commits (static fallback summary under the default
+    # abort_on_summary_failure=false); the streak bump is the post-commit tell. Never call that "recovered".
+    streak_after = getattr(compressor, "_fallback_compression_streak", 0)
+    if deterministic or (isinstance(streak_after, int) and isinstance(streak_before, int) and streak_after > streak_before):
+        logger.warning(
+            "Context compression committed a deterministic fallback summary on %s after the primary summary route "
+            "stalled (no summary model produced output)", route["label"],
+        )
+    else:
+        logger.info("Context compression recovered on %s after the primary summary route stalled", route["label"])
     return result_msgs, result_prompt
 
 
@@ -1046,6 +1097,10 @@ def run_compress_context_with_progress_timeout(
     idle = float(idle_timeout_seconds)
     fence = fence if fence is not None else CompressionCommitFence()
     fence.set_total_ceiling_seconds(ceiling)
+    # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's
+    # ``stall_interrupted`` record both land during the unwind below, and this stall must not count as
+    # its own prior. One prior timeout-class failure = the route already burned a full idle window.
+    escalate_deterministic = stall_fallback and _prior_timeout_failures(telemetry_agent) >= 1
     # Sync mirror of gateway hygiene's run_in_executor + wait_for loop: offload,
     # poll idle budget + ceiling, fence-cancel on timeout so no late commit lands.
     from tools.thread_context import propagate_context_to_thread
@@ -1143,6 +1198,7 @@ def run_compress_context_with_progress_timeout(
                 worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
+                escalate_deterministic=escalate_deterministic,
             )
             if recovered is not None:
                 return recovered
@@ -2984,6 +3040,18 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
             agent._session_db.set_session_title_source(agent.session_id, _src)
 
 
+def _compression_child_source(agent: Any, parent_session_id: str) -> str:
+    """The parent row's persisted source: a compression child is the same conversation, so a ``--source tool``,
+    ``oneshot`` or inherited ``kanban`` label must not degrade to the bare ``agent.platform`` (#112550)."""
+    parent = None
+    with contextlib.suppress(Exception):
+        parent = agent._session_db.get_session(parent_session_id)
+    if parent and parent.get("source"):
+        return parent["source"]
+    from run_agent import _session_source_for_agent  # late: run_agent imports this module
+    return _session_source_for_agent(getattr(agent, "platform", None))
+
+
 def _publish_rotated_compaction(
     agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
     old_session_id: str, compressed_user_turn_outcome: str,
@@ -3022,7 +3090,7 @@ def _publish_rotated_compaction(
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
+        source=_compression_child_source(agent, old_session_id), model=agent.model,
         model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,

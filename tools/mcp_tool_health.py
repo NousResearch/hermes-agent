@@ -194,13 +194,15 @@ class MCPServerHealthMixin:
         Only then is the reconnect budget cleared: a handshake that drops moments later must keep
         consuming ``_reconnect_retries`` so a flapping transport still reaches the park.
 
-        Called from the keepalive success path (session survived at least one full keepalive interval) and
-        the tool-call success path. See #62212.
+        Called from the keepalive success path (session survived a full keepalive interval — for
+        stdio without a keepalive, a full default interval idle with the child alive) and the
+        tool-call success path. See #62212.
         """
         if self._session_proven:
             return
         self._session_proven = True
         self._reconnect_retries = 0
+        self._park_reason = None
         if self._was_parked:
             self._was_parked = False
             logger.warning("MCP server '%s': revived — session healthy again after "

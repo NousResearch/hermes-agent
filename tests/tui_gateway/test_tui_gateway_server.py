@@ -21828,12 +21828,11 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         assert sess["history"][1]["content"] == "reply 1"
-        # Durable active transcript matches the cut (archive_dropped keeps
-        # inactive rows; get_messages_as_conversation returns active only).
+        # Durable active transcript matches the cut plus the prompt just sent, which is durable at
+        # submit (#111868) — before the turn runs (archive_dropped keeps inactive rows;
+        # get_messages_as_conversation returns active only).
         active = db.get_messages_as_conversation(session_key)
-        assert len(active) == 2
-        assert active[0]["content"] == "first"
-        assert active[1]["content"] == "reply 1"
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second"]
         # Heal stamps for subsequent rewinds when memory lined up with DB.
         assert sess["history"][0].get("_row_id") is not None
     finally:
@@ -22236,7 +22235,8 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)
-        assert [m["content"] for m in active] == ["first", "reply 1"]
+        # The cut, plus the prompt just sent (durable at submit, #111868).
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]
         # And the second response rebinds again: one surviving user turn.
         survivors2 = resp2["result"].get("survivor_user_row_ids")
         assert isinstance(survivors2, list) and len(survivors2) == 1

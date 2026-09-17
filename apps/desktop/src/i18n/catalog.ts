@@ -13,6 +13,6 @@ export const TRANSLATIONS: Record<Locale, Translations> = {
   'zh-hant': zhHant,
   ja,
   ar,
-  ru
+  ru,
   fa
 }

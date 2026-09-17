@@ -376,13 +376,8 @@ export function ChatSidebar({
   return (
     <aside
       className={cn(
-<<<<<<< HEAD
-        'flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1',
+        'flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pe-1',
         className
-=======
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pe-1",
-        className,
->>>>>>> 50f28cf637d (fix(ui): mirror direction-sensitive layout for RTL locales)
       )}
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">

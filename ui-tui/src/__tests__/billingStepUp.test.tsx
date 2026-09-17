@@ -1,7 +1,6 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
-import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -15,6 +14,7 @@ vi.mock('@hermes/ink', async importOriginal => {
 import type { BillingOverlayState } from '../app/interfaces.js'
 import { BillingOverlay } from '../components/billingOverlay.js'
 import type { BillingStateResponse } from '../gatewayTypes.js'
+import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME

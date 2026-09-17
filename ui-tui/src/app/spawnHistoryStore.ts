@@ -1,8 +1,7 @@
-import type { SubagentStatus } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
 import type { SpawnTreeLoadResponse } from '../gatewayTypes.js'
-import type { SubagentProgress } from '../types.js'
+import type { SubagentProgress, SubagentStatus } from '../types.js'
 
 export interface SpawnSnapshot {
   finishedAt: number

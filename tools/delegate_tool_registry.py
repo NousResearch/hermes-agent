@@ -121,6 +121,27 @@ def _subagent_transport_matches(record, transport) -> bool:
     return bound is transport or (isinstance(bound, FanoutTransport) and bound.contains(transport))
 
 
+def _subagent_live_owner_matches(
+    record, owner_session_id: str, owner_transport: Any, owner_session_record: Any,
+) -> bool:
+    """Whether one live child belongs to the exact attached UI session.
+
+    Normal registrations carry the live session record and follow its transport fanout. A background tool worker
+    can lose request ContextVars before registration, leaving both capture-time authority objects unset; recover
+    that case only when the exact UI id AND the child's durable parent identity/lineage match the attached owner.
+    A captured-but-different record is a retired generation and always fails closed.
+    """
+    if record.get("owner_session_id") != owner_session_id or owner_session_record is None:
+        return False
+    captured_owner = record.get("owner_session_record")
+    if captured_owner is owner_session_record and _subagent_transport_matches(record, owner_transport):
+        return True
+    if captured_owner is not None:
+        return False
+    parent_agent = owner_session_record.get("agent") if isinstance(owner_session_record, dict) else None
+    return parent_agent is not None and _owns_subagent_record(record, parent_agent)
+
+
 def steer_subagent(
     subagent_id: str, text: str, *, owner_session_id: Optional[str] = None, owner_transport: Any = None,
     owner_session_record: Any = None,
@@ -139,12 +160,8 @@ def steer_subagent(
         record = _active_subagents.get(subagent_id)
         if not record or not record.get("accepting_steer", False):
             return False
-        if owner_session_id is not None and (
-            record.get("owner_session_id") != owner_session_id
-            or owner_transport is None
-            or not _subagent_transport_matches(record, owner_transport)
-            or owner_session_record is None
-            or record.get("owner_session_record") is not owner_session_record
+        if owner_session_id is not None and not _subagent_live_owner_matches(
+            record, owner_session_id, owner_transport, owner_session_record,
         ):
             return False
         agent = record.get("agent")

@@ -13,7 +13,8 @@ def runtime(monkeypatch):
     from tools import async_delegation, delegate_tool_registry
 
     transport = SimpleNamespace(write=lambda frame: True)
-    owner = {"session_key": "parent", "history": [], "transport": transport}
+    parent_agent = SimpleNamespace(session_id="parent", _session_db=None)
+    owner = {"session_key": "parent", "history": [], "transport": transport, "agent": parent_agent}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
     monkeypatch.setattr(delegate_tool_registry, "_active_subagents", {})
     monkeypatch.setattr(delegate_tool_registry, "_recent_subagents", {})
@@ -116,6 +117,50 @@ def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
     finally:
         _unregister_subagent("child")
 
+
+
+def test_missing_capture_time_authority_recovers_from_exact_live_and_durable_owner(runtime, tmp_path):
+    """A tool worker can lose request ContextVars before child registration. The live UI session id and the
+    child's durable parent stamp still identify the exact conversation; an attached viewer may recover list,
+    tail and controls without exposing a child from another durable parent."""
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _active_subagents, _unregister_subagent
+
+    server, owner, transport, call = runtime
+    transcript = tmp_path / "child.log"
+    transcript.write_text("live child detail")
+    steered, stopped = [], []
+    child = SimpleNamespace(
+        _subagent_id="child", _delegate_depth=1, _parent_session_id="parent", model="test",
+        _live_transcript_path=str(transcript), steer=lambda text: steered.append(text) or True,
+        hard_interrupt=lambda text: stopped.append(text),
+    )
+    foreign = SimpleNamespace(
+        _subagent_id="foreign", _delegate_depth=1, _parent_session_id="different-parent", model="test",
+        _live_transcript_path=str(transcript), steer=lambda text: steered.append("foreign:" + text) or True,
+        hard_interrupt=lambda text: stopped.append("foreign:" + text),
+    )
+    # Simulate the production failure: ui-session identity was captured, but request transport/session-record
+    # ContextVars were unavailable by the time the background child registered.
+    _register_child(child, None, "owned task", owner_session_id="ui-owner",
+                    owner_transport=None, owner_session_record=None)
+    _register_child(foreign, None, "foreign task", owner_session_id="ui-owner",
+                    owner_transport=None, owner_session_record=None)
+    try:
+        assert _active_subagents["child"]["owner_transport"] is None
+        assert _active_subagents["child"]["owner_session_record"] is None
+        snapshot = call("subagent.list")["result"]
+        assert [row["subagent_id"] for row in snapshot["subagents"]] == ["child"]
+        assert call("subagent.tail", subagent_id="child")["result"] == {
+            "subagent_id": "child", "available": True, "text": "live child detail", "truncated": False,
+        }
+        assert not call("subagent.tail", subagent_id="foreign")["result"]["available"]
+        assert call("subagent.steer", subagent_id="child", text="course")["result"]["status"] == "queued"
+        assert call("subagent.interrupt", subagent_id="child")["result"]["found"]
+        assert steered == ["course"] and len(stopped) == 1
+    finally:
+        _unregister_subagent("child")
+        _unregister_subagent("foreign")
 
 
 def test_interrupt_requires_exact_live_owner_but_direct_helper_stays_legacy(runtime):

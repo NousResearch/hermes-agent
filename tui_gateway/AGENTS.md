@@ -95,8 +95,13 @@ transport's live session. Live child records are pinned to the exact session
 record and transport. Child authority is resolved at RPC time against the owning session's
 LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
 resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
-per-record transport sync at an attach site; foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
-indicator. Async completion units are not agents and lack exact generation authority;
+per-record transport sync at an attach site; foreign or retired generations remain inaccessible.
+A child registered after a background tool worker lost its request ContextVars can have an exact
+`owner_session_id` and durable `owner_agent_session_id` but no captured session-record/transport
+objects. That case recovers only when the RPC caller is attached to the exact live UI session and
+`_owns_subagent_record` proves the child's durable parent identity/lineage matches that live owner.
+A non-`None` captured record from another generation always fails closed. `last_tool` is the last
+started tool, not an in-flight indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot
 on their existing poll and avoid updates when unchanged.

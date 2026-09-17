@@ -504,6 +504,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
+| `single_instance` | bool | If `true`, this stdio server must have exactly one live child system-wide (a single-writer datastore). A second Hermes context that finds the resource already held parks quietly — no timed self-probe — and is revived by an explicit reconnect (`/reload-mcp` or `hermes mcp` refresh) once the owning instance exits. |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example

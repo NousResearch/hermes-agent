@@ -10,10 +10,10 @@ only a full restart recovers it.
 ``_check_polling_stall`` closes that hole: Telegram answers a long-poll
 within ~50s, so a poller with no successful getUpdates round-trip for
 ``_POLLING_STALL_TIMEOUT`` seconds is unambiguously wedged, and the check
-escalates loudly through the existing reconnect ladder
-(``_handle_polling_network_error``). ``_polling_heartbeat_loop`` runs the
-check every probe, so steady-state wedges are caught without any Bot API
-call.
+raises a ``_PollingStallError`` through the recovery path, which skips the
+reconnect ladder and hands the adapter to the supervisor for a rebuild
+(#113618). ``_polling_heartbeat_loop`` runs the check every probe, so
+steady-state wedges are caught without any Bot API call.
 """
 import asyncio
 import time as _time
@@ -58,9 +58,9 @@ async def test_recent_progress_does_not_escalate():
 
 
 @pytest.mark.asyncio
-async def test_stalled_long_poll_escalates_to_reconnect_ladder():
+async def test_stalled_long_poll_hands_off_to_supervisor():
     """#92991: with an empty queue and healthy get_me(), only the stall
-    timestamp can detect the wedged consumer — and it must."""
+    timestamp can detect the wedged consumer — and it must hand off."""
     adapter = _make_adapter(stalled_seconds=400)
     recovery = AsyncMock()
     with patch.object(adapter, "_handle_polling_network_error", new=recovery):

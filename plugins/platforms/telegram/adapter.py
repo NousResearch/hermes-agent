@@ -1816,9 +1816,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # connected for as long as the recovery ladder runs (#101391: 11 h).
         if getattr(self, "_running", False):
             self._mark_degraded()
-        logger.warning(
-            "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s", self.name, reason,
-            _redact_telegram_error_text(error))
+        if isinstance(error, _PollingStallError):
+            # Not a retry promise: the recovery path hands a confirmed stall straight to the supervisor
+            # (``_go_fatal_network`` logs the single error-level line for it).
+            logger.warning(
+                "[%s] Telegram polling stall confirmed (%s); handing off to the supervisor for an adapter rebuild. "
+                "Error: %s", self.name, reason, _redact_telegram_error_text(error))
+        else:
+            logger.warning(
+                "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s", self.name, reason,
+                _redact_telegram_error_text(error))
         self._spawn_polling_recovery(asyncio.get_running_loop(), self._handle_polling_network_error(error))
 
     async def _delete_webhook_best_effort(self, *, require_success: bool = False) -> bool:
@@ -2244,12 +2251,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if stalled_for <= _POLLING_STALL_TIMEOUT:
             return
-        logger.error(
-            "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
-            "(generation %d). Handing the adapter to the supervisor for a rebuild instead of staying silently deaf.",
-            self.name, stalled_for, getattr(self, "_polling_generation", 0))
+        # No pre-log here: the recovery path logs the hand-off and ``_go_fatal_network`` the one
+        # error-level line, so a stall does not announce itself twice.
         self._schedule_polling_recovery(
-            _PollingStallError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for),
+            _PollingStallError(
+                "getUpdates made no progress for %.0fs (generation %d; polling stall watchdog)"
+                % (stalled_for, getattr(self, "_polling_generation", 0))),
             reason="polling stall watchdog")
 
     def _verifier_stale(self, generation: int, progress: asyncio.Event) -> bool:

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from agent.context_references import format_reference_value
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
@@ -72,6 +73,10 @@ def _reap_leaked_notification_pollers():
     for the whole file even when many tests leaked pollers.
     """
     yield
+    if isinstance(server._sessions, dict):
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
     pollers = [
         (stop, thread)
         for stop, thread in list(server._notification_pollers)
@@ -11030,7 +11035,7 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
         assert resp["result"]["path"] == str(stored)
-        assert resp["result"]["ref_text"] == f"@file:{stored}"
+        assert resp["result"]["ref_text"] == f"@file:{server._format_ref_value(str(stored))}"
         assert stored.read_text(encoding="utf-8") == "hello world"
     finally:
         server._sessions.pop("sid", None)
@@ -11063,7 +11068,7 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
         stored = home / "attachments" / "outside.txt"
         assert resp["result"]["attached"] is True
         assert resp["result"]["uploaded"] is True
-        assert resp["result"]["ref_text"] == f"@file:{stored}"
+        assert resp["result"]["ref_text"] == f"@file:{server._format_ref_value(str(stored))}"
         assert stored.read_text(encoding="utf-8") == "outside workspace"
     finally:
         server._sessions.pop("sid", None)
@@ -16198,6 +16203,7 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
     )
+    monkeypatch.setattr("hermes_cli.inventory._anthropic_oauth_credentials_present", lambda: False)
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
 
@@ -20376,7 +20382,7 @@ def test_build_persist_message_with_image_refs_appends_existing_paths(monkeypatc
 
     result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
 
-    assert result == f"what is in this photo?\n@image:{img}"
+    assert result == f"what is in this photo?\n@image:{format_reference_value(str(img))}"
 
 
 def test_build_persist_message_keeps_the_caption_on_the_first_line(tmp_path):
@@ -20400,7 +20406,7 @@ def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, 
 
     result = server._build_persist_message_with_image_refs("compare them", [str(existing), missing])
 
-    assert result == f"compare them\n@image:{existing}"
+    assert result == f"compare them\n@image:{format_reference_value(str(existing))}"
 
 
 def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeypatch, tmp_path):
@@ -20409,7 +20415,7 @@ def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeyp
     img = tmp_path / "only.png"
     img.write_bytes(b"png")
 
-    assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
+    assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{format_reference_value(str(img))}"
 
 
 def test_build_persist_message_quotes_paths_containing_spaces(tmp_path):
@@ -20439,7 +20445,7 @@ def test_persist_user_message_mirrors_the_shape_sent_to_the_model(tmp_path):
 
     override = server._build_persist_user_message("what is this?", [str(img)], native_parts)
 
-    assert override == [{"type": "text", "text": f"what is this?\n@image:{img}"}, image_part]
+    assert override == [{"type": "text", "text": f"what is this?\n@image:{format_reference_value(str(img))}"}, image_part]
 
 
 def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
@@ -20450,7 +20456,7 @@ def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
 
     override = server._build_persist_user_message("what is this?", [str(img)], "enriched api-only text")
 
-    assert override == f"what is this?\n@image:{img}"
+    assert override == f"what is this?\n@image:{format_reference_value(str(img))}"
 
 
 def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):

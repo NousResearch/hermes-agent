@@ -11,6 +11,8 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from tools.binary_extensions import (
     has_opaque_document_extension,
     is_pdf_path,
@@ -135,20 +137,28 @@ class TestWriteFileToolGuard:
         assert not result.get("error")
         assert pdf.exists()
 
-    def test_write_file_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
+    @pytest.mark.parametrize("sidecar_exists", [True, False])
+    def test_write_file_rejects_sqlite_wal_sidecar(self, tmp_path: Path, sidecar_exists: bool):
         # ".db-wal" is not a suffix in BINARY_EXTENSIONS; the sidecar must still
-        # count as its database's extension or text lands in the WAL.
+        # count as its database's extension or text lands in the WAL. A
+        # checkpointed db has no sidecar on disk, so the absent case must be
+        # refused too — otherwise a garbage WAL lands next to a live database.
         db = tmp_path / "state.db"
-        wal = _make_wal_db(db)
-        original = wal.read_bytes()
+        if sidecar_exists:
+            wal = _make_wal_db(db)
+            original = wal.read_bytes()
+        else:
+            sqlite3.connect(db).close()
+            wal = Path(str(db) + "-wal")
+            assert not wal.exists()
         result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
         # The no-baseline overwrite guard would also refuse; pin the binary
         # refusal so the message steers the model to sqlite3, not to read_file.
         assert "binary" in result.get("error", ""), result
-        assert wal.read_bytes() == original
-        conn = sqlite3.connect(db)
-        assert conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"
-        conn.close()
+        if sidecar_exists:
+            assert wal.read_bytes() == original
+        else:
+            assert not wal.exists()
 
     def test_write_file_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"

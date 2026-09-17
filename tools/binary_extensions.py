@@ -36,19 +36,44 @@ OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
 # write guard would treat the raw page bytes as text.
 _SQLITE_SIDECAR_MARKERS = ("-wal", "-shm", "-journal")
 
+# Only these suffixes take a sidecar marker; ``report.docx-wal`` is not a
+# document and must not be treated as one.
+_SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3", ".db3"}) & BINARY_EXTENSIONS
+
+
+def _strip_sidecar_marker(suffix: str) -> str | None:
+    """Return the database suffix a lower-cased sidecar suffix hangs off
+    (``.db-wal`` -> ``.db``), or None when ``suffix`` is not a SQLite sidecar."""
+    for marker in _SQLITE_SIDECAR_MARKERS:
+        if suffix.endswith(marker):
+            base = suffix[: -len(marker)]
+            if base in _SQLITE_EXTENSIONS:
+                return base
+    return None
+
 
 def _has_extension_in(path: str, extensions: frozenset) -> bool:
     """Case-insensitive check on the final ``.suffix``; pure string, no I/O.
-    A SQLite sidecar counts as its database's extension."""
+    A SQLite sidecar counts as its database's extension (only SQLite suffixes
+    are stripped, so ``x.docx-wal`` stays unrecognised)."""
     dot = path.rfind(".")
     if dot == -1:
         return False
     suffix = path[dot:].lower()
-    for marker in _SQLITE_SIDECAR_MARKERS:
-        if suffix.endswith(marker):
-            suffix = suffix[: -len(marker)]
-            break
+    base = _strip_sidecar_marker(suffix)
+    if base is not None:
+        suffix = base
     return suffix in extensions
+
+
+def is_sqlite_sidecar(path: str) -> bool:
+    """True for ``x.db-wal`` / ``x.sqlite3-shm`` / ``x.db-journal`` paths.
+    Pure string, no I/O — a sidecar path is never a legitimate text target
+    even when no sidecar exists on disk (a checkpointed db has none)."""
+    dot = path.rfind(".")
+    if dot == -1:
+        return False
+    return _strip_sidecar_marker(path[dot:].lower()) is not None
 
 
 def has_binary_extension(path: str) -> bool:

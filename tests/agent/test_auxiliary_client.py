@@ -3411,6 +3411,108 @@ class TestCodexAdapterPromptCacheKey:
 
 
 
+class TestCodexAdapterPerplexityReservedToolAliases:
+    """Regression for #114260: the auxiliary chat->Responses conversion path
+    (title generation, compression, MoA aggregation) is independent of the main
+    transport's build_kwargs and previously never applied Perplexity's reserved-
+    tool-name aliasing or emitted strict:false, so an aux call against a
+    Perplexity model with a reserved-named tool 400ed even after the main loop
+    was fixed."""
+
+    @staticmethod
+    def _build_adapter(base_url="https://api.perplexity.ai/v1", model="openai/gpt-6-astra",
+                        function_call_name=None):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        output: list = []
+        if function_call_name:
+            output.append(SimpleNamespace(
+                type="function_call", call_id="call_1", name=function_call_name,
+                arguments='{"pattern":"README"}',
+            ))
+        else:
+            output.append(SimpleNamespace(
+                type="message", role="assistant", status="completed",
+                content=[SimpleNamespace(type="output_text", text="hi")],
+            ))
+        # hasattr(event_stream, "output") short-circuits create() straight to
+        # _parse_codex_final_response, bypassing the SSE event assembler entirely
+        # (matches how a completed-but-non-streamed Responses object is handled).
+        final_response = SimpleNamespace(
+            output=output, status="completed",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            # #93650 routes bulk fields (tools included) through extra_body; fold them back in
+            # so assertions read the effective wire body the SDK would send.
+            captured_kwargs.update(kwargs.get("extra_body") or {})
+            return final_response
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, model)
+        return adapter, captured_kwargs
+
+    def test_reserved_tool_name_aliased_on_the_wire(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "search for it"}],
+            tools=[{"type": "function", "function": {
+                "name": "search_files", "description": "Search files.",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        )
+        names = [t["name"] for t in captured["tools"]]
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_non_perplexity_backend_keeps_original_names(self):
+        adapter, captured = self._build_adapter(base_url="https://api.openai.com/v1", model="gpt-5.5")
+        adapter.create(
+            messages=[{"role": "user", "content": "search for it"}],
+            tools=[{"type": "function", "function": {
+                "name": "search_files", "description": "Search files.",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        )
+        names = [t["name"] for t in captured["tools"]]
+        assert "search_files" in names
+
+    def test_converted_tools_are_always_strict_false(self):
+        """The main transport's _responses_tools() always sets strict: False; this adapter
+        drifted and omitted it, which made Perplexity reject nested free-form schemas with a
+        bare, field-less "invalid request". Applies to every backend, not only Perplexity."""
+        adapter, captured = self._build_adapter(base_url="https://api.openai.com/v1", model="gpt-5.5")
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        )
+        assert captured["tools"][0]["strict"] is False
+
+    def test_reserved_tool_call_alias_is_mapped_back_before_dispatch(self):
+        """A returned function_call for the aliased wire name must come back as the real
+        name -- Hermes dispatch never sees the hermes_-prefixed alias."""
+        adapter, captured = self._build_adapter(function_call_name="hermes_search_files")
+        result = adapter.create(
+            messages=[{"role": "user", "content": "search for it"}],
+            tools=[{"type": "function", "function": {
+                "name": "search_files", "description": "Search files.",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        )
+        tool_call = result.choices[0].message.tool_calls[0]
+        assert tool_call.function.name == "search_files"
+
+
+
 class TestCodexAdapterGithubResponsesMessageIdDrop:
     """_CodexCompletionsAdapter must drop codex_message_items ``id`` when
     talking to Copilot (githubcopilot.com), independent of the main

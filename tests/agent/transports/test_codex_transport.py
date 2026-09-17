@@ -1134,6 +1134,101 @@ class TestOpencodeReservedToolAliases:
         assert names == ["search_files", "web_search"]
 
 
+class TestPerplexityReservedToolAliases:
+    """Perplexity's Agent API (/v1/responses on api.perplexity.ai) reserves several of its own
+    built-in tool names as function names (HTTP 400 "custom function name 'X' is reserved",
+    verified live 2026-09, #114260). Same aliasing treatment as OpenCode/xAI."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "fetch_url", "description": "Fetch a URL.",
+            "parameters": {"type": "object",
+                           "properties": {"url": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_provider_name_prefix_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="openai/gpt-6-astra",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="perplexity-agent",
+            base_url="https://api.perplexity.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_fetch_url" in names
+        assert "search_files" not in names
+        assert "fetch_url" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_hostname_match_without_provider_name(self, transport):
+        """An arbitrary custom provider name pointing at api.perplexity.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="openai/gpt-6-astra",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-custom-name",
+            base_url="https://api.perplexity.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+
+    def test_non_perplexity_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "fetch_url" in names
+        assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files"]
+
+
 class TestXaiReservedToolSearchAlias:
     """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
     the client declaration with HTTP 400 (#95003). The transport aliases the

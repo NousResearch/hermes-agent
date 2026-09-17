@@ -1356,8 +1356,11 @@ class _CodexCompletionsAdapter:
         self._client = real_client
         self._model = model
 
-    def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
-        """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
+    def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any, Dict[str, str]]:
+        """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout, wire_aliases)``;
+        mirrors codex.py::build_kwargs. ``wire_aliases``: ``{alias: original_name}`` for reserved tool
+        names renamed on the wire this request (Perplexity), mapped back onto the parsed response in
+        ``create()`` before it reaches Hermes dispatch."""
         # Separate system/instructions from replayable conversation messages, then route the rest through
         # the SINGLE shared chat->Responses converter used by the main agent transport
         # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
@@ -1385,13 +1388,34 @@ class _CodexCompletionsAdapter:
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
         instructions = "You are a helpful assistant."
+        # Perplexity's Agent API reserves its own built-in tool names on the wire, same as the
+        # main transport (agent/transports/codex.py::_alias_wire_tools, #114260). This adapter is
+        # a second, independent chat->Responses conversion path (title generation, compression,
+        # MoA aggregation all route through it) and previously never applied the aliasing, so an
+        # aux call to a Perplexity model with a reserved-named tool 400ed even after the main
+        # loop was fixed. The alias map is request-local (never instance state: this adapter is
+        # cached/shared across concurrent aux calls) and returned alongside resp_kwargs so
+        # create() can reverse it on the parsed tool_calls before they reach Hermes dispatch.
+        from agent.transports.codex import (
+            _PERPLEXITY_RESERVED_TOOL_NAMES, _alias_reserved_tools, _is_perplexity_responses_backend,
+        )
+        wire_aliases: Dict[str, str] = {}
+        is_perplexity = _is_perplexity_responses_backend({"base_url": host})
         replay_messages: List[Dict[str, Any]] = []
         for msg in kwargs.get("messages", []):
             content = msg.get("content") or ""
             if msg.get("role", "user") == "system":
                 instructions = content if isinstance(content, str) else str(content)
-            else:
-                replay_messages.append(msg)
+                continue
+            if is_perplexity and msg.get("tool_calls"):
+                msg = dict(msg)
+                msg["tool_calls"] = [
+                    {**tc, "function": {**tc["function"], "name": f"hermes_{tc['function']['name']}"}}
+                    if isinstance(tc, dict) and (tc.get("function") or {}).get("name") in _PERPLEXITY_RESERVED_TOOL_NAMES
+                    else tc
+                    for tc in msg["tool_calls"]
+                ]
+            replay_messages.append(msg)
         # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
         # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
@@ -1461,8 +1485,10 @@ class _CodexCompletionsAdapter:
                 if name:
                     converted.append({
                         "type": "function", "name": name, "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
+                        "parameters": fn.get("parameters", {}), "strict": False,
                     })
+            if converted and is_perplexity:
+                converted, wire_aliases = _alias_reserved_tools(converted, _PERPLEXITY_RESERVED_TOOL_NAMES)
             if converted:
                 resp_kwargs["tools"] = converted
         # Stable prompt-cache routing: key is content-addressed from the static prefix
@@ -1491,7 +1517,7 @@ class _CodexCompletionsAdapter:
         # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
-        return resp_kwargs, model, timeout
+        return resp_kwargs, model, timeout, wire_aliases
 
     def create(self, **kwargs) -> Any:
         from hermes_cli.providers import is_actual_route
@@ -1506,7 +1532,7 @@ class _CodexCompletionsAdapter:
         # Low-level ``responses.create(stream=True)`` and assemble the final response ourselves
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
-        resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
+        resp_kwargs, model, timeout, wire_aliases = self._build_responses_kwargs(kwargs)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
@@ -1535,6 +1561,11 @@ class _CodexCompletionsAdapter:
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            if wire_aliases and tool_calls_raw:
+                for tc in tool_calls_raw:
+                    fn = getattr(tc, "function", None)
+                    if fn is not None and fn.name in wire_aliases:
+                        fn.name = wire_aliases[fn.name]
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc

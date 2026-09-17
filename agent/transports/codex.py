@@ -74,13 +74,17 @@ _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 # (hermes_<name>), map back in normalize_response so Hermes dispatch is unaffected. See #85589.
 _OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+# Perplexity's Agent API (/v1/responses on api.perplexity.ai) rejects client tools sharing a name
+# with one of its own built-ins with the same "custom function name 'X' is reserved" 400. Verified
+# live 2026-09; generic names pass. See #114260.
+_PERPLEXITY_RESERVED_TOOL_NAMES = ("web_search", "search_files", "fetch_url", "people_search", "finance_search")
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
 # built a request; real requests carry request-local ``_last_wire_aliases``.
 _LEGACY_ALIAS_FALLBACK = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
+    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES, *_PERPLEXITY_RESERVED_TOOL_NAMES)
 }
 _LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
@@ -98,6 +102,24 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
         from utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _is_perplexity_responses_backend(params: dict[str, Any]) -> bool:
+    """True for a ``perplexity*``-named provider or a base URL on api.perplexity.ai.
+
+    No built-in Perplexity provider preset exists; this backend is reached only through a
+    user-defined custom provider (OpenAI-compatible, ``api_mode: responses``), so both the
+    provider-name and hostname checks are needed -- a user may name their provider anything.
+    """
+    provider = str(params.get("provider") or "").strip().lower()
+    if provider.startswith("perplexity"):
+        return True
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "api.perplexity.ai"
     except Exception:
         return False
 
@@ -178,6 +200,10 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     if response_tools and _is_opencode_responses_backend(params):
         response_tools, _oc_aliases = _alias_reserved_tools(response_tools, _OPENCODE_RESERVED_TOOL_NAMES)
         wire_aliases.update(_oc_aliases)
+    # Perplexity's Agent API reserves its own built-in tool names; same treatment (#114260).
+    if response_tools and _is_perplexity_responses_backend(params):
+        response_tools, _pplx_aliases = _alias_reserved_tools(response_tools, _PERPLEXITY_RESERVED_TOOL_NAMES)
+        wire_aliases.update(_pplx_aliases)
     # xAI server-side web search vs Hermes web providers. grok models on xAI's /v1/responses surface have a
     # *native*, server-executed web search. A client-side function literally named ``web_search`` collides
     # with that engine: declared as a plain ``function`` rather than ``{"type": "web_search"}``, the search

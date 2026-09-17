@@ -17,6 +17,24 @@ from gateway.platform_registry import PlatformEntry, platform_registry
 from tools.send_message_tool import resolve_send_target, send_message_tool
 
 
+@pytest.mark.asyncio
+async def test_mattermost_custom_handler_keeps_full_request_priority(monkeypatch):
+    from tools.send_message_tool import _send_to_platform
+    from gateway.config import PlatformConfig
+    handler = AsyncMock(return_value={"success": True, "message_ids": ["custom"]})
+    native = AsyncMock(side_effect=AssertionError("custom handler owns this request"))
+    entry = SimpleNamespace(send_message_handler=handler, standalone_sender_fn=native)
+    monkeypatch.setattr(platform_registry, "get", lambda name: entry)
+    monkeypatch.setattr("tools.send_message_tool._live_adapter", native)
+    args = {"message": "x" * 1300, "target": "mattermost:channel", "subject": "keep"}
+    config = PlatformConfig(extra={"max_post_length": 500})
+    result = await _send_to_platform(Platform.MATTERMOST, config, "channel", args["message"],
+                                     media_files=[("image.png", False)], args=args)
+    handler.assert_awaited_once_with(args, "channel", "mattermost", config)
+    assert result["message_ids"] == ["custom"]
+    native.assert_not_called()
+
+
 @pytest.fixture
 def plugin_platform():
     name = "fmsg-ext-test"

@@ -51,4 +51,28 @@ describe('SidebarLoadMoreRow', () => {
     screen.getByRole('button', { name: 'Load more' }).click()
     expect(onClick).toHaveBeenCalledOnce()
   })
+
+  it('triggers onClick when intersection observer fires', () => {
+    let observerCallback: (entries: { isIntersecting: boolean }[]) => void = () => {}
+    const observeMock = vi.fn()
+    const disconnectMock = vi.fn()
+
+    class MockIntersectionObserver {
+      constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+        observerCallback = cb
+      }
+      observe = observeMock
+      disconnect = disconnectMock
+    }
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+
+    const onClick = vi.fn()
+    render(<SidebarLoadMoreRow onClick={onClick} step={0} />)
+
+    expect(observeMock).toHaveBeenCalled()
+    observerCallback([{ isIntersecting: true }])
+    expect(onClick).toHaveBeenCalledOnce()
+
+    vi.unstubAllGlobals()
+  })
 })

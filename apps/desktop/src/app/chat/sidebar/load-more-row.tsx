@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
@@ -7,6 +8,7 @@ interface SidebarLoadMoreRowProps {
   step: number
   onClick: () => void
   loading?: boolean
+  autoLoad?: boolean
 }
 
 // Compact "load more" affordance shared by recents, messaging, and cron. Kept
@@ -14,13 +16,35 @@ interface SidebarLoadMoreRowProps {
 // so pagination reads as one interaction everywhere. It hangs off the list
 // instead of sitting in a row, so it repeats the row's trailing inset
 // (SidebarRowShell's `pr-2`) to stay on the edge the rows stop at.
-export function SidebarLoadMoreRow({ step, onClick, loading = false }: SidebarLoadMoreRowProps) {
+export function SidebarLoadMoreRow({ step, onClick, loading = false, autoLoad = true }: SidebarLoadMoreRowProps) {
   const { t } = useI18n()
   const label = loading ? t.sidebar.loading : step > 0 ? t.sidebar.loadCount(step) : t.sidebar.loadMore
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (!autoLoad || loading || typeof IntersectionObserver === 'undefined') {
+      return
+    }
+    const el = buttonRef.current
+    if (!el) {
+      return
+    }
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0]?.isIntersecting) {
+          onClick()
+        }
+      },
+      { rootMargin: '150px' }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [autoLoad, loading, onClick])
 
   return (
     <Tip label={label}>
       <button
+        ref={buttonRef}
         aria-label={label}
         className="mr-2 ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-(--ui-text-tertiary)"
         disabled={loading}

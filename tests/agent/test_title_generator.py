@@ -713,3 +713,21 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+    def test_greeting_title_upgraded_on_subsequent_turn(self):
+        """A session with a 'Friendly greeting' title is upgraded on turn 2."""
+        import threading
+        from agent.title_generator import maybe_auto_title
+        db = MagicMock()
+        db.get_session_title.return_value = "Friendly greeting"
+        db.get_session_title_source.return_value = "derived"
+
+        history = [
+            {"role": "user", "content": "hi how are you"},
+            {"role": "assistant", "content": "Hello! How can I help you today?"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "How do I optimize SQLite queries?", history)
+            assert called.wait(timeout=5), "auto_title should run on turn 2 to upgrade greeting title"

@@ -338,13 +338,28 @@ def generate_title(
         return None
 
 
+def _is_greeting_title(title: Any) -> bool:
+    """True when title is a placeholder greeting that should be upgraded on later turns."""
+    if not isinstance(title, str) or not title.strip():
+        return False
+    norm = re.sub(r"[^\w\s]", "", title).strip().lower()
+    return norm in ("friendly greeting", "friendly greeting in chat", "greeting", "greetings", "hello", "hi") or "friendly greeting" in norm
+
+
 def _has_upgraded_title(session_db, session_id: str) -> bool:
     """True when the session already carries an ``llm``/``user`` title (or the check fails)."""
     try:
+        title_fn = getattr(session_db, "get_session_title", None)
+        title = title_fn(session_id) if callable(title_fn) else None
+        if isinstance(title, str) and _is_greeting_title(title):
+            return False
         source_fn = getattr(session_db, "get_session_title_source", None)
         if source_fn is not None:
-            return source_fn(session_id) not in (None, "derived")
-        return bool(session_db.get_session_title(session_id))
+            source = source_fn(session_id)
+            if source == "user":
+                return True
+            return source not in (None, "derived")
+        return bool(title)
     except Exception:
         return True
 
@@ -360,6 +375,15 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     leave the session untitled (#50537), append a ``#N`` suffix via ``get_next_title_in_lineage``.
     """
     auto_fn = getattr(session_db, "set_auto_title", None)
+
+    # If the session already holds a greeting placeholder, demote its source so a topical llm title can upgrade it.
+    title_fn = getattr(session_db, "get_session_title", None)
+    current_title = title_fn(session_id) if callable(title_fn) else None
+    if source == "llm" and isinstance(current_title, str) and _is_greeting_title(current_title):
+        with suppress(Exception):
+            set_src = getattr(session_db, "set_session_title_source", None)
+            if callable(set_src):
+                set_src(session_id, "derived")
 
     def _set(candidate):
         if auto_fn is not None:
@@ -426,9 +450,10 @@ def auto_title_session(
         # Same for the accounting context, so the title call's token usage is recorded against this session
         # (task='title_generation', #23270).
         set_accounting_context(session_db, session_id)
-        title, source = generate_title(
+        title = generate_title(
             user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
-        ), "llm"
+        )
+        source = "derived" if _is_greeting_title(title) else "llm"
         if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
             title, source = derive_title(user_message), "derived"
         if not title:
@@ -501,10 +526,12 @@ def maybe_auto_title(
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
         return
-    # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
-    # left a machinery-opened session nameless; title alone never titles on an old store.
+    # History may be pre- or post-message. Skip once past the opening turns (max 3),
+    # or once the session carries an upgraded, non-greeting title.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+    if user_msg_count > 3:
+        return
+    if user_msg_count > 1 and _has_upgraded_title(session_db, session_id):
         return
     kanban_title = _kanban_task_title()
     if kanban_title:

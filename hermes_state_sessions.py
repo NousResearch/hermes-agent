@@ -1297,6 +1297,7 @@ class SessionSessionsMixin:
             for row in self._read_all(pinned_query, base_where_params):
                 s = self._list_row(row)
                 if s["id"] not in seen_ids:
+                    s["_pinned_backfill"] = True
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:

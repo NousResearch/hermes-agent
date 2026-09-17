@@ -256,3 +256,19 @@ class TestCrossProfileProjectTree:
         # The healthy profile's tree still lands; only the broken one drops out.
         assert "Healthy" in [project["label"] for project in payload["projects"]]
         assert [project["sessionCount"] for project in payload["projects"] if project["isNoProject"]] == [1]
+
+    def test_pinned_sessions_inside_window_do_not_falsify_profiles_truncated(
+        self, client, profiles_on_disk
+    ):
+        """Pinned sessions inside the page window must not be discounted against the page limit."""
+        home = profiles_on_disk["default"]
+        from hermes_state import SessionDB
+        db = SessionDB(home / "state.db")
+        for i in range(5):
+            sid = f"sess-test-{i}"
+            _seed_session(home, sid, source="desktop")
+            if i < 2:
+                db.set_session_pinned(sid, True)
+
+        payload = client.get("/api/profiles/sessions/sidebar?recents_limit=5").json()
+        assert payload["recents"]["profiles_truncated"]["default"] is True

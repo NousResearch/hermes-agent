@@ -1595,7 +1595,7 @@ def _turn_owns_its_own_context_repair(result: Dict[str, Any]) -> bool:
     )
 
 
-def close_durable_failed_turn(agent: Any, result: Any) -> Any:
+def close_durable_failed_turn(agent: Any, result: Any, user_message: Any = None) -> Any:
     """Close a durable turn that ended without an assistant row (in place; returns ``result``).
 
     The single seam every envelope passes through, so one owner covers the classes that never
@@ -1631,7 +1631,11 @@ def close_durable_failed_turn(agent: Any, result: Any) -> Any:
 
         from agent.turn_failure_copy import failed_turn_notice
 
-        append_message(messages, {"role": "assistant", "content": failed_turn_notice(messages)})
+        # ``user_message`` anchors the effects scan to the ACCEPTED turn: Hermes appends
+        # user-role scaffolding mid-turn, and a "last user row" boundary would start after
+        # it and miss a tool that already ran.
+        notice = failed_turn_notice(messages, user_message)
+        append_message(messages, {"role": "assistant", "content": notice})
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)
@@ -1677,7 +1681,7 @@ def run_conversation(
         moa_config=moa_config,
         turn_author=turn_author,
     )
-    result = close_durable_failed_turn(agent, result)
+    result = close_durable_failed_turn(agent, result, user_message)
     return export_current_turn_boundary(agent, result, user_message)
 
 

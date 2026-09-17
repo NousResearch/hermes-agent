@@ -703,3 +703,157 @@ def test_acp_failed_turn_with_tool_evidence_persists_the_partial_notice(acp):
     # The boundary is in the returned messages too, not only in the DB.
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
+
+
+# ── Partial-effect anchoring: synthetic user rows must not end the turn ───────
+#
+# Hermes appends user-ROLE scaffolding inside a single real user turn: verify-on-stop
+# and pre_verify nudges (``agent/turn_stop_gates.py::_continue``), kanban stop nudges,
+# length-continuation and dropped-tool-call notices, todo snapshots. A "scan back to the
+# last role=user row" boundary starts AFTER that scaffolding and so cannot see tool
+# evidence that ran earlier in the same turn — it would claim "not processed" for a turn
+# that already deleted files. These pin the anchor to the accepted human turn instead.
+
+
+def _real_user(text):
+    return {"role": "user", "content": text}
+
+
+def _tool_effect_rows():
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "terminal", "arguments": '{"cmd": "rm -rf build"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "removed 412 files"},
+    ]
+
+
+# Real Hermes scaffolding shapes: the flags ``turn_stop_gates._continue`` stamps, and the
+# content prefixes ``agent/conversation_compression._SYNTHETIC_USER_PREFIXES`` knows.
+_SYNTHETIC_NUDGES = [
+    pytest.param({"role": "user", "content": "Please verify your work before stopping.",
+                  "_verification_stop_synthetic": True}, id="verify-on-stop"),
+    pytest.param({"role": "user", "content": "Run the pre_verify hook.",
+                  "_pre_verify_synthetic": True}, id="pre-verify"),
+    pytest.param({"role": "user", "content": "A tool call was dropped; retry it.",
+                  "_dropped_toolcall_nudge": True}, id="dropped-tool-call"),
+    pytest.param({"role": "user", "content": "[System: Your previous response was truncated. Continue.]"},
+                 id="length-continuation"),
+    pytest.param({"role": "user", "content": "[Your active task list was preserved across context compression]",
+                  "_todo_snapshot_synthetic": True}, id="todo-snapshot"),
+    pytest.param({"role": "user", "content": "recovered from an empty response",
+                  "_empty_recovery_synthetic": True}, id="empty-response-recovery"),
+]
+
+
+@pytest.mark.parametrize("nudge", _SYNTHETIC_NUDGES)
+def test_tool_effect_before_a_synthetic_nudge_still_hedges(nudge):
+    """The safety case: a tool ran, THEN Hermes appended internal user-role scaffolding.
+
+    Anchoring on the last ``role=user`` row starts at the nudge, sees no tool evidence and
+    falsely reports "not processed" for a turn that already had side effects.
+    """
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice
+
+    request = "delete the build directory"
+    messages = [_real_user(request), *_tool_effect_rows(), nudge]
+
+    assert failed_turn_notice(messages, request) == PARTIAL_FAILED_TURN_NOTICE, (
+        "a tool ran before the synthetic nudge; the boundary must not claim the request "
+        "was unprocessed"
+    )
+
+
+@pytest.mark.parametrize("nudge", _SYNTHETIC_NUDGES)
+def test_synthetic_nudge_without_tool_effects_reports_unprocessed(nudge):
+    """The inverse: scaffolding but no side effects — the plain notice is correct."""
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE, failed_turn_notice
+
+    request = "what is the capital of France?"
+    messages = [_real_user(request), {"role": "assistant", "content": "Thinking..."}, nudge]
+
+    assert failed_turn_notice(messages, request) == FAILED_TURN_NOTICE
+
+
+def test_effects_from_a_previous_turn_do_not_leak_into_this_turn():
+    """The anchor must also not reach BACKWARD past the accepted turn."""
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE, failed_turn_notice
+
+    request = "what is the capital of France?"
+    messages = [
+        _real_user("delete the build directory"), *_tool_effect_rows(),
+        {"role": "assistant", "content": "Done."},
+        _real_user(request),
+    ]
+    assert failed_turn_notice(messages, request) == FAILED_TURN_NOTICE
+
+
+def test_unresolvable_anchor_fails_safe_towards_hedging():
+    """When no accepted turn can be identified, hedge rather than claim "not processed"."""
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice
+
+    orphaned = _tool_effect_rows()  # no user row at all
+    assert failed_turn_notice(orphaned, "a request that is not in this list") == \
+        PARTIAL_FAILED_TURN_NOTICE
+
+
+# ── The anchor must survive compression / rewrite / reanchor ─────────────────
+
+
+def test_anchor_survives_compaction_moving_the_turn_and_appending_a_snapshot():
+    """The exact shape ``reanchor_current_turn_user_idx`` documents.
+
+    Compression rebuilds ``messages``, so a pre-rewrite index is meaningless, and it may
+    append a todo-snapshot user row AFTER the surviving copy of this turn's message. The
+    tool evidence sits between the two. A positional index or a last-user-row scan both
+    fail here; reanchoring on the turn's own ``user_message`` does not.
+    """
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice
+
+    request = "delete the build directory"
+    messages = [
+        # Compaction handoff scaffolding now occupies the head of the list.
+        {"role": "user", "content": "[conversation summary]", "display_kind": "hidden"},
+        {"role": "assistant", "content": "Understood."},
+        _real_user(request),          # the surviving copy, at a brand-new index
+        *_tool_effect_rows(),
+        {"role": "user", "content": "[Your active task list was preserved across context compression]",
+         "_todo_snapshot_synthetic": True},
+    ]
+    assert failed_turn_notice(messages, request) == PARTIAL_FAILED_TURN_NOTICE
+
+
+def test_anchor_falls_back_to_a_human_row_when_merge_into_tail_rewrote_the_content():
+    """Merge-into-tail rewrites the row's content, so the exact-match branch cannot fire.
+
+    ``reanchor_current_turn_user_idx`` then falls back to the last *user-originated* row —
+    which can be scaffolding. The walk-back keeps the anchor on a human turn, so the tool
+    evidence stays inside the slice.
+    """
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice
+
+    messages = [
+        {"role": "user", "content": "delete the build directory\n\n[merged summary tail]"},
+        *_tool_effect_rows(),
+        {"role": "user", "content": "Please verify your work before stopping.",
+         "_verification_stop_synthetic": True},
+    ]
+    # The original text no longer appears verbatim anywhere.
+    assert failed_turn_notice(messages, "delete the build directory") == PARTIAL_FAILED_TURN_NOTICE
+
+
+def test_accepted_turn_slice_starts_at_the_human_row_not_the_scaffolding():
+    """Direct assertion on the slice itself, so the anchor is pinned independently of copy."""
+    from agent.turn_failure_copy import accepted_turn_slice
+
+    request = "delete the build directory"
+    messages = [
+        {"role": "user", "content": "[conversation summary]", "display_kind": "hidden"},
+        _real_user(request),
+        *_tool_effect_rows(),
+        {"role": "user", "content": "Please verify your work before stopping.",
+         "_verification_stop_synthetic": True},
+    ]
+    sliced = accepted_turn_slice(messages, request)
+    assert sliced[0] is messages[1], "slice must begin at the accepted human row"
+    assert len(sliced) == 4

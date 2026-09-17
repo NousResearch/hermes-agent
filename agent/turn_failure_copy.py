@@ -45,31 +45,72 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "before resending."
 )
 
+# "The caller supplied no user_message", distinct from a legitimate ``None``/``""`` one.
+_UNSET = object()
 
-def turn_slice_after_last_user(messages: Any) -> list:
-    """This turn's messages: everything from the last ``user`` row onward.
 
-    No index needed and none trusted: a turn's ``current_turn_user_idx`` can be invalidated
-    by compaction, and a rolled-back envelope carries a different projection than the live
-    list. The last user row is this turn's accepted input in every one of those shapes.
-    Fails open to the whole list when there is no user row at all.
+def _is_accepted_user_turn(message: Any) -> bool:
+    """True only for a HUMAN-originating user row.
+
+    Hermes appends user-ROLE scaffolding inside a single real user turn — verify-on-stop and
+    pre_verify nudges (``agent/turn_stop_gates.py``), kanban stop nudges, length-continuation
+    and dropped-tool-call notices, todo snapshots, compaction handoffs. ``_is_real_user_message``
+    is the core's existing verdict on that distinction (synthetic flags, known content
+    prefixes, compaction scaffolding); reuse it rather than growing a second list that can
+    drift out of sync with it.
     """
-    if not isinstance(messages, list):
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    try:
+        from agent.conversation_compression import _is_real_user_message
+    except Exception:  # pragma: no cover - partial init / import cycle
+        return True  # fail safe: widen the slice rather than truncate it
+    return bool(_is_real_user_message(message))
+
+
+def accepted_turn_slice(messages: Any, user_message: Any = _UNSET) -> list:
+    """This turn's messages, starting at the ACCEPTED user row.
+
+    NOT "the last ``role=user`` row". That boundary starts after any synthetic nudge Hermes
+    appended mid-turn, which hides tool evidence from earlier in the SAME turn — so a turn
+    that already deleted files would be reported as never processed.
+
+    ``reanchor_current_turn_user_idx`` is the core's existing identity for this turn's user
+    row, and is built to survive sequence repair, compression and context rebuild: it
+    re-resolves against the turn's own ``user_message`` on the FINAL list instead of trusting
+    an index captured before the rewrite. Its documented fallback ("last user-originated
+    turn") can still land on scaffolding once merge-into-tail has rewritten the content, so
+    the resolved index is walked back to the nearest accepted human row.
+
+    Fails SAFE towards hedging: when no accepted turn can be identified the whole list is
+    returned, so an unknown boundary over-reports possible effects rather than under-reporting
+    them.
+    """
+    if not isinstance(messages, list) or not messages:
         return []
-    for index in range(len(messages) - 1, -1, -1):
-        row = messages[index]
-        if isinstance(row, dict) and row.get("role") == "user":
+    anchor = -1
+    if user_message is not _UNSET:
+        try:
+            from agent.turn_context import reanchor_current_turn_user_idx
+
+            anchor = reanchor_current_turn_user_idx(messages, user_message)
+        except Exception:  # pragma: no cover - copy selection must never break a turn
+            anchor = -1
+    start = anchor if 0 <= anchor < len(messages) else len(messages) - 1
+    for index in range(start, -1, -1):
+        if _is_accepted_user_turn(messages[index]):
             return messages[index:]
     return messages
 
 
-def failed_turn_notice(messages: Any) -> str:
+def failed_turn_notice(messages: Any, user_message: Any = _UNSET) -> str:
     """Boundary copy for a failed turn: never claim "not processed" when a tool may have run.
 
     Same evidence the gateway uses — a ``tool`` result, or an assistant row carrying
-    ``tool_calls``, anywhere in this turn's slice.
+    ``tool_calls`` — but scanned from the accepted user turn (see :func:`accepted_turn_slice`),
+    so scaffolding appended mid-turn cannot hide an effect that already happened.
     """
-    for row in turn_slice_after_last_user(messages):
+    for row in accepted_turn_slice(messages, user_message):
         if not isinstance(row, dict):
             continue
         if row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")):

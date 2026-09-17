@@ -155,6 +155,10 @@ def _handle_react(args, remove=False):
     """Attach (``remove=True``: retract) an emoji reaction via the live gateway adapter; no
     standalone fallback because reacting needs the adapter's live message-id state."""
     target, emoji = args.get("target", ""), (args.get("emoji") or "").strip()
+    # Same lone-surrogate class as the send body (#113799): the emoji rides the
+    # adapter's add_reaction request body unvalidated otherwise.
+    from agent.message_sanitization import _sanitize_surrogates
+    emoji = _sanitize_surrogates(emoji)
     message_id = (args.get("message_id") or "").strip() or None
     if not target or (not remove and not emoji):
         return tool_error("'target' is required when action='unreact'" if remove
@@ -205,8 +209,9 @@ def _handle_send(args):
         return tool_error("Both 'target' and 'message' are required when action='send'")
     # Lone surrogates reach the outbound body via surrogateescape-decoded argv
     # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
-    # request bodies (feishu/lark, #113799). Every outbound send (CLI, cron
-    # delivery, kanban notifier) assembles its body here, so scrub at the source.
+    # request bodies (feishu/lark, #113799). Scrub before media extraction and
+    # the session mirror consume the text; `_send_to_platform` re-scrubs as the
+    # chokepoint for callers that bypass this handler (cron standalone delivery).
     from agent.message_sanitization import _sanitize_surrogates
     message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
@@ -597,6 +602,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    # Chokepoint for direct callers that bypass `_handle_send` — cron's
+    # `scheduler_delivery._standalone_send` invokes this coroutine directly, so
+    # scrub lone surrogates (#113799) here too. Idempotent for text already
+    # scrubbed by `_handle_send`.
+    from agent.message_sanitization import _sanitize_surrogates
+    message = _sanitize_surrogates(message)
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []

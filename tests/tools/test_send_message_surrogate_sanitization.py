@@ -3,8 +3,9 @@
 ``hermes send MESSAGE`` passes argv through surrogateescape decoding on macOS
 shells; a lone surrogate then crashes the UTF-8 marshal inside platform SDK
 request bodies (feishu/lark) and the message is lost after the retries.
-``_handle_send`` is where every outbound send (CLI, cron delivery, kanban
-notifier) assembles its body, so scrubbing there closes the class.
+``_handle_send`` scrubs before media extraction and the session mirror consume
+the text; ``_send_to_platform`` re-scrubs as the chokepoint for direct callers
+(cron standalone delivery), and ``_handle_react`` scrubs the emoji the same way.
 """
 
 import asyncio
@@ -58,3 +59,38 @@ def test_surrogate_free_message_is_sent_unchanged():
 
     assert result["success"] is True
     assert send_mock.await_args.args[3] == "all clean: 你好 \U0001f44d"
+
+
+def test_cron_style_direct_send_to_platform_is_scrubbed():
+    # cron/scheduler_delivery.py::_standalone_send awaits _send_to_platform
+    # directly (bypassing _handle_send), so the chokepoint must scrub there.
+    from tools.send_message_tool import _send_to_platform
+
+    telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+    send_mock = AsyncMock(return_value={"success": True})
+    with patch("tools.send_message_tool._send_telegram", new=send_mock):
+        result = asyncio.run(
+            _send_to_platform(Platform.TELEGRAM, telegram_cfg, "12345", "cron \ud83d end"))
+
+    assert result["success"] is True
+    delivered = send_mock.await_args.args[2]
+    assert not _SURROGATE_RE.search(delivered)
+    assert delivered == "cron \ufffd end"
+
+
+def test_react_emoji_is_scrubbed_before_the_adapter():
+    react_mock = AsyncMock(return_value={"success": True})
+    with patch("tools.send_message_tool._resolve_tool_target",
+               return_value=("telegram", "12345", None, None)), \
+         patch("tools.send_message_tool._platform_enum",
+               return_value=(Platform.TELEGRAM, None)), \
+         patch("tools.send_message_tool._authorize_relay_target", return_value=None), \
+         patch("tools.send_message_tool._live_adapter",
+               return_value=(True, SimpleNamespace(add_reaction=react_mock))), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately):
+        result = json.loads(send_message_tool({
+            "action": "react", "target": "telegram:12345",
+            "message_id": "m1", "emoji": "\u2764\ufe0f\ud83d"}))
+
+    assert result["success"] is True
+    assert react_mock.await_args.kwargs["emoji"] == "\u2764\ufe0f\ufffd"

@@ -198,6 +198,7 @@ def run_question_batch(normalized: List[dict], callback, question: str = "") -> 
         answers: dict = {}
         timed_out = False
         cancelled = False
+        notice = None
         if _is_timeout(raw):
             timed_out = True
         elif isinstance(raw, dict):

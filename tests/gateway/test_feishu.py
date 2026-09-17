@@ -1058,6 +1058,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p1",
                         media_urls=["/tmp/a.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[False],
                     )
                 )
                 await adapter._dispatch_inbound_event(
@@ -1068,6 +1069,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p2",
                         media_urls=["/tmp/b.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[True],
                     )
                 )
                 pending = list(adapter._pending_media_batch_tasks.values())
@@ -1079,6 +1081,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
+        self.assertEqual(event.media_text_inlined, [False, True])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
 

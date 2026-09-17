@@ -423,7 +423,15 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     if not os.path.isabs(hermes_path) or not os.path.isfile(path):
         raise ValueError("Hermes path is not an executable file")
     version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    # hermes.exe may be a uv trampoline that fails in SSH sessions (junction resolution
+    # bug in uv). Fall back to the real CPython + module invocation which works because
+    # the caller sets PYTHONPATH to the source root before running this process.
+    _py_cli = [sys.executable, "-m", "hermes_cli.main"]
+    if version.returncode != 0:
+        version = subprocess.run([*_py_cli, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    if help_result.returncode != 0:
+        help_result = subprocess.run([*_py_cli, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     help_text = help_result.stdout + help_result.stderr
     return {
         "path": path,

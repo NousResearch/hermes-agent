@@ -299,9 +299,14 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
 
 function helperCommand(runtime, operation, args = []) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
+  const hermesPathLit = psLiteral(runtime.hermesPath)
 
   const script = [
     '$ErrorActionPreference="Stop"',
+    // hermes_cli is an editable install; PYTHONPATH must include the source root
+    // (parent of venv) so the real CPython can find it without .pth processing.
+    `$venvRoot=Split-Path -Parent (Split-Path -Parent ${hermesPathLit})`,
+    '$env:PYTHONPATH=(Split-Path -Parent $venvRoot)+[IO.Path]::PathSeparator+(Join-Path $venvRoot "Lib\\site-packages")',
     `& ${argv.map(psLiteral).join(' ')}`,
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
   ].join(';')
@@ -343,6 +348,10 @@ function buildAtomicWindowsSpawnScript(runtime, reservation: any = {}, backendJs
   return [
     '$ErrorActionPreference="Stop"',
     `$hermesDir=${psLiteral(runtime.hermesHome)}`,
+    // hermes_cli is an editable install; PYTHONPATH must include the source root
+    // (parent of venv) so the real CPython can find it without .pth processing.
+    `$venvRoot=Split-Path -Parent (Split-Path -Parent ${psLiteral(runtime.hermesPath)})`,
+    '$env:PYTHONPATH=(Split-Path -Parent $venvRoot)+[IO.Path]::PathSeparator+(Join-Path $venvRoot "Lib\\site-packages")',
     '$installRoot=$hermesDir',
     '$parent=Split-Path -Parent $hermesDir',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',

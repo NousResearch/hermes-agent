@@ -154,7 +154,10 @@ def get_process_hermes_home() -> Path:
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    # A shell that does not expand `~` inside `VAR=~/...` (fish; any shell when quoted) hands us a
+    # literal tilde. Path() alone leaves it relative, so it resolves against cwd and scaffolds a
+    # full home under <cwd>/~/.hermes instead of the user's real home (#114353).
+    return Path(val).expanduser() if val else _get_platform_default_hermes_home()
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
@@ -178,7 +181,7 @@ def get_default_hermes_root() -> Path:
         return memo[2]
     result = native_home
     if env_home:
-        env_path = Path(env_home)
+        env_path = Path(env_home).expanduser()
         try:
             env_path.resolve().relative_to(native_home.resolve())  # under ~/.hermes (normal or profile mode)
         except ValueError:  # Docker/custom root: <root>/profiles/<name> -> <root>, else HERMES_HOME itself

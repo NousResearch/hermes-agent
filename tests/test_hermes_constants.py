@@ -55,6 +55,15 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_unexpanded_tilde_is_expanded_not_treated_as_relative(self, tmp_path, monkeypatch):
+        """Same #114353 fix applied here: an unexpanded ``~`` in HERMES_HOME must resolve
+        against the real home so it correctly matches the native default root, not spawn
+        a distinct (and wrong) relative-path root."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", "~/.hermes")
+        assert get_default_hermes_root() == tmp_path / ".hermes"
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
@@ -151,6 +160,15 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_unexpanded_tilde_is_expanded_not_treated_as_relative(self, tmp_path, monkeypatch):
+        """A shell that hands HERMES_HOME through with a literal, unexpanded ``~`` (fish;
+        any shell when the value is quoted) must resolve against the real home, not against
+        cwd — a bare Path() would scaffold a stray ``<cwd>/~/.hermes`` (#114353)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", "~/.hermes")
+        assert get_process_hermes_home() == tmp_path / ".hermes"
 
 
 

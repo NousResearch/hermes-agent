@@ -44,6 +44,8 @@ export async function activeConnection(): Promise<HermesConnection> {
 export interface PluginRestOptions {
   method?: string
   body?: unknown
+  query?: Record<string, string | number | boolean | null | undefined>
+  headers?: Record<string, string>
   /** Single-file multipart upload (see HermesApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
@@ -75,11 +77,17 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
   }
 
   const suffix = pluginPathSuffix('pluginRest', path)
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(opts.query ?? {})) {
+    if (value !== null && value !== undefined) query.set(key, String(value))
+  }
+  const querySuffix = query.toString() ? `${suffix.includes('?') ? '&' : '?'}${query}` : ''
 
   return hermesApi<T>({
-    path: `/api/plugins/${pluginId}${suffix}`,
+    path: `/api/plugins/${pluginId}${suffix}${querySuffix}`,
     method: opts.method,
     body: opts.body,
+    headers: opts.headers,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
     ...profileScoped()

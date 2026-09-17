@@ -16004,7 +16004,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+  opts: { method?: string; body?: unknown; headers?: Record<string, string>; upload?: unknown; timeoutMs?: number } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
 
@@ -16019,7 +16019,7 @@ async function fetchJsonForBackend(
       method: opts.method,
       body: opts.body,
       timeoutMs: opts.timeoutMs,
-      headers: descriptor.headers
+      headers: { ...descriptor.headers, ...opts.headers }
     }
 
     return requestWithOauthFallback(descriptor.baseUrl, {
@@ -16034,7 +16034,7 @@ async function fetchJsonForBackend(
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    headers: descriptor.headers
+    headers: { ...descriptor.headers, ...opts.headers }
   })
 }
 
@@ -16628,6 +16628,7 @@ async function dispatchRegistryApiRequest(
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
     body: request?.body,
+    headers: request?.headers,
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
@@ -16712,6 +16713,7 @@ async function handleHermesApiRequest(request) {
     response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
       method: request?.method,
       body: request?.body,
+      headers: request?.headers,
       upload: request?.upload,
       timeoutMs
     })

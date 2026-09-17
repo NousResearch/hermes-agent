@@ -61,9 +61,9 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = $sessionTiles.get().find(
-    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
-  )?.ownerRoute
+  const verifiedOwner = $sessionTiles
+    .get()
+    .find(tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId)?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }

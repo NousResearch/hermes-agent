@@ -307,6 +307,144 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
         await get_flow.asend(httpx.Response(200, request=get_retry))
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("retry_status", [200, 401])
+async def test_first_resource_401_after_refresh_retries_before_browser_auth(
+    tmp_path, monkeypatch, retry_status
+):
+    """A just-refreshed token gets one resource retry before browser auth.
+
+    Some OAuth servers can reject the first MCP request immediately after a
+    successful refresh even though the newly persisted access token works on
+    the next connection. The same connection must retry that resource request
+    once instead of entering the authorization-code flow immediately.
+    """
+    import json
+    import time
+
+    from mcp.shared.auth import (
+        OAuthClientInformationFull,
+        OAuthClientMetadata,
+        OAuthMetadata,
+    )
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_tool import sdk_httpx
+
+    assert _HERMES_PROVIDER_CLS is not None
+    httpx = sdk_httpx()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv", hermes_home=tmp_path)
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir()
+    (token_dir / "srv.json").write_text(
+        json.dumps(
+            {
+                "access_token": "expired-access",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "expires_at": time.time() - 60,
+                "refresh_token": "refresh-token",
+            }
+        )
+    )
+    redirect_uri = AnyUrl("https://callback.example.com/callback")
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[redirect_uri],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+    storage.save_oauth_metadata(
+        OAuthMetadata(
+            issuer=AnyUrl("https://auth.example.com"),
+            authorization_endpoint=AnyUrl("https://auth.example.com/authorize"),
+            token_endpoint=AnyUrl("https://auth.example.com/token"),
+            response_types_supported=["code"],
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[redirect_uri],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+    # Separate zero-TTL initialization from the validity check. Windows' wall
+    # clock can return the same tick twice, and the SDK treats equality as valid.
+    await provider._initialize()
+    await asyncio.sleep(0.02)
+
+    request = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(request)
+
+    refresh_request = await flow.__anext__()
+    assert str(refresh_request.url) == "https://auth.example.com/token"
+    resource_request = await flow.asend(
+        httpx.Response(
+            200,
+            request=refresh_request,
+            json={
+                "access_token": "refreshed-access",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "next-refresh-token",
+            },
+        )
+    )
+    assert resource_request is request
+    assert resource_request.headers["authorization"] == "Bearer refreshed-access"
+
+    retry_request = await flow.asend(
+        httpx.Response(
+            401,
+            request=resource_request,
+            headers={
+                "www-authenticate": (
+                    'Bearer resource_metadata="https://example.com/'
+                    '.well-known/oauth-protected-resource"'
+                )
+            },
+        )
+    )
+
+    assert retry_request is request
+    assert retry_request.headers["authorization"] == "Bearer refreshed-access"
+
+    retry_response = httpx.Response(
+        retry_status,
+        request=retry_request,
+        headers={
+            "www-authenticate": (
+                'Bearer resource_metadata="https://example.com/'
+                '.well-known/oauth-protected-resource"'
+            )
+        },
+    )
+    if retry_status == 200:
+        with pytest.raises(StopAsyncIteration):
+            await flow.asend(retry_response)
+    else:
+        after_retry = await flow.asend(retry_response)
+        assert after_retry is not request
+        assert str(after_retry.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        await flow.aclose()
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
     return None

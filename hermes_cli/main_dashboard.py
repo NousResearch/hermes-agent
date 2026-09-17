@@ -430,7 +430,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
     if not gateway_mode and hasattr(_signal, "SIGHUP"):
         # Non-main thread: update still runs, just without hangup protection.
         with contextlib.suppress(ValueError, OSError):
-            _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)
+            _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)  # windows-footgun: ok — guarded by hasattr(_signal, "SIGHUP") above
 
     # Any failure here is non-fatal; we just skip the wrap.
     try:

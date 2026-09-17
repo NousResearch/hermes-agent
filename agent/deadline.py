@@ -426,9 +426,9 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
 
     import signal as _signal
     if sig is None:
-        sig = _signal.SIGKILL
+        sig = _signal.SIGKILL  # windows-footgun: ok — unreachable on win32 (taskkill branch returns above)
 
-    with _process_tree_snapshot(int(pid), hard_kill=sig == _signal.SIGKILL) as descendants:
+    with _process_tree_snapshot(int(pid), hard_kill=sig == _signal.SIGKILL) as descendants:  # windows-footgun: ok — unreachable on win32
         signalled = False
         # Signal descendants while their ownership ancestry is still observable.
         # Frozen hard-kill targets cannot fork during this bottom-up teardown.

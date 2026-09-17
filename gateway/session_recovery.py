@@ -162,16 +162,24 @@ class SessionRecoveryMixin:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
-        db = self._db_for_key(session_key)
+        return self._peer_row(
+            self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
+            user_id=source.user_id,
+            chat_id=source.chat_id if allow_peer_fallback else None,
+            chat_type=source.chat_type if allow_peer_fallback else None,
+            thread_id=source.thread_id, raise_on_lookup_error=raise_on_lookup_error)
+
+    @staticmethod
+    def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
+                  **peer: Any) -> Optional[Dict[str, Any]]:
+        """``db.find_latest_gateway_session_for_peer`` guarded for a missing store, a SessionDB
+        without the finder, and a failing lookup (debug-logged -> None unless *raise_on_lookup_error*).
+        Extra keyword arguments (user_id/chat_id/chat_type/thread_id) pass through to the finder."""
         finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
         if not callable(finder):
             return None
         try:
-            return finder(
-                source=source.platform.value, user_id=source.user_id, session_key=session_key,
-                chat_id=source.chat_id if allow_peer_fallback else None,
-                chat_type=source.chat_type if allow_peer_fallback else None,
-                thread_id=source.thread_id)
+            return finder(source=source, session_key=session_key, **peer)
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             if raise_on_lookup_error:
@@ -199,14 +207,9 @@ class SessionRecoveryMixin:
             return session_id, db
         parts = str(session_key).split(":")
         platform = parts[2] if len(parts) >= 3 and parts[0] == "agent" else None
-        finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
-        if not platform or not callable(finder):
+        if not platform:
             return None
-        try:
-            row = finder(source=platform, session_key=session_key)
-        except Exception as exc:
-            logger.debug("Session key->id resolution failed for %s: %s", session_key, exc)
-            return None
+        row = self._peer_row(db, source=platform, session_key=session_key)
         if not isinstance(row, dict) or not row.get("id"):
             return None
         started_at = row.get("started_at")

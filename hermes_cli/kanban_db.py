@@ -1595,29 +1595,31 @@ def list_tasks(
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
-    profile = _canonical_assignee(profile)
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-        if not row:
-            return False
-        if row["claim_lock"] is not None and row["status"] == "running":
-            raise RuntimeError(
-                f"cannot reassign {task_id}: currently running (claimed). "
-                "Wait for completion or reclaim the stale lock first."
-            )
-        if row["assignee"] != profile:
-            # The failure streak is per task/profile; a new profile starts fresh.
-            conn.execute(
-                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
-                "last_failure_error = NULL WHERE id = ?", (profile, task_id),
-            )
-        else:
-            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
-    # Observer fires AFTER commit so subscribers see durable state.
-    notify_task_updated(conn, task_id, ("assignee",))
+    return update_task_fields(conn, task_id, fields=("assignee",), assignee=profile)
+
+
+def _assign_locked(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+    """Assignee write + ``assigned`` event inside the CALLER's txn; the caller owns
+    the commit and the post-commit observer."""
+    row = conn.execute(
+        "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if not row:
+        return False
+    if row["claim_lock"] is not None and row["status"] == "running":
+        raise RuntimeError(
+            f"cannot reassign {task_id}: currently running (claimed). "
+            "Wait for completion or reclaim the stale lock first."
+        )
+    if row["assignee"] != profile:
+        # The failure streak is per task/profile; a new profile starts fresh.
+        conn.execute(
+            "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+            "last_failure_error = NULL WHERE id = ?", (profile, task_id),
+        )
+    else:
+        conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+    _append_event(conn, task_id, "assigned", {"assignee": profile})
     return True
 
 
@@ -1669,6 +1671,8 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 # Scalar fields an external editor may set directly. ``assignee`` is excluded on
 # purpose — ``assign_task`` owns its running-task guard.
 _EDITABLE_TASK_FIELDS = ("title", "body", "priority")
+# What a mixed PATCH may carry: the scalars plus the assignee, applied together.
+_ASSIGNABLE_TASK_FIELDS = ("assignee", *_EDITABLE_TASK_FIELDS)
 # Content edits are refused here: a finished card's text is a historical record.
 _TERMINAL_EDIT_STATES = frozenset({"done", "archived"})
 
@@ -1683,22 +1687,57 @@ def edit_task_fields(
     Title/body edits on a ``done``/``archived`` task raise ``RuntimeError``; ``priority`` stays
     editable (harmless once terminal, keeps bulk re-prioritising working). ``False`` when the
     task does not exist."""
-    requested = [f for f in fields if f in _EDITABLE_TASK_FIELDS]
+    return update_task_fields(
+        conn, task_id, fields=[f for f in fields if f in _EDITABLE_TASK_FIELDS],
+        title=title, body=body, priority=priority,
+    )
+
+
+def _edit_fields_locked(
+    conn: sqlite3.Connection, task_id: str, requested: list[str], values: dict[str, Any],
+) -> bool:
+    """Scalar edit + ``edited`` event inside the CALLER's txn (see ``_assign_locked``)."""
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    if row["status"] in _TERMINAL_EDIT_STATES and ("title" in requested or "body" in requested):
+        raise RuntimeError(f"cannot edit the title/body of a {row['status']} task")
+    assignments = ", ".join(f"{name} = ?" for name in requested)
+    conn.execute(
+        f"UPDATE tasks SET {assignments} WHERE id = ?",
+        [values[name] for name in requested] + [task_id],
+    )
+    _append_event(conn, task_id, "edited", {"fields": list(requested)})
+    return True
+
+
+def update_task_fields(
+    conn: sqlite3.Connection, task_id: str, *, fields: Iterable[str],
+    assignee: Optional[str] = None, title: Optional[str] = None,
+    body: Optional[str] = None, priority: Optional[int] = None,
+) -> bool:
+    """Apply an assignee change and/or ``title``/``body``/``priority`` edits in ONE
+    transaction, writing only the names listed in ``fields``.
+
+    Mixed mutations are all-or-nothing: a concurrent transition that lands after the
+    assignee write makes the scalar guard raise, which rolls the assignee back too, so a
+    PATCH can never answer 409 having already persisted (and announced) the reassignment.
+    Observers fire only after the combined commit. ``False`` when the task does not exist.
+    """
+    requested = [f for f in fields if f in _ASSIGNABLE_TASK_FIELDS]
     if not requested:
         return get_task(conn, task_id) is not None
+    scalars = [f for f in requested if f != "assignee"]
     values = {"title": title, "body": body, "priority": priority}
+    assigning = "assignee" in requested
     with write_txn(conn):
-        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
+        if assigning and not _assign_locked(conn, task_id, _canonical_assignee(assignee)):
             return False
-        if row["status"] in _TERMINAL_EDIT_STATES and ("title" in requested or "body" in requested):
-            raise RuntimeError(f"cannot edit the title/body of a {row['status']} task")
-        assignments = ", ".join(f"{name} = ?" for name in requested)
-        conn.execute(
-            f"UPDATE tasks SET {assignments} WHERE id = ?",
-            [values[name] for name in requested] + [task_id],
-        )
-        _append_event(conn, task_id, "edited", {"fields": list(requested)})
+        if scalars and not _edit_fields_locked(conn, task_id, scalars, values):
+            return False
+    # Observer fires AFTER commit so subscribers see durable state.
+    if assigning:
+        notify_task_updated(conn, task_id, ("assignee",))
     return True
 
 

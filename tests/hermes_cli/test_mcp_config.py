@@ -298,10 +298,39 @@ class TestMcpTest:
         )
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        cmd_mcp_test(_make_args(name="ink"))
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    @pytest.mark.parametrize(
+        ("servers", "probe_error", "expected"),
+        [
+            ({}, None, 2),
+            ({"ink": {"url": "https://mcp.ml.ink/mcp"}}, OSError("offline"), 1),
+        ],
+    )
+    def test_test_failure_status(self, tmp_path, monkeypatch, servers, probe_error, expected):
+        _seed_config(tmp_path, servers)
+        if probe_error is not None:
+
+            def fail_probe(*_args, **_kwargs):
+                raise probe_error
+
+            monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", fail_probe)
+
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        assert cmd_mcp_test(_make_args(name="ink")) == expected
+
+    def test_dispatcher_exits_with_test_failure_status(self, monkeypatch):
+        from hermes_cli import mcp_config
+
+        monkeypatch.setattr(mcp_config, "cmd_mcp_test", lambda _args: 2)
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_config.mcp_command(_make_args(mcp_action="test"))
+
+        assert exc_info.value.code == 2
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""

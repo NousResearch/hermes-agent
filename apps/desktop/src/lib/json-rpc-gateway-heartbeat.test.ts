@@ -128,4 +128,78 @@ describe('JsonRpcGatewayClient heartbeat recovery', () => {
     expect(socket.readyState).toBe(FakeSocket.OPEN)
     expect(socket.sent).toEqual([])
   })
+
+  it('keeps connection alive during long compaction when progress status events are emitted within deadline', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', { OPEN: FakeSocket.OPEN })
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      heartbeatDeadlineMs: 45,
+      heartbeatIntervalMs: 15,
+      requestTimeoutMs: 120,
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connected = client.connect('ws://gateway.test/api/ws')
+    socket.emit('open')
+    await connected
+    socket.message({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { heartbeat: true } }
+    })
+
+    const reqPromise = client.request('agent.turn', { prompt: 'hello' }, 120)
+
+    // Backend emits periodic progress status every 15ms during a 90ms compaction
+    await vi.advanceTimersByTimeAsync(15)
+    socket.message({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'status.update', payload: { message: '📦 Compacting context...' } }
+    })
+
+    await vi.advanceTimersByTimeAsync(15)
+    socket.message({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'status.update', payload: { message: '📦 Compacting context...' } }
+    })
+
+    await vi.advanceTimersByTimeAsync(15)
+    socket.message({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'status.update', payload: { message: '📦 Compacting context...' } }
+    })
+
+    await vi.advanceTimersByTimeAsync(15)
+    socket.message({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'status.update', payload: { message: '📦 Compacting context...' } }
+    })
+
+    // Total elapsed: 60ms (exceeding initial 45ms deadline), connection must still be open
+    expect(client.connectionState).toBe('open')
+    expect(socket.readyState).toBe(FakeSocket.OPEN)
+
+    // Complete the turn at 80ms
+    await vi.advanceTimersByTimeAsync(20)
+    socket.message({
+      jsonrpc: '2.0',
+      id: 'r1',
+      result: { ok: true }
+    })
+
+    const result = await reqPromise
+    expect(result).toEqual({ ok: true })
+    expect(client.connectionState).toBe('open')
+
+    // After turn completes, idle silence past 45ms invalidates the socket
+    await vi.advanceTimersByTimeAsync(60)
+    expect(client.connectionState).toBe('closed')
+    expect(socket.readyState).toBe(FakeSocket.CLOSED)
+  })
 })

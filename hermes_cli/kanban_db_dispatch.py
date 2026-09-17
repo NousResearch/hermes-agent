@@ -1375,12 +1375,13 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    (worker PR URL without a newer explicit requeue; re-spawning risks a
+    duplicate PR). Operator reference links are not publication evidence. The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1443,17 +1444,55 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Compare publication and explicit requeue events, not arbitrary progress
+    # comments. New comment events retain their row ID for same-second ordering.
+    requeue = conn.execute(
+        "SELECT id, created_at FROM task_events WHERE task_id = ? "
+        "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed', 'changes_requested') "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
+        "SELECT c.body, c.created_at, (SELECT MAX(e.id) FROM task_events e "
+        "WHERE e.task_id = c.task_id AND e.kind = 'commented' "
+        "AND json_extract(e.payload, '$.comment_id') = c.id) AS event_id "
+        "FROM task_comments c WHERE c.task_id = ? AND c.created_at >= ? "
+        "AND c.author IN (?, 'worker')",
+        (task_id, pr_cutoff, row["assignee"]),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not c["body"] or not _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            continue
+        if requeue is not None:
+            if c["event_id"] is not None and c["event_id"] < requeue["id"]:
+                continue
+            # Legacy events lack comment IDs. Only an unambiguously later
+            # requeue supersedes them; equal timestamps retain protection.
+            if c["event_id"] is None and c["created_at"] < requeue["created_at"]:
+                continue
+        return "active_pr"
 
     return None
 
+
+
+def respawn_guard_diagnostic(conn: sqlite3.Connection, task_id: str, lane: str):
+    """Use the actual dispatch predicate for read-only operator diagnostics."""
+    from hermes_cli.kanban_diagnostics import Diagnostic, DiagnosticAction
+    if lane not in {"ready", "review"}:
+        return None
+    reason = check_respawn_guard(conn, task_id, lane=lane)
+    if reason is None:
+        return None
+    recovery = {
+        "active_pr": "Review the existing PR; explicitly requeue only if further work is required.",
+        "recent_success": "Review the completed run; explicitly requeue only if further work is required.",
+        "blocker_auth": "Restore the assigned provider credentials, then explicitly unblock the task.",
+        "rate_limit_cooldown": "Wait for the provider cooldown; dispatch will retry after it expires.",
+    }[reason]
+    return Diagnostic(kind="dispatch_guard", severity="warning", title="Dispatch deferred",
+                      detail=recovery, data={"reason": reason},
+                      actions=[DiagnosticAction(kind="cli_hint", label="Inspect task",
+                                                payload={"command": f"hermes kanban show {task_id}"})])
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be

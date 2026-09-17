@@ -99,6 +99,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
+            "respawn_guarded": [{"task_id": tid, "reason": reason} for tid, reason in res.respawn_guarded],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
@@ -132,6 +133,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    for tid, reason in res.respawn_guarded:
+        print(f"Deferred ({reason}): {tid}; inspect with hermes kanban diagnostics --task {tid}")
     if res.auto_assigned_default:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "

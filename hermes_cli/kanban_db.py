@@ -1743,7 +1743,7 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        _append_event(conn, task_id, "commented", {"author": author, "len": len(body), "comment_id": int(cur.lastrowid or 0)})
         return int(cur.lastrowid or 0)
 
 

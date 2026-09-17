@@ -11,6 +11,7 @@
  * on a one-time `access_url`, and the query string is a live credential.
  */
 
+import { isRemoteGateway } from '@/lib/media'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 
@@ -72,6 +73,17 @@ export async function screenshotActivePreview(): Promise<PreviewShotFailure | Pr
 
   if (!tab) {
     return { error: 'No preview tab is open — open one with desktop_preview first.', success: false }
+  }
+
+  // The PNG lands on THIS disk. A remote gateway's tools cannot open that path,
+  // so answering it would be a success the agent cannot use — refuse up front,
+  // before a file is written.
+  if (isRemoteGateway()) {
+    return {
+      error:
+        'Preview screenshots are saved on the desktop machine, which this remote gateway cannot read — use desktop_preview read for the page text instead.',
+      success: false
+    }
   }
 
   const camera = cameras.get(tab.id)

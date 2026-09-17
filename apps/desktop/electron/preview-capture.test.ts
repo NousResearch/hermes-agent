@@ -169,3 +169,51 @@ test('capturePreviewToFile fails closed on an empty image, writing nothing', asy
   )
   assert.equal(writes, 0)
 })
+
+test('capturePreviewToFile refuses a webContents that is not a webview guest', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => {
+          throw new Error('should not run')
+        },
+        getType: () => 'window',
+        isDestroyed: () => false
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /not a webview/
+  )
+  assert.equal(writes, 0)
+})
+
+test('capturePreviewToFile never writes a 0-byte PNG', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => ({
+          getSize: () => ({ height: 800, width: 1200 }),
+          isEmpty: () => false,
+          toPNG: () => Buffer.alloc(0)
+        }),
+        getType: () => 'webview',
+        isDestroyed: () => false
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /empty/
+  )
+  assert.equal(writes, 0)
+})

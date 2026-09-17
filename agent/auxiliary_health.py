@@ -53,3 +53,21 @@ def fallback_candidate_unavailable_reason(exc: Exception) -> Optional[str]:
         (label for predicate, label in _FALLBACK_REASONS if label != "auth error" and predicate(exc)),
         None,
     )
+
+
+# Quarantine hold per unavailable-reason label. Payment/quota depletion and a dead credential
+# last hours, so those keep the long default TTL (None); a per-minute 429, a dropped connection or
+# a garbled body clears in seconds — holding the lane for 10 minutes process-wide would hide a
+# healthy fallback from every aux task over one transient blip.
+_TRANSIENT_CANDIDATE_QUARANTINE_SECONDS = 60.0
+_CANDIDATE_QUARANTINE_TTL: dict[str, Optional[float]] = {
+    "rate limit": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+    "connection error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+    "invalid provider response": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+}
+
+
+def fallback_candidate_quarantine_ttl(reason: Optional[str]) -> Optional[float]:
+    """Seconds to hide a fallback candidate for ``reason`` (a ``_FALLBACK_REASONS`` label, or None
+    for a stale credential); None means the long default TTL."""
+    return _CANDIDATE_QUARANTINE_TTL.get(reason or "")

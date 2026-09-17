@@ -111,7 +111,8 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import (
-    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_unavailable_reason,
+    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
+    fallback_candidate_unavailable_reason,
 )
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, nous_credential_failure_detail,
@@ -3923,11 +3924,15 @@ def _plan_fallback_candidate(
 
 def _quarantine_fallback_candidate(
     task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
-    base_url: str = "", tag: str = "", why: str = "has a stale/unrefreshable credential",
+    base_url: str = "", tag: str = "", reason: Optional[str] = None,
 ) -> None:
-    """The candidate cannot serve this walk (dead token, or a capacity error such as a quota 429):
-    mark it unhealthy so the ordered re-walk skips it and the caller moves on to the next entry."""
-    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url, reason="stale fallback credential")
+    """The candidate cannot serve this walk (``reason`` = its ``_FALLBACK_REASONS`` capacity label,
+    None = dead token): mark it unhealthy so the ordered re-walk skips it and the caller moves on to
+    the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
+    _mark_provider_unhealthy(
+        fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
+        base_url=base_url, reason=reason or "stale fallback credential")
+    why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
     logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
                    task or "call", tag, fb_label, why, fb_err)
 
@@ -4000,7 +4005,7 @@ def _call_fallback_candidate_sync(
                 raise
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
-                why=f"is out of capacity ({capacity})")
+                reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -4050,7 +4055,7 @@ async def _call_fallback_candidate_async(
                 raise
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
-                tag=" (async)", why=f"is out of capacity ({capacity})")
+                tag=" (async)", reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -7493,7 +7498,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                    # All fallback layers exhausted — emit a single user-visible warning so the operator
                    # knows aux task is about to fail. (#26882) The error itself is re-raised below.
                    # (#26882)
-                   "(fallback_chain + main agent model). Raising the last error.",
+                   "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
     return None
 

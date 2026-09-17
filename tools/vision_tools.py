@@ -255,8 +255,35 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # tokens per image (#92699), so we size for model reading instead: 256 KB keeps a 1568px screenshot cheap
 # enough to ride the session (PNGs that exceed it are downscaled further by the byte-budget ladder), well
 # under every provider's per-image limit.
-_EMBED_TARGET_BYTES = 256 * 1024
-_EMBED_MAX_DIMENSION = 1568
+_EMBED_TARGET_BYTES_DEFAULT = 256 * 1024
+_EMBED_MAX_DIMENSION_DEFAULT = 1568
+
+
+def _resolve_embed_target_bytes() -> int:
+    """``HERMES_VISION_EMBED_TARGET_BYTES`` → ``auxiliary.vision.embed_target_bytes`` → 256 KB.
+
+    The default is sized for screenshots that ride a long chat session. A document-reading
+    workload wants it higher: a 150 DPI A4 page of body text is ~300-400 KB as JPEG q85, so
+    under 256 KB it is re-encoded at q50 and, if still over, halved to ~620 px wide, where
+    table digits stop being legible. Values below 16 KB are ignored; the 20 MB hard ceiling
+    still applies. Pair it with ``embed_max_dimension``: the ladder's only size move is
+    halving, so any page taller than that cap (A4 at 150 DPI is 1755 px) is halved outright.
+    """
+    val = _read_vision_setting(
+        "HERMES_VISION_EMBED_TARGET_BYTES", "embed_target_bytes", int, minimum=16 * 1024)
+    return min(val, _MAX_BASE64_BYTES) if val else _EMBED_TARGET_BYTES_DEFAULT
+
+
+def _resolve_embed_max_dimension() -> int:
+    """``HERMES_VISION_EMBED_MAX_DIMENSION`` → ``auxiliary.vision.embed_max_dimension`` → 1568.
+    Long-edge cap for history embeds; Anthropic's 8000 px per-side reject-cap bounds it."""
+    val = _read_vision_setting(
+        "HERMES_VISION_EMBED_MAX_DIMENSION", "embed_max_dimension", int, minimum=64)
+    return min(val, 8000) if val else _EMBED_MAX_DIMENSION_DEFAULT
+
+
+_EMBED_TARGET_BYTES = _resolve_embed_target_bytes()
+_EMBED_MAX_DIMENSION = _resolve_embed_max_dimension()
 
 # Target when auto-resizing after a provider size rejection (retry once).
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024

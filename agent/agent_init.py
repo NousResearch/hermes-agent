@@ -30,7 +30,7 @@ from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
 )
-from agent.process_bootstrap import _install_safe_stdio
+from agent.process_bootstrap import _install_safe_stdio, install_happy_eyeballs_socket_connect
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -2242,6 +2242,10 @@ def init_agent(
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()
+    # Every startup-path sync connect (catalog fetch via urllib, provider warm via
+    # requests, sync LLM clients via httpcore) races IPv6/IPv4 instead of stalling
+    # serially on a blackholed AAAA route (#114265). Idempotent process-level install.
+    install_happy_eyeballs_socket_connect()
 
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:

@@ -23,6 +23,7 @@ from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 
 _OPENAI_CLS_CACHE = None
 _HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
+_SOCKET_CONNECT_RACER_INSTALLED = False
 
 # Process-wide pool of sync ``httpx.HTTPTransport`` objects shared by every
 # keepalive client with the same (verify, proxy, happy-eyeballs) identity.
@@ -223,6 +224,59 @@ def enable_happy_eyeballs_on_client(client) -> None:
         return
     for transport in (getattr(client, "_transport", None), *(getattr(client, "_mounts", None) or {}).values()):
         _enable_happy_eyeballs(transport, proxy_pool_types)
+
+
+def install_happy_eyeballs_socket_connect() -> None:
+    """Race IPv6/IPv4 for every sync TCP connect in the process (RFC 8305, #114265).
+
+    The startup path does not build its HTTP clients in one place: the model catalog
+    fetch goes through ``urllib``/``http.client``, provider warm through
+    ``requests``/``urllib3``, and sync LLM clients through httpcore. All three funnel
+    their TCP connect into ``socket.create_connection`` (``http.client`` re-reads it
+    per connection; httpcore looks it up at call time; urllib3 re-exports its own
+    serial copy in ``urllib3.util.connection``), and the stock implementation walks the
+    ``getaddrinfo`` results serially — on a network whose advertised IPv6 route is
+    blackholed, each AAAA record burns the full connect timeout before IPv4 answers.
+    Patches both entry points with the racer from this module; idempotent, best-effort.
+    """
+    global _SOCKET_CONNECT_RACER_INSTALLED
+    if _SOCKET_CONNECT_RACER_INSTALLED:
+        return
+    _SOCKET_CONNECT_RACER_INSTALLED = True
+
+    _socket_original = socket.create_connection
+
+    def _socket_racer(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+        effective = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+        try:
+            return _happy_eyeballs_create_connection(address, effective, source_address=source_address)
+        except OSError:
+            raise  # every candidate failed — identical semantics to the serial original
+        except Exception:
+            return _socket_original(address, effective, source_address=source_address)
+
+    socket.create_connection = _socket_racer
+
+    try:
+        from urllib3.util import connection as _urllib3_connection
+        from urllib3.util.timeout import _DEFAULT_TIMEOUT as _urllib3_sentinel
+        _urllib3_original = _urllib3_connection.create_connection
+
+        def _urllib3_racer(address, timeout=_urllib3_sentinel, source_address=None, socket_options=None):
+            effective = None if timeout is _urllib3_sentinel else timeout
+            try:
+                return _happy_eyeballs_create_connection(
+                    address, effective, source_address=source_address,
+                    socket_options=tuple(socket_options or ()))
+            except OSError:
+                raise
+            except Exception:
+                return _urllib3_original(
+                    address, effective, source_address=source_address, socket_options=socket_options)
+
+        _urllib3_connection.create_connection = _urllib3_racer
+    except Exception:
+        pass  # requests warm keeps its serial connect; the socket/http.client/httpcore paths still race
 
 
 def _load_openai_cls() -> type:
@@ -458,5 +512,5 @@ OpenAI = _OpenAIProxy()
 __all__ = [
     "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_get_proxy_from_env",
     "_get_proxy_for_base_url", "build_keepalive_http_client", "close_shared_transports",
-    "enable_happy_eyeballs_on_client",
+    "enable_happy_eyeballs_on_client", "install_happy_eyeballs_socket_connect",
 ]

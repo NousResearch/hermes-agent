@@ -4,8 +4,8 @@ Regression companion to #107562: that merge rolled back partial *seeded* copies 
 the same compensation "applies to branch children", but the interactive session.branch call
 site constructs the child without it. A copy failure after the first committed chunk (real
 append_messages_batch transactions, chunk_rows=500) therefore leaves a durable child row
-holding a truncated transcript — which also defeats the lazy first-prompt seed (the row
-exists, so INSERT OR IGNORE never lands). Injects the failure at the real production seam;
+holding a truncated transcript even though the branch RPC returned an error.
+Injects the failure at the real production seam;
 no source reading, synthetic data, temp HERMES_HOME only.
 """
 
@@ -21,23 +21,28 @@ class _InjectedCopyError(RuntimeError):
 
 
 class _FailingBatchDB(SessionDB):
-    """Real SessionDB whose append_messages_batch fails after the first committed
-    500-row chunk. Subclassing (not wrapping) is required: chunk_rows recursion calls
+    """Real SessionDB failing before copying or after one committed 500-row chunk.
+    Subclassing (not wrapping) is required: chunk_rows recursion calls
     ``self.append_messages_batch``, so the override must sit ON the instance the
     production code holds."""
 
     def __init__(self, db_path=None, **kwargs):
         super().__init__(db_path=db_path, **kwargs)
-        self._calls = 0
+        self.fail_after_rows = None
+        self.rows_at_failure = None
 
     def append_messages_batch(self, session_id, messages, **kwargs):
-        self._calls += 1
-        if self._calls == 3:  # outer call, first 500-row chunk committed, now the second
-            raise _InjectedCopyError("injected branch copy failure after first committed chunk")
+        # Only inject at a leaf transaction, after parent seeding has finished.
+        if self.fail_after_rows is not None and kwargs.get("chunk_rows") is None:
+            committed_rows = self.message_count(session_id)
+            if committed_rows == self.fail_after_rows:
+                self.rows_at_failure = committed_rows
+                raise _InjectedCopyError("injected branch copy failure")
         return super().append_messages_batch(session_id, messages, **kwargs)
 
 
-def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path):
+@pytest.mark.parametrize("committed_rows", [0, 500])
+def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path, committed_rows):
     pytest.importorskip("tui_gateway")
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
@@ -53,6 +58,8 @@ def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path)
     db.create_session(parent, source="tui")
     db.append_messages_batch(parent, history)
     assert db.message_count(parent) == 1200
+    parent_messages = db.get_messages(parent)
+    db.fail_after_rows = committed_rows
 
     class FakeAgent:
         def __init__(self):
@@ -72,7 +79,7 @@ def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path)
         "last_active": 1.0,
         "cwd": str(tmp_path),
     }
-    server._sessions["parent"] = parent_record
+    monkeypatch.setattr(server, "_sessions", {"parent": parent_record})
     monkeypatch.setattr("hermes_state_registry.acquire", lambda *a, **k: db)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
@@ -89,6 +96,8 @@ def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path)
     try:
         response = server.handle_request(
             {"id": "1", "method": "session.branch", "params": {"session_id": "parent", "name": "forked"}})
+        assert db.rows_at_failure == committed_rows, "copy failure seam was not reached"
+        assert db.get_messages(parent) == parent_messages
         # The copy failed, so the branch must fail — but must not leave a durable partial child.
         child_rows = [row for row in (db.list_sessions_rich() or [])
                       if row.get("parent_session_id") == parent]
@@ -99,5 +108,4 @@ def test_session_branch_cleans_up_partial_copy_on_failure(monkeypatch, tmp_path)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
-        parent_record  # noqa: B018 - keep reference alive for interpreter teardown clarity
         db.close()

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -144,8 +145,16 @@ interface PreviewLoadErrorState {
   url: string
 }
 
+interface GuestSelectionAction {
+  source: string
+  text: string
+  x: number
+  y: number
+}
+
 const FILE_RELOAD_DEBOUNCE_MS = 200
 const SERVER_RESTART_TIMEOUT_MS = 45_000
+const GUEST_SELECTION_POLL_MS = 180
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
   const description = error.description.toLowerCase()
@@ -269,6 +278,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const [guestSelectionAction, setGuestSelectionAction] = useState<GuestSelectionAction | null>(null)
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -636,6 +646,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     },
     [consoleState]
   )
+
+  const addGuestSelectionToChat = useCallback((selectionText: string, source: string) => {
+    const selected = selectionText.trim()
+
+    if (!selected) {
+      return
+    }
+
+    // Keep the three pieces structurally separate. A Markdown blockquote lets
+    // a source line visually run into the selected passage, which is exactly
+    // the ambiguity this shortcut is meant to avoid.
+    const fence = '`'.repeat(Array.from(selected.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length + 1), 3))
+
+    requestComposerInsert(
+      `[Selected preview text]\n${fence}text\n${selected}\n${fence}\n\n[Source]\n${source}\n\n[My annotation]\n`,
+      { mode: 'block' }
+    )
+    requestComposerFocus('active')
+  }, [])
 
   const restartServer = useCallback(async () => {
     if (!onRestartServer) {
@@ -1130,6 +1159,85 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     // and the glyph was left stuck "on" when we tracked it locally.
     const onDevToolsOpened = () => setDevtoolsOpen(true)
     const onDevToolsClosed = () => setDevtoolsOpen(false)
+    let disposed = false
+    let selectionPending = false
+
+    // A preview is deliberately an unprivileged, sandboxed guest. Polling its
+    // DOM selection through the one existing, scoped script channel lets the
+    // host draw an immediate affordance without granting a third-party page a
+    // preload bridge or any Hermes APIs.
+    const syncGuestSelectionAction = () => {
+      if (disposed || selectionPending || annotateRef.current.mode) {
+        return
+      }
+
+      selectionPending = true
+
+      void Promise.resolve()
+        .then(() =>
+          bindPreviewExecuteJavaScript(webview)(`(() => {
+          const selection = window.getSelection();
+          if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+          const text = selection.toString().trim();
+          if (!text) return null;
+          const rect = selection.getRangeAt(0).getBoundingClientRect();
+          return { text: text.slice(0, 12000), right: rect.right, bottom: rect.bottom };
+        })()`)
+        )
+        .then(raw => {
+          if (disposed || webviewRef.current !== webview) {
+            return
+          }
+
+          if (!raw || typeof raw !== 'object') {
+            setGuestSelectionAction(null)
+
+            return
+          }
+
+          const snapshot = raw as { bottom?: unknown; right?: unknown; text?: unknown }
+
+          if (
+            typeof snapshot.text !== 'string' ||
+            typeof snapshot.right !== 'number' ||
+            typeof snapshot.bottom !== 'number'
+          ) {
+            setGuestSelectionAction(null)
+
+            return
+          }
+
+          const guestRect = webview.getBoundingClientRect()
+          const contentRect = previewContentRef.current?.getBoundingClientRect()
+          const zoom = window.hermesDesktop?.zoom?.factor?.() || 1
+          const source = guestPage(webview, target.url).url
+
+          const next = {
+            source,
+            text: snapshot.text,
+            x: guestRect.left - (contentRect?.left ?? guestRect.left) + snapshot.right / zoom,
+            y: guestRect.top - (contentRect?.top ?? guestRect.top) + snapshot.bottom / zoom
+          }
+
+          setGuestSelectionAction(previous =>
+            previous &&
+            previous.source === next.source &&
+            previous.text === next.text &&
+            Math.abs(previous.x - next.x) < 2 &&
+            Math.abs(previous.y - next.y) < 2
+              ? previous
+              : next
+          )
+        })
+        .catch(() => {
+          if (!disposed && webviewRef.current === webview) {
+            setGuestSelectionAction(null)
+          }
+        })
+        .finally(() => {
+          selectionPending = false
+        })
+    }
 
     // Right-clicks INSIDE the guest page. The tag surfaces Chromium's full
     // context-menu params (link, image, editable, selection, spellcheck), so
@@ -1183,6 +1291,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           srcURL: params.srcURL || ''
         },
         {
+          addSelectionToChat: (selectionText: string) =>
+            addGuestSelectionToChat(selectionText, guestPage(webview, target.url).url),
           addToDictionary: (word: string) => {
             const webContentsId = webview.getWebContentsId?.()
 
@@ -1219,8 +1329,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('page-title-updated', notePage)
     host.appendChild(webview)
     webviewRef.current = webview
+    const guestSelectionPoll = window.setInterval(syncGuestSelectionAction, GUEST_SELECTION_POLL_MS)
 
     return () => {
+      disposed = true
+      window.clearInterval(guestSelectionPoll)
+      setGuestSelectionAction(null)
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('context-menu', onGuestContextMenu)
@@ -1233,9 +1347,24 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-stop-loading', onStop)
       webview.removeEventListener('page-title-updated', notePage)
       webview.remove()
+
+      if (webviewRef.current === webview) {
+        webviewRef.current = null
+      }
+
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [
+    addGuestSelectionToChat,
+    appendConsoleEntry,
+    consoleState,
+    copy,
+    isRemoteHtml,
+    isWebPreview,
+    tabId,
+    target.kind,
+    target.url
+  ])
 
   return (
     <aside
@@ -1328,6 +1457,33 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             )}
             ref={hostRef}
           />
+          {guestSelectionAction && !annotate.mode && (
+            <div
+              className="pointer-events-none absolute z-20 -translate-x-1/2 pt-2"
+              style={{ left: guestSelectionAction.x, top: guestSelectionAction.y }}
+            >
+              <Button
+                aria-label={t.rightSidebar.addToChat}
+                className="pointer-events-auto"
+                onClick={() => {
+                  addGuestSelectionToChat(guestSelectionAction.text, guestSelectionAction.source)
+                  setGuestSelectionAction(null)
+                  void bindPreviewExecuteJavaScript(webviewRef.current || {})(
+                    'window.getSelection()?.removeAllRanges()'
+                  ).catch(() => undefined)
+                }}
+                // A normal button mousedown steals focus before its click,
+                // which makes Chromium collapse the very selection the user
+                // is asking to attach. Keep focus in the guest until click.
+                onMouseDown={event => event.preventDefault()}
+                size="xs"
+                type="button"
+                variant="secondary"
+              >
+                {t.rightSidebar.addToChat}
+              </Button>
+            </div>
+          )}
           {isRemoteHtml && (
             <iframe
               className="absolute inset-0 size-full border-0 bg-white"

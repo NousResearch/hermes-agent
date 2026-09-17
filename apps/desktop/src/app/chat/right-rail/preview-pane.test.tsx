@@ -1,7 +1,7 @@
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { onComposerAttachImagesRequest, onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
@@ -149,6 +149,76 @@ describe('PreviewPane console state', () => {
     })
 
     expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
+  })
+
+  it('adds an immediate selected-preview action to the active composer', async () => {
+    let rendered!: ReturnType<typeof render>
+    const inserts: Array<{ mode: string; target: string; text: string }> = []
+    const unsubscribe = onComposerInsertRequest(detail => inserts.push(detail))
+
+    try {
+      await act(async () => {
+        rendered = render(
+          <PreviewPane
+            target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+          />
+        )
+      })
+
+      const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+
+      Object.assign(webview, {
+        executeJavaScript: vi.fn(async () => ({ bottom: 30, right: 42, text: 'Selected preview passage\n```js\nconst value = 1\n```' })),
+        getURL: () => 'https://example.com/article'
+      })
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Add to chat' }))
+
+      await waitFor(() =>
+        expect(inserts).toEqual([
+          {
+            mode: 'block',
+            target: 'main',
+            text: '[Selected preview text]\n````text\nSelected preview passage\n```js\nconst value = 1\n```\n````\n\n[Source]\nhttps://example.com/article\n\n[My annotation]'
+          }
+        ])
+      )
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('discards a pending selection when the preview target changes', async () => {
+    const rendered = render(
+      <PreviewPane
+        target={{ kind: 'url', label: 'Example', source: 'https://example.com', url: 'https://example.com' }}
+      />
+    )
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    let resolveSelection!: (value: unknown) => void
+
+    const executeJavaScript = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveSelection = resolve
+        })
+    )
+
+    Object.assign(webview, { executeJavaScript, getURL: () => 'https://example.com' })
+    await waitFor(() => expect(executeJavaScript).toHaveBeenCalled())
+
+    rendered.rerender(
+      <PreviewPane
+        target={{ kind: 'url', label: 'Other example', source: 'https://example.org', url: 'https://example.org' }}
+      />
+    )
+    await act(async () => {
+      resolveSelection({ bottom: 30, right: 42, text: 'Old page selection' })
+    })
+
+    expect(rendered.queryByRole('button', { name: 'Add to chat' })).toBeNull()
+    expect(rendered.container.querySelector('webview')).not.toBe(webview)
   })
 
   it('drives the webview from the bar and tracks its history', async () => {

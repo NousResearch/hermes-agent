@@ -14,7 +14,12 @@ export function buildCommandScreenshotMonitor({ distDir = resolve(root, 'dist') 
   const staging = `${output}.${process.pid}.tmp`
   mkdirSync(dirname(output), { recursive: true })
   try {
+    // Pin the SDK explicitly: a bare `xcrun clang` inherits the host default
+    // SDK, which may be newer than the active linker (unknown-arch .tbd stubs
+    // at link time, #113708). `--sdk macosx` names the same default SDK while
+    // forcing the driver and linker to agree on it.
     execFileSync('xcrun', [
+      '--sdk', 'macosx',
       'clang', '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
       '-fobjc-arc', '-fblocks', '-O2', '-Wall', '-Wextra',
       '-framework', 'Cocoa', '-framework', 'CoreGraphics',

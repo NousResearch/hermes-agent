@@ -78,6 +78,43 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
+def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
+    from gateway.warning_notifications import warning_notifications_enabled
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    # Callback workers do not necessarily inherit the turn's ContextVars. The
+    # existing agent latch follows the same serialized turn across those threads.
+    if getattr((session or {}).get("agent"), "_mute_notification_reply", False):
+        return False
+    if not diagnostic:
+        return True
+    with _session_profile_runtime_scope(session or {}):
+        # Sole TUI policy read for agent callbacks; sinks below call this instead of re-deriving it.
+        return warning_notifications_enabled("tui", getattr((session or {}).get("agent"), "_notification_config", None))
+
+
+def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
+    from gateway.warning_notifications import is_warning_status
+    if not _agent_presentation_enabled(sid, diagnostic=is_warning_status(kind, text if text is not None else kind)):
+        return
+    _status_update(sid, str(kind), None if text is None else str(text))
+
+
+def _agent_thinking_update(sid: str, text: str) -> None:
+    from gateway.warning_notifications import DiagnosticText
+    if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
+        return
+    _emit("thinking.delta", sid, {"text": text})
+
+
+def _agent_notice_update(sid: str, notice) -> None:
+    if not _agent_presentation_enabled(sid, diagnostic=notice.level in {"warn", "error"}):
+        return
+    _emit("notification.show", sid,
+          {"text": notice.text, "level": notice.level, "kind": notice.kind,
+           "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id})
+
+
 def _agent_cbs(sid: str) -> dict:
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
@@ -92,16 +129,14 @@ def _agent_cbs(sid: str) -> dict:
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
-        "status_callback": lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
+        "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
-        "notice_callback": lambda n: _emit(
-            "notification.show", sid,
-            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
+        "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
@@ -395,11 +430,23 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         if preview or name:
             progress(str(preview) if preview else f"{event_type.replace('.', ' ')}: {name}")
 
+    _restart_status = _restart_status_factory(parent, progress)
     return {
         "tool_start_callback": tool_start, "tool_complete_callback": tool_complete,
         "tool_progress_callback": tool_progress,
         "tool_gen_callback": lambda name: progress(f"Preparing {name}"),
-        "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
+        "status_callback": _restart_status}
+
+
+def _restart_status_factory(parent: str, progress):
+    """Restart-panel status rows: automatic warnings honor the TUI policy like the main agent's sink."""
+    def _restart_status(kind, text=None):
+        from gateway.warning_notifications import is_warning_status
+        message = text if text is not None else kind
+        if is_warning_status(kind, message) and not _agent_presentation_enabled(parent, diagnostic=True):
+            return
+        progress(message)
+    return _restart_status
 
 
 def _rebuild_session_agent(sid: str, session: dict, **kwargs):

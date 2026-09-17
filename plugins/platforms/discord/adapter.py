@@ -2894,7 +2894,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             f"{dropped_chars} characters were not delivered; the full "
             f"response is in the session logs."
         )
-        kept.append(notice)
+        if self.warning_text(notice):
+            kept.append(notice)
         return kept
 
     async def send(
@@ -4030,6 +4031,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         profile = getattr(self, "_owner_profile", None)
         try:
+            if profile:
+                from gateway.run import _async_profile_runtime_scope
+                from hermes_cli.profiles import get_profile_dir
+                async with _async_profile_runtime_scope(get_profile_dir(profile)):
+                    await self._deliver_unauthorized_slash_alert(
+                        runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason)
+            else:
+                await self._deliver_unauthorized_slash_alert(
+                    runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason)
+        except Exception as e:
+            logger.debug("[Discord] Admin notify: profile %r scope failed: %s", profile, e)
+
+    async def _deliver_unauthorized_slash_alert(
+        self, runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason,
+    ) -> None:
+        # Discovery, policy, and transport must share the same owning profile scope.
+        try:
             adapters, config = await self._alert_adapters_and_config(runner, profile)
         except Exception as e:
             logger.debug("[Discord] Admin notify: profile %r resolution failed: %s", profile, e)
@@ -4049,7 +4067,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     f"Command: {command_text}\n"
                     f"Reason: {reason}"
                 )
-                result = await adapter.send(str(home.chat_id), msg)
+                # Policy is the DISCORD owner's (self) evaluated for the foreign target lane; a veto
+                # is not transport failure or permission to reroute to the next target.
+                from gateway.warning_notifications import present_notification
+                result = None
+                async def send_alert():
+                    nonlocal result
+                    result = await adapter.send(str(home.chat_id), msg)
+                if not await present_notification(send_alert, platform=target,
+                                                  diagnostic=True):
+                    return
                 # Only return on confirmed delivery.
                 if getattr(result, "success", None) is False:
                     logger.debug(
@@ -5884,8 +5911,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
                         await message.channel.send(
-                            "⚠️ Hermes could not create a Discord thread for "
-                            "this message, so the request was not processed. Please retry."
+                            self.warning_text(
+                                "⚠️ Hermes could not create a Discord thread for "
+                                "this message, so the request was not processed. Please retry.",
+                                "The request was not processed. Please retry.")
                         )
                     except Exception as notify_error:
                         logger.warning(

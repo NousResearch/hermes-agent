@@ -21016,6 +21016,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
 
 def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
     """The trim boundary must not retain the just-pruned history snapshots."""
+    import contextlib
     observed = {}
     cleanup_order = []
 
@@ -21072,6 +21073,10 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
             "reset_hermes_home_override",
             lambda _token: cleanup_order.append("reset_home"),
         )
+        # This test observes the worker's history-release scope, not the
+        # separate notification-policy and post-turn scopes (covered elsewhere).
+        monkeypatch.setattr(server, "_session_profile_runtime_scope",
+                            lambda _session: contextlib.nullcontext())
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _inspect_trim_frame)
 
         resp = server.handle_request(

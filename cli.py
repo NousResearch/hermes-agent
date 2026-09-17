@@ -2511,6 +2511,7 @@ class _ChatTurn:
     """
 
     result: Optional[dict] = None
+    mute_notification_reply: bool = False
     use_streaming_tts: bool = False
     box_opened: bool = False
     thinking_started: bool = False
@@ -2851,20 +2852,24 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             failure = describe_storage_failure(e)
-            try:
-                Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
-                    "Searching past sessions is also disabled.\n"
-                    f"  Reason: {failure.gloss}.\n"
-                    f"  {failure.action}\n"
-                    f"  [dim]Details: {storage_failure_details(e)}[/dim]"
-                )
-            except Exception:
-                print(
-                    "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
-                )
+            def _present_store_warning():
+                try:
+                    Console(stderr=True).print(
+                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                        "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
+                        "Searching past sessions is also disabled.\n"
+                        f"  Reason: {failure.gloss}.\n"
+                        f"  {failure.action}\n"
+                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
+                    )
+                except Exception:
+                    print(
+                        "WARNING: Session store unavailable — this conversation will NOT be "
+                        f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
+                    )
+            # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
+            from gateway.warning_notifications import render_notification
+            render_notification(_present_store_warning, platform="cli")
         _run_state_db_auto_maintenance(self._session_db)
         _run_checkpoint_auto_maintenance()
 
@@ -3055,7 +3060,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
             notice = default_downgrade_notice()
             if notice:
-                self._console_print(f"[yellow]⚠ {notice}[/yellow]")
+                from gateway.warning_notifications import render_notification
+                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
         except Exception:
             logger.debug("browser backend notice failed", exc_info=True)
 

@@ -42,7 +42,7 @@ def test_live_delivery_retry_keeps_receipt_across_owner_loss(tmp_path, monkeypat
 
 
 def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
-    from cron import jobs
+    from cron import jobs, executions
     from gateway import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -53,18 +53,23 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(delivery._sched, "load_config", lambda: {})
     monkeypatch.setattr(config, "load_gateway_config", lambda: None)
     monkeypatch.setattr(delivery.subprocess, "run", Mock(side_effect=AssertionError("CLI")))
-    updates = []
-    monkeypatch.setattr(jobs, "update_job", lambda key, values: updates.append(values))
-    job = dict(id="digest", execution_id="run", deliver="bot-chat")
+    job = jobs.create_job(prompt="fixture", schedule="every 1h", deliver="bot-chat")
+    execution = executions.create_execution(job["id"], source="test")
+    job["execution_id"] = execution["id"]
+    jobs.bind_delivery_execution(job["id"], execution["id"])
     error = delivery._deliver_result(job, "payload")
     assert error is None
-    queued = updates[-1]["last_delivery_queued"]
+    queued = jobs.get_job(job["id"])["last_delivery_queued"]
     assert queued and next(iter(queued.values()))["status"] == "queued"
     assert delivery._sched._classify_delivery_outcome(
         delivery_error=error, delivery_queued=queued, should_deliver=True, unresolved_origin=False,
         normalized_deliver="bot-chat", incident_acked=False, success=True) == "queued"
+    executions.finish_execution(execution["id"], success=True, delivery_outcome="queued")
     record = mailbox.claim_pending_delivery(tmp_path, owner)
     assert record is not None
     mailbox.complete_delivery(tmp_path, record["delivery_id"], status="settled", reply="done")
+    from cron.bot_chat_delivery import drain
+    drain()  # housekeeping, not another delivery attempt, refreshes the durable projection
+    assert jobs.get_job(job["id"])["last_delivery_queued"] is None
+    assert executions.get_execution(execution["id"])["delivery_outcome"] == "delivered"
     assert delivery._deliver_result(job, "payload") is None
-    assert updates[-1]["last_delivery_queued"] is None

@@ -295,7 +295,8 @@ def _upsert_incident_for_failure(
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file,
+            execution_id=job.get("execution_id"))
         incident = get_incident(incident_id)
         acked = bool(incident and incident.get("state") == "closed")
         return acked, incident_id
@@ -317,14 +318,21 @@ def _resolve_incidents_for_recovered_job(job: dict) -> None:
         logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
 
 
-def _mark_incident_alerted(incident_id: Optional[str]) -> None:
-    """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one)."""
+def _mark_incident_alerted(incident_id: Optional[str], execution_id: Optional[str] = None) -> None:
+    """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one).
+
+    Fenced to the occurrence THIS execution bound: a native alert whose run belongs to an
+    older occurrence (the incident recovered and reopened meanwhile) must not mark the new one.
+    """
     if not incident_id:
         return
     try:
-        from cron.incidents import set_incident_state
+        from cron.incidents import mark_alerted_for_execution, set_incident_state
 
-        set_incident_state(incident_id, "alerted")
+        if execution_id:
+            mark_alerted_for_execution(incident_id, execution_id)
+        else:
+            set_incident_state(incident_id, "alerted")
     except Exception as exc:
         logger.debug("Failed marking incident %s alerted: %s", incident_id, exc)
 
@@ -2474,6 +2482,8 @@ def run_one_job(
         job["execution_id"] = execution["id"]
 
     execution_id = str(job["execution_id"])
+    from cron.jobs import bind_delivery_execution
+    bind_delivery_execution(job["id"], execution_id)
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
@@ -2548,12 +2558,14 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
-    delivery_queued=None,
+    delivery_queued=None, notification_suppressed: bool = False,
 ) -> str:
-    if delivery_error:
-        return "failed"
     if should_deliver and delivery_queued:
         return "queued"
+    if delivery_error:
+        return "failed"
+    if notification_suppressed:
+        return "suppressed"
     if should_deliver and unresolved_origin:
         return "not_configured"
     if should_deliver and normalized_deliver != "local":
@@ -2788,8 +2800,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
     if not d.should_deliver and job.get("last_delivery_queued"):
-        from cron.jobs import update_job
-        update_job(job["id"], {"last_delivery_queued": None})
+        from cron.jobs import update_delivery_projection
+        update_delivery_projection(job["id"], execution_id, {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
     mark_kwargs: dict = {"delivery_error": d.delivery_error}
     if not d.success and job.pop("_model_unreachable", False):
@@ -2813,6 +2825,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
         delivery_queued=job.get("last_delivery_queued"),
+        notification_suppressed=bool(job.get("_notification_all_targets_suppressed")),
         should_deliver=d.should_deliver,
         unresolved_origin=d.unresolved_origin,
         # Read the lane the notice was actually routed through (failure_deliver on failure).
@@ -2822,7 +2835,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     )
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
-        _mark_incident_alerted(d.failure_incident_id)
+        _mark_incident_alerted(d.failure_incident_id, execution_id)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     return True
@@ -2859,9 +2872,10 @@ def _deliver_crash_failure(
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
-        delivery_queued=job.get("last_delivery_queued"))
+        delivery_queued=job.get("last_delivery_queued"),
+        notification_suppressed=bool(job.get("_notification_all_targets_suppressed")))
     if delivery_outcome in ("delivered", "not_configured"):
-        _mark_incident_alerted(failure_incident_id)
+        _mark_incident_alerted(failure_incident_id, job.get("execution_id"))
     return delivery_error, delivery_outcome
 
 

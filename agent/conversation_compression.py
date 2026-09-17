@@ -1847,7 +1847,7 @@ def _lower_threshold_to_aux_context(
             f"{recomputed_threshold:,} tokens, still above the compression model's {aux_context:,}.)"
         )
     agent._compression_warning = msg
-    agent._emit_status(msg)
+    agent._emit_diagnostic_status(msg)
     logger.warning(
         "Auxiliary compression model %s has %d token context, below the main model's compression threshold of %d "
         "tokens — auto-lowered session threshold to %d to keep compression working.", aux_model, aux_context,
@@ -1904,7 +1904,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            agent._emit_diagnostic_status(msg)
             logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
             return
         aux_base_url = str(getattr(client, "base_url", ""))
@@ -1958,8 +1958,10 @@ def replay_compression_warning(agent: Any) -> None:
     ``__init__``) is finally wired."""
     msg = getattr(agent, "_compression_warning", None)
     if msg and agent.status_callback:
+        # Replayed as a classified diagnostic so every sink applies its own policy snapshot.
+        from gateway.warning_notifications import DiagnosticText
         with contextlib.suppress(Exception):
-            agent.status_callback("lifecycle", msg)
+            agent.status_callback("lifecycle", DiagnosticText(msg))
 
 
 def conversation_history_after_compression(
@@ -3216,7 +3218,7 @@ def _finish_compaction_boundary(
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
         )
         agent._compression_warning = _cc_msg
-        agent._emit_status(_cc_msg)
+        agent._emit_diagnostic_status(_cc_msg)
 
     # session:compress lets hooks ingest the old session before it's lost;
     # in_place=True tells them the same id was compacted rather than rotated.

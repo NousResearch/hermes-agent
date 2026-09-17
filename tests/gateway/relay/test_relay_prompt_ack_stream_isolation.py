@@ -88,6 +88,17 @@ async def _open_turn_draft(a, chat_id="D01", draft_id=7):
 
 class TestPromptAckDoesNotSealDraft:
     @pytest.mark.asyncio
+    async def test_explicit_destination_diagnostic_is_interim_at_both_egress_doors(self):
+        a = _adapter()
+        key = await _open_turn_draft(a)
+        await a.send("D01", "diagnostic", metadata={
+            "_interim_send": True, "_relay_logical_platform": "slack"})
+        assert key in a._open_draft_by_chat
+        assert a._transport.frames[-1][0]["op"] == "send"
+        await a.send("D01", "requested final")
+        assert key not in a._open_draft_by_chat
+
+    @pytest.mark.asyncio
     async def test_prompt_response_handler_does_not_block_on_ack_send(self):
         """Live finding round 2 (rc.4): _consume_prompt_response runs ON the
         transport read loop (inbound frame -> _handle_frame -> _inbound).

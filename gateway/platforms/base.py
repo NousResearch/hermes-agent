@@ -2841,8 +2841,55 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
-        text = f"{caption}\n{text}" if caption else text
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata,
+                                             shown_metadata=metadata)
+
+    async def emit_warning(
+        self, chat_id: str, content: str, *, reply_to=None, metadata=None, logical_platform=None,
+    ) -> Optional[SendResult]:
+        """Present a classified channel diagnostic in the caller's owning scope.
+
+        None means suppressed, NOT successfully sent. Transport receipts/exceptions
+        pass through unchanged; logs and producer state belong outside this boundary.
+        Existing routing/stream metadata is preserved, never inferred from text.
+        """
+        if not self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return None
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def emit_media_warning(
+        self, chat_id: str, notice: str, *, caption=None, reply_to=None, metadata=None,
+        shown_metadata=None,
+    ) -> SendResult:
+        """Present an optional media diagnostic without losing the requested caption.
+
+        Preserve the legacy fallback-text receipt when shown (``shown_metadata`` is the exact
+        metadata the legacy shown path passed; default None keeps callers that sent none
+        byte-identical). When hidden, preserve the media failure even if the independent
+        caption itself was delivered.
+        """
+        result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
+                                         reply_to=reply_to, metadata=shown_metadata)
+        if result is not None:
+            return result
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        return SendResult(success=False, error=notice)
+
+    def warning_text(self, visible: str, hidden: Optional[str] = "", *, logical_platform=None, chat_id=None, metadata=None) -> Optional[str]:
+        """Project mixed content: the diagnostic variant when visible, else the requested remainder.
+
+        For payloads that combine a requested result (caption, answer) with an automatic
+        diagnostic. The requested part must be present in BOTH variants; never hide it.
+        """
+        if self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return visible
+        return hidden
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        """Presentation policy under the caller's owning profile; old plugins inherit it."""
+        from gateway.warning_notifications import warning_notifications_enabled
+        return warning_notifications_enabled(logical_platform or self.platform)
 
     def prepare_tts_text(self, text: str) -> str:
         """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,
@@ -2933,8 +2980,9 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
-            problem = None if notice.success else notice.error
+            notice = await self.emit_warning(chat_id, text,
+                                             metadata={**(metadata or {}), "_interim_send": True})
+            problem = None if notice is None or notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
         if problem is not None:
@@ -3310,8 +3358,8 @@ class BasePlatformAdapter(ABC):
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
-        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
-        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        """Routed home + terminal policy for post-handler text, media and error delivery;
+        a no-op without a runner or outside multiplexing."""
         resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
         if not callable(resolve) or source is None:
             return contextlib.nullcontext()
@@ -3424,9 +3472,12 @@ class BasePlatformAdapter(ABC):
                     )
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
-                notice = (
+                notice = self.warning_text(
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent.")
+                    "Please try again \u2014 your request was processed but the response could not be sent.",
+                    chat_id=chat_id, metadata=metadata)
+                if not notice:
+                    return result
                 try:
                     await _send(notice)
                 except Exception as notify_err:
@@ -3451,7 +3502,9 @@ class BasePlatformAdapter(ABC):
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
-            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            chat_id=chat_id, content=self.warning_text(
+                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
     @staticmethod
@@ -4030,13 +4083,21 @@ class BasePlatformAdapter(ABC):
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
+        from gateway.warning_notifications import diagnostic_wake_muted
         try:
-            error_detail = str(e)[:300] if str(e) else "no details available"
-            _thread_metadata = _thread_metadata_for_event(event)
-            await self.send(
-                chat_id=event.source.chat_id,
-                content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
+            with self._media_delivery_scope(event.source):
+                _thread_metadata = _thread_metadata_for_event(event)
+                if diagnostic_wake_muted(event):
+                    return _thread_metadata
+                error_detail = str(e)[:300] if str(e) else "no details available"
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=self.warning_text(
+                        f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                        "Try again or use /reset to start a fresh session.",
+                        "Sorry, I encountered an error.",
+                        logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata),
+                    metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -4178,47 +4239,53 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
-            is_ephemeral_response = isinstance(response, EphemeralReply)
-            # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
-            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
-            # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
-            if response and interrupt_event.is_set() and session_key in self._pending_messages:
-                logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
-                            session_key)
-                response = None
-            if not response:
-                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
-            else:
-                extracted = await self._extract_response_content(
-                    response, event, session_key, is_ephemeral_response=is_ephemeral_response)
-                text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
-                        _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
-                    finally:
+            from gateway.warning_notifications import diagnostic_wake_muted
+            # The handler has left the owner scope. Keep it for the whole delivery,
+            # including transport fallbacks, but exit before draining another turn.
+            with self._media_delivery_scope(event.source):
+                if diagnostic_wake_muted(event):
+                    response = None
+                is_ephemeral_response = isinstance(response, EphemeralReply)
+                # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
+                response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+                # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
+                if response and interrupt_event.is_set() and session_key in self._pending_messages:
+                    logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
+                                session_key)
+                    response = None
+                if not response:
+                    logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                else:
+                    extracted = await self._extract_response_content(
+                        response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+                    text_content, media_files = extracted.text_content, extracted.media_files
+                    # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
+                    _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                    _tts_paths, _tts_requested_path = [], None
+                    if self._wants_auto_tts(
+                            event, session_key, interrupt_event, text_content, media_files):
+                        _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    # TTS plays before text; generated files are removed afterwards.
+                    _tts_caption_delivered = False
+                    for _tts_index, _tts_path in enumerate(_tts_paths):
+                        try:
+                            _tts_caption_delivered |= await self._play_tts_file(
+                                event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+                                _record_delivery)
+                        finally:
+                            with contextlib.suppress(OSError):
+                                os.remove(_tts_path)
+                    if not _tts_paths and _tts_requested_path is not None:
                         with contextlib.suppress(OSError):
-                            os.remove(_tts_path)
-                if not _tts_paths and _tts_requested_path is not None:
-                    with contextlib.suppress(OSError):
-                        os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
-                        event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
-                    event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
-                    record_delivery=_record_delivery)
+                            os.remove(_tts_requested_path)
+                    if text_content and not _tts_caption_delivered:
+                        await self._send_final_text(
+                            event, session_key, text_content, _final_thread_metadata,
+                            is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                    await self._deliver_attachments(
+                        event, extracted, _final_thread_metadata,
+                        anything_sent=delivery_attempted or _tts_caption_delivered,
+                        record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

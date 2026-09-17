@@ -15,3 +15,39 @@
 export function latchChatActivation(previous: boolean, isActive: boolean): boolean {
   return previous || isActive;
 }
+
+/**
+ * Module-level external store holding the latch.
+ *
+ * `ChatPage` reads it through `useSyncExternalStore`: a render-phase
+ * `setState` latch is illegal under react-hooks/set-state-in-effect, and a
+ * plain state+effect latch would have to call setState synchronously in the
+ * effect body. An external store sidesteps both — the effect only calls
+ * `activate()`, and React re-renders from the subscription notification.
+ *
+ * Module scope (not React state) also matches the real-world semantics: the
+ * "sticky" property survives even an unmount/remount of the page within one
+ * document lifetime, which is exactly when the PTY bootstrap cost would
+ * otherwise be paid twice.
+ */
+const listeners = new Set<() => void>();
+let activated = false;
+
+export const chatActivationStore = {
+  subscribe(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  },
+  getSnapshot(): boolean {
+    return activated;
+  },
+  /** Mark the chat tab as activated; sticky, no-op when already active. */
+  activate(): void {
+    const next = latchChatActivation(activated, true);
+    if (next === activated) return;
+    activated = next;
+    for (const listener of listeners) listener();
+  },
+};

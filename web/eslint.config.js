@@ -24,13 +24,14 @@ export default defineConfig([
       // (the Provider) and a hook (useContext). Allow constant exports so
       // these don't need to be split into separate files.
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
-      // TODO: upgrade these react-hooks v7 rules from 'warn' to 'error' after
-      // refactoring set-state-in-effect, ref-as-instance-var, and manual
-      // memoization patterns in the web codebase.
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/refs': 'warn',
-      'react-hooks/preserve-manual-memoization': 'warn',
-      'react-hooks/static-components': 'warn',
+      // Upgraded from 'warn' once the codebase was swept clean (render-phase
+      // state adjustments, microtask boundaries in effects, helpers moved out
+      // of component files). New violations now fail `npm run lint`, and the
+      // lint script enforces --max-warnings 0 in CI.
+      'react-hooks/set-state-in-effect': 'error',
+      'react-hooks/refs': 'error',
+      'react-hooks/preserve-manual-memoization': 'error',
+      'react-hooks/static-components': 'error',
     },
   },
 ])

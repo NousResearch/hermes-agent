@@ -48,7 +48,10 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
   }
 
   const repo = (
-    payload.params?.repo || payload.params?.identifier || (payload.kind !== 'plugin' ? payload.name : '') || ''
+    payload.params?.repo ||
+    payload.params?.identifier ||
+    (payload.kind !== 'plugin' ? payload.name : '') ||
+    ''
   ).trim()
 
   if (payload.kind === 'plugin' && payload.name === 'install' && repo) {

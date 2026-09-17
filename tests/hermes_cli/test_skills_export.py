@@ -71,3 +71,23 @@ def test_export_refuses_unsafe_sources_and_preserves_existing_output(tmp_path, m
     with pytest.raises(ValueError, match="credential"):
         export_skills(["notes"], output)
     assert not output.exists()
+
+
+def test_export_explains_missing_parent_and_hardlink_failure(tmp_path, monkeypatch):
+    from hermes_cli.skills_export import export_skills
+
+    home = tmp_path / "home"
+    skill = home / "skills" / "notes"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Write notes.")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(ValueError, match="parent directory does not exist"):
+        export_skills(["notes"], tmp_path / "missing" / "bundle.tar.gz")
+
+    def no_hardlink(*_args):
+        raise OSError("hard links disabled")
+
+    monkeypatch.setattr("hermes_cli.skills_export.os.link", no_hardlink)
+    with pytest.raises(ValueError, match="Cannot publish export.*hard links are unavailable"):
+        export_skills(["notes"], tmp_path / "bundle.tar.gz")

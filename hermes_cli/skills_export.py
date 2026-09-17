@@ -23,6 +23,8 @@ def export_skills(names: list[str], output: Path) -> Path:
         raise ValueError("Export destination must be outside the skills directory")
     if not names:
         raise ValueError("Select at least one skill directory")
+    if not output.parent.is_dir():
+        raise ValueError(f"Export parent directory does not exist: {output.parent}")
     if root.is_symlink():
         raise ValueError("Cannot export through a symlinked skills directory")
     if output.exists() or output.is_symlink():
@@ -85,7 +87,11 @@ def export_skills(names: list[str], output: Path) -> Path:
                         else:
                             archive.addfile(info)
             # Close before linking/unlinking: Windows denies deletion of open files.
-            os.link(archive_path, output)
+            try:
+                os.link(archive_path, output)
+            except OSError as exc:
+                detail = exc.strerror or "hard links are unavailable"
+                raise ValueError(f"Cannot publish export at {output}: {detail}") from exc
         finally:
             Path(archive_path).unlink(missing_ok=True)
     return output

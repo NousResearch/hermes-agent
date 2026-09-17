@@ -1827,7 +1827,7 @@ export async function retainGatewayForSessionTurn(
       // scope's state, not this lease's.
       publishTurnLease(scope, scopeHasTurnLease(scope))
       releaseRoute()
-    },
+    }
   }
 
   g.turnLeases.set(key, lease)

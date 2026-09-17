@@ -837,7 +837,8 @@ def _(rid, params: dict) -> dict:
     """Invoke a backend intent declared in an artifact's action manifest.
 
     The client sends only stable identifiers — artifact ID, pinned revision,
-    binding ID, entity ref, and an idempotency key. The server resolves the
+    binding ID, entity ref, an idempotency key, and optional bounded human
+    context for contained-session intents. The server resolves the
     registered handler from the artifact's declarations at that revision;
     a forged binding or substituted intent name is rejected because the
     server never trusts the caller's intent string.
@@ -854,6 +855,7 @@ def _(rid, params: dict) -> dict:
             binding_id=str(params.get("binding_id", "")),
             entity_ref=str(params.get("entity_ref", "")),
             idempotency_key=str(params.get("idempotency_key", "")),
+            user_context=params.get("user_context"),
         )
         if result.get("status") == "succeeded":
             # Emit artifact.changed so the client refreshes live.

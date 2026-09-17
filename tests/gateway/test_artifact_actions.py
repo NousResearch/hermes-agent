@@ -486,6 +486,198 @@ def test_session_spawn_seeds_task_from_stored_entity_not_raw_ref(
     assert "resolved from stored content" in task     # provenance marker
 
 
+def test_session_spawn_includes_required_human_context(
+    artifact_home, fake_server_methods
+):
+    from tui_gateway import artifact_actions as aa
+
+    actions = [{"type": "intent", "id": "fix", "label": "Fix",
+                "intent": "artifact.session.spawn",
+                "session_prompt": "Resolve the open application questions.",
+                "presentation": {"role": "normal", "context": "required"}}]
+    stored = _make_artifact(artifact_home, actions=actions)
+
+    with pytest.raises(ValueError, match="user_context is required"):
+        aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="fix", entity_ref="alice",
+            idempotency_key="context-required",
+        )
+
+    result = aa.invoke(
+        artifact_id="test-art", artifact_rev=stored["rev"],
+        binding_id="fix", entity_ref="alice",
+        idempotency_key="context-required",
+        user_context="  Use my answer for the relocation question.  ",
+    )
+
+    assert result["status"] == "succeeded"
+    task = fake_server_methods.submitted[0]["text"]
+    assert "Human-provided context for this run" in task
+    assert "Use my answer for the relocation question." in task
+
+
+def test_user_context_is_bounded_and_session_only(artifact_home):
+    from tui_gateway import artifact_actions as aa
+
+    actions = [{"type": "intent", "id": "refresh", "intent": "artifact.refresh"}]
+    stored = _make_artifact(artifact_home, actions=actions)
+
+    with pytest.raises(ValueError, match="only for artifact.session.spawn"):
+        aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="refresh", entity_ref="", idempotency_key="wrong-intent",
+            user_context="Do something unrelated.",
+        )
+
+    with pytest.raises(ValueError, match="4000 UTF-8 bytes"):
+        aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="refresh", entity_ref="", idempotency_key="too-large",
+            user_context="x" * 4_001,
+        )
+
+    with pytest.raises(ValueError, match="4000 UTF-8 bytes"):
+        aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="refresh", entity_ref="", idempotency_key="whitespace-large",
+            user_context=" " * 4_001,
+        )
+
+    with pytest.raises(ValueError, match="control character"):
+        aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="refresh", entity_ref="", idempotency_key="control-char",
+            user_context="answer\u0085separator",
+        )
+
+    assert aa._normalize_user_context("line one\nline two") == "line one\nline two"
+
+
+def test_human_context_participates_in_idempotency_scope(
+    artifact_home, fake_server_methods
+):
+    from tui_gateway import artifact_actions as aa
+
+    actions = [{"type": "intent", "id": "fix", "label": "Fix",
+                "intent": "artifact.session.spawn",
+                "session_prompt": "Resolve the open questions.",
+                "presentation": {"role": "normal", "context": "optional"}}]
+    stored = _make_artifact(artifact_home, actions=actions)
+
+    for context in ("First answer", "First answer", "Corrected answer", None):
+        result = aa.invoke(
+            artifact_id="test-art", artifact_rev=stored["rev"],
+            binding_id="fix", entity_ref="alice", idempotency_key="same-key",
+            user_context=context,
+        )
+        assert result["status"] == "succeeded"
+
+    assert len(fake_server_methods.created) == 3
+    assert "First answer" in fake_server_methods.submitted[0]["text"]
+    assert "Corrected answer" in fake_server_methods.submitted[1]["text"]
+
+
+def test_context_idempotency_replays_complete_result_from_ledger(
+    artifact_home, fake_server_methods
+):
+    from tui_gateway import artifact_actions as aa
+
+    actions = [{"type": "intent", "id": "fix", "label": "Fix",
+                "intent": "artifact.session.spawn",
+                "presentation": {"role": "normal", "context": "optional"}}]
+    stored = _make_artifact(artifact_home, actions=actions)
+    kwargs = {
+        "artifact_id": "test-art",
+        "artifact_rev": stored["rev"],
+        "binding_id": "fix",
+        "entity_ref": "alice",
+        "idempotency_key": "durable-context",
+        "user_context": "Use my answer.",
+    }
+
+    first = aa.invoke(**kwargs)
+    aa._idempotency_cache.clear()
+    replay = aa.invoke(**kwargs)
+
+    assert replay == first
+    assert replay["session_id"] == "20260101_000000_abcdef"
+    assert len(fake_server_methods.created) == 1
+
+
+def test_destructive_session_preserves_context_through_confirmation(
+    artifact_home, fake_server_methods
+):
+    from tui_gateway import artifact_actions as aa
+
+    actions = [{"type": "intent", "id": "fix", "label": "Fix",
+                "intent": "artifact.session.spawn.with_context",
+                "session_prompt": "Resolve the open questions.",
+                "presentation": {"role": "destructive", "context": "required"}}]
+    stored = _make_artifact(artifact_home, actions=actions)
+
+    invoked = aa.invoke(
+        artifact_id="test-art", artifact_rev=stored["rev"],
+        binding_id="fix", entity_ref="alice", idempotency_key="confirmed-context",
+        user_context="My confirmed answer.",
+    )
+    assert invoked["status"] == "needs_confirmation"
+    assert not fake_server_methods.created
+
+    result = aa.confirm("test-art", invoked["challenge"])
+
+    assert result["status"] == "succeeded"
+    assert "My confirmed answer." in fake_server_methods.submitted[0]["text"]
+
+
+def test_context_confirmation_rejects_changed_artifact_revision(
+    artifact_home, fake_server_methods
+):
+    from tui_gateway import artifact_actions as aa, artifact_store as store
+
+    actions = [{"type": "intent", "id": "fix", "label": "Fix",
+                "intent": "artifact.session.spawn.with_context",
+                "presentation": {"role": "destructive", "context": "required"}}]
+    stored = _make_artifact(artifact_home, actions=actions)
+    invoked = aa.invoke(
+        artifact_id="test-art", artifact_rev=stored["rev"],
+        binding_id="fix", entity_ref="alice", idempotency_key="changed-revision",
+        user_context="Sensitive application answer.",
+    )
+    store.set_artifact(
+        "test-art", "dataset", stored["content"], updated_by="changed",
+        replace=True, actions=actions,
+    )
+
+    result = aa.confirm("test-art", invoked["challenge"])
+
+    assert result["status"] == "conflict"
+    assert not fake_server_methods.created
+
+
+def test_action_invoke_rpc_forwards_human_context(monkeypatch):
+    from tui_gateway import artifact_actions as aa, server
+
+    captured = {}
+
+    def fake_invoke(**kwargs):
+        captured.update(kwargs)
+        return {"status": "unsupported"}
+
+    monkeypatch.setattr(aa, "invoke", fake_invoke)
+    response = server._methods["artifact.action.invoke"]("rpc-context", {
+        "artifact_id": "test-art",
+        "artifact_rev": 3,
+        "binding_id": "fix",
+        "entity_ref": "alice",
+        "idempotency_key": "rpc-key",
+        "user_context": "My application answer.",
+    })
+
+    assert response["result"]["status"] == "unsupported"
+    assert captured["user_context"] == "My application answer."
+
+
 def test_session_spawn_unresolved_entity_fails_closed(
     artifact_home, fake_server_methods
 ):

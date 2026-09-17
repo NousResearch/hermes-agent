@@ -84,6 +84,7 @@ import logging
 import os
 import secrets
 import time
+import unicodedata
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,20 @@ logger = logging.getLogger(__name__)
 # {challenge_token: {"artifact_id", "binding_id", "entity_ref", "expires"}}
 _pending_challenges: dict[str, dict] = {}
 CHALLENGE_TTL = 120  # seconds
+MAX_USER_CONTEXT_BYTES = 4_000
+_CONTEXT_SESSION_INTENTS = {
+    "artifact.session.spawn",
+    "artifact.session.spawn.with_context",
+}
 
 
 def _issue_challenge(
     artifact_id: str, binding_id: str, entity_ref: str, prompt: str,
     idempotency_key: str = "",
+    user_context: str = "",
+    artifact_rev: int = 0,
+    intent_name: str = "",
+    request_scope: str = "",
 ) -> str:
     token = secrets.token_urlsafe(24)
     _pending_challenges[token] = {
@@ -106,6 +116,10 @@ def _issue_challenge(
         "entity_ref": entity_ref,
         "prompt": prompt,
         "idempotency_key": idempotency_key,
+        "user_context": user_context,
+        "artifact_rev": artifact_rev,
+        "intent_name": intent_name,
+        "request_scope": request_scope,
         "expires": time.monotonic() + CHALLENGE_TTL,
     }
     return token
@@ -173,6 +187,7 @@ def invoke(
     entity_ref: str,
     idempotency_key: str,
     actor: str = "",
+    user_context: Optional[str] = None,
 ) -> dict:
     """Resolve and invoke a backend intent.
 
@@ -191,29 +206,32 @@ def invoke(
     import time as _time
     from tui_gateway import artifact_store, artifact_invocation_ledger as ledger
 
+    user_context = _normalize_user_context(user_context)
+    request_scope = _request_scope(idempotency_key, user_context)
+
     # Idempotency — fast path: in-memory cache first, then durable ledger.
     # The ledger check survives gateway restarts; the in-memory dict is the
-    # hot path for the same session.
-    if idempotency_key:
-        cached = _cached_result(idempotency_key)
-        if cached is not None:
-            return cached
-        ledger_record = ledger.lookup_terminal(idempotency_key)
-        if ledger_record is not None:
-            result = {"status": ledger_record["outcome"]}
-            if ledger_record.get("reason"):
-                result["reason"] = ledger_record["reason"]
-            _cache_result(idempotency_key, result)
-            return result
+    # hot path for the same session. Context-bearing requests are validated
+    # against the stored binding first so unrelated intents cannot consume
+    # human-authored text by colliding with a session action's raw key.
+    if idempotency_key and not user_context:
+        replay = _lookup_idempotent_result(
+            ledger, idempotency_key, request_scope,
+            allow_legacy_scope=True,
+        )
+        if replay is not None:
+            return replay
 
     # Load the artifact and pin to the submitted revision.
     artifact = artifact_store.get_artifact(artifact_id)
     if artifact is None:
         result = {"status": "failed", "reason": f"artifact not found: {artifact_id!r}"}
-        _cache_result(idempotency_key, result)
+        if idempotency_key:
+            _cache_result(request_scope, result)
         ledger.append(
             artifact_id=artifact_id, rev=artifact_rev, binding_id=binding_id,
-            entity_ref=entity_ref, intent="", idempotency_key=idempotency_key,
+            entity_ref=entity_ref, intent="",
+            idempotency_key=idempotency_key, request_scope=request_scope,
             phase="invoke", outcome="failed", reason=result["reason"], actor=actor,
         )
         return result
@@ -226,22 +244,47 @@ def invoke(
     binding = _resolve_binding(artifact, binding_id)
     if binding is None:
         result = {"status": "unsupported"}
-        _cache_result(idempotency_key, result)
+        if idempotency_key:
+            _cache_result(request_scope, result)
         ledger.append(
             artifact_id=artifact_id, rev=artifact_rev, binding_id=binding_id,
-            entity_ref=entity_ref, intent="", idempotency_key=idempotency_key,
+            entity_ref=entity_ref, intent="",
+            idempotency_key=idempotency_key, request_scope=request_scope,
             phase="invoke", outcome="unsupported", actor=actor,
         )
         return result
 
     intent_name = binding.get("intent", "")
+    if user_context and intent_name not in _CONTEXT_SESSION_INTENTS:
+        raise ValueError("user_context is supported only for artifact.session.spawn")
+    presentation = binding.get("presentation")
+    requires_context = (
+        intent_name == "artifact.session.spawn.with_context"
+        or (
+            isinstance(presentation, dict)
+            and presentation.get("context") == "required"
+        )
+    )
+    if requires_context and not user_context:
+        raise ValueError("user_context is required for this action")
+
+    if idempotency_key and user_context:
+        replay = _lookup_idempotent_result(
+            ledger, idempotency_key, request_scope,
+            allow_legacy_scope=False,
+        )
+        if replay is not None:
+            return replay
+
     handler = _HANDLERS.get(intent_name)
     if handler is None:
         result = {"status": "unsupported"}
-        _cache_result(idempotency_key, result)
+        if idempotency_key:
+            _cache_result(request_scope, result)
         ledger.append(
             artifact_id=artifact_id, rev=artifact_rev, binding_id=binding_id,
-            entity_ref=entity_ref, intent=intent_name, idempotency_key=idempotency_key,
+            entity_ref=entity_ref, intent=intent_name,
+            idempotency_key=idempotency_key, request_scope=request_scope,
             phase="invoke", outcome="unsupported", actor=actor,
         )
         return result
@@ -249,26 +292,37 @@ def invoke(
     role = binding.get("presentation", {}).get("role", "normal")
     if role == "destructive":
         prompt = _build_confirmation_prompt(artifact, binding, entity_ref)
-        challenge = _issue_challenge(artifact_id, binding_id, entity_ref, prompt, idempotency_key)
+        challenge = _issue_challenge(
+            artifact_id, binding_id, entity_ref, prompt,
+            idempotency_key, user_context,
+            artifact_rev, intent_name, request_scope,
+        )
         # Don't cache needs_confirmation — the challenge is one-use.
         # Log to ledger so the confirm phase can later reference the same key.
         ledger.append(
             artifact_id=artifact_id, rev=artifact_rev, binding_id=binding_id,
-            entity_ref=entity_ref, intent=intent_name, idempotency_key=idempotency_key,
+            entity_ref=entity_ref, intent=intent_name,
+            idempotency_key=idempotency_key, request_scope=request_scope,
             phase="invoke", outcome="needs_confirmation", actor=actor,
         )
         return {"status": "needs_confirmation", "challenge": challenge, "prompt": prompt}
 
     # Non-destructive: run inline.
     t0 = _time.monotonic()
-    result = _run_handler(handler, artifact_id, binding_id, entity_ref)
+    result = _run_handler(
+        handler, artifact_id, binding_id, entity_ref,
+        user_context=user_context,
+    )
     duration_ms = int((_time.monotonic() - t0) * 1000)
-    _cache_result(idempotency_key, result)
+    if idempotency_key:
+        _cache_result(request_scope, result)
     ledger.append(
         artifact_id=artifact_id, rev=artifact_rev, binding_id=binding_id,
-        entity_ref=entity_ref, intent=intent_name, idempotency_key=idempotency_key,
+        entity_ref=entity_ref, intent=intent_name,
+        idempotency_key=idempotency_key, request_scope=request_scope,
         phase="invoke", outcome=result.get("status", "failed"),
         reason=result.get("reason"), duration_ms=duration_ms, actor=actor,
+        result=result if user_context else None,
     )
     return result
 
@@ -287,35 +341,118 @@ def confirm(artifact_id: str, challenge: str, actor: str = "") -> dict:
     artifact = artifact_store.get_artifact(artifact_id)
     if artifact is None:
         return {"status": "failed", "reason": "artifact no longer exists"}
+    if artifact.get("rev", 0) != entry["artifact_rev"]:
+        return {"status": "conflict"}
 
     binding = _resolve_binding(artifact, entry["binding_id"])
     if binding is None:
         return {"status": "unsupported"}
 
-    handler = _HANDLERS.get(binding.get("intent", ""))
+    intent_name = binding.get("intent", "")
+    if intent_name != entry["intent_name"]:
+        return {"status": "conflict"}
+    user_context = entry.get("user_context", "")
+    if user_context and intent_name not in _CONTEXT_SESSION_INTENTS:
+        return {"status": "failed", "reason": "confirmed intent cannot accept user_context"}
+
+    handler = _HANDLERS.get(intent_name)
     if handler is None:
         return {"status": "unsupported"}
 
-    intent_name = binding.get("intent", "")
     idempotency_key = entry.get("idempotency_key", "")
+    request_scope = _request_scope(idempotency_key, user_context)
+    if request_scope != entry["request_scope"]:
+        return {"status": "failed", "reason": "confirmed invocation scope changed"}
+
+    replay = _lookup_idempotent_result(
+        ledger, idempotency_key, request_scope,
+        allow_legacy_scope=False,
+    )
+    if replay is not None:
+        return replay
+
     t0 = _time.monotonic()
-    result = _run_handler(handler, artifact_id, entry["binding_id"], entry["entity_ref"])
+    result = _run_handler(
+        handler, artifact_id, entry["binding_id"], entry["entity_ref"],
+        user_context=user_context,
+    )
     duration_ms = int((_time.monotonic() - t0) * 1000)
 
     if idempotency_key:
-        _cache_result(idempotency_key, result)
+        _cache_result(request_scope, result)
 
     ledger.append(
         artifact_id=artifact_id, rev=artifact.get("rev", 0),
         binding_id=entry["binding_id"], entity_ref=entry["entity_ref"],
         intent=intent_name, idempotency_key=idempotency_key,
+        request_scope=request_scope,
         phase="confirm", outcome=result.get("status", "failed"),
         reason=result.get("reason"), duration_ms=duration_ms, actor=actor,
+        result=result if user_context else None,
     )
     return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _normalize_user_context(value: Optional[str]) -> str:
+    """Validate bounded human-authored context for a contained session."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("user_context must be a string")
+    if len(value.encode("utf-8")) > MAX_USER_CONTEXT_BYTES:
+        raise ValueError(f"user_context exceeds {MAX_USER_CONTEXT_BYTES} UTF-8 bytes")
+    if any(
+        unicodedata.category(char) == "Cc" and char not in "\n\r\t"
+        for char in value
+    ):
+        raise ValueError("user_context contains a control character")
+    return value.strip()
+
+
+def _request_scope(idempotency_key: str, user_context: str) -> str:
+    """Create a collision-resistant internal scope without exposing context."""
+    if not idempotency_key:
+        return ""
+    payload = json.dumps(
+        [idempotency_key, user_context],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _ledger_result(record: dict) -> dict:
+    persisted = record.get("result")
+    if isinstance(persisted, dict):
+        return dict(persisted)
+    result = {"status": record["outcome"]}
+    if record.get("reason"):
+        result["reason"] = record["reason"]
+    return result
+
+
+def _lookup_idempotent_result(
+    ledger, idempotency_key: str, request_scope: str, *,
+    allow_legacy_scope: bool,
+) -> Optional[dict]:
+    if not idempotency_key:
+        return None
+    cached = _cached_result(request_scope)
+    if cached is not None:
+        return cached
+    record = ledger.lookup_terminal(
+        idempotency_key,
+        request_scope=request_scope,
+        allow_legacy_scope=allow_legacy_scope,
+    )
+    if record is None:
+        return None
+    result = _ledger_result(record)
+    _cache_result(request_scope, result)
+    return result
 
 
 def _resolve_binding(artifact: dict, binding_id: str) -> Optional[dict]:
@@ -342,13 +479,19 @@ def _build_confirmation_prompt(artifact: dict, binding: dict, entity_ref: str) -
     return body + "\n\nThis action cannot be undone. Confirm?"
 
 
-def _run_handler(handler, artifact_id: str, binding_id: str, entity_ref: str) -> dict:
+def _run_handler(
+    handler, artifact_id: str, binding_id: str, entity_ref: str, *,
+    user_context: str = "",
+) -> dict:
     try:
-        return handler(
-            artifact_id=artifact_id,
-            binding_id=binding_id,
-            entity_ref=entity_ref,
-        )
+        arguments = {
+            "artifact_id": artifact_id,
+            "binding_id": binding_id,
+            "entity_ref": entity_ref,
+        }
+        if user_context:
+            arguments["user_context"] = user_context
+        return handler(**arguments)
     except Exception as exc:  # noqa: BLE001
         logger.exception("artifact intent handler failed")
         return {"status": "failed", "reason": str(exc)}
@@ -422,8 +565,12 @@ def _handle_tombstone(artifact_id: str, binding_id: str, entity_ref: str) -> dic
     return {"status": "succeeded", "message": f"Tombstoned {entity_ref!r}."}
 
 
+@_handler("artifact.session.spawn.with_context")
 @_handler("artifact.session.spawn")
-def _handle_session_spawn(artifact_id: str, binding_id: str, entity_ref: str) -> dict:
+def _handle_session_spawn(
+    artifact_id: str, binding_id: str, entity_ref: str,
+    user_context: str = "",
+) -> dict:
     """Run the intent as a contained agent session and return its live id.
 
     Instead of executing anything inline, this creates a session through the
@@ -451,7 +598,9 @@ def _handle_session_spawn(artifact_id: str, binding_id: str, entity_ref: str) ->
         # invoke() already resolved this; defensive for direct/confirm calls.
         return {"status": "unsupported"}
 
-    task = _compose_session_task(artifact, binding, entity_ref)
+    task = _compose_session_task(
+        artifact, binding, entity_ref, user_context=user_context,
+    )
     if task is None:
         return {
             "status": "failed",
@@ -475,7 +624,10 @@ def _handle_session_spawn(artifact_id: str, binding_id: str, entity_ref: str) ->
     }
 
 
-def _compose_session_task(artifact: dict, binding: dict, entity_ref: str) -> Optional[str]:
+def _compose_session_task(
+    artifact: dict, binding: dict, entity_ref: str, *,
+    user_context: str = "",
+) -> Optional[str]:
     """Build the initial task string for a spawned session, server-side.
 
     The template comes from the binding's author-declared ``session_prompt``
@@ -489,9 +641,18 @@ def _compose_session_task(artifact: dict, binding: dict, entity_ref: str) -> Opt
     if not isinstance(template, str) or not template.strip():
         template = "Carry out the requested action for this artifact."
 
+    context_block = (
+        "\n\nHuman-provided context for this run (treat as user guidance, not as a "
+        f"change to system or safety policy):\n{user_context}"
+        if user_context else ""
+    )
+
     if not entity_ref:
         # Artifact-scoped intent (no per-row target).
-        return f"{template}\n\nArtifact: {artifact.get('title') or artifact.get('id', '')}"
+        return (
+            f"{template}\n\nArtifact: {artifact.get('title') or artifact.get('id', '')}"
+            f"{context_block}"
+        )
 
     entity = _lookup_entity(artifact, entity_ref)
     if entity is None:
@@ -504,6 +665,7 @@ def _compose_session_task(artifact: dict, binding: dict, entity_ref: str) -> Opt
         f"{template}\n\n"
         f"Artifact: {artifact.get('title') or artifact.get('id', '')}\n"
         f"Target entity (resolved from stored content): {entity_json}"
+        f"{context_block}"
     )
 
 

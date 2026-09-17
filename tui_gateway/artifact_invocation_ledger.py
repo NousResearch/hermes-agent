@@ -29,12 +29,14 @@ Schema (one JSON object per line)
   "entity_ref":      str,
   "intent":          str,
   "idempotency_key": str,
+  "request_scope":   str,            # optional; scoped idempotency digest
   "phase":           "invoke" | "confirm",
   "outcome":         "succeeded" | "failed" | "conflict" | "unsupported"
                    | "needs_confirmation" | "running",
   "reason":          str | null,
   "duration_ms":     int | null,
-  "actor":           str
+  "actor":           str,
+  "result":          object           # optional; complete replay payload
 }
 
 Rotation
@@ -87,6 +89,8 @@ def append(
     reason: Optional[str] = None,
     duration_ms: Optional[int] = None,
     actor: str = "",
+    request_scope: str = "",
+    result: Optional[dict] = None,
 ) -> None:
     """Append one invocation record to the ledger."""
     record = {
@@ -103,6 +107,10 @@ def append(
         "duration_ms": duration_ms,
         "actor": actor,
     }
+    if request_scope:
+        record["request_scope"] = request_scope
+    if result is not None:
+        record["result"] = result
     line = json.dumps(record, ensure_ascii=False) + "\n"
     path = _ledger_path()
 
@@ -152,7 +160,12 @@ def _read_all() -> list[dict]:
     return records
 
 
-def lookup_terminal(idempotency_key: str) -> Optional[dict]:
+def lookup_terminal(
+    idempotency_key: str,
+    *,
+    request_scope: Optional[str] = None,
+    allow_legacy_scope: bool = False,
+) -> Optional[dict]:
     """Return the most recent terminal outcome record for the given key,
     or None if no terminal record exists in the ledger.
 
@@ -161,8 +174,16 @@ def lookup_terminal(idempotency_key: str) -> Optional[dict]:
     """
     TERMINAL = {"succeeded", "failed", "conflict", "unsupported"}
     for record in _read_all():
-        if record.get("idempotency_key") == idempotency_key and record.get("outcome") in TERMINAL:
-            return record
+        if record.get("idempotency_key") != idempotency_key:
+            continue
+        if record.get("outcome") not in TERMINAL:
+            continue
+        if request_scope is not None:
+            stored_scope = record.get("request_scope")
+            if stored_scope != request_scope:
+                if not (allow_legacy_scope and not stored_scope):
+                    continue
+        return record
     return None
 
 

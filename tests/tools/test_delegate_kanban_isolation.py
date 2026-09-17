@@ -174,6 +174,32 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
 
 
+def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
+    monkeypatch,
+    tmp_path,
+):
+    """An inherited child marker fences both bridge writes instead of faking success."""
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools
+
+    conn = kbc.connect()
+    try:
+        task_before = kb.get_task(conn, tid)
+        events_before = kb.list_events(conn, tid)
+        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+
+        assert kanban_tools.heartbeat_current_worker_from_env() is False
+
+        task_after = kb.get_task(conn, tid)
+        assert task_after.claim_expires == task_before.claim_expires
+        assert task_after.last_heartbeat_at == task_before.last_heartbeat_at
+        assert kb.list_events(conn, tid) == events_before
+    finally:
+        conn.close()
+
+
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     monkeypatch,
     tmp_path,

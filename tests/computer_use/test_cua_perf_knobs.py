@@ -72,7 +72,7 @@ def fixture_spans_ax_only(task_id="t-ax"):
         _span(task_id, "admission", 1225, 1230, "tc-1"),
         _span(task_id, "backend_resolve", 1230, 1260, "tc-1", backend="cua"),
         _span(task_id, "dispatch_lock_wait", 1260, 1275, "tc-1"),
-        _span(task_id, "backend_call", 1275, 1575, "tc-1", capture_mode="ax"),
+        _span(task_id, "capture", 1275, 1575, "tc-1", capture_mode="ax"),
         _span(task_id, "element_processing", 1575, 1725, "tc-1"),
         _span(task_id, "response_shape", 1725, 1735, "tc-1"),
         _span(task_id, "model", 1760, 2960),
@@ -89,7 +89,7 @@ def fixture_spans_som(task_id="t-som"):
         _span(task_id, "admission", 1520, 1526, "tc-1"),
         _span(task_id, "backend_resolve", 1526, 1540, "tc-1", backend="cua"),
         _span(task_id, "backend_start", 1540, 1600, "tc-1"),
-        _span(task_id, "backend_call", 1600, 2100, "tc-1", capture_mode="som"),
+        _span(task_id, "capture", 1600, 2100, "tc-1", capture_mode="som"),
         _span(task_id, "capture_persist", 2100, 2130, "tc-1"),
         _span(task_id, "element_processing", 2130, 2580, "tc-1"),
         _span(task_id, "response_shape", 2580, 2590, "tc-1"),
@@ -117,7 +117,7 @@ def fixture_spans_aux_vision(task_id="t-aux"):
     return [
         _span(task_id, "model", 0, 900),
         _span(task_id, "admission", 920, 925, "tc-1"),
-        _span(task_id, "backend_call", 925, 1425, "tc-1", capture_mode="vision"),
+        _span(task_id, "capture", 925, 1425, "tc-1", capture_mode="vision"),
         _span(task_id, "aux_vision", 1425, 2925, "tc-1"),
         _span(task_id, "element_processing", 2925, 2975, "tc-1"),
         _span(task_id, "response_shape", 2975, 2980, "tc-1"),
@@ -129,13 +129,13 @@ def fixture_spans_capture_after(task_id="t-capafter"):
     return [
         _span(task_id, "model", 0, 1100),
         _span(task_id, "admission", 1120, 1125, "tc-1"),
-        _span(task_id, "backend_call", 1125, 1625, "tc-1", capture_mode="som"),
+        _span(task_id, "capture", 1125, 1625, "tc-1", capture_mode="som"),
         _span(task_id, "element_processing", 1625, 1725, "tc-1"),
         _span(task_id, "response_shape", 1725, 1730, "tc-1"),
         _span(task_id, "model", 1750, 2850),
         _span(task_id, "admission", 2850, 2855, "tc-2"),
         _span(task_id, "input", 2855, 2905, "tc-2", action="type"),
-        _span(task_id, "backend_call", 2905, 3405, "tc-2", capture_mode="som", capture_after="true"),
+        _span(task_id, "capture", 2905, 3405, "tc-2", capture_mode="som", capture_after="true"),
         _span(task_id, "response_shape", 3405, 3410, "tc-2"),
     ]
 
@@ -160,7 +160,7 @@ def test_critical_path_reconstructs_serial_phases_in_order():
     phases = [s.phase for s in report.segments if s.kind == "phase"]
     assert phases == [
         "model", "admission", "backend_resolve", "dispatch_lock_wait",
-        "backend_call", "element_processing", "response_shape",
+        "capture", "element_processing", "response_shape",
         "model", "admission", "input", "response_shape",
     ]
     assert report.e2e_ms == 3020

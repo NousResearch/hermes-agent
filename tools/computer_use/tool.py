@@ -25,6 +25,7 @@ from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseB
 from tools.computer_use.execution_revision import (
     CAPTURE_DEPS, INPUT_DEPS, ExecutionRevision, ExecutionState, target_mismatch,
 )
+from tools.computer_use.phase_spans import note_invalidation, phase, record_call, set_dimension
 
 logger = logging.getLogger(__name__)
 
@@ -247,12 +248,16 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
+                set_dimension("backend_cache_hit", False)
                 backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
+                with phase("backend_start"):
+                    backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
             if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                set_dimension("backend_cache_hit", True)
                 return cached
             # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
+            set_dimension("backend_rebound", True)
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
@@ -331,24 +336,39 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    # Phase 0A spans (#112734 §C): the ambient recorder is a no-op unless relay
+    # instrumentation is enabled, so the timed path below is behavior-neutral when off.
+    with record_call(action, session_id=session_id, task_id=str(kwargs.get("task_id") or "")) as rec:
+        with rec.phase("total"):
+            return _handle_computer_use(args, kwargs, action, session_id)
+
+
+def _handle_computer_use(args: Dict[str, Any], kwargs: Dict[str, Any], action: str, session_id: str) -> Any:
     if (err := _reject_unsafe(action, args)) is not None:
         return err
-    scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
-        ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
-    for scope in scopes:
-        if (err := _request_approval(scope, args)) is not None:
-            return err
-    try:
-        backend = _get_backend(session_id=session_id)
-    except Exception as e:
-        return json.dumps({"error": f"computer_use backend unavailable: {e}",
-                           "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
-                                   "If a Python dependency is missing, the error above shows the exact install command."})
+    with phase("approval_wait"):
+        scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
+            ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
+        for scope in scopes:
+            if (err := _request_approval(scope, args)) is not None:
+                return err
+    with phase("backend_resolve"):
+        try:
+            backend = _get_backend(session_id=session_id)
+        except Exception as e:
+            return json.dumps({"error": f"computer_use backend unavailable: {e}",
+                               "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                                       "If a Python dependency is missing, the error above shows the exact install command."})
     try:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
-        with call_lock:
+        # Time only the lock wait, not the dispatch under it: acquire first, then run.
+        with phase("dispatch_lock_wait"):
+            call_lock.acquire()
+        try:
             return _dispatch(backend, action, args, session_id=session_id or None)
+        finally:
+            call_lock.release()
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -414,12 +434,19 @@ def _guarded_capture(backend, session_id: Optional[str], **capture_kwargs) -> An
     """Capture fence (#112734 §B: publication is a commit boundary): admit the revision the operation relies on,
     capture, then validate BEFORE the result reaches any sink (persist/spill/aux-vision/model). A stale revision
     fails closed instead of publishing a frame its assumptions no longer authorize."""
-    state, rev = _execution_state(session_id), _admit_revision(session_id, backend)
-    cap = backend.capture(**capture_kwargs)
-    if not (verdict := state.validate(rev, CAPTURE_DEPS)).ok:
-        return json.dumps({"ok": False, "action": "capture", "code": "revision_invalidated",
-                           "invalidation_reason": verdict.reason,
-                           "error": f"capture discarded: {verdict.describe()} — re-capture and retry."})
+    state, rev = None, None
+    with phase("admission"):
+        state, rev = _execution_state(session_id), _admit_revision(session_id, backend)
+    with phase("capture"):
+        set_dimension("capture_mode", capture_kwargs.get("mode", "som"))
+        cap = backend.capture(**capture_kwargs)
+    with phase("validate"):
+        verdict = state.validate(rev, CAPTURE_DEPS)
+        if not verdict.ok:
+            note_invalidation(verdict.reason)
+            return json.dumps({"ok": False, "action": "capture", "code": "revision_invalidated",
+                               "invalidation_reason": verdict.reason,
+                               "error": f"capture discarded: {verdict.describe()} — re-capture and retry."})
     return _capture_response(cap, session_id=session_id)
 
 def _do_capture(backend, action, args, session_id=None, **_):
@@ -487,11 +514,15 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
     # reporting ok:true. The admitted revision also carries the backend generation, so an input admitted before
     # a rebind fails closed instead of landing on the new backend's target.
     if spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip():
-        rev = _admit_revision(session_id, backend)
-        if not (verdict := _execution_state(session_id).validate(rev, INPUT_DEPS)).ok:
-            return json.dumps({"ok": False, "action": action, "code": "revision_invalidated",
-                               "invalidation_reason": verdict.reason,
-                               "error": f"{action} refused: {verdict.describe()} — re-capture and retry."})
+        with phase("admission"):
+            rev = _admit_revision(session_id, backend)
+        with phase("validate"):
+            verdict = _execution_state(session_id).validate(rev, INPUT_DEPS)
+            if not verdict.ok:
+                note_invalidation(verdict.reason)
+                return json.dumps({"ok": False, "action": action, "code": "revision_invalidated",
+                                   "invalidation_reason": verdict.reason,
+                                   "error": f"{action} refused: {verdict.describe()} — re-capture and retry."})
         if (mismatch := target_mismatch(rev.app, requested_app)) is not None:
             return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
                 f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
@@ -499,8 +530,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
                 f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
-    res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
-                       bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
+    with phase("input") if spec.input else contextlib.nullcontext():
+        res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
+                           bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
     return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")),
                                                                          session_id=session_id)
 
@@ -607,10 +639,12 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
+    with phase("capture_persist"):
+        elements_file = _spill_elements_to_file(cap) if lost_detail else None
+        screenshot_path = _persist_capture_image(cap) if has_image else None
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
-                           elements_file=_spill_elements_to_file(cap) if lost_detail else None,
-                           screenshot_path=_persist_capture_image(cap) if has_image else None,
+                           elements_file=elements_file, screenshot_path=screenshot_path,
                            dims_omitted=dims if too_small else None, has_image=has_image)
 
 def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
@@ -713,8 +747,18 @@ def get_shadow_state_metrics(session_id: Optional[str] = None) -> Dict[str, Any]
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
-    v = _capture_view(cap, max_elements)
-    _shadow_state_observe(cap, session_id)  # Phase 1A shadow measurement only; the response below is untouched
+    with phase("element_processing"):
+        v = _capture_view(cap, max_elements)
+        set_dimension("element_count", v.total)
+        set_dimension("capture_bytes", getattr(cap, "png_bytes_len", None))
+        # Phase 1A shadow measurement only; timed here because it is element work.
+        _shadow_state_observe(cap, session_id)
+    with phase("response_shape"):
+        return _capture_response_shaped(v, cap, session_id=session_id)
+
+
+def _capture_response_shaped(v: SimpleNamespace, cap: CaptureResult,
+                             session_id: Optional[str] = None) -> Any:
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(
@@ -741,9 +785,11 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # the multimodal envelope (main model handles vision natively). Issue #24015: previously the
         # multimodal envelope was returned unconditionally, so non-vision main models tripped HTTP 404 / 400
         # at the provider boundary even when auxiliary.vision was explicitly configured to handle this.
-        routed = _route_capture_through_aux_vision(
-            cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
-            elements_file=v.elements_file, screenshot_path=v.screenshot_path)
+        with phase("aux_vision"):
+            routed = _route_capture_through_aux_vision(
+                cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
+                elements_file=v.elements_file, screenshot_path=v.screenshot_path)
+            set_dimension("aux_vision_used", routed is not None)
         if routed is not None:
             return routed
         # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could

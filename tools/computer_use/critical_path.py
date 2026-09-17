@@ -1,11 +1,12 @@
 """Local critical-path reconstruction for computer_use latency (RFC #112639, P0 slice).
 
-This is the *analysis* half of the P0 instrumentation. The phase-span *recording* half lives
-elsewhere (PR #112778, ``tools/computer_use/runtime_metrics.py``): this module consumes phase
-spans keyed by the existing observer/request/tool correlation IDs (``session_id`` /
-``task_id`` / ``tool_call_id``, as carried by the ``pre_tool_call`` / ``post_tool_call`` and
-``pre_api_request`` / ``post_api_request`` lifecycle hooks) and reconstructs per-task critical
-paths locally, with no Relay round trip.
+This is the *analysis* half of the P0 instrumentation. The in-process phase-span
+*recording* half is ``phase_spans.py`` (PR #112778's ``runtime_metrics.py`` is the
+relay-forwarding counterpart): this module consumes phase spans keyed by the existing
+observer/request/tool correlation IDs (``session_id`` / ``task_id`` / ``tool_call_id``,
+as carried by the ``pre_tool_call`` / ``post_tool_call`` and ``pre_api_request`` /
+``post_api_request`` lifecycle hooks) and reconstructs per-task critical paths locally,
+with no Relay round trip.
 
 Behavior-neutral by construction: nothing here touches the tool's execution path, records new
 spans, or changes any schema. It only reads span lists and reports where the wall clock went.
@@ -16,13 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
-# Phase vocabulary shared with the recording half
-# (``shared_metrics_contract.COMPUTER_USE_PHASES`` in #112778). "model" is the whole model
-# turn as seen by the existing pre/post_api_request hooks; queue/ttft/decode arrive later.
+# Phase vocabulary from #112734 §C, shared with the recording half
+# (``phase_spans.PHASES``). "model" is the whole model turn as seen by the
+# existing pre/post_api_request hooks; queue/ttft/decode arrive later.
 PHASES = (
-    "model", "admission", "approval_wait", "backend_resolve", "backend_start",
-    "dispatch_lock_wait", "input", "capture", "backend_call", "backend_rebind",
-    "capture_persist", "element_processing", "aux_vision", "response_shape", "total",
+    "total", "admission", "approval_wait", "screen_start", "backend_resolve",
+    "backend_start", "backend_rebind", "dispatch_lock_wait", "capture", "input",
+    "validate", "capture_persist", "element_processing", "aux_vision",
+    "response_shape", "model",
 )
 
 # Phases that burn wall clock without doing work: the report calls these out as avoidable.

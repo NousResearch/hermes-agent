@@ -254,6 +254,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { installChatGptSession } from './install-chatgpt-session'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
@@ -18446,6 +18447,7 @@ app.whenReady().then(() => {
   }
 
   installMediaPermissions()
+  installChatGptSession()
   installDownloadHandling()
   registerMediaProtocol()
   installEmbedReferer()

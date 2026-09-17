@@ -90,10 +90,17 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { ChatGptWorkspace } from '../chatgpt-workspace/chatgpt-workspace'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
-import { $workspaceIsPage } from '../routes'
+import {
+  $workspaceIsPage,
+  type RouteContribution,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution
+} from '../routes'
 
 import { DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
@@ -259,6 +266,20 @@ registry.registerMany([
 // ---------------------------------------------------------------------------
 
 registry.registerMany([
+  {
+    id: 'chatgpt-workspace.page',
+    area: ROUTES_AREA,
+    source: 'core',
+    data: { path: '/chatgpt' } satisfies RouteContribution,
+    render: () => <ChatGptWorkspace />
+  },
+  {
+    id: 'chatgpt-workspace.nav',
+    area: SIDEBAR_NAV_AREA,
+    source: 'core',
+    order: -100,
+    data: { codicon: 'comment-discussion', label: 'ChatGPT', path: '/chatgpt' } satisfies SidebarNavContribution
+  },
   // Titlebar center stays empty on purpose: session title lives in tabs +
   // sidebar; place/cwd lives in the sidebar project tree. Center is drag
   // chrome (plugins can still contribute to titleBar.center if needed).

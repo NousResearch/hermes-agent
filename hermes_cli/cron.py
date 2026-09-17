@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -98,6 +99,31 @@ def _format_lateness(seconds: float) -> str:
     days, hours = divmod(hours, 24)
     parts = [(days, "d"), (hours, "h"), (minutes if not days else 0, "m")]
     return " ".join(f"{n}{unit}" for n, unit in parts if n) or "0m"
+
+
+def _next_run_display(next_run_at: Any) -> str:
+    """Render a job's ``next_run_at`` timestamp, flagging it OVERDUE when it's already past.
+
+    A stalled ticker (dead thread, gateway process down, every tick failing) stops advancing
+    ``next_run_at`` once it's due, so the field silently freezes on a past timestamp forever.
+    `cron list`/`cron status` used to print that stale value with no indication it's overdue,
+    looking identical to a healthy future-scheduled job — this is the only signal a user reading
+    just the "Next run" line gets that something needs attention. See #114309.
+    """
+    text = str(next_run_at or "").strip()
+    if not text or text == "?":
+        return text or "?"
+    try:
+        from hermes_time import now as _hermes_now
+        next_dt = datetime.fromisoformat(text)
+        if next_dt.tzinfo is None:
+            next_dt = next_dt.replace(tzinfo=_hermes_now().tzinfo)
+        overdue_by = (_hermes_now() - next_dt).total_seconds()
+    except (ValueError, TypeError):
+        return text
+    if overdue_by <= 0:
+        return text
+    return text + color(f"  ⚠ OVERDUE by {_format_lateness(overdue_by)}", Colors.YELLOW)
 
 
 def _dispatch_display(dispatch: dict) -> Optional[str]:
@@ -211,7 +237,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
-        ("Next run", job.get("next_run_at", "?")),
+        ("Next run", _next_run_display(job.get("next_run_at", "?"))),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
 
@@ -462,7 +488,7 @@ def _print_active_jobs_summary(jobs) -> None:
     next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        print(f"  Next run: {min(next_runs)}")
+        print(f"  Next run: {_next_run_display(min(next_runs))}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
     late = [j for j in jobs if isinstance(j.get("last_dispatch"), dict)
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]

@@ -417,37 +417,24 @@ def update_task(
     if not fields:
         raise HTTPException(status_code=400, detail="at least one field is required")
     with _connection(board) as conn:
-        task = _require_task(conn, task_id)
-        scalar_fields = [f for f in ("title", "body", "priority") if f in fields]
-        # Reject title/body edits on a finished card up front, before writing
-        # anything (including a possible assignee change), so the request
-        # doesn't partially apply.
-        if task.status in {"done", "archived"} and (
-            "title" in scalar_fields or "body" in scalar_fields
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=f"cannot edit the title/body of a {task.status} task",
+        _require_task(conn, task_id)
+        # One storage-layer transaction for the whole patch: a transition landing
+        # mid-request rolls back every field, so a 409 never leaves the assignee
+        # applied (and announced) while the title/body edit was refused.
+        try:
+            applied = kanban_db.update_task_fields(
+                conn,
+                task_id,
+                fields=[f for f in ("assignee", "title", "body", "priority") if f in fields],
+                assignee=payload.assignee or None,
+                title=payload.title,
+                body=payload.body,
+                priority=payload.priority,
             )
-        if "assignee" in fields:
-            try:
-                if not kanban_db.assign_task(conn, task_id, payload.assignee or None):
-                    raise HTTPException(status_code=404, detail="task not found")
-            except RuntimeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        if scalar_fields:
-            try:
-                kanban_db.edit_task_fields(
-                    conn,
-                    task_id,
-                    fields=scalar_fields,
-                    title=payload.title,
-                    body=payload.body,
-                    priority=payload.priority,
-                )
-            except RuntimeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not applied:
+            raise HTTPException(status_code=404, detail="task not found")
         return _task_response(conn, task_id)
 
 

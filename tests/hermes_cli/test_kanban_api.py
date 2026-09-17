@@ -325,6 +325,33 @@ def test_patch_rejects_edits_to_archived_task(client: TestClient) -> None:
     assert rejected.status_code == 409, rejected.text
 
 
+def test_patch_mixing_assignee_and_edit_is_all_or_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal transition landing between the assignee write and the title guard
+    must roll the assignee back too — never 409 with the reassignment persisted."""
+    task_id = _create(client, idempotency_key="atomic-patch")["task"]["id"]
+    real_append = kanban_db._append_event
+
+    def racing_append(conn, tid, kind, payload=None, **kwargs):
+        real_append(conn, tid, kind, payload, **kwargs)
+        if kind == "assigned":  # another actor completes the task right here
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (tid,))
+
+    monkeypatch.setattr(kanban_db, "_append_event", racing_append)
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"assignee": "worker-two", "title": "renamed mid-flight"},
+    )
+    assert rejected.status_code == 409, rejected.text
+
+    monkeypatch.setattr(kanban_db, "_append_event", real_append)
+    task = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"]
+    assert task["assignee"] is None
+    assert task["title"] == "External operation"
+    assert task["status"] != "done"
+
+
 def test_events_and_runs_limit_returns_most_recent_in_order(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="limit-key")["task"]["id"]
 

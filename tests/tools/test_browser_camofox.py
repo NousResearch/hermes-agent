@@ -3,6 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+import requests
+
 
 from tools.browser_camofox import (
     camofox_back,
@@ -362,3 +365,102 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
+
+
+# ---------------------------------------------------------------------------
+# HTTP error detail — camofox's own explanation must survive raise_for_status()
+# ---------------------------------------------------------------------------
+
+
+def _failing_response(status=500, json_data=None, text="", url="http://localhost:9377/tabs/t1/evaluate"):
+    """A response whose raise_for_status() fails the way requests' does."""
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    if json_data is None:
+        resp.json.side_effect = ValueError("no json")
+    else:
+        resp.json.return_value = json_data
+    reason = "Internal Server Error" if status >= 500 else "Bad Request"
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        f"{status} Server Error: {reason} for url: {url}", response=resp
+    )
+    return resp
+
+
+class TestErrorDetail:
+    def test_extracts_error_field(self):
+        from tools.browser_camofox import _error_detail
+        resp = _failing_response(json_data={"error": "page.evaluate: return not in function"})
+        assert _error_detail(resp) == "page.evaluate: return not in function"
+
+    def test_appends_structured_code(self):
+        from tools.browser_camofox import _error_detail
+        resp = _failing_response(
+            status=400,
+            json_data={"error": "page.evaluate: return not in function",
+                       "code": "invalid_expression", "retryable": False},
+        )
+        detail = _error_detail(resp)
+        assert "return not in function" in detail
+        assert "code: invalid_expression" in detail
+
+    def test_falls_back_to_text_when_not_json(self):
+        from tools.browser_camofox import _error_detail
+        resp = _failing_response(text="<html><body>502 Bad Gateway</body></html>")
+        assert "502 Bad Gateway" in _error_detail(resp)
+
+    def test_collapses_whitespace(self):
+        from tools.browser_camofox import _error_detail
+        resp = _failing_response(json_data={"error": "line one\n  line two\t\tline three"})
+        assert _error_detail(resp) == "line one line two line three"
+
+    def test_caps_long_bodies(self):
+        from tools.browser_camofox import _error_detail, _MAX_ERROR_DETAIL_CHARS
+        resp = _failing_response(text="x" * 10_000)
+        detail = _error_detail(resp)
+        assert len(detail) == _MAX_ERROR_DETAIL_CHARS + 3
+        assert detail.endswith("...")
+
+    def test_empty_body_yields_empty_detail(self):
+        from tools.browser_camofox import _error_detail
+        assert _error_detail(_failing_response(text="")) == ""
+
+
+class TestRequestSurfacesServerError:
+    @patch("tools.browser_camofox.requests.post")
+    def test_server_message_reaches_the_caller(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from tools.browser_camofox import _post
+        mock_post.return_value = _failing_response(
+            json_data={"error": "page.evaluate: return not in function"}
+        )
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            _post("/tabs/t1/evaluate", {"userId": "u", "expression": "return document.title"})
+
+        message = str(excinfo.value)
+        assert "return not in function" in message
+        # the original status line is kept so existing status-code checks still match
+        assert "500" in message
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_status_line_preserved_when_body_is_empty(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from tools.browser_camofox import _post
+        mock_post.return_value = _failing_response(text="")
+
+        with pytest.raises(requests.HTTPError) as excinfo:
+            _post("/tabs/t1/evaluate", {"userId": "u", "expression": "document.title"})
+
+        assert "500 Server Error" in str(excinfo.value)
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_successful_response_is_untouched(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from tools.browser_camofox import _post
+        mock_post.return_value = _mock_response(json_data={"ok": True, "result": "Example Domain"})
+
+        assert _post("/tabs/t1/evaluate", {"userId": "u", "expression": "document.title"}) == {
+            "ok": True, "result": "Example Domain"
+        }

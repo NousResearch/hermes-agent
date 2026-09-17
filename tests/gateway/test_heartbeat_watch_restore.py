@@ -10,7 +10,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionStore, SessionSource
 from hermes_cli import goals
-from hermes_cli.heartbeat import HeartbeatManager
+from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
 from hermes_state import SessionDB
 
 
@@ -81,8 +81,9 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, monkeypatch):
-    """Idle case: no ``heartbeat:*`` key in any served profile → the restore poll must not
-    sweep the routing index (each swept origin re-parses that profile's config/secrets)."""
+    """Idle case: no ACTIVE ``heartbeat:*`` row in any served profile → the restore poll must not
+    sweep the routing index (each swept origin re-parses that profile's config/secrets). An active
+    row, or a store the probe cannot read, brings the sweep back."""
     from gateway.run_heartbeat_restore import restore_heartbeat_watches
 
     home = tmp_path / '.hermes'
@@ -111,6 +112,25 @@ async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, mo
         await restore_heartbeat_watches(runner)
         assert sweeps == []
         assert runner._heartbeat_watch == {}
+
+        # A cleared heartbeat keeps its row (status=cleared): still nothing to restore.
+        dbs[str(named)].set_meta('heartbeat:old', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == []
+
+        # An ACTIVE row in the secondary store opens the gate.
+        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+            prompt='p', interval_seconds=60, status='active').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1]
+
+        # Fail OPEN: a store the probe cannot open must not suppress the sweep.
+        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+        monkeypatch.setattr('gateway.run._profile_session_db_probe', lambda _home: None)
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1, 1]
     finally:
         store.close_all_db_handles()
         for db in dbs.values():

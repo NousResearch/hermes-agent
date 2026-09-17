@@ -1312,8 +1312,8 @@ class OneBotAdapter(BasePlatformAdapter):
                 text_parts.append("[语音]")
             elif seg_type == "video":
                 try:
-                    path = await self._download_media(
-                        data.get("url", "") or data.get("file", ""), "video"
+                    path = await self._resolve_video(
+                        data.get("url", "") or "", data.get("file", "")
                     )
                     if path:
                         media_urls.append(path)
@@ -1562,6 +1562,56 @@ class OneBotAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[onebot] inbound file download failed: %s", e)
             return None
+
+    async def _resolve_video(self, url: str, file: str) -> Optional[str]:
+        """把 video 段的 url/file 解析为可读的本地视频文件路径。
+
+        - url 非空: 直接下载（不调 get_video_file）
+        - file=base64:// / file:// / 本地存在的路径: 直接使用或落盘
+        - file 是 hash: 调 OneBot get_video_file API 换取 url/base64/路径
+          再落盘（NapCat 对视频段可能只给 file hash 不给 url）。
+        任一失败返回 None，由调用方降级为 [视频] 占位（不阻塞入站消息）。
+        """
+        if url:
+            return await self._download_media(url, "video")
+        if not file:
+            return None
+        if file.lower().startswith("base64://"):
+            return await self._download_media(file, "video")
+        if file.lower().startswith("file://"):
+            file = file[len("file://"):]
+        p = Path(file)
+        if p.exists():
+            return str(p)
+        # hash → get_video_file 换取真实下载地址（参数名 file/file_id 双发，
+        # 兼容不同 OneBot 实现的命名惯例）
+        try:
+            data = await self._call_action(
+                "get_video_file",
+                {"file": file, "file_id": file},
+                timeout=30.0,
+            )
+        except Exception as e:
+            logger.info("[onebot] get_video_file failed for file=%s: %s", file, e)
+            return None
+        for key in ("url", "file", "base64"):
+            cand = data.get(key)
+            if not cand:
+                continue
+            cand = str(cand)
+            if key == "base64" and not cand.lower().startswith("base64://"):
+                cand = "base64://" + cand
+            if cand.startswith(("http://", "https://", "base64://")):
+                path = await self._download_media(cand, "video")
+                if path:
+                    return path
+                continue
+            if cand.lower().startswith("file://"):
+                cand = cand[len("file://"):]
+            cp = Path(cand)
+            if cp.exists():
+                return str(cp)
+        return None
 
     def _shrink_image(self, path: Path) -> Optional[str]:
         """Downscale an image to ≤ `image_max_size` px on its long edge.

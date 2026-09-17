@@ -156,6 +156,91 @@ def test_cq_parse_record_no_url_falls_back() -> None:
     assert media_types == []
 
 
+def test_video_with_url_direct_download_skips_get_video_file(monkeypatch) -> None:
+    """视频段有 url 时直接下载，不得调用 get_video_file。"""
+    adapter = _make_adapter()
+    calls: list = []
+    fake_path = str(Path(tempfile.gettempdir()) / "hermes_onebot_test_url.mp4")
+
+    async def fake_call_action(action, params, timeout=30.0):
+        calls.append((action, dict(params)))
+        raise AssertionError(f"unexpected OneBot action: {action}")
+
+    async def fake_download_media(url, kind):
+        calls.append(("download", url, kind))
+        assert kind == "video"
+        return fake_path
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    monkeypatch.setattr(adapter, "_download_media", fake_download_media)
+    text, media, types, _ = asyncio.run(
+        adapter._parse_message_array(
+            [
+                {"type": "video", "data": {"url": "https://fake.cdn/v.mp4", "file": "abc123"}}
+            ]
+        )
+    )
+    assert media == [fake_path]
+    assert types == ["video/mp4"]
+    assert ("download", "https://fake.cdn/v.mp4", "video") in calls
+    assert not any(c[0] == "get_video_file" for c in calls), "有 url 时不得调 get_video_file"
+    assert "[视频]" in text
+
+
+def test_video_hash_only_fetches_via_get_video_file(monkeypatch) -> None:
+    """视频段只有 file hash 无 url 时，经 get_video_file 换取后下载落盘。"""
+    adapter = _make_adapter()
+    calls: list = []
+    fake_path = str(Path(tempfile.gettempdir()) / "hermes_onebot_test_hash.mp4")
+    b64 = base64.b64encode(b"fake-mp4-bytes").decode()
+
+    async def fake_call_action(action, params, timeout=30.0):
+        calls.append((action, dict(params)))
+        assert action == "get_video_file"
+        assert params["file"] == "abc123hash"
+        assert params["file_id"] == "abc123hash"
+        return {"file": f"base64://{b64}"}
+
+    async def fake_download_media(url, kind):
+        assert url == f"base64://{b64}"
+        assert kind == "video"
+        return fake_path
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    monkeypatch.setattr(adapter, "_download_media", fake_download_media)
+    text, media, types, _ = asyncio.run(
+        adapter._parse_message_array([{"type": "video", "data": {"file": "abc123hash"}}])
+    )
+    assert media == [fake_path]
+    assert types == ["video/mp4"]
+    assert (
+        "get_video_file",
+        {"file": "abc123hash", "file_id": "abc123hash"},
+    ) in calls
+    assert "[视频]" in text
+
+
+def test_video_hash_only_get_video_file_failure_degrades(monkeypatch) -> None:
+    """get_video_file 失败/超时 → 降级：无媒体、不 crash、消息仍带 [视频] 入站。"""
+    adapter = _make_adapter()
+
+    async def fake_call_action(action, params, timeout=30.0):
+        raise RuntimeError("get_video_file unavailable")
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    text, media, types, _ = asyncio.run(
+        adapter._parse_message_array(
+            [
+                {"type": "text", "data": {"text": "看视频"}},
+                {"type": "video", "data": {"file": "abc123hash"}},
+            ]
+        )
+    )
+    assert media == []
+    assert types == []
+    assert text == "看视频[视频]"
+
+
 def test_shrink_image_downscales_large_image(tmp_path) -> None:
     from PIL import Image
 

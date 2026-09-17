@@ -288,6 +288,20 @@ def test_explicit_subprocess_base_never_reads_late_home_policy(
             hermes_constants.get_process_hermes_home(empty_snapshot)
 
 
+def test_explicit_home_lookup_never_reads_os_account(monkeypatch):
+    """Strict snapshot mode treats an absent real-home value as absent."""
+    pwd = pytest.importorskip("pwd")
+
+    class _Entry:
+        pw_dir = "/ambient-account-home"
+
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _Entry())
+
+    assert hermes_constants.get_real_home(
+        {}, allow_process_fallback=False
+    ) == "/tmp"
+
+
 
 # ---------------------------------------------------------------------------
 # Profile bootstrap

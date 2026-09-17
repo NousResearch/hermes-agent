@@ -961,9 +961,10 @@ def _iter_real_home_candidates(
         _env_get(env, "HERMES_REAL_HOME", allow_process_fallback=allow_process_fallback),
         _env_get(env, "HOME", allow_process_fallback=allow_process_fallback),
     ]
-    with contextlib.suppress(Exception):
-        import pwd
-        candidates.append(pwd.getpwuid(os.getuid()).pw_dir.strip())  # windows-footgun: ok — POSIX-only module inside try/except
+    if allow_process_fallback:
+        with contextlib.suppress(Exception):
+            import pwd
+            candidates.append(pwd.getpwuid(os.getuid()).pw_dir.strip())  # windows-footgun: ok — POSIX-only module inside try/except
     candidates.append(
         _env_get(env, "USERPROFILE", allow_process_fallback=allow_process_fallback)
     )

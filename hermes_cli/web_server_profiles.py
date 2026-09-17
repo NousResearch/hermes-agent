@@ -145,16 +145,27 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     return profiles
 
 
-def _resolve_profile_dir(name: str) -> Path:
-    """Validate ``name`` and resolve to its directory or raise an HTTPException."""
+def _resolve_profile_dir(
+    name: str, *, launch_home: Optional[Path] = None
+) -> Path:
+    """Validate ``name`` and resolve it from the optional launch authority."""
     from hermes_cli import profiles as profiles_mod
     try:
         profiles_mod.validate_profile_name(name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
+    if launch_home is None:
+        profile_dir = profiles_mod.get_profile_dir(name)
+    else:
+        root = (
+            launch_home.parent.parent
+            if launch_home.parent.name == "profiles"
+            else launch_home
+        )
+        profile_dir = root if name == "default" else root / "profiles" / name
+    if name != "default" and not profiles_mod.named_profile_is_live(profile_dir):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    return profile_dir
 
 
 def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
@@ -233,7 +244,8 @@ def _profile_scope(profile: Optional[str]):
 
 @contextmanager
 def _config_profile_scope(
-    profile: Optional[str], *, launch_home: "str | Path | None" = None
+    profile: Optional[str], *, launch_home: "str | Path | None" = None,
+    resolved_profile_dir: Optional[Path] = None,
 ):
     """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
     scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
@@ -259,11 +271,22 @@ def _config_profile_scope(
         launch_secret_scope,
     )
 
-    process_home = Path(launch_home) if launch_home is not None else authoritative_launch_home()
+    explicit_launch_home = Path(launch_home) if launch_home is not None else None
+    process_home = explicit_launch_home or authoritative_launch_home()
     if _is_current_profile(profile):
         profile_dir, scoped = None, None  # the dashboard's own profile: no home override
     else:
-        profile_dir = _resolve_profile_dir(profile.strip())
+        assert profile is not None
+        if resolved_profile_dir is not None:
+            profile_dir = resolved_profile_dir
+        elif explicit_launch_home is not None:
+            profile_dir = _resolve_profile_dir(
+                profile.strip(), launch_home=process_home
+            )
+        else:
+            # Preserve the established one-argument resolver seam used by
+            # dashboard endpoints and their test doubles.
+            profile_dir = _resolve_profile_dir(profile.strip())
         scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
     if scoped is not None:
         activate_multi_profile_hosting()

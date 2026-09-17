@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
@@ -22,7 +22,7 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
+    _is_hermes_internal_secret, _is_routed_profile_sdk_credential, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
@@ -376,6 +376,7 @@ def build_subprocess_env(
 def served_profile_child_env(
     base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
     inherit_credentials: bool = False, launch_home: "str | Path | None" = None,
+    credential_env_names: "Iterable[str]" = (),
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -402,6 +403,19 @@ def served_profile_child_env(
         if _is_routed_home(target, launch_home=launch_home):
             strip_launch_profile_env(env, target, launch_home=launch_home)
             _scrub_credentials(env, inherit_credentials=False)
+            for key in list(env):
+                if _is_routed_profile_sdk_credential(key):
+                    env.pop(key, None)
+            for key in credential_env_names:
+                env.pop(key, None)
+            # Keep the AWS default chain inside the selected profile. Explicit
+            # target dotenv values below may replace these fail-closed defaults.
+            aws_home = Path(target) / ".aws"
+            env["AWS_SHARED_CREDENTIALS_FILE"] = str(aws_home / "credentials")
+            env["AWS_CONFIG_FILE"] = str(aws_home / "config")
+            env["BOTO_CONFIG"] = str(Path(target) / ".boto")
+            env["AWS_LOGIN_CACHE_DIRECTORY"] = str(aws_home / "login" / "cache")
+            env["AWS_EC2_METADATA_DISABLED"] = "true"
     if inherit_credentials:
         if target:
             secrets = build_profile_secret_scope(Path(target))

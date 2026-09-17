@@ -26,8 +26,6 @@ from types import MappingProxyType
 from typing import Dict, Iterator, Mapping, Optional
 
 _lock = threading.Lock()
-_snapshot: Optional[Dict[str, str]] = None
-_snapshot_home: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -38,24 +36,20 @@ class LaunchProfileAuthority:
     home: Path
 
 
+_authority: Optional[LaunchProfileAuthority] = None
+
+
 def capture_launch_authority() -> LaunchProfileAuthority:
     """Freeze launch values and resolved home atomically; the first capture wins."""
-    global _snapshot, _snapshot_home
+    global _authority
     with _lock:
-        if _snapshot is None:
+        if _authority is None:
             from hermes_constants import get_process_hermes_home
 
             snapshot = dict(os.environ)
-            _snapshot = snapshot
-            try:
-                _snapshot_home = get_process_hermes_home(snapshot)
-            except ValueError:
-                # A deliberately stripped launch environment may omit every
-                # platform-home key. Resolve the native default now, before
-                # activation, and freeze it with the captured mapping.
-                _snapshot_home = get_process_hermes_home()
-        assert _snapshot_home is not None
-        return LaunchProfileAuthority(MappingProxyType(dict(_snapshot)), _snapshot_home)
+            home = get_process_hermes_home(snapshot)
+            _authority = LaunchProfileAuthority(MappingProxyType(snapshot), home)
+        return _authority
 
 
 def capture_launch_env() -> Dict[str, str]:
@@ -83,18 +77,19 @@ def launch_env() -> Dict[str, str]:
 
 
 def launch_authority() -> LaunchProfileAuthority:
-    """Current launch authority, frozen under multiplex and live before activation."""
+    """Return the captured authority once published, otherwise a pre-activation live view."""
     from agent.secret_scope import is_multiplex_active
-    if is_multiplex_active():
-        return capture_launch_authority()
     from hermes_constants import get_process_hermes_home
 
-    env = dict(os.environ)
-    try:
-        home = get_process_hermes_home(env)
-    except ValueError:
-        home = get_process_hermes_home()
-    return LaunchProfileAuthority(MappingProxyType(env), home)
+    with _lock:
+        if _authority is not None:
+            return _authority
+        if not is_multiplex_active():
+            env = dict(os.environ)
+            home = get_process_hermes_home(env)
+            return LaunchProfileAuthority(MappingProxyType(env), home)
+    # A harness may flip multiplexing directly without calling activation.
+    return capture_launch_authority()
 
 
 def launch_home() -> Path:
@@ -126,19 +121,32 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
 
 
 @contextlib.contextmanager
-def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
-    """Bind the launch profile's own runtime scope for one body: ``launch_secret_scope`` plus its
-    terminal policy over the frozen launch ``TERMINAL_*`` overlay. No HERMES_HOME override — the
-    launch home IS the process home. For hosts whose launch-profile bodies are not RPC sessions
-    (the standalone messaging gateway after a hosted room activated multiplexing, #112878)."""
+def launch_profile_runtime_scope(
+    launch_home: "str | Path | None" = None,
+) -> Iterator[None]:
+    """Bind the launch profile's own runtime scope for one body: frozen home identity,
+    launch secret scope, and terminal policy over the frozen ``TERMINAL_*`` overlay. For hosts whose
+    launch-profile bodies are not RPC sessions (the standalone messaging gateway after a hosted
+    room activated multiplexing, #112878). ``launch_home`` is retained for
+    caller compatibility but cannot override the captured authority."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
-    home = Path(launch_home)
-    secret_token = set_secret_scope(launch_secret_scope(home))
-    terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    del launch_home
+    home = launch_authority().home
+    home_token = set_hermes_home_override(home)
     try:
-        yield
+        secret_token = set_secret_scope(launch_secret_scope(home))
+        try:
+            terminal_token = install_profile_terminal_scope(
+                home, env_overlay=launch_terminal_env()
+            )
+            try:
+                yield
+            finally:
+                reset_terminal_scope(terminal_token)
+        finally:
+            reset_secret_scope(secret_token)
     finally:
-        reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)

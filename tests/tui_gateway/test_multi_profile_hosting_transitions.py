@@ -38,7 +38,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection, no file
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
     monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
     return root, b
 
@@ -95,7 +95,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
     from hermes_cli import web_server_profiles as wsp
 
     root, b = two_homes
-    monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name: b)
+    monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name, **_kwargs: b)
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}
 

@@ -317,10 +317,21 @@ def _resolve_chat_argv(
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
 
+    from tui_gateway.launch_profile_policy import (
+        capture_launch_authority,
+        launch_authority,
+    )
+
     profile_dir: Optional[Path] = None
     requested = (profile or "").strip()
     if requested and requested.lower() != "current":
-        profile_dir = _resolve_profile_dir(requested)
+        # Freeze routing identity before resolving a user-selected profile name.
+        # Later process-global HERMES_HOME mutations must not redirect this name
+        # to another profiles tree.
+        authority = capture_launch_authority()
+        profile_dir = _resolve_profile_dir(requested, launch_home=authority.home)
+    else:
+        authority = launch_authority()
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     # One launch-authority snapshot feeds both the current-profile environment and
@@ -331,16 +342,28 @@ def _resolve_chat_argv(
         hermes_subprocess_env,
         served_profile_child_env,
     )
-    from tui_gateway.launch_profile_policy import launch_authority
-
     if profile_dir is None:
-        authority = launch_authority()
         env = None
     else:
+        from hermes_cli.config import read_raw_config
+        from tools.environments.local_env_policy import declared_credential_env_names
+
+        with _hermes_home_scope(authority.home):
+            with _config_profile_scope("current", launch_home=authority.home):
+                launch_credential_env_names = declared_credential_env_names(
+                    read_raw_config()
+                )
         # Entering the first routed scope freezes both launch values and launch-home
         # identity before any secondary profile work can mutate process state.
-        with _config_profile_scope(requested):
-            authority = launch_authority()
+        with _config_profile_scope(
+            requested,
+            launch_home=authority.home,
+            resolved_profile_dir=profile_dir,
+        ):
+            selected_credential_env_names = declared_credential_env_names(read_raw_config())
+            credential_env_names = (
+                launch_credential_env_names | selected_credential_env_names
+            )
             launch_base = dict(authority.env)
             env = served_profile_child_env(
                 base=hermes_subprocess_env(
@@ -349,6 +372,7 @@ def _resolve_chat_argv(
                 target_home=profile_dir,
                 inherit_credentials=True,
                 launch_home=authority.home,
+                credential_env_names=credential_env_names,
             )
     launch_base = dict(authority.env)
     launch_env = build_subprocess_env(
@@ -380,7 +404,11 @@ def _resolve_chat_argv(
             for env_var in restorable_terminal - launch_owned - launch_dotenv_owned:
                 if env_var in launch_env:
                     env[env_var] = launch_env[env_var]
-            with _config_profile_scope(requested, launch_home=authority.home):
+            with _config_profile_scope(
+                requested,
+                launch_home=authority.home,
+                resolved_profile_dir=profile_dir,
+            ):
                 raw_selected_terminal = read_raw_config().get("terminal")
                 if isinstance(raw_selected_terminal, dict) and "home_mode" in raw_selected_terminal:
                     selected_home_mode = raw_selected_terminal["home_mode"]
@@ -405,6 +433,7 @@ def _resolve_chat_argv(
         from hermes_constants import apply_subprocess_home_env
 
         env["HERMES_HOME"] = str(profile_dir)
+        env["HERMES_PROFILE"] = requested
         real_home = launch_env.get("HERMES_REAL_HOME") or launch_env.get("HOME")
         if real_home:
             env["HERMES_REAL_HOME"] = real_home

@@ -849,7 +849,12 @@ class TestProfileScopedChatPty:
         [
             (
                 "FIRECRAWL_API_KEY=worker-overlap\n"
-                "ANTHROPIC_API_KEY=worker-only\n",
+                "ANTHROPIC_API_KEY=worker-only\n"
+                "AWS_ACCESS_KEY_ID=worker-aws-access\n"
+                "AWS_SECRET_ACCESS_KEY=worker-aws-secret\n"
+                "HERMES_CUSTOM_DEMO_API_KEY=worker-custom\n"
+                "CUSTOM_BOX_API_KEY=worker-box\n"
+                "HERMES_PROFILE=forged-profile\n",
                 "worker-overlap",
                 "worker-only",
             ),
@@ -878,6 +883,24 @@ class TestProfileScopedChatPty:
             worker_env.unlink()
         else:
             worker_env.write_text(target_env, encoding="utf-8")
+        worker_config_path = worker_home / "config.yaml"
+        worker_config = yaml.safe_load(worker_config_path.read_text(encoding="utf-8")) or {}
+        worker_config["model"] = {
+            "provider": "custom",
+            "key_env": "CUSTOM_BOX_API_KEY",
+        }
+        worker_config_path.write_text(
+            yaml.safe_dump(worker_config, sort_keys=False), encoding="utf-8"
+        )
+        launch_config_path = launch_home / "config.yaml"
+        launch_config = yaml.safe_load(launch_config_path.read_text(encoding="utf-8")) or {}
+        launch_config["model"] = {
+            "provider": "custom",
+            "key_env": "SOURCE_CUSTOM_TOKEN",
+        }
+        launch_config_path.write_text(
+            yaml.safe_dump(launch_config, sort_keys=False), encoding="utf-8"
+        )
 
         # Pin the explicit profile-HOME policy from #103651. The dashboard chat
         # must apply it after selecting the target profile, not before.
@@ -886,6 +909,21 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("OPENAI_API_KEY", "launch-only")
         monkeypatch.setenv("FIRECRAWL_API_KEY", "launch-overlap")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "launch-aws-access")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "launch-aws-secret")
+        monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/launch/.aws/credentials")
+        monkeypatch.setenv("AWS_CONFIG_FILE", "/launch/.aws/config")
+        monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "false")
+        monkeypatch.setenv("AWS_CREDENTIAL_FILE", "/launch/.aws/legacy-credentials")
+        monkeypatch.setenv("BOTO_CONFIG", "/launch/.boto")
+        monkeypatch.setenv("AWS_SECURITY_TOKEN", "launch-legacy-token")
+        monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2099-01-01T00:00:00Z")
+        monkeypatch.setenv("AWS_ACCOUNT_ID", "123456789012")
+        monkeypatch.setenv("AWS_LOGIN_CACHE_DIRECTORY", "/launch/.aws/login/cache")
+        monkeypatch.setenv("HERMES_CUSTOM_DEMO_API_KEY", "launch-custom")
+        monkeypatch.setenv("CUSTOM_BOX_API_KEY", "launch-box")
+        monkeypatch.setenv("SOURCE_CUSTOM_TOKEN", "launch-source-only")
+        monkeypatch.setenv("HERMES_PROFILE", "default")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("UNRELATED_SETTING", "keep")
         monkeypatch.setattr(
@@ -898,7 +936,15 @@ class TestProfileScopedChatPty:
         probe = (
             "import json,os; print(json.dumps({k: os.environ.get(k) for k in "
             "('HERMES_HOME','HOME','OPENAI_API_KEY','FIRECRAWL_API_KEY',"
-            "'ANTHROPIC_API_KEY','UNRELATED_SETTING','HERMES_TUI_GATEWAY_URL')}))"
+            "'ANTHROPIC_API_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY',"
+            "'AWS_SHARED_CREDENTIALS_FILE','AWS_CONFIG_FILE','AWS_EC2_METADATA_DISABLED',"
+            "'AWS_CREDENTIAL_FILE','BOTO_CONFIG','AWS_SECURITY_TOKEN',"
+            "'AWS_CREDENTIAL_EXPIRATION','AWS_ACCOUNT_ID',"
+            "'AWS_LOGIN_CACHE_DIRECTORY',"
+            "'HERMES_CUSTOM_DEMO_API_KEY','CUSTOM_BOX_API_KEY','HERMES_PROFILE',"
+            "'SOURCE_CUSTOM_TOKEN',"
+            "'UNRELATED_SETTING',"
+            "'HERMES_TUI_GATEWAY_URL')}))"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -916,6 +962,21 @@ class TestProfileScopedChatPty:
             "OPENAI_API_KEY": None,
             "FIRECRAWL_API_KEY": expected_overlap,
             "ANTHROPIC_API_KEY": expected_target_only,
+            "AWS_ACCESS_KEY_ID": "worker-aws-access" if target_env else None,
+            "AWS_SECRET_ACCESS_KEY": "worker-aws-secret" if target_env else None,
+            "AWS_SHARED_CREDENTIALS_FILE": str(worker_home / ".aws" / "credentials"),
+            "AWS_CONFIG_FILE": str(worker_home / ".aws" / "config"),
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "AWS_CREDENTIAL_FILE": None,
+            "BOTO_CONFIG": str(worker_home / ".boto"),
+            "AWS_SECURITY_TOKEN": None,
+            "AWS_CREDENTIAL_EXPIRATION": None,
+            "AWS_ACCOUNT_ID": None,
+            "AWS_LOGIN_CACHE_DIRECTORY": str(worker_home / ".aws" / "login" / "cache"),
+            "HERMES_CUSTOM_DEMO_API_KEY": "worker-custom" if target_env else None,
+            "CUSTOM_BOX_API_KEY": "worker-box" if target_env else None,
+            "SOURCE_CUSTOM_TOKEN": None,
+            "HERMES_PROFILE": "worker_beta",
             "UNRELATED_SETTING": "keep",
             "HERMES_TUI_GATEWAY_URL": None,
         }
@@ -926,9 +987,19 @@ class TestProfileScopedChatPty:
         self, isolated_profiles, monkeypatch, target_dotenv_exists, explicit_launch_home
     ):
         from agent.secret_scope import set_multiplex_active
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import get_default_hermes_root
         from tui_gateway import launch_profile_policy
 
         launch_home = isolated_profiles["default"]
+        monkeypatch.setattr(
+            profiles_mod, "_get_default_hermes_home", get_default_hermes_root
+        )
+        monkeypatch.setattr(
+            profiles_mod,
+            "_get_profiles_root",
+            lambda: get_default_hermes_root() / "profiles",
+        )
         worker_home = isolated_profiles["worker_beta"]
         (launch_home / "config.yaml").write_text(
             "terminal:\n  ssh_host: ${LAUNCH_HOST}\n", encoding="utf-8"
@@ -938,6 +1009,12 @@ class TestProfileScopedChatPty:
         (next_worker_home / "home").mkdir()
         (next_worker_home / "config.yaml").write_text(
             "terminal:\n  ssh_user: target-config-poison\n", encoding="utf-8"
+        )
+        late_root = launch_home / "late-root-poison"
+        late_worker_home = late_root / "profiles" / "worker_gamma"
+        late_worker_home.mkdir(parents=True)
+        (late_worker_home / "config.yaml").write_text(
+            "terminal:\n  ssh_user: late-root-poison\n", encoding="utf-8"
         )
         if target_dotenv_exists:
             (next_worker_home / ".env").write_text("", encoding="utf-8")
@@ -951,7 +1028,7 @@ class TestProfileScopedChatPty:
                 lambda env=None: launch_home,
             )
             monkeypatch.delenv("HERMES_HOME")
-        monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
         monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         set_multiplex_active(False)
         monkeypatch.setenv("HOME", str(real_home))
@@ -970,7 +1047,10 @@ class TestProfileScopedChatPty:
         _argv, _cwd, first_env = _web_server_chat._resolve_chat_argv(
             profile="worker_beta"
         )
-        monkeypatch.setenv("HERMES_HOME", str(next_worker_home))
+        # A secondary-profile task may mutate process-global HERMES_HOME. Profile-name
+        # resolution must remain rooted in the same frozen launch authority as the
+        # child environment, rather than accepting a different profiles tree.
+        monkeypatch.setenv("HERMES_HOME", str(late_worker_home))
         monkeypatch.setenv("HERMES_REAL_HOME", str(late_real_home))
         monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("LAUNCH_HOST", "late-config-poison")

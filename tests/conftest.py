@@ -524,8 +524,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
     launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
-    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
-        monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
+    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_authority"):
+        monkeypatch.setattr(launch_policy_mod, "_authority", None)
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())

@@ -2,6 +2,7 @@ import {
   type ConnectionState,
   type GatewayEvent,
   isGatewayReauthRequired,
+  JsonRpcGatewayError,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -1906,6 +1907,41 @@ const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 // (#94769 prune ↔ redial race).
 const SECONDARY_MIN_LIFETIME_MS = 30_000
 
+// Wake-path liveness probe budget for a live-in-use secondary: mirrors
+// GATEWAY_LIVENESS_PROBE_TIMEOUT_MS in use-gateway-boot (the primary's probe).
+const SECONDARY_WAKE_PROBE_TIMEOUT_MS = 5_000
+
+// Probe a live-in-use secondary instead of blind-closing it on a forced wake,
+// and close it only when the probe proves it not alive. A half-open TCP
+// connection (sleep/wake, silent network drop) reports connectionState
+// 'open' forever and fires no close event, so without this close an in-flight
+// request rides a dead transport until its per-call timeout — prompt.submit's
+// is 30 minutes. Closing arms the entry's ordinary reconnect backoff via its
+// onState('closed') handler; a healthy-but-busy backend answers the ping and
+// keeps its socket (#94769 review).
+function probeSecondaryLiveness(entry: Secondary): void {
+  if (typeof entry.gateway.request !== 'function') {
+    return
+  }
+
+  void entry.gateway.request('ping', {}, SECONDARY_WAKE_PROBE_TIMEOUT_MS).catch((error: unknown) => {
+    // -32601 (method not found) = a version-skewed but HEALTHY backend that
+    // predates the ping method — the same compatibility carve-out the
+    // primary's probe makes in use-gateway-boot.
+    if (error instanceof JsonRpcGatewayError && error.code === -32601) {
+      return
+    }
+
+    // The entry may have been pruned or redialed while the probe was
+    // pending; only the very same socket may be torn down.
+    if (g.secondaries.get(entry.scope) !== entry || !isOpen(entry.gateway)) {
+      return
+    }
+
+    entry.gateway.close()
+  })
+}
+
 // Recovery signal: nudge every live secondary back open. Power-resume/network
 // signals can force sockets that still report open to retire before redialing.
 export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
@@ -1931,10 +1967,14 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
       // secondary socket before redialing. Closing one that is mid-use detaches
       // its runtime → the backend orphan-reaps it → `session.reclaimed` → the
       // surface re-resumes on a fresh socket the same signal may close again:
-      // the #94769 flicker loop. Only force-redial quiescent sockets; live
-      // ones ride through and ordinary close/reconnect still heals them if
-      // the wake genuinely dropped them.
+      // the #94769 flicker loop. But a live socket also cannot simply be
+      // SKIPPED: a half-open socket never fires a close event, so an in-flight
+      // request would hang until its per-call timeout. Probe liveness instead —
+      // a healthy-but-busy backend answers and keeps its socket; a dead
+      // transport is closed and healed by the ordinary reconnect backoff.
       if (entry.activeRequests > 0 || foregroundPinned(entry)) {
+        probeSecondaryLiveness(entry)
+
         continue
       }
 

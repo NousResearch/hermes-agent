@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Connection lifecycle for registry-scoped secondary gateways:
@@ -13,7 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 //     the entry instead of retrying forever.
 
 const gatewayMocks = vi.hoisted(() => {
-  const instances: { close: ReturnType<typeof vi.fn>; connectionState: string }[] = []
+  const instances: {
+    close: ReturnType<typeof vi.fn>
+    request: ReturnType<typeof vi.fn>
+    connectionState: string
+  }[] = []
 
   return {
     connect: vi.fn(async (_wsUrl: string): Promise<void> => undefined),
@@ -38,6 +43,7 @@ vi.mock('@/hermes', () => ({
       await gatewayMocks.connect(wsUrl)
       this.connectionState = 'open'
     }
+    request = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({}))
     onEvent = vi.fn((handler: (event: unknown) => void) => {
       gatewayMocks.eventHandlers.push(handler)
 
@@ -468,6 +474,54 @@ describe('reconnectSecondaryGateways', () => {
     expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
     expect(getConnectionFor).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes a live-in-use secondary on a forced wake only when its liveness probe fails', async () => {
+    // A half-open socket never fires a close event, so skipping it would strand
+    // an in-flight request until its per-call timeout (30 min for
+    // prompt.submit). The wake path probes instead: a dead transport is
+    // closed; a healthy one — including a version-skewed backend answering
+    // -32601 — keeps its socket (#94769 review).
+    configureGatewayRegistry({
+      onEvent: vi.fn(),
+      foregroundScopes: () => new Set(['conn:homelab::default'])
+    } as never)
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    const socket = gatewayMocks.instances[0]
+    expect(socket.connectionState).toBe('open')
+
+    // Healthy version-skewed backend: -32601 (method not found) is a live
+    // answer, not a dead socket — the same carve-out the primary's probe
+    // makes. The socket stays open.
+    socket.request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('Method not found', { code: -32601 })
+    })
+
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(socket.close).not.toHaveBeenCalled()
+    expect(socket.connectionState).toBe('open')
+
+    // Dead transport: the probe rejects with a non-RPC error (timeout family)
+    // and the socket is torn down so its reconnect backoff can heal it.
+    socket.request = vi.fn(async () => {
+      throw new Error('probe timeout')
+    })
+
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await vi.waitFor(() => {
+      expect(socket.close).toHaveBeenCalledOnce()
+    })
+    expect(socket.connectionState).toBe('closed')
   })
 })
 

@@ -408,26 +408,40 @@ def finish_execution(
     detail = None if success else (str(error) if error else "unknown failure")
     # A worker may observe a terminal receipt during its wait. Use the same durable
     # classification as restart reconciliation, in particular unknown != failed.
+    caller_outcome = delivery_outcome
     with _transaction() as conn:
-        pending = _fetch(conn, execution_id)
-        if pending and (pending.get("delivery_manifest_pending") or _held_by_incomplete_adoption(pending, conn)
-                        or _late_legacy_intent(pending, conn)):
-            # Deferred children were sent but their manifest is not in the ledger yet: the
-            # caller's classification (and any placeholder) is incomplete by construction.
-            delivery_outcome = "queued"
-        elif pending and pending.get("delivery_manifest"):
-            projection = _delivery_projection(pending)
-            if projection is not None:
-                delivery_outcome = projection[0]
-        cur = conn.execute(
-            """UPDATE executions
-               SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
-               WHERE id=? AND status IN ('claimed','running')
-                 AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
-        )
-        if cur.rowcount != 1:
+        cur = None
+        for _attempt in range(2):
+            # Derive the terminal delivery decision from the AUTHORITATIVE row contents and
+            # write it with a CAS on the exact manifest it was derived from. A concurrent
+            # replay that lands the complete manifest between derivation and write fails the
+            # CAS; the second pass derives again from what is there now. The row is ours
+            # (process/pid), so this never double-terminalizes.
+            row = _fetch(conn, execution_id)
+            derived_from = row.get("delivery_manifest") if row else None
+            delivery_outcome = caller_outcome
+            if row and (row.get("delivery_manifest_pending") or _held_by_incomplete_adoption(row, conn)
+                        or _late_legacy_intent(row, conn)):
+                # Deferred children were sent but their manifest is not in the ledger yet: the
+                # caller's classification (and any placeholder) is incomplete by construction.
+                delivery_outcome = "queued"
+            elif row and derived_from:
+                projection = _delivery_projection(row)
+                if projection is not None:
+                    delivery_outcome = projection[0]
+                elif manifest_pending(row):
+                    delivery_outcome = "queued"
+            cur = conn.execute(
+                """UPDATE executions
+                   SET status=?, finished_at=?, error=?, handoff_pending=0,
+                       handoff_started_at=NULL, delivery_outcome=?
+                   WHERE id=? AND status IN ('claimed','running')
+                     AND process_id=? AND pid=? AND delivery_manifest IS ?""",
+                (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid(), derived_from),
+            )
+            if cur.rowcount == 1:
+                break
+        if cur is None or cur.rowcount != 1:
             return None
         _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
@@ -473,13 +487,15 @@ def _store_manifest(conn, execution_id: str, manifest: dict) -> None:
     Clearing ``delivery_manifest_pending`` is part of the SAME statement: a storage fault that
     rejects the manifest leaves the intent flag set, so no reader can misread the placeholder.
     """
-    placeholder = json.dumps({"external": True}, sort_keys=True)
     row = _fetch(conn, execution_id)
-    if row and row.get("delivery_manifest") == placeholder:
+    existing = row.get("delivery_manifest") if row else None
+    if existing and "bot" not in json.loads(existing):
+        # Any placeholder-only manifest (canonical or not) is incomplete by the same predicate
+        # every reader uses; the complete manifest replaces it and keeps its external marker.
         manifest = {**manifest, "external": True}
     conn.execute("UPDATE executions SET delivery_manifest=?, delivery_manifest_pending=0 WHERE id=? AND "
-                 "(delivery_manifest IS NULL OR delivery_manifest=?)",
-                 (json.dumps(manifest, sort_keys=True), execution_id, placeholder))
+                 "(delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')=0)",
+                 (json.dumps(manifest, sort_keys=True), execution_id))
 
 
 def mark_delivery_manifest_pending(execution_id: Optional[str]) -> None:

@@ -31,6 +31,10 @@ class AtomicPersistenceViolation(RuntimeError):
     """Raised when an operation attempts to complete without verified persistence and validation."""
 
 
+class PlanTerminatedError(AtomicPersistenceViolation):
+    """Raised when an item completion is rejected because parent WorkPlan is terminal/aborted."""
+
+
 class WorkItemStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -60,6 +64,7 @@ class WorkItem:
     evidence_refs: List[Dict[str, Any]] = field(default_factory=list)
     checkpoints: Dict[str, str] = field(default_factory=dict)
     retry_state: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
     last_error: Optional[str] = None
     created_at: str = field(default_factory=_utc_now)
     started_at: Optional[str] = None
@@ -129,6 +134,7 @@ class WorkItem:
             evidence_refs=_json_or_list(data.get("evidence_refs")),
             checkpoints=_json_or_dict(data.get("checkpoints")),
             retry_state=_json_or_dict(data.get("retry_state")),
+            error=data.get("error"),
             last_error=data.get("last_error"),
             created_at=str(data.get("created_at", _utc_now())),
             started_at=data.get("started_at"),
@@ -241,27 +247,36 @@ class DurableTaskStore:
                 CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
                 """
             )
-            try:
-                cols_wp = {row[1] for row in conn.execute("PRAGMA table_info(work_plans)").fetchall()}
-                if "run_id" not in cols_wp:
-                    conn.execute("ALTER TABLE work_plans ADD COLUMN run_id TEXT")
-                if "execution_key" not in cols_wp:
-                    conn.execute("ALTER TABLE work_plans ADD COLUMN execution_key TEXT")
+            cols_wp = {row[1] for row in conn.execute("PRAGMA table_info(work_plans)").fetchall()}
+            for col_name in ("run_id", "execution_key"):
+                if col_name not in cols_wp:
+                    try:
+                        conn.execute(f"ALTER TABLE work_plans ADD COLUMN {col_name} TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" in str(exc).lower():
+                            pass
+                        else:
+                            logger.error("Failed to migrate work_plans table with column %s: %s", col_name, exc)
+                            raise
+                    except Exception as exc:
+                        logger.error("Unexpected error migrating work_plans table with column %s: %s", col_name, exc)
+                        raise
 
-                cols = {row[1] for row in conn.execute("PRAGMA table_info(work_items)").fetchall()}
-                if "error" not in cols:
-                    conn.execute("ALTER TABLE work_items ADD COLUMN error TEXT")
-                if "last_error" not in cols:
-                    conn.execute("ALTER TABLE work_items ADD COLUMN last_error TEXT")
-                if "evidence_refs" not in cols:
-                    conn.execute("ALTER TABLE work_items ADD COLUMN evidence_refs TEXT")
-                if "operation_id" not in cols:
-                    conn.execute("ALTER TABLE work_items ADD COLUMN operation_id TEXT")
-                if "run_id" not in cols:
-                    conn.execute("ALTER TABLE work_items ADD COLUMN run_id TEXT")
-                conn.commit()
-            except Exception:
-                pass
+            cols_wi = {row[1] for row in conn.execute("PRAGMA table_info(work_items)").fetchall()}
+            for col_name in ("error", "last_error", "evidence_refs", "operation_id", "run_id"):
+                if col_name not in cols_wi:
+                    try:
+                        conn.execute(f"ALTER TABLE work_items ADD COLUMN {col_name} TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" in str(exc).lower():
+                            pass
+                        else:
+                            logger.error("Failed to migrate work_items table with column %s: %s", col_name, exc)
+                            raise
+                    except Exception as exc:
+                        logger.error("Unexpected error migrating work_items table with column %s: %s", col_name, exc)
+                        raise
+            conn.commit()
 
     def get_connection(self) -> sqlite3.Connection:
         if self._external_conn is not None:
@@ -580,6 +595,29 @@ class DurableTaskStore:
 
         now = _utc_now()
         with self._lock, self.get_connection() as conn:
+            plan_row = conn.execute("SELECT status FROM work_plans WHERE id = ?", (item.plan_id,)).fetchone()
+            plan_status = (plan_row[0] if plan_row else "").lower()
+            if plan_status in {"interrupted", "failed", "cancelled", "blocked"}:
+                conn.execute(
+                    """
+                    UPDATE work_items
+                    SET status = ?,
+                        error = ?,
+                        last_error = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        WorkItemStatus.BLOCKED.value,
+                        f"Parent plan {item.plan_id} is in terminal/aborted state: {plan_status}",
+                        "NEEDS_RECONCILIATION",
+                        item_id,
+                    ),
+                )
+                conn.commit()
+                raise PlanTerminatedError(
+                    f"WorkItem {item_id} cannot be completed because parent WorkPlan {item.plan_id} is in status '{plan_status}' (NEEDS_RECONCILIATION)"
+                )
+
             conn.execute(
                 """
                 UPDATE work_items

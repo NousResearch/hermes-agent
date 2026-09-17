@@ -96,6 +96,7 @@ class WorkstationKanbanBridge:
             return None
 
         clean_title = (title or prompt.strip().split("\n")[0])[:80]
+        claimed_run_id = None
         with self.get_connection() as conn:
             task_id = kanban_db.create_task(
                 conn,
@@ -106,6 +107,9 @@ class WorkstationKanbanBridge:
                 board=self.board,
                 initial_status="running",
             )
+            claimed_task = kanban_db.claim_task(conn, task_id, claimer=f"workstation:{session_id}")
+            if claimed_task and claimed_task.current_run_id:
+                claimed_run_id = claimed_task.current_run_id
             contract = acceptance_contract or AcceptanceContract()
             conn.execute("INSERT INTO task_acceptance_contracts(task_id, contract_json) VALUES (?,?)",
                          (task_id, json.dumps(asdict(contract))))
@@ -116,7 +120,7 @@ class WorkstationKanbanBridge:
         journal.record(
             ExecutionEventKind.TASK_CREATED,
             f"Workstation task promoted into Kanban: {clean_title}",
-            metadata={"source": "automatic_multistep_promotion", "prompt": prompt},
+            metadata={"source": "automatic_multistep_promotion", "prompt": prompt, "run_id": claimed_run_id},
         )
         return task_id
 
@@ -300,7 +304,14 @@ class WorkstationKanbanBridge:
                                metadata={"procedure_id": candidate.id})
         return success
 
-    def finalize_turn_candidate(self, task_id: str, session_id: str, turn_result: dict) -> dict:
+    def finalize_turn_candidate(
+        self,
+        task_id: str,
+        session_id: str,
+        turn_result: dict,
+        *,
+        expected_run_id: Optional[int] = None,
+    ) -> dict:
         """Verify persisted execution before submitting the turn's outcome candidate."""
         from workstation.artifacts import ArtifactStore
         from workstation.contracts import EvidenceRef
@@ -362,10 +373,16 @@ class WorkstationKanbanBridge:
         status = (OutcomeStatus.VERIFIED_COMPLETED if verified else OutcomeStatus.WAITING_FOR_HUMAN if handoffs
                   else OutcomeStatus.FAILED if turn_result.get("failed") else OutcomeStatus.UNCERTAIN if stopped
                   else OutcomeStatus.BLOCKED)
+
+        target_run_id = expected_run_id
+        if target_run_id is None and task is not None and task.current_run_id is not None:
+            target_run_id = task.current_run_id
+
         report = BrowserTaskReport(task_id, session_id, task.body or task.title,
             str(turn_result.get("final_response") or "Execution has no verified final result"), verified,
             pending_items=pending, evidence=evidence, verifier_results=verifiers,
-            deliverables=[e.uri for e in evidence], outcome_status=status)
-        accepted = self.complete_task_with_report(task_id, report)
-        return {"task_id": task_id, "status": status.value, "acceptance_approved": accepted,
+            deliverables=[e.uri for e in evidence], outcome_status=status,
+            run_id=str(target_run_id) if target_run_id is not None else None)
+        accepted = self.complete_task_with_report(task_id, report, expected_run_id=target_run_id)
+        return {"task_id": task_id, "status": status.value if accepted else "uncertain", "acceptance_approved": accepted,
                 "pending_items": pending, "planned_handoffs": handoffs}

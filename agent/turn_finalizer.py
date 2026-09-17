@@ -835,11 +835,14 @@ def finalize_turn(
     agent._turn_received_provider_response = False
 
     canonical_task_id = getattr(agent, "_canonical_work_task_id", None)
+    canonical_run_id = getattr(agent, "_canonical_work_run_id", None)
     if canonical_task_id:
         try:
             from workstation.kanban import WorkstationKanbanBridge
             root = agent._conversation_root_id() or agent.session_id
-            result["work_outcome"] = WorkstationKanbanBridge().finalize_turn_candidate(canonical_task_id, root, result)
+            result["work_outcome"] = WorkstationKanbanBridge().finalize_turn_candidate(
+                canonical_task_id, root, result, expected_run_id=canonical_run_id
+            )
         except Exception as exc:
             logger.warning("canonical outcome candidate verification failed: %s", exc)
             result["work_outcome"] = {"task_id": canonical_task_id, "status": "uncertain", "acceptance_approved": False}

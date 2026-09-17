@@ -139,6 +139,36 @@ def test_captionable_without_tag_caption_is_unchanged(monkeypatch):
         os.unlink(img)
 
 
+def test_over_long_tag_caption_is_truncated_to_the_platform_cap(monkeypatch):
+    """An over-long tag caption must not reach the platform unbounded.
+
+    Discord delivers the caption as message *content* (2000-char cap), so an untruncated tag
+    caption could fail a send that delivered fine while it was uncaptioned (review on #111908).
+    """
+    img = _tmpfile(".png")
+    try:
+        sender = _RecordingSender()
+        _patch_standalone_sender(monkeypatch, "discord", sender)
+        asyncio.run(_send_plugin_standalone(
+            "discord", _pconfig(), "ch", "", [""], [(img, False)],
+            thread_id=None, max_len=None, force_document=False,
+            media_captions={img: "x" * 2500}))
+        assert sender.calls == [
+            {"message": "", "media_files": [(img, False)], "caption": "x" * 2000}
+        ]
+    finally:
+        os.unlink(img)
+
+
+def test_tag_caption_cap_is_per_platform_and_defaults_to_the_shared_ceiling():
+    """The cap follows the platform the caption lands on; unknown platforms keep the ceiling."""
+    from tools.send_message_senders import _bound_caption
+    assert _bound_caption("y" * 1500, "whatsapp") == "y" * 1024
+    assert _bound_caption("z" * 5000, "discord") == "z" * 2000
+    assert _bound_caption("w" * 5000, "slack") == "w" * 4096
+    assert _bound_caption(None, "discord") is None
+
+
 # ---------------------------------------------------------------------------
 # _send_plugin_standalone — platforms without a caption field (feishu)
 # ---------------------------------------------------------------------------

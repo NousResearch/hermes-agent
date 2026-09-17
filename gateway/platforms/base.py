@@ -1429,6 +1429,9 @@ def extract_media_captions(content: str) -> Dict[str, str]:
     attach files look it up by path. Keys are normalized the same way
     ``filter_media_delivery_paths`` normalizes delivered paths, so a caption survives the safety
     filter (symlink resolution / docker path rewrite included).
+
+    Duplicate tags for the same path are first-wins: ``setdefault`` keeps the first tag's caption
+    and ignores the later ones.
     """
     if "MEDIA:" not in content or "|" not in content:
         return {}

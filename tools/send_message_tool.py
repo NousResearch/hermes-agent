@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _chunk_text, _error, _fold_captions_into_text, _live_adapter,
-    _media_caption_split, _plugin_standalone_sender, _registry_standalone_send,
+    _adapter_media_method, _bound_caption, _chunk_text, _error, _fold_captions_into_text,
+    _live_adapter, _media_caption_split, _plugin_standalone_sender, _registry_standalone_send,
     _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles, _send_matrix_via_adapter,
     _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
@@ -431,7 +431,7 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
             return {"error": (f"Live adapter does not implement native {media_kind} delivery; "
                               f"media file {index + 1}/{total} was not sent")}
         # Tag caption wins for its own file; the text-derived one lands on the first file left.
-        file_caption = media_captions.get(media_path)
+        file_caption = _bound_caption(media_captions.get(media_path), getattr(adapter, "platform", None))
         if file_caption is None:
             file_caption, caption = caption, None
         try:
@@ -573,7 +573,7 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         # A caption field holds one caption per send: the first tag caption rides the bubble and
         # every other tag caption is delivered as text, so none is lost silently.
         bubble_path = next((p for p, _ in media_files if media_captions.get(p)), None) if captionable else None
-        bubble_caption = media_captions.get(bubble_path) if bubble_path else None
+        bubble_caption = _bound_caption(media_captions.get(bubble_path), platform_name) if bubble_path else None
         folded = _fold_captions_into_text(message, media_files, media_captions, exclude=bubble_path)
         if folded != message:
             message, chunks = folded, _chunk_text(folded, max_len)

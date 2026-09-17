@@ -943,6 +943,7 @@ def _send_media_via_adapter(
     ``MEDIA:<path> | <caption>`` caption, passed through as the attachment caption."""
     from gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
+    from tools.send_message_senders import _bound_caption
     from agent.async_utils import safe_schedule_threadsafe
     job_ref = {"id": job.get("id", "?")}
     errors: list = []
@@ -971,7 +972,7 @@ def _send_media_via_adapter(
                 method, path_kw = "send_image_file", "image_path"
             else:
                 method, path_kw = "send_document", "file_path"
-            _caption = _captions.get(media_path) or None
+            _caption = _bound_caption(_captions.get(media_path), route_platform) or None
             _cap_kw = {"caption": _caption} if _caption else {}
             coro = getattr(adapter, method)(
                 chat_id=chat_id, metadata=metadata, **_cap_kw, **{path_kw: media_path})

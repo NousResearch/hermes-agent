@@ -21,6 +21,27 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt"
 # Native caption limits (chars): Telegram caps photo/video at 1024; one conservative shared ceiling elsewhere.
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
+# Per-platform caps where the caption lands as native text: Discord rides it as message *content*
+# (2000) and WhatsApp caps media captions at 1024. Unlisted platforms keep the shared ceiling.
+_TAG_CAPTION_LIMITS = {"telegram": _TELEGRAM_CAPTION_LIMIT, "discord": 2000, "whatsapp": 1024}
+
+
+def _tag_caption_limit(platform) -> int:
+    """Caption cap (chars) for ``platform``; the shared ceiling when the platform is unknown."""
+    return _TAG_CAPTION_LIMITS.get(str(platform or "").strip().lower(), _DEFAULT_CAPTION_LIMIT)
+
+
+def _bound_caption(caption, platform):
+    """Truncate a ``MEDIA:<path> | <caption>`` caption to the platform's caption cap.
+
+    A tag caption is user-authored and, unlike the text-derived one (``_media_caption_split``),
+    was previously unbounded — an over-long caption could exceed the platform's native cap and
+    fail a media send that delivered fine before the caption rode the bubble.
+    """
+    if not caption:
+        return caption
+    cap = _tag_caption_limit(platform)
+    return caption[:cap] if len(caption) > cap else caption
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -294,7 +315,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         for media_path, is_voice in media_files:
             # An explicit tag caption wins and is consumed by its own file; the text-derived caption
             # (if any) falls back to the first file left without a tag caption.
-            _tag_caption = media_captions.get(media_path)
+            _tag_caption = _bound_caption(media_captions.get(media_path), "telegram")
             if _tag_caption:
                 caption = _tag_caption
             elif _tg_caption is not None:

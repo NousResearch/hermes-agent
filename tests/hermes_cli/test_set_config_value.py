@@ -513,17 +513,26 @@ class TestSchemaValidation:
     DEFAULT_CONFIG is not a complete registry of what the runtime reads.
     """
 
-    def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
+    @pytest.mark.parametrize("key,suggestion", [
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
+        # The stray middle segment ``gateway`` fuzzy-matches the sibling ``agent.gateway_timeout``;
+        # the structural wrong-prefix match must win so the path is refused, not written with
+        # a misleading did-you-mean.
+        ("agent.gateway.strict", "gateway.strict"),
+    ])
+    def test_unknown_subkey_under_known_section_refused_before_write(
+        self, key, suggestion, _isolated_hermes_home, capsys
+    ):
         config_path = _isolated_hermes_home / "config.yaml"
         config_path.write_text("model: gpt-4o\n", encoding="utf-8")
 
         with pytest.raises(SystemExit):
-            set_config_value("gateway.discord.gateway_restart_notification", "true")
+            set_config_value(key, "true")
 
         assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
         err = capsys.readouterr().err
         assert "nothing was written" in err
-        assert "discord.gateway_restart_notification" in err
+        assert f"Did you mean: {suggestion}" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
         # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded

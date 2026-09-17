@@ -3314,13 +3314,16 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
-            sibling = _suggest_closest_key(seg, set(node.keys()))
-            if sibling is not None:
-                return False, ".".join(consumed + [sibling])
             # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
+            # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a
+            # guess, and ``agent.gateway.strict`` must be refused as ``gateway.strict`` rather
+            # than written with a misleading ``agent.gateway_timeout`` did-you-mean.
             rest = ".".join(segments[len(consumed):])
             if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
                 return False, rest
+            sibling = _suggest_closest_key(seg, set(node.keys()))
+            if sibling is not None:
+                return False, ".".join(consumed + [sibling])
             return False, None
         consumed.append(seg)
         node = node[seg]

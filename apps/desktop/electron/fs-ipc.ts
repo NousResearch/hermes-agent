@@ -203,6 +203,37 @@ export function registerFsIpc({
     return { path: resolved }
   })
 
+  // Create an EMPTY text file atomically, refusing to clobber an existing
+  // entry (`O_EXCL`). Same hardening as `hermes:fs:writeText` (parent must
+  // exist, resolved/allowed roots) plus the collision guard — the local twin
+  // of POST /api/fs/create's refusal to replace, so a New File never truncates
+  // a file the user didn't ask to overwrite.
+  ipcMain.handle('hermes:fs:createTextExclusive', async (_event, filePath) => {
+    const raw = String(filePath || '').trim()
+
+    if (!raw) {
+      throw new Error('Invalid path')
+    }
+
+    const resolved = resolveRequestedPathForIpc(expandUserPath(raw), { purpose: 'Create text file' })
+
+    if (!directoryExists(path.dirname(resolved))) {
+      throw new Error('Parent directory does not exist')
+    }
+
+    try {
+      await fs.promises.writeFile(resolved, '', { encoding: 'utf8', flag: 'wx' })
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
+        throw new Error(`"${path.basename(resolved)}" already exists`)
+      }
+
+      throw error
+    }
+
+    return { path: resolved }
+  })
+
   // Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
   // default. `shell.trashItem` routes to Finder/Explorer/Files trash per platform.
   ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {

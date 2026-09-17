@@ -6,6 +6,7 @@ reached through the late-binding seam (cycle-safe).
 
 import asyncio
 import base64
+import errno
 import binascii
 import contextlib
 import mimetypes
@@ -27,10 +28,12 @@ from fastapi.responses import FileResponse
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _managed_file_entry, _managed_files_policy, _managed_response_meta,
+    _path_is_under, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
-    ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
+    ChatImageUpload, FsCreate, FsDelete, FsRename, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
+    ManagedFileUpload,
 )
 
 router = APIRouter()
@@ -688,6 +691,193 @@ async def fs_write_text(payload: FsWriteText):
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
+
+
+# POSIX allows renaming OVER an existing target; refuse it with an atomic
+# O_EXCL-style rename when the platform supports no-replace semantics. Python
+# has no cross-platform no-replace rename, so serialize the check-and-mutate
+# window per parent dir (same process — the gateway single event loop).
+_rename_locks: dict[str, asyncio.Lock] = {}
+
+
+def _fs_parent_lock(parent: Path) -> asyncio.Lock:
+    return _rename_locks.setdefault(str(parent), asyncio.Lock())
+
+
+def _fs_mutation_target(raw_path: str) -> Path:
+    """Resolve the PARENT (must exist, no symlinked directory in the chain)
+    and keep the FINAL component lexical, never followed.
+
+    - A symlinked PARENT (e.g. `/project/link/...` where `link` points
+      elsewhere) would have redirected creation/rename/delete outside the
+      directory the tree shows — reject it (400).
+    - The FINAL component as a symlink is mutated AS the link (renamed,
+      unlinked, or collided) — never chased to its referent, which would
+      mutate outside the tree. This is what the managed-files route avoids and
+      what a filesystem-safe tree mutation must do.
+    """
+    try:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError
+        # Reject any `.`/`..` component: `Path('.../existing/..')` would pass
+        # the parent checks with the final name `..`, and a delete/copy of
+        # that target resolves to the PARENT directory — deleting outside the
+        # selected tree (e.g. `rmtree('/tmp/existing/..')` → `/tmp`).
+        if any(part in (".", "..") for part in candidate.parts):
+            raise ValueError
+        parent = candidate.parent
+        if not parent.is_dir():
+            raise HTTPException(status_code=400, detail="Parent directory does not exist")
+        # Reject a symlinked parent chain: the desktop tree resolves entries so
+        # no legit caller passes a symlinked dir for a mutation.
+        probe = parent
+        while probe != probe.parent:
+            if probe.is_symlink():
+                raise HTTPException(status_code=400, detail="Cannot mutate through a symbolic-link directory")
+            probe = probe.parent
+        return parent.resolve() / candidate.name
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _fs_valid_new_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    return name
+
+
+@router.post("/api/fs/create")
+async def fs_create(payload: FsCreate):
+    """Create an empty regular file or a directory (``directory: true``).
+
+    Mirrors the Electron ``hermes:fs:writeText`` hardening: the parent must
+    already exist (never build trees; resolved without following any symlinked
+    dir so a create inside ``link/`` never escapes the shown folder), and
+    creation is ATOMIC-exclusive — ``O_EXCL`` for files, ``mkdir`` without
+    ``exist_ok`` for directories — so two concurrent creates or a racing
+    writer yield exactly one success and the other a 409, never a clobber
+    (``Path.touch()`` defaults to ``exist_ok=True`` and would silently accept
+    an existing name).
+    """
+    target = _fs_mutation_target(payload.path)
+    async with _fs_parent_lock(target.parent):
+        with _io_errors("Parent directory is not writable", "Could not create"):
+            if payload.directory:
+                try:
+                    target.mkdir()
+                except OSError as exc:
+                    if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                        raise HTTPException(status_code=409, detail="Path already exists")
+                    raise
+            else:
+                try:
+                    # Base mode 0o666 (not the 0o777 open() default) so the
+                    # umask yields 0644 for new text files, not 0755.
+                    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                    os.close(fd)
+                except OSError as exc:
+                    if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                        raise HTTPException(status_code=409, detail="Path already exists")
+                    raise
+    return {"ok": True, "path": str(target), "isDirectory": bool(payload.directory)}
+
+
+@router.post("/api/fs/rename")
+async def fs_rename(payload: FsRename):
+    """Rename a file/folder in place; the destination is resolved in the SAME
+    parent dir so a rename can never move the item elsewhere or traverse out.
+    Mirrors the Electron ``hermes:fs:rename`` handler (same-name guard, refuses
+    a name collision).
+
+    The check-and-mutate window is serialized per parent dir (single-process
+    gateway event loop) so a racing create of the destination between the
+    existence check and ``rename()`` cannot cause POSIX to silently replace the
+    colliding entry — the check and the rename happen atomically with respect
+    to other /api/fs mutations of the same folder.
+    """
+    name = _fs_valid_new_name(payload.name)
+    target = _fs_mutation_target(payload.path)
+    destination = target.parent / name
+
+    if destination == target:
+        return {"ok": True, "path": str(target)}
+    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
+    # this endpoint renames the LINK itself, so broken links must still be
+    # renameable (is_symlink() is lexical and does not follow).
+    if not (target.is_symlink() or target.exists()):
+        raise HTTPException(status_code=404, detail="Path not found")
+    if destination.exists() or destination.is_symlink():
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+
+    async with _fs_parent_lock(target.parent):
+        # Re-check under the lock: a concurrent create of `destination` between
+        # the pre-flight check and here must still be refused, not replaced.
+        if destination.exists() or destination.is_symlink():
+            raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+        with _io_errors("Path is not writable", "Could not rename"):
+            target.rename(destination)
+    return {"ok": True, "path": str(destination)}
+
+
+@router.delete("/api/fs/delete")
+async def fs_delete(payload: FsDelete, request: Request):
+    """Delete a file, or a directory with ``recursive: true``.
+
+    The managed root AND the filesystem root can never be deleted — including
+    through an ancestor: ``/opt`` with ``recursive: true`` must not ``rmtree``
+    a locked `/opt/data` underneath it, so the guard rejects any deleted target
+    that IS the locked root or one of its ancestors. The final component is
+    never followed: a symlink is unlinked AS the link, not chased to its
+    referent. Unlike the OS-trash path the local Electron tree uses, this is
+    permanent — the desktop confirm dialog says so in remote mode.
+
+    With ``recursive: false`` an empty directory is removed with ``rmdir()``
+    (same semantics as the managed-files route); only a non-empty directory
+    needs the recursive opt-in.
+    """
+    if not payload.path or payload.path.startswith("file:"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    target = _fs_mutation_target(payload.path)
+    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
+    # a delete unlinks the LINK itself (unlink never chases the referent), so
+    # broken links must still be deletable.
+    if not (target.is_symlink() or target.exists()):
+        raise HTTPException(status_code=404, detail="Path not found")
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    policy = _managed_files_policy(request)
+    if policy.locked_root is not None and (
+        target == policy.locked_root or _path_is_under(target, policy.locked_root)
+    ):
+        raise HTTPException(status_code=400, detail="Cannot delete the managed directory root")
+
+    async with _fs_parent_lock(target.parent):
+        with _io_errors("Path is not writable", "Could not delete path"):
+            # The final component must not be followed: a symlink is unlinked AS
+            # the link. is_dir() would chase a link-to-directory and rmdir() the
+            # referent instead, so test is_symlink() BEFORE the directory branch.
+            if target.is_symlink():
+                target.unlink()
+            elif target.is_dir():
+                if payload.recursive:
+                    shutil.rmtree(target)
+                else:
+                    # rmdir() removes an EMPTY directory (matches the managed-files
+                    # route); only ENOTEMPTY/EEXIST map to the 409 — any other
+                    # OSError (e.g. EACCES) keeps its real 403/500 mapping.
+                    try:
+                        target.rmdir()
+                    except OSError as exc:
+                        if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                            raise HTTPException(
+                                status_code=409, detail="Directory is not empty (enable recursive delete)"
+                            )
+                        raise
+            else:
+                target.unlink()
+    return {"ok": True, "path": str(target)}
 
 
 async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:

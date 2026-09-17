@@ -9,7 +9,7 @@ import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
-import { $renamingPath, beginInlineRename } from '@/store/file-actions'
+import { $creatingEntry, $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
@@ -59,6 +59,7 @@ export function ProjectTree({
 }: ProjectTreeProps) {
   markRightPanePerf('project-tree-render')
 
+  const creatingEntry = useStore($creatingEntry)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
@@ -159,10 +160,11 @@ export function ProjectTree({
   )
 
   // F2 / Enter on the selected row begins an inline rename. Capture-phase so it
-  // beats arborist's own Enter-to-activate; skipped while an edit is in progress
-  // (the editor input owns Enter/Esc then) and for placeholder rows.
+  // beats arborist's own Enter-to-activate; skipped while an edit OR a new-entry
+  // create is in progress (the editor input owns Enter/Esc then) and for
+  // placeholder rows.
   const handleRenameShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!isRenameShortcut(event) || $renamingPath.get()) {
+    if (!isRenameShortcut(event) || $renamingPath.get() || $creatingEntry.get()) {
       return
     }
 
@@ -202,7 +204,13 @@ export function ProjectTree({
           padding={0}
           ref={treeRef}
           renderRow={ProjectTreeRowContainer}
-          rowHeight={ROW_HEIGHT}
+          rowHeight={node =>
+            // The NEW-ENTRY flow renders a second row (the inline name input)
+            // beneath the folder row inside a single arborist item; give that
+            // item a real doubled slot so react-window's fixed-ROW_HEIGHT
+            // offset math stays correct and the input is not clipped/overlaid.
+            creatingEntry?.parentDir === node.data?.id ? ROW_HEIGHT * 2 : ROW_HEIGHT
+          }
           width={size.width}
         >
           {props => (
@@ -275,6 +283,7 @@ function ProjectTreeRow({
   relativeTo?: null | string
 }) {
   const renamingPath = useStore($renamingPath)
+  const creatingEntry = useStore($creatingEntry)
   const path = node.data?.id ?? ''
   const changeStore = useMemo(() => repoChangeKindForPath(path), [path])
   const changeKind: RepoChangeKind | undefined = useStore(changeStore)
@@ -289,6 +298,10 @@ function ProjectTreeRow({
   const isPlaceholder = Boolean(node.data.placeholder)
   const isErrorPlaceholder = node.data.placeholder === 'error'
   const editing = !isPlaceholder && renamingPath === node.data.id
+  // New-file/new-folder flow: the folder row receiving the entry renders an
+  // inline input underneath it (VS Code style) instead of a ghost tree row —
+  // no optimistic tree mutation, and Esc/blur cancel is just clearing the atom.
+  const creatingHere = !isPlaceholder && isFolder && creatingEntry?.parentDir === node.data.id
 
   const row = (
     <div
@@ -374,6 +387,33 @@ function ProjectTreeRow({
 
   if (isPlaceholder) {
     return row
+  }
+
+  if (creatingHere) {
+    return (
+      <div
+        style={{
+          ...style,
+          // This item hosts TWO visual rows (the folder row plus its inline
+          // new-entry input), and `rowHeight` above reports the doubled size
+          // to react-window — keep the container and the arborist row slot in
+          // sync so the next item starts BELOW the input, never behind it.
+          height: ROW_HEIGHT * 2,
+          overflow: 'hidden',
+          paddingLeft: withTreeInset(style.paddingLeft)
+        }}
+      >
+        {/* Row is h-full: pin it to the top half so the input row below is
+            not pushed out of the item. */}
+        <div style={{ height: ROW_HEIGHT }}>{row}</div>
+        <div className="flex h-(--file-tree-row-height) items-center gap-1 px-3 text-xs text-(--ui-text-secondary)">
+          <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
+            <Codicon name={creatingEntry?.directory ? 'folder' : 'file'} size="0.875rem" />
+          </span>
+          <InlineRenameInput name="" path={node.data.id} />
+        </div>
+      </div>
+    )
   }
 
   return (

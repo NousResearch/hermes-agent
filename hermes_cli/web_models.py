@@ -163,6 +163,18 @@ class FsWriteText(BaseModel):
     path: str
     content: str
 
+class FsRename(BaseModel):
+    path: str
+    name: str
+
+class FsCreate(BaseModel):
+    path: str
+    directory: bool = False
+
+class FsDelete(BaseModel):
+    path: str
+    recursive: bool = False
+
 class GitPathBody(BaseModel):
     path: str
 

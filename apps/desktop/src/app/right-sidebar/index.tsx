@@ -10,6 +10,7 @@ import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { $creatingEntry, requestNewEntry } from '@/store/file-actions'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
@@ -17,6 +18,7 @@ import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/sto
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { InlineRenameInput } from './file-actions'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -153,6 +155,7 @@ function FilesystemTab({
         <div className="flex min-w-0 flex-1">
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </div>
+        <RootNewEntryInput cwd={cwd} />
         <Tip label={r.refreshTree}>
           <Button
             aria-label={r.refreshTree}
@@ -201,6 +204,58 @@ export function RightSidebarSectionHeader({ children, className, ...props }: Com
     <div className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)} {...props}>
       {children}
     </div>
+  )
+}
+
+// The project root is NOT a TreeNode — the tree hosts new-entry editors on
+// folder ROWS, so a create at the root has nowhere to mount its input. This
+// header affordance targets the root cwd directly: two plus-actions plus the
+// inline editor itself, mounted here instead of in the tree. (Remote gateways
+// and local shares both use it; the shared InlineRenameInput seeds empty and
+// commits through the active connection.)
+function RootNewEntryInput({ cwd }: { cwd: string }) {
+  const { t } = useI18n()
+  const m = t.fileMenu
+  const creating = useStore($creatingEntry)
+  const creatingHere = creating?.parentDir === cwd
+
+  // While the root editor is open, show only it (the refresh/collapse buttons
+  // stay clickable beside it); enter commits, esc/blur cancels.
+  if (creatingHere) {
+    return (
+      <InlineRenameInput
+        className="h-4.5 w-40 rounded-sm border border-sidebar-ring/40 bg-(--ui-bg-elevated) px-1 text-xs"
+        name=""
+        path={cwd}
+      />
+    )
+  }
+
+  return (
+    <>
+      <Tip label={m.newFile}>
+        <Button
+          aria-label={m.newFile}
+          className={HEADER_ACTION_LABEL_REVEAL}
+          onClick={() => void requestNewEntry({ directory: false, parentDir: cwd })}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Codicon name="new-file" size="0.8125rem" />
+        </Button>
+      </Tip>
+      <Tip label={m.newFolder}>
+        <Button
+          aria-label={m.newFolder}
+          className={HEADER_ACTION_LABEL_REVEAL}
+          onClick={() => void requestNewEntry({ directory: true, parentDir: cwd })}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <Codicon name="new-folder" size="0.8125rem" />
+        </Button>
+      </Tip>
+    </>
   )
 }
 

@@ -3652,7 +3652,24 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
         else:
             value = redact_config_value(value)
 
-    print(_format_config_get_value(value, as_json=as_json))
+    print(_format_config_get_value(value, as_json=as_json), flush=True)
+
+    # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
+    # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
+    # usually read by nothing, so it must not look like a live setting. The check is a
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
+    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
+    # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
+    # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
+    if _split_key_path(key)[0] in _known_top_level_keys():
+        is_known, suggestion = _validate_config_key(key)
+        if not is_known:
+            print(color(
+                f"⚠ '{key}' is not a recognized config key — Hermes may not read it; the value "
+                "printed above comes from your config file.", Colors.YELLOW), file=sys.stderr)
+            if suggestion:
+                print(color(f"  Did you mean: {suggestion}", Colors.YELLOW), file=sys.stderr)
 
 
 def unset_config_value(key: str):

@@ -1532,6 +1532,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
+        if platform == Platform.MATRIX:
+            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
+            # get_chat_info reports "dm"/"group" for the home room.
+            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1549,6 +1553,17 @@ class GatewayStartupMixin:
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
             handoff_config=handoff_config,
         )
+
+    @staticmethod
+    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
+        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
+        unknown/failed → not a DM, the common handoff target."""
+        try:
+            info = await adapter.get_chat_info(home_chat_id)
+        except Exception:
+            logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
+            return False
+        return isinstance(info, dict) and info.get("type") == "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next

@@ -479,8 +479,8 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
-            self._target = target
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
+            self._target = lambda: target(*args, **(kwargs or {}))
 
         def start(self):
             self._target()

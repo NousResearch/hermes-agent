@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
@@ -9,6 +9,7 @@ import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
 
+import { TITLEBAR_CHROME_CHANGED_EVENT } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
@@ -88,12 +89,29 @@ describe('TitlebarControls fixed clusters', () => {
     expect(pluginTool()).not.toBeNull()
   })
 
+  it('leaves page titles to the workspace header without hiding window controls', () => {
+    const disposeTitle = registry.register({
+      area: 'titleBar.center',
+      id: 'test-page-title',
+      render: () => <span>Board picker</span>
+    })
+
+    try {
+      renderControls('/kanban')
+      expect(screen.queryByText('Board picker')).toBeNull()
+      expect(windowControls()).not.toBeNull()
+      expect(appControls()).not.toBeNull()
+    } finally {
+      act(disposeTitle)
+    }
+  })
+
   describe('when the page projects titlebar chrome', () => {
     let disposeChrome: () => void
 
     beforeEach(() => {
       disposeChrome = registry.register({
-        area: 'titleBar.center',
+        area: 'titleBar.left',
         id: 'test-plugin-chrome',
         render: () => <span>plugin-chrome</span>
       })
@@ -130,6 +148,29 @@ describe('TitlebarControls fixed clusters', () => {
       renderControls('/settings')
 
       expect(pluginChrome()).toBeNull()
+    })
+
+    it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
+      // usePanelTitlebar positions the sessions tab strip from these hooks;
+      // without them the tabs keep their stale chat-view offset and slide
+      // under the page's switcher (kanban's board switcher).
+      const { container } = renderControls('/kanban')
+
+      expect(container.querySelector('[data-titlebar-cluster="left"]')).not.toBeNull()
+      expect(container.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
+    })
+
+    it('announces its chrome so the sessions tab reservation re-measures', () => {
+      const listener = vi.fn()
+      window.addEventListener(TITLEBAR_CHROME_CHANGED_EVENT, listener)
+
+      try {
+        renderControls('/kanban')
+
+        expect(listener).toHaveBeenCalled()
+      } finally {
+        window.removeEventListener(TITLEBAR_CHROME_CHANGED_EVENT, listener)
+      }
     })
   })
 })

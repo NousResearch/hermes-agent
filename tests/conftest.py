@@ -77,8 +77,14 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
+        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
+        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
+        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # install so the state.db guard tripped on every store-touching test (#112692).
+        from hermes_state_guard import _real_platform_state_root
+
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
+        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
     if resolved == real_root:

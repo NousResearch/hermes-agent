@@ -604,6 +604,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
+    from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -655,12 +656,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
+    # browser_vault_fill registers injected values with this forced model-egress
+    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    result = {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "output": redact_sensitive_text(proc.stdout, force=True),
+    }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = (proc.stderr or "").strip()
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:

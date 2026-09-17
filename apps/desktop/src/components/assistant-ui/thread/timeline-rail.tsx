@@ -62,7 +62,9 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
     frame.current = 0
 
     for (const bar of root.current?.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]') ?? []) {
-      const width = `${Number(timelineBarWidth(Number(bar.dataset.index), activeIndex, hover.current).toFixed(4))}rem`
+      const width = pointerY.current === null
+        ? '0.5rem'
+        : `${Number(timelineBarWidth(Number(bar.dataset.index), activeIndex, hover.current).toFixed(4))}rem`
 
       if (bar.style.width !== width) {
         bar.style.width = width

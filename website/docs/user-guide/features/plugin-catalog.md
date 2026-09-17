@@ -24,6 +24,9 @@ view. It is not an embedded website. **Installed** is a separate tab backed
 by the app's desktop-plugin registry and the selected profile's agent-plugin
 state, rather than catalog metadata. Skills uses the same **Installed / Browse**
 layout; search stays at the top and the tab switch and actions share one row.
+Browse defaults to cards. The list and card icons beside the filters switch
+layouts, preserving search and filters and remembering the choice across both
+catalogs.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -62,6 +65,8 @@ directory of the hermes-agent repository, declaring:
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `docs_url` | External documentation link (optional) |
+| `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
+| `image` | Banner image for the catalog card, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 
 ## Trust model
 
@@ -73,6 +78,13 @@ The catalog is designed so you know exactly what you're installing:
 - **Exact SHA pins.** Entries pin a specific commit, not a branch. A plugin
   author pushing new code to their repo does **not** change what the catalog
   installs — updating the pin requires another reviewed PR.
+- **Scanned at admission, trusted at install.** Admission CI runs the same
+  security scanner the installer runs (`hermes plugins validate` includes a
+  `security scan` check): a `dangerous` verdict fails the entry, `caution`
+  findings are listed for the reviewer. Because the reviewer saw them, a
+  catalog install checked out at exactly the pinned SHA does not stop to ask
+  about `caution` again; `dangerous` still blocks, and anything installed from
+  a raw URL or at another revision gets the normal prompt.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.
@@ -198,7 +210,11 @@ in short, an entry must be:
    `hermes plugins update <name>`).
 
 Pin updates (bumping `sha` to a newer commit) follow the same PR + review
-process.
+process; bump `version` in the same PR so the label users see matches the
+code. Installed plugins compare their recorded sha against the live pin:
+`hermes plugins list --json` reports `update_available`, the Desktop Plugins
+tab shows an **Update to 1.4.0** button, and `hermes plugins update <name>`
+checks out exactly the new pin.
 
 ## See also
 

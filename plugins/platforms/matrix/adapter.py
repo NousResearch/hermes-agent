@@ -1496,7 +1496,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
-            return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)
+            return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
@@ -1809,7 +1809,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = "⚠️ Couldn't deliver the attachment."
-            return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
+            return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
         except OSError:

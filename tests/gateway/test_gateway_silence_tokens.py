@@ -171,6 +171,7 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
     turn_ctx = SimpleNamespace(
         session_key="agent:main:telegram:group:-1001:12345",
         stream_consumer_holder=[None],
+        mute_notification_reply=False,
         persist_user_display_kind=None,
         source=_source(),
         _status_thread_metadata=None,
@@ -203,7 +204,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
-                                    message_type=None, internal=True)
+                                    message_type=None, internal=True, metadata={})
 
     merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,

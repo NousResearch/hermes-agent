@@ -226,7 +226,7 @@ def finish_text_response(
             "(retry %d/3, model=%s provider=%s)",
             agent._dropped_toolcall_retries, agent.model, agent.provider,
         )
-        agent._emit_status(
+        agent._emit_diagnostic_status(
             "↻ Model signaled a tool call but sent none — "
             f"re-prompting ({agent._dropped_toolcall_retries}/3)"
         )

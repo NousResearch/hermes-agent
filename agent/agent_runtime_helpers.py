@@ -970,7 +970,7 @@ def try_recover_primary_transport(
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
-            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True,
+            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True, diagnostic=True,
         )
         time.sleep(wait_time)
         return True
@@ -1195,7 +1195,7 @@ def restore_primary_runtime(agent) -> bool:
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
-                agent._emit_status(
+                agent._emit_diagnostic_status(
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )

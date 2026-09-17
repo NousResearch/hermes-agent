@@ -249,7 +249,10 @@ console.error = (...args) => {
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
   classifyStreamLog(text);
-  originalConsoleError(...args);
+  // The SDK sometimes logs values read from PASSWORD_STORE. Keep the
+  // stream-health classifier, but never forward arbitrary SDK arguments to
+  // the sidecar log where credentials could be exposed in clear text.
+  originalConsoleError("photon-sidecar: Spectrum SDK stream event");
 };
 
 const originalConsoleLog = console.log.bind(console);
@@ -258,7 +261,7 @@ console.log = (...args) => {
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
   classifyStreamLog(text);
-  originalConsoleLog(...args);
+  originalConsoleLog("photon-sidecar: Spectrum SDK stream event");
 };
 
 // Upstream liveness probe (see `/probe` handler). A synthetic DM space id +

@@ -330,7 +330,9 @@ export function spawnUpdaterProcess(
   deps: SpawnUpdaterProcessDeps = {}
 ): UpdaterChild {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
-  const spawnOptions = hiddenWindowsChildOptions(options, isWindows) as SpawnOptions
+  // This helper launches an executable directly. Explicitly disable Node's
+  // shell mode so environment-derived paths are never reparsed as a command.
+  const spawnOptions = { ...hiddenWindowsChildOptions(options, isWindows), shell: false } as SpawnOptions
 
   const child = deps.spawnProcess
     ? deps.spawnProcess(updater, updaterArgs, spawnOptions)

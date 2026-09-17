@@ -297,9 +297,9 @@ function checkEmDashCopy(text, ext, findings) {
   if (!PROSE_EXT.has(ext)) return;
   // Keep only what a visitor actually reads: no script/style, no comments, no <title>/<meta>.
   const prose = text
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<title[\s\S]*?<\/title>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+    .replace(/<title\b[^>]*>[\s\S]*?<\/title\s*>/gi, ' ')
     .replace(/<meta[^>]*>/gi, ' ')
     // Headings, terms and captions are LABELS, not sentences. "-200m — The Blue" is a dash doing
     // exactly the job a dash should do, and counting it made the rule argue against good typography.

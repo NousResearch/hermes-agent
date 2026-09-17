@@ -1001,7 +1001,7 @@ async function openSecondary(
       // reconnectSecondary classifies failures by message ("No connection
       // with id", "no longer exists") to fail-stop permanent conditions, and
       // wrapping here would break that. Callers decide surfacing (#81094).
-      console.error(`[gateway] dial failed for scope="${entry.scope}" profile="${entry.profile}":`, error)
+      console.error('[gateway] dial failed', { scope: entry.scope, profile: entry.profile }, error)
       throw error
     }
 
@@ -1847,6 +1847,14 @@ function scopeHasTurnLease(scope: string): boolean {
   return false
 }
 
+function releaseTurnLease(key: string): void {
+  const release = g.turnLeases.get(key)
+
+  if (release) {
+    release()
+  }
+}
+
 // Tell main whether a prompt turn leases this scope's pooled backend. An early
 // skip for cooperative retirement (electron/pool-retire.ts), never the proof:
 // main asks the backend itself before stopping anything. From #104871.
@@ -1872,7 +1880,7 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
   }
 
   if (event.type === 'session.reclaimed') {
-    g.turnLeases.get(key)?.()
+    releaseTurnLease(key)
 
     return
   }
@@ -1887,7 +1895,7 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
       key,
       setTimeout(() => {
         g.turnLeaseReleaseTimers.delete(key)
-        g.turnLeases.get(key)?.()
+        releaseTurnLease(key)
       }, TURN_LEASE_SETTLE_DELAY_MS)
     )
   }

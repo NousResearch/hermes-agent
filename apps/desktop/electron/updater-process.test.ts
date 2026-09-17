@@ -102,7 +102,7 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
     {
       args: ['--update', '--branch', 'main'],
       command: 'hermes-setup.exe',
-      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true }
+      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true, shell: false }
     }
   ])
 })
@@ -124,7 +124,7 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
     }
   )
 
-  assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore' })
+  assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore', shell: false })
 })
 
 test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', () => {

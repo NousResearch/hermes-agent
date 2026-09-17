@@ -155,6 +155,12 @@ describe('markdownLinkFor', () => {
   it('escapes square brackets in the label', () => {
     expect(markdownLinkFor('a [b] c', 'https://example.dev')).toBe('[a \\[b\\] c](https://example.dev)')
   })
+
+  it('escapes backslashes before parsing the label', () => {
+    const label = String.raw`a \ b`
+
+    expect(markdownLinkFor(label, 'https://example.dev')).toBe(String.raw`[a \\ b](https://example.dev)`)
+  })
 })
 
 describe('chipTypedUrlOnSpace', () => {

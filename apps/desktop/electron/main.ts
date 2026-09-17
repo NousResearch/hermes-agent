@@ -7334,7 +7334,7 @@ function restorePersistedZoomLevel(window) {
 
   window.webContents
     .executeJavaScript(
-      `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
+      '(() => { try { return localStorage.getItem("hermes:desktop:zoomLevel") } catch { return null } })()'
     )
     .then(stored => {
       if (!window || window.isDestroyed()) {

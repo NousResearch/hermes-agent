@@ -122,7 +122,12 @@ export function selectionLinkLabel(editor: HTMLElement): string | null {
  *  URL they pasted. Square brackets in the label are escaped so the link
  *  survives markdown parsing downstream. */
 export function markdownLinkFor(label: string, url: string): string {
-  return `[${label.replace(/([[\]])/g, '\\$1')}](${url})`
+  // Backslashes are escapes in markdown link labels too; escaping only the
+  // brackets lets a user-supplied backslash change how the following label
+  // character is parsed.
+  const escapedLabel = label.replace(/[\\[\]]/g, '\\$&')
+
+  return `[${escapedLabel}](${url})`
 }
 
 /** A plain space finishing a typed link commits it as a chip (followed by

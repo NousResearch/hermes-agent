@@ -48,6 +48,12 @@ describe('group mention rendering', () => {
     expect(html).toContain('data-ref="broadcast"')
     // `@example.com` is not a room identity — no span around it.
     expect(html).not.toContain('data-ref="agent" title="Bot in this room">@example')
-    expect(html.replace(/<[^>]+>/g, '')).toBe(text)
+    // Assert the exact static markup instead of stripping tags with a regex.
+    // The test is checking React's output, not parsing untrusted HTML.
+    expect(html).toBe(
+      '<span class="ref font-medium" data-ref="agent" title="Bot in this room">@planner</span> compare the options, then ' +
+        '<span class="ref font-medium" data-ref="human" title="You — the room is waiting on a human">@user</span> picks; mail ops@example.com — ' +
+        '<span class="ref font-medium" data-ref="broadcast" title="Everyone in the room">@everyone</span> review'
+    )
   })
 })

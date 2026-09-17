@@ -415,20 +415,21 @@ describe('connection-scoped dial failure identity (#95421)', () => {
       await expect(openGatewayForAgent('work', 'default')).rejects.toBe(dialError)
       await expect(openGatewayForAgent('homelab', 'default')).rejects.toBe(dialError)
 
-      const messages = errorSpy.mock.calls.map(([message]) => String(message))
+      const calls = errorSpy.mock.calls
+      const messages = calls.map(([message]) => String(message))
+      const contexts = calls.map(([, context]) => context as { scope?: string; profile?: string })
 
       expect(messages).toHaveLength(2)
-      expect(messages).toEqual(
+      expect(messages.every(message => message === '[gateway] dial failed')).toBe(true)
+      expect(contexts).toEqual(
         expect.arrayContaining([
-          expect.stringContaining('scope="conn:work::default"'),
-          expect.stringContaining('scope="conn:homelab::default"')
+          expect.objectContaining({ scope: 'conn:work::default', profile: 'default' }),
+          expect.objectContaining({ scope: 'conn:homelab::default', profile: 'default' })
         ])
       )
-      expect(messages.every(message => message.includes('profile="default"'))).toBe(true)
-      expect(new Set(messages).size).toBe(2)
-      expect(messages.join(' ')).not.toContain('wss://')
+      expect(new Set(contexts.map(context => context.scope)).size).toBe(2)
 
-      for (const [, error] of errorSpy.mock.calls) {
+      for (const [, , error] of calls) {
         expect(error).toBe(dialError)
       }
     } finally {

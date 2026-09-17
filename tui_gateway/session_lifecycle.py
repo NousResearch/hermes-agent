@@ -60,6 +60,12 @@ _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. 
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
+def _lease_metadata(live_session_id: str) -> dict:
+    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``; the delivery flag is
+    what Bot Chat gates live delivery on (session_notifications)."""
+    return {"live_session_id": live_session_id, "bot_live_delivery_consumer": True}
+
+
 def _claim_active_session_slot(
     session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
 ) -> tuple[Any, str | None]:
@@ -67,7 +73,7 @@ def _claim_active_session_slot(
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
+            metadata=_lease_metadata(live_session_id),
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -89,12 +95,30 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
-        session["active_session_lease"] = lease
+        _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
+
+
+def _attach_lease(session: dict, lease) -> None:
+    session["active_session_lease"] = lease
+    session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+
+
+def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:
+    """A sibling runtime of ``session`` (same key, same profile) holding an unreleased lease with no client.
+    Caller holds ``_sessions_lock``."""
+    for other_sid, other in _sessions.items():
+        if (other is session or other.get("_finalized") or str(other.get("session_key") or "") != key
+                or not _live_profile_matches(other, session.get("profile_home"))):
+            continue
+        lease = other.get("active_session_lease")
+        if lease is not None and not lease.released and _transport_is_dead(other.get("transport")):
+            return other_sid, other
+    return None
 
 
 def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool:
@@ -104,31 +128,27 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     restoring a chat after a renderer crash, a reload during the client-gone settle window (4009 fences
     ``session.resume``) — is a "different writer" of its own chat and was refused ``SESSION_NOT_OWNED`` until
     the old runtime's reap released the lease (up to grace + activity-stale + interrupt polls). The user IS the
-    owner: the old runtime is in THIS process and has no client, so its turn is interrupted and the lease moves.
+    owner: the old runtime is in THIS process and has no client, so the lease moves and its turn is asked to
+    stop (hard interrupt, honoured at the agent's next check — the same best-effort stop the reaper relies on).
     A live foreign pid, a sibling that still has a client, or a same-id runtime of another profile keeps
     refusing — cross-process, multi-window and cross-profile (#100029) exclusivity are untouched. See #104691.
     """
     from hermes_cli.active_sessions import transfer_active_session
     with _session_resume_lock, _sessions_lock:
-        for other_sid, other in _sessions.items():
-            if (other is session or other.get("_finalized") or str(other.get("session_key") or "") != key
-                    or not _live_profile_matches(other, session.get("profile_home"))):
-                continue
-            lease = other.get("active_session_lease")
-            if lease is None or getattr(lease, "released", False) or not _transport_is_dead(other.get("transport")):
-                continue
-            if not transfer_active_session(
-                    lease, session_id=key, metadata={"live_session_id": sid, "bot_live_delivery_consumer": True}):
-                return False
-            del other["active_session_lease"]
-            other["_lease_taken_over"] = True  # its finalize must spare the row + key-wide state the new owner drives
-            session["active_session_lease"] = lease
-            break
-        else:
+        if (found := _detached_lease_holder(session, key)) is None:
             return False
+        other_sid, other = found
+        lease = other["active_session_lease"]
+        if not transfer_active_session(lease, session_id=key, metadata=_lease_metadata(sid)):
+            return False
+        del other["active_session_lease"]
+        other["_lease_taken_over"] = True
+        _attach_lease(session, lease)
     logger.info("Session %s took over lease for %s from detached runtime %s", sid, key, other_sid)
-    with contextlib.suppress(Exception):
+    try:
         _interrupt_session_turn(other_sid, other, request_id=f"lease-takeover-{sid}")
+    except Exception:
+        logger.exception("lease-takeover interrupt failed sid=%s", other_sid)
     return True
 
 
@@ -229,8 +249,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
         return True
     try:
         from hermes_cli.active_sessions import transfer_active_session
-        if transfer_active_session(lease, session_id=new_session_id, metadata={
-                "live_session_id": sid, "bot_live_delivery_consumer": True}):
+        if transfer_active_session(lease, session_id=new_session_id, metadata=_lease_metadata(sid)):
             return True
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)
@@ -346,8 +365,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Fix for #20001.
     if _desktop_automatic_cleanup and not session_id:
         _release_active_session_slot(session)
-    # A record whose lease was taken over by a new runtime for the same chat no longer owns the row, the
-    # key-wide delegations or the approval callback — that runtime does (_take_over_detached_runtime_lease).
+    # ``_lease_taken_over``: a new runtime for the same chat owns the row and its delegations now.
     _lifecycle_guard = (_other_runtime_lease_guard(session_id, session)
                         if _desktop_automatic_cleanup and session_id
                         else contextlib.nullcontext(bool(session.get("_lease_taken_over"))))
@@ -413,6 +431,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):
         from tools.approval import unregister_gateway_notify
+        # One approval callback per key: after a takeover it is the new runtime's registration.
         if (key := session.get("session_key")) and not session.get("_lease_taken_over"):
             unregister_gateway_notify(key)
     # agent.close() → shutdown_memory_provider reads the provider's config/credentials at call time; same

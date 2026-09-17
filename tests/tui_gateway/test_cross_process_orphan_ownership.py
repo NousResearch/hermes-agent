@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.active_sessions import (
+    SESSION_NOT_OWNED,
     active_session_liveness_guard,
     active_session_registry_snapshot,
     try_acquire_active_session,
@@ -464,7 +465,7 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lea
             profile_home=profile_home,
         )
         assert refused_lease is None
-        assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+        assert getattr(refusal, "reason", None) == SESSION_NOT_OWNED
         assert (
             len(active_session_registry_snapshot(registry_home=profile_home)) == 1
         )
@@ -551,6 +552,13 @@ def test_new_runtime_takes_over_detached_sibling_lease_in_same_process(
     assert old["agent"].interrupted and old["_turn_cancel_requested"] is True
     (entry,) = active_session_registry_snapshot()
     assert entry["lease_id"] == lease.lease_id and entry["metadata"]["live_session_id"] == "new"
+
+    # The mark is not sticky: when the roles flip (new client gone, old runtime submits again) the old record
+    # owns the lease again and must finalize like any owner.
+    new["transport"] = server._detached_ws_transport
+    assert server._ensure_active_session_slot("old", old) is None
+    assert old["active_session_lease"] is lease and "_lease_taken_over" not in old
+    assert new.get("_lease_taken_over") is True and "active_session_lease" not in new
     lease.release()
 
 
@@ -574,7 +582,7 @@ def test_new_runtime_never_takes_a_live_foreign_or_attached_lease(
 
         for sid, record in (("f", foreign), ("w2", second)):
             refusal = server._ensure_active_session_slot(sid, record)
-            assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+            assert getattr(refusal, "reason", None) == SESSION_NOT_OWNED
             assert record.get("active_session_lease") is None
         assert attached["active_session_lease"] is not None and not attached["agent"].interrupted
         attached["active_session_lease"].release()
@@ -597,7 +605,7 @@ def test_takeover_stays_within_the_profile(tmp_path: Path, monkeypatch: pytest.M
     assert holder_b is not None and message is None
     try:
         refusal = server._ensure_active_session_slot("b", new)
-        assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+        assert getattr(refusal, "reason", None) == SESSION_NOT_OWNED
         assert new.get("active_session_lease") is None
         assert sibling["active_session_lease"] is not None and not sibling["agent"].interrupted
     finally:

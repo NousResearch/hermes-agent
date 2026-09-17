@@ -118,6 +118,7 @@ class _FakeMem0State:
     from_config_calls: int = 0
     clients: list = field(default_factory=list)
     requests: list = field(default_factory=list)
+    memory_configs: list = field(default_factory=list)
 
 
 def _install_fake_mem0(monkeypatch):
@@ -266,6 +267,7 @@ def _install_fake_mem0(monkeypatch):
 
     class MemoryConfig:
         def __init__(self, **config):
+            state.memory_configs.append(copy.deepcopy(config))
             llm = config["llm"]
             if llm["provider"] not in {"openai", "ollama"}:
                 raise ValueError(
@@ -286,6 +288,7 @@ def _install_fake_mem0(monkeypatch):
                 config=copy.deepcopy(vector_store.get("config", {})),
             )
             self.version = config.get("version", "v1.1")
+            self.custom_instructions = config.get("custom_instructions")
 
     class Memory:
         instances = []
@@ -381,6 +384,18 @@ class TestOSSBackend:
         backend = OSSBackend.__new__(OSSBackend)
         backend._memory = memory
         return backend, memory
+
+    def _oss_raw(self, llm_provider, **extra):
+        llm_config = {"model": "llama3.1:8b"} if llm_provider == "ollama" else {
+            "model": "gpt-5-mini",
+            "api_key": "openai-sentinel",
+        }
+        return {
+            "llm": {"provider": llm_provider, "config": llm_config},
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+            **extra,
+        }
 
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
@@ -616,6 +631,32 @@ class TestOSSBackend:
         assert "hermes_openai" not in factory.provider_to_class
         assert state.clients == []
         assert raw == before
+
+    def test_constructor_forwards_custom_instructions_on_both_init_paths(self, monkeypatch):
+        """oss.custom_instructions must reach MemoryConfig on both constructor arms."""
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        instructions = "Do not store paraphrases of facts already in memory."
+
+        OSSBackend(self._oss_raw("ollama", custom_instructions=f"  {instructions}  "))
+        OSSBackend(self._oss_raw("openai", custom_instructions=f"  {instructions}  "))
+
+        assert state.from_config_calls == 1
+        assert [cfg["custom_instructions"] for cfg in state.memory_configs] == [
+            instructions,
+            instructions,
+        ]
+        assert [inst.config.custom_instructions for inst in Memory.instances] == [
+            instructions,
+            instructions,
+        ]
+
+    def test_constructor_omits_blank_custom_instructions(self, monkeypatch):
+        blanks = ({}, {"custom_instructions": None}, {"custom_instructions": ""}, {"custom_instructions": "   "})
+        for extra in blanks:
+            state, Memory, _ = _install_fake_mem0(monkeypatch)
+            OSSBackend(self._oss_raw("ollama", **extra))
+            assert "custom_instructions" not in state.memory_configs[0], extra
+            assert Memory.instances[0].config.custom_instructions is None, extra
 
 
 httpx = pytest.importorskip("httpx")

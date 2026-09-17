@@ -3,6 +3,7 @@
 Based on PR #1085 by ismoilh (salvaged).
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -548,6 +549,28 @@ class TestProtectedInstructionFiles:
         res = self._write(proj / "config.yaml")
         assert res.get("error") and "BLOCKED" in res["error"]
 
+    def test_project_local_hermes_symlink_into_real_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / "active" / ".hermes"
+        target = fake_home / "notes" / "config.yaml"
+        target.parent.mkdir(parents=True)
+        target.write_text("original", encoding="utf-8")
+        project_home = tmp_path / "project" / ".hermes"
+        project_home.mkdir(parents=True)
+        link = project_home / "config.yaml"
+        link.symlink_to(target)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(link, "injected")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+
     def test_checkout_nested_under_hermes_dir_not_gated(self, tmp_path, approvals):
         """A repo living UNDER a .hermes dir (e.g. ~/.hermes/hermes-agent)
         must not have every write gated — only files directly inside a
@@ -558,10 +581,10 @@ class TestProtectedInstructionFiles:
         assert not res.get("error"), res
         assert approvals["calls"] == []
 
-    def test_real_hermes_home_not_gated_by_this_check(
+    def test_regular_file_in_real_hermes_home_not_gated_by_this_check(
         self, tmp_path, approvals, monkeypatch
     ):
-        """~/.hermes itself is governed by existing guards, not this gate."""
+        """Ordinary ~/.hermes files remain governed by the existing guards."""
         import tools.file_tools_write_guards as ft
         fake_home = tmp_path / ".hermes"
         (fake_home / "notes").mkdir(parents=True)
@@ -571,6 +594,114 @@ class TestProtectedInstructionFiles:
         res = self._write(fake_home / "notes" / "scratch.txt", "ok")
         assert not res.get("error"), res
         assert approvals["calls"] == []
+
+    def test_relative_regular_file_in_real_hermes_home_not_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools_paths as paths
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+
+        def resolve_base(task_id, container_paths=None):
+            return tmp_path
+
+        monkeypatch.setattr(ft, "_resolve_base_dir", resolve_base)
+        monkeypatch.setattr(paths, "_resolve_base_dir", resolve_base)
+
+        res = self._write(".hermes/scratch.txt", "ok")
+
+        assert not res.get("error"), res
+        assert approvals["calls"] == []
+
+    def test_protected_basename_in_real_hermes_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(fake_home / "SOUL.md")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not (fake_home / "SOUL.md").exists()
+        assert json.dumps(
+            str((fake_home / "SOUL.md").resolve()), ensure_ascii=False
+        ) in approvals["calls"][0]["command"]
+
+    def test_active_home_symlink_approval_names_alias_and_resolved_target(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        target = fake_home / "SOUL.md"
+        target.write_text("original", encoding="utf-8")
+        alias = tmp_path / "innocent.txt"
+        alias.symlink_to(target)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(alias, "injected")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        command = approvals["calls"][0]["command"]
+        displayed = json.dumps(
+            f"{alias} -> {target.resolve()}", ensure_ascii=False
+        )
+        assert displayed in command
+        assert target.read_text(encoding="utf-8") == "original"
+
+    def test_container_approval_target_stays_in_container_namespace(
+        self, monkeypatch
+    ):
+        from pathlib import PurePosixPath
+
+        import tools.file_tools_write_guards as ft
+
+        monkeypatch.setattr(ft, "_uses_container_paths", lambda task_id: True)
+        monkeypatch.setattr(
+            ft,
+            "_resolve_base_dir",
+            lambda task_id, container_paths=None: PurePosixPath("/workspace"),
+        )
+
+        identity, display, is_alias = ft._protected_instruction_approval_target(
+            "AGENTS.md", "container-task"
+        )
+
+        assert identity == "/workspace/AGENTS.md"
+        assert display == json.dumps("/workspace/AGENTS.md")
+        assert is_alias is False
+
+    def test_extra_pattern_in_real_hermes_home_is_gated(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import tools.file_tools_write_guards as ft
+        fake_home = tmp_path / ".hermes"
+        scripts = fake_home / "scripts"
+        scripts.mkdir(parents=True)
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, ["*_prerun.py"])
+        )
+        approvals["answer"] = "deny"
+
+        res = self._write(scripts / "nightly_prerun.py")
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not (scripts / "nightly_prerun.py").exists()
 
     # ---- patch tool -----------------------------------------------------
 
@@ -634,6 +765,44 @@ class TestProtectedInstructionFiles:
         res = json.loads(patch_tool(mode="patch", patch=patch))
         assert not res.get("error"), res
         assert agents.read_text(encoding="utf-8") == "updated rules\n"
+
+    def test_patch_v4a_names_project_and_active_home_targets(
+        self, tmp_path, approvals, monkeypatch
+    ):
+        import json
+        import tools.file_tools_write_guards as ft
+        from tools.file_tools import patch_tool
+        project_agents = tmp_path / "project" / "AGENTS.md"
+        project_agents.parent.mkdir()
+        project_agents.write_text("project rules\n", encoding="utf-8")
+        fake_home = tmp_path / ".hermes"
+        fake_home.mkdir()
+        home_agents = fake_home / "AGENTS.md"
+        home_agents.write_text("home rules\n", encoding="utf-8")
+        monkeypatch.setattr(
+            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+        )
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {project_agents}\n"
+            "@@\n"
+            "-project rules\n"
+            "+changed project rules\n"
+            f"*** Update File: {home_agents}\n"
+            "@@\n"
+            "-home rules\n"
+            "+changed home rules\n"
+            "*** End Patch"
+        )
+        approvals["answer"] = "deny"
+
+        res = json.loads(patch_tool(mode="patch", patch=patch))
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        command = approvals["calls"][0]["command"]
+        assert json.dumps(str(project_agents.resolve()), ensure_ascii=False) in command
+        assert json.dumps(str(home_agents.resolve()), ensure_ascii=False) in command
+        assert command.count("AGENTS.md") == 2
 
     # ---- gateway round-trip ----------------------------------------------
 
@@ -754,6 +923,116 @@ class TestProfileHomeExemptsHermesRoot:
             reset_hermes_home_override(token)
         assert not res.get("error"), res
         assert (root / "LEDGER.md").read_text(encoding="utf-8") == "caliber fixed"
+        assert approvals["calls"] == []
+
+    def test_active_profile_instruction_alias_into_root_stays_gated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, profile = self._profile_layout(tmp_path)
+        target = root / "shared.txt"
+        target.write_text("original", encoding="utf-8")
+        alias = profile / "AGENTS.md"
+        alias.symlink_to(target)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(profile))
+        try:
+            res = self._write(alias, "changed")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+        assert len(approvals["calls"]) == 1
+
+    def test_project_hermes_alias_into_root_stays_gated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, profile = self._profile_layout(tmp_path)
+        target = root / "shared.txt"
+        target.write_text("original", encoding="utf-8")
+        project_home = tmp_path / "repo" / ".hermes"
+        project_home.mkdir(parents=True)
+        alias = project_home / "config.yaml"
+        alias.symlink_to(target)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(profile))
+        try:
+            res = self._write(alias, "changed")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+        assert len(approvals["calls"]) == 1
+
+    def test_symlinked_default_home_keeps_ordinary_direct_file_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        real_root = tmp_path / "real-home"
+        real_root.mkdir()
+        lexical_root = tmp_path / ".hermes"
+        lexical_root.symlink_to(real_root, target_is_directory=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_root))
+        try:
+            res = self._write(lexical_root / "scratch.txt", "ok")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (real_root / "scratch.txt").read_text(encoding="utf-8") == "ok"
+        assert approvals["calls"] == []
+
+    def test_symlinked_named_profile_keeps_parent_root_store_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        real_root = tmp_path / "real-home"
+        real_profile = real_root / "profiles" / "worker"
+        real_profile.mkdir(parents=True)
+        (real_root / "config.yaml").write_text("model: x\n", encoding="utf-8")
+        lexical_root = tmp_path / ".hermes"
+        lexical_root.symlink_to(real_root, target_is_directory=True)
+        lexical_profile = lexical_root / "profiles" / "worker"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_profile))
+        try:
+            res = self._write(lexical_root / "AGENTS.md", "root notes")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (real_root / "AGENTS.md").read_text(encoding="utf-8") == "root notes"
+        assert approvals["calls"] == []
+
+    def test_symlinked_named_profile_directory_keeps_parent_root_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root = tmp_path / ".hermes"
+        profiles = root / "profiles"
+        profiles.mkdir(parents=True)
+        external_profile = tmp_path / "profile-data"
+        external_profile.mkdir()
+        lexical_profile = profiles / "worker"
+        lexical_profile.symlink_to(external_profile, target_is_directory=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_profile))
+        try:
+            res = self._write(root / "AGENTS.md", "root notes")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (root / "AGENTS.md").read_text(encoding="utf-8") == "root notes"
         assert approvals["calls"] == []
 
     def test_only_a_real_hermes_root_is_exempt(self, tmp_path, monkeypatch, approvals):

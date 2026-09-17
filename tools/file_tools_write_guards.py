@@ -11,13 +11,22 @@ whole-file overwrite of content this task never saw or that changed since.
 """
 
 import fnmatch
+import json
 import os
+import posixpath
+import sys
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
-from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+from tools.file_tools_paths import (
+    _expand_tilde,
+    _normalize_without_host_deref,
+    _resolve_base_dir,
+    _resolve_path_for_task,
+    _uses_container_paths,
+)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -197,6 +206,37 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
     return enabled, [str(p) for p in extra if p]
 
 
+def _qualified_lexical_path(filepath: str, task_id: str = "default") -> str:
+    """Qualify a task path without dereferencing its final symlink."""
+    container_paths = _uses_container_paths(task_id)
+    expanded = _expand_tilde(filepath)
+    if container_paths:
+        return str(_normalize_without_host_deref(
+            expanded if posixpath.isabs(expanded)
+            else posixpath.join(
+                str(_resolve_base_dir(task_id, container_paths=True)), expanded
+            )
+        ))
+    if sys.platform == "win32":
+        import ntpath
+
+        from tools.environments.local import _msys_to_windows_path
+
+        expanded = _expand_tilde(_msys_to_windows_path(filepath))
+        return ntpath.normpath(
+            expanded if ntpath.isabs(expanded)
+            else ntpath.join(
+                str(_resolve_base_dir(task_id, container_paths=False)), expanded
+            )
+        )
+    return os.path.normpath(
+        expanded if os.path.isabs(expanded)
+        else os.path.join(
+            str(_resolve_base_dir(task_id, container_paths=False)), expanded
+        )
+    )
+
+
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
                                   extra_patterns: list[str] | None = None) -> str | None:
@@ -212,27 +252,73 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     if not enabled:
         return None
 
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    try:
+        normalized = _qualified_lexical_path(filepath, task_id)
+    except (OSError, ValueError, RuntimeError):
+        normalized = os.path.abspath(os.path.normpath(_expand_tilde(filepath)))
     try:
         resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
     except (OSError, ValueError, RuntimeError):
         resolved = os.path.realpath(normalized)
 
-    # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
-    # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
+    # A named profile's parent Hermes ROOT is not part of that profile's live
+    # instruction scope. Preserve its whole-tree exemption (#110630), while the
+    # active profile still evaluates protected basenames and configured patterns.
+    real_home = _get_real_hermes_home()
+    real_home_key = os.path.normcase(os.path.abspath(real_home)) if real_home else None
+    exempt_home_keys = tuple(
+        os.path.normcase(os.path.abspath(home)) for home in _hermes_exempt_homes()
+    )
+    try:
+        from hermes_constants import get_hermes_home, named_profile_home
 
-    for candidate in (normalized, resolved):
+        lexical_home = os.path.abspath(os.path.normpath(str(get_hermes_home())))
+        if real_home_key and os.path.normcase(os.path.realpath(lexical_home)) != real_home_key:
+            lexical_home = real_home
+        lexical_home_key = os.path.normcase(lexical_home)
+        lexical_profile_home = named_profile_home(lexical_home)
+        lexical_exempt_home_keys = (lexical_home_key,)
+        if lexical_profile_home is not None:
+            lexical_root_key = os.path.normcase(os.path.abspath(
+                str(lexical_profile_home.parent.parent)
+            ))
+            if lexical_root_key != lexical_home_key:
+                lexical_exempt_home_keys += (lexical_root_key,)
+            canonical_lexical_root_key = os.path.normcase(
+                os.path.realpath(str(lexical_profile_home.parent.parent))
+            )
+            if canonical_lexical_root_key not in exempt_home_keys:
+                exempt_home_keys += (canonical_lexical_root_key,)
+    except (OSError, RuntimeError, ValueError):
+        lexical_home_key = real_home_key
+        lexical_exempt_home_keys = exempt_home_keys
+
+    def _within(candidate_key: str, home_key: str) -> bool:
+        return candidate_key == home_key or candidate_key.startswith(home_key + os.sep)
+
+    candidate_namespaces = (
+        (normalized, lexical_home_key, lexical_exempt_home_keys),
+        (resolved, real_home_key, exempt_home_keys),
+    )
+    for candidate, active_home_key, candidate_exempt_home_keys in candidate_namespaces:
+        candidate_key = os.path.normcase(os.path.abspath(candidate))
+        candidate_in_active_home = bool(
+            active_home_key and _within(candidate_key, active_home_key)
+        )
+        candidate_in_parent_root = any(
+            _within(candidate_key, exempt_home_key)
+            and not candidate_in_active_home
+            for exempt_home_key in candidate_exempt_home_keys
+        )
+        if candidate_in_parent_root:
+            continue
         base = os.path.basename(candidate)
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
             return base
+        if candidate_in_active_home:
+            continue
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
@@ -242,25 +328,48 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     return None
 
 
+def _protected_instruction_approval_target(
+        filepath: str, task_id: str = "default") -> tuple[str, str, bool]:
+    """Return canonical identity, qualified display, and alias status."""
+    container_paths = _uses_container_paths(task_id)
+    try:
+        requested = _qualified_lexical_path(filepath, task_id)
+    except (OSError, ValueError, RuntimeError):
+        requested = os.path.abspath(os.path.normpath(_expand_tilde(filepath)))
+    # Container paths belong to the remote namespace. Host realpath would
+    # rewrite (or invent) a different target and misidentify the approved file.
+    canonical = requested if container_paths else os.path.realpath(requested)
+    is_alias = (
+        not container_paths
+        and os.path.normcase(requested) != os.path.normcase(canonical)
+    )
+    display = f"{requested} -> {canonical}" if is_alias else requested
+    return (
+        canonical if container_paths else os.path.normcase(canonical),
+        json.dumps(display, ensure_ascii=False),
+        is_alias,
+    )
+
+
 _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavailable."
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
 
-def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
+def _request_protected_instruction_approval(targets: list[str], task_id: str = "default") -> str | None:
     """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
 
     Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
     allowlists): this gate is one-operation approval EVERY time, no persisted
     scope, fail-closed without a human channel.
     """
-    targets = ", ".join(dict.fromkeys(reasons))
+    target_list = ", ".join(targets)
     description = (
-        f"Write to protected agent-instruction file(s): {targets}. "
+        f"Write to protected agent-instruction file(s): {target_list}. "
         "These files steer future agent behavior; approval is always "
         "required (not bypassed by auto-approve).")
-    display = f"<write to {targets}>"
+    display = f"<write to {target_list}>"
     blocked = (
-        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
+        f"BLOCKED: write to protected agent-instruction file(s) ({target_list}) "
         "{why} The user has NOT consented to this write. Do NOT retry it or "
         "attempt the same edit via another path (terminal, execute_code, "
         "etc.).")
@@ -327,11 +436,20 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
-                           for p in paths) if r]
-    if not reasons:
+    targets: dict[str, tuple[str, bool]] = {}
+    for path in paths:
+        reason = _protected_instruction_reason(
+            path, task_id, enabled=enabled, extra_patterns=extra)
+        if reason:
+            identity, display, is_alias = _protected_instruction_approval_target(
+                path, task_id)
+            previous = targets.get(identity)
+            if previous is None or (is_alias and not previous[1]):
+                targets[identity] = (display, is_alias)
+    if not targets:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    return _request_protected_instruction_approval(
+        [display for display, _is_alias in targets.values()], task_id)
 
 
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:

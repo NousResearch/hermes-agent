@@ -12,7 +12,8 @@ from hermes_cli.local_runtime.bootstrap import ensure_local_runtime, shutdown_lo
 from hermes_cli.local_runtime.context_policy import (  # noqa: F401
     FLOOR, growth_decision, initial_window, ladder, launch_args)
 from hermes_cli.local_runtime.growth import (  # noqa: F401
-    clear_window_override, load_window_overrides, maybe_grow_window, save_window_override)
+    clear_mtp_override, clear_window_override, load_mtp_overrides, load_window_overrides,
+    maybe_grow_window, save_mtp_override, save_window_override)
 from hermes_cli.local_runtime.detect import detect_server  # noqa: F401
 from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint  # noqa: F401
 from hermes_cli.local_runtime.estimator import (  # noqa: F401

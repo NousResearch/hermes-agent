@@ -30,6 +30,8 @@ Two subtleties this pins:
   and disables compaction on a healthy session.
   ``test_no_false_positive_under_tokenizer_skew``.
 """
+import time
+
 import pytest
 
 from agent.context_compressor import ContextCompressor
@@ -188,11 +190,13 @@ class TestFutilityGuard:
 
 
 class TestMinimumMessagesBranch:
-    def test_too_few_messages_records_an_ineffective_pass(self):
-        """Returning the transcript unchanged must move the anti-thrash state.
+    def test_too_few_messages_defers_via_structural_backoff(self):
+        """A structurally impossible compaction must not strike the breaker.
 
-        Otherwise should_compress() keeps saying True about a transcript that can
-        never shrink, and every turn re-enters a no-op compaction.
+        #93022 — too-few-messages is a transcript-shape fact, not evidence
+        of an incompressible floor: striking it punished unrelated later
+        failures. Instead the branch arms the structural no-op backoff so
+        retries are deferred without burning anti-thrash strikes.
         """
         cc = _compressor(threshold_tokens=1)
         msgs = _messages(3, size=10)
@@ -202,7 +206,13 @@ class TestMinimumMessagesBranch:
 
         assert len(out) == len(msgs), "nothing should have been compressed"
         assert cc._last_compression_made_progress is False
-        assert cc._ineffective_compression_count == before + 1
+        assert cc._ineffective_compression_count == before, (
+            "structural no-op must leave the strike counter untouched"
+        )
+        assert cc._structural_no_op_backoff_until > time.monotonic(), (
+            "structural no-op must arm the retry backoff"
+        )
+        assert cc._compression_block_reason().startswith("structural_backoff")
 
 
 class TestRejectedCompactionStrike:

@@ -15,7 +15,7 @@ Fully sharded data-parallel training for large models.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/pytorch-fsdp` |
-| Path | `optional-skills/mlops/pytorch-fsdp` |
+| Path | `optional-skills/mlops\pytorch-fsdp` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

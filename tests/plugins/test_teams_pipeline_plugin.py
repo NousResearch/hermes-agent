@@ -99,7 +99,7 @@ def test_build_pipeline_runtime_reuses_existing_teams_adapter_surface(monkeypatc
 
     monkeypatch.setattr(runtime_module, "build_graph_client", lambda: object())
     monkeypatch.setattr(runtime_module, "resolve_teams_pipeline_store_path", lambda: tmp_path / "teams-store.json")
-    monkeypatch.setattr("plugins.platforms.teams.adapter.TeamsSummaryWriter", FakeWriter)
+    monkeypatch.setattr("plugins.platforms.teams.summary_writer.TeamsSummaryWriter", FakeWriter)
 
     gateway = SimpleNamespace(
         config=GatewayConfig(
@@ -168,7 +168,6 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
         "sub-1",
         {"client_state": "abc", "resource": "communications/onlineMeetings"},
     )
-    store.record_event_timestamp("evt-1", "2026-05-03T19:30:00Z")
     store.upsert_job("job-1", {"status": "received", "event_id": "evt-1"})
     store.upsert_sink_record("notion:meeting-1", {"page_id": "page-1"})
 
@@ -180,7 +179,6 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert subscription is not None
     assert subscription["subscription_id"] == "sub-1"
     assert subscription["client_state"] == "abc"
-    assert reloaded.get_event_timestamp("evt-1") == "2026-05-03T19:30:00Z"
     assert job is not None
     assert job["status"] == "received"
     assert sink is not None
@@ -430,7 +428,7 @@ class TestTeamsMeetingPipeline:
         assert summarize_calls == 1
         assert len(store.list_jobs()) == 1
         receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
-        assert store.has_notification_receipt(receipt_key) is True
+        assert store.record_notification_receipt(receipt_key) is False
 
 
 def test_parse_graph_meeting_resource_reads_quoted_users_transcript_path():

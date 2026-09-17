@@ -1,0 +1,14 @@
+name: mnemosyne
+repo: https://github.com/Devs-Foundation/mnemosyne
+sha: ad7ece790122d29d478ca71edfab5eb05e54f2db
+description: Local vault-backed memory provider — unlimited storage, ripgrep search, zero cloud, zero
+  attack surface. Stores memories as markdown files in the Obsidian vault.
+maintainer: Devs-Foundation
+tier: community
+category: memory
+docs_url: https://github.com/Devs-Foundation/mnemosyne#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

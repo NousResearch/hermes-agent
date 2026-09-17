@@ -158,15 +158,28 @@ type KanbanMessages = {
   copyTitle: string
   copiedId: (id: string) => string
   copiedTitle: string
-  archiveTask: string
-  deleteTask: string
   close: string
   working: string
   // board switcher
   board: string
   newBoard: string
   newBoardDots: string
-  boardSettings: string
+  // Menu labels are bare verbs — the board they act on is the one named in the
+  // switcher's trigger. The nouns come back for the native file-dialog and
+  // in-app dialog titles, which stand alone.
+  exportDots: string
+  importDots: string
+  renameDots: string
+  settingsDots: string
+  exportBoardTitle: string
+  importBoardTitle: string
+  boardExported: (path: string) => string
+  boardImported: (name: string) => string
+  boardImportedAs: (slug: string) => string
+  renameBoardTitle: string
+  deleteBoardTitle: (name: string) => string
+  deleteBoardConfirm: string
+  boardArchived: (path: string) => string
   boardSettingsFor: (name: string) => string
   name: string
   boardNamePlaceholder: string
@@ -191,6 +204,8 @@ type KanbanMessages = {
     blockedTitle: string
     blockLoopTitle: string
     gaveUpTitle: string
+    /** Body for gave_up — the raw worker error rides in the toast `detail`. */
+    gaveUpBody: string
     crashedTitle: string
     timedOutTitle: string
     openKanban: string
@@ -361,14 +376,24 @@ export const en: KanbanMessages = {
   copyTitle: 'Copy title',
   copiedId: id => `Copied ${id}`,
   copiedTitle: 'Copied title',
-  archiveTask: 'Archive task',
-  deleteTask: 'Delete task',
   close: 'Close',
   working: 'working',
   board: 'Board',
   newBoard: 'New board',
   newBoardDots: 'New board…',
-  boardSettings: 'Board settings…',
+  exportDots: 'Export…',
+  importDots: 'Import…',
+  renameDots: 'Rename…',
+  settingsDots: 'Settings…',
+  exportBoardTitle: 'Export board…',
+  importBoardTitle: 'Import board…',
+  boardExported: path => `Board exported to ${path}`,
+  boardImported: name => `Imported ${name}`,
+  boardImportedAs: slug => `That name was taken — imported as ${slug}`,
+  renameBoardTitle: 'Rename board',
+  deleteBoardTitle: name => `Delete "${name}"?`,
+  deleteBoardConfirm: 'The board is archived, not erased — its tasks and attachments stay on disk and can be restored.',
+  boardArchived: path => `Board archived to ${path}`,
   boardSettingsFor: name => `Board settings — ${name}`,
   name: 'Name',
   boardNamePlaceholder: 'Board name',
@@ -392,9 +417,10 @@ export const en: KanbanMessages = {
     completedTitle: 'Task completed',
     blockedTitle: 'Task blocked — needs your input',
     blockLoopTitle: 'Task routed to triage — needs a decision',
-    gaveUpTitle: 'Task gave up',
-    crashedTitle: 'Worker crashed — will retry',
-    timedOutTitle: 'Task timed out — will retry',
+    gaveUpTitle: 'Task stopped',
+    gaveUpBody: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
+    crashedTitle: 'Task hit a problem — Hermes will retry it automatically',
+    timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
   }
@@ -562,14 +588,24 @@ const ja: KanbanMessages = {
   copyTitle: 'タイトルをコピー',
   copiedId: id => `${id} をコピーしました`,
   copiedTitle: 'タイトルをコピーしました',
-  archiveTask: 'タスクをアーカイブ',
-  deleteTask: 'タスクを削除',
   close: '閉じる',
   working: '作業中',
   board: 'ボード',
   newBoard: '新しいボード',
   newBoardDots: '新しいボード…',
-  boardSettings: 'ボード設定…',
+  exportDots: 'エクスポート…',
+  importDots: 'インポート…',
+  renameDots: '名前を変更…',
+  settingsDots: '設定…',
+  exportBoardTitle: 'ボードをエクスポート…',
+  importBoardTitle: 'ボードをインポート…',
+  boardExported: path => `ボードを ${path} にエクスポートしました`,
+  boardImported: name => `${name} をインポートしました`,
+  boardImportedAs: slug => `その名前は使用中のため ${slug} としてインポートしました`,
+  renameBoardTitle: 'ボード名を変更',
+  deleteBoardTitle: name => `「${name}」を削除しますか？`,
+  deleteBoardConfirm: 'ボードは消去されずアーカイブされます。タスクと添付ファイルはディスクに残り、復元できます。',
+  boardArchived: path => `ボードを ${path} にアーカイブしました`,
   boardSettingsFor: name => `ボード設定 — ${name}`,
   name: '名前',
   boardNamePlaceholder: 'ボード名',
@@ -593,9 +629,10 @@ const ja: KanbanMessages = {
     completedTitle: 'タスク完了',
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
     blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
-    gaveUpTitle: 'タスクを断念しました',
-    crashedTitle: 'ワーカーがクラッシュ — 再試行します',
-    timedOutTitle: 'タスクがタイムアウト — 再試行します',
+    gaveUpTitle: 'タスクが停止しました',
+    gaveUpBody: 'Hermes はこのタスクを完了できませんでした。かんばんを開いて原因を確認し、再割り当てしてください。',
+    crashedTitle: 'タスクで問題が発生 — Hermes が自動で再試行します',
+    timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
   }
@@ -761,14 +798,24 @@ const zh: KanbanMessages = {
   copyTitle: '复制标题',
   copiedId: id => `已复制 ${id}`,
   copiedTitle: '已复制标题',
-  archiveTask: '归档任务',
-  deleteTask: '删除任务',
   close: '关闭',
   working: '进行中',
   board: '面板',
   newBoard: '新建面板',
   newBoardDots: '新建面板…',
-  boardSettings: '面板设置…',
+  exportDots: '导出…',
+  importDots: '导入…',
+  renameDots: '重命名…',
+  settingsDots: '设置…',
+  exportBoardTitle: '导出面板…',
+  importBoardTitle: '导入面板…',
+  boardExported: path => `面板已导出至 ${path}`,
+  boardImported: name => `已导入 ${name}`,
+  boardImportedAs: slug => `该名称已被占用，已导入为 ${slug}`,
+  renameBoardTitle: '重命名面板',
+  deleteBoardTitle: name => `确定删除“${name}”？`,
+  deleteBoardConfirm: '面板会被归档而非清除，其任务和附件仍保留在磁盘上，可以恢复。',
+  boardArchived: path => `面板已归档至 ${path}`,
   boardSettingsFor: name => `面板设置 — ${name}`,
   name: '名称',
   boardNamePlaceholder: '面板名称',
@@ -791,9 +838,10 @@ const zh: KanbanMessages = {
     completedTitle: '任务已完成',
     blockedTitle: '任务受阻 — 需要你的输入',
     blockLoopTitle: '任务已转入分类 — 需要人工决定',
-    gaveUpTitle: '任务已放弃',
-    crashedTitle: '工作单元崩溃 — 将重试',
-    timedOutTitle: '任务超时 — 将重试',
+    gaveUpTitle: '任务已停止',
+    gaveUpBody: 'Hermes 无法完成这个任务。打开看板查看原因并重新分配。',
+    crashedTitle: '任务遇到问题 — Hermes 将自动重试',
+    timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
   }
@@ -959,14 +1007,24 @@ const zhHant: KanbanMessages = {
   copyTitle: '複製標題',
   copiedId: id => `已複製 ${id}`,
   copiedTitle: '已複製標題',
-  archiveTask: '封存任務',
-  deleteTask: '刪除任務',
   close: '關閉',
   working: '進行中',
   board: '面板',
   newBoard: '新增面板',
   newBoardDots: '新增面板…',
-  boardSettings: '面板設定…',
+  exportDots: '匯出…',
+  importDots: '匯入…',
+  renameDots: '重新命名…',
+  settingsDots: '設定…',
+  exportBoardTitle: '匯出面板…',
+  importBoardTitle: '匯入面板…',
+  boardExported: path => `面板已匯出至 ${path}`,
+  boardImported: name => `已匯入 ${name}`,
+  boardImportedAs: slug => `該名稱已被使用，已匯入為 ${slug}`,
+  renameBoardTitle: '重新命名面板',
+  deleteBoardTitle: name => `確定刪除「${name}」？`,
+  deleteBoardConfirm: '面板會被封存而非清除，其任務和附件仍保留在磁碟上，可以還原。',
+  boardArchived: path => `面板已封存至 ${path}`,
   boardSettingsFor: name => `面板設定 — ${name}`,
   name: '名稱',
   boardNamePlaceholder: '面板名稱',
@@ -989,9 +1047,10 @@ const zhHant: KanbanMessages = {
     completedTitle: '任務已完成',
     blockedTitle: '任務受阻 — 需要你的輸入',
     blockLoopTitle: '任務已轉入分類 — 需要人工決定',
-    gaveUpTitle: '任務已放棄',
-    crashedTitle: '工作單元當機 — 將重試',
-    timedOutTitle: '任務逾時 — 將重試',
+    gaveUpTitle: '任務已停止',
+    gaveUpBody: 'Hermes 無法完成這個任務。開啟看板查看原因並重新指派。',
+    crashedTitle: '任務遇到問題 — Hermes 將自動重試',
+    timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
   }

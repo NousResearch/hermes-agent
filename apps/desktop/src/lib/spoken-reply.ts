@@ -111,6 +111,38 @@ export function markAssistantIdSpoken(
   markSpokenReply(sessionId, { id, ordinal })
 }
 
+/**
+ * Carry the spoken anchor when a chat gets a real session id (null → created)
+ * mid voice-conversation. Do not copy across two real sessions — that would
+ * leak "already spoken" into a different transcript. The null-session entry is
+ * moved, not copied: left behind, it would mark the NEXT new chat's first reply
+ * as already spoken.
+ */
+export function adoptSpokenReplySession(
+  fromSessionId: string | null | undefined,
+  toSessionId: string | null | undefined
+): void {
+  const fromKey = sessionKey(fromSessionId)
+  const toKey = sessionKey(toSessionId)
+
+  if (fromKey !== NO_SESSION || toKey === NO_SESSION) {
+    return
+  }
+
+  const from = lastSpokenBySession.get(fromKey)
+
+  if (!from) {
+    return
+  }
+
+  // Dropped even when not adopted below: the anchor belongs to this chat.
+  lastSpokenBySession.delete(fromKey)
+
+  if (!lastSpokenBySession.has(toKey)) {
+    lastSpokenBySession.set(toKey, from)
+  }
+}
+
 /** Current spoken anchor, migrated in place when the live row was rewritten. */
 export function resolveSpokenReply(
   sessionId: string | null | undefined,

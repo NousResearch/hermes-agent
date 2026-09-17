@@ -60,7 +60,7 @@ def _run_switch(
     with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
-         patch("hermes_cli.models.validate_requested_model", return_value=validation), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
@@ -122,3 +122,37 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+
+def test_compat_projection_of_same_provider_is_not_ambiguous():
+    """The gateway/TUI/CLI pass ``providers:`` AND ``get_compatible_custom_providers()``, which re-lists
+    each ``providers.<slug>`` row as ``custom:<name>``. One configured endpoint must route, not be
+    rejected as 'declared by multiple configured providers' (#112788)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": {"name": "relay", "api": "https://relay.example/v1",
+                                "key_env": "RELAY_KEY", "default_model": "claude-opus-4-7"}}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers({"providers": user_providers}))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+
+
+def test_distinct_legacy_endpoint_with_same_model_stays_ambiguous():
+    """Control for #112788: a hand-written ``custom_providers:`` row (no provider_key) that declares
+    the same model on a different endpoint is still a genuinely separate candidate."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": {"name": "relay", "api": "https://relay.example/v1",
+                                "key_env": "RELAY_KEY", "default_model": "claude-opus-4-7"}}
+    cfg = {"providers": user_providers, "custom_providers": [
+        {"name": "backup-relay", "base_url": "https://backup.example/v1", "key_env": "BACKUP_KEY",
+         "model": "claude-opus-4-7"}]}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
+    assert "custom:backup-relay" in result.error_message and "relay" in result.error_message

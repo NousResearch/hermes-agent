@@ -39,10 +39,7 @@ from hermes_cli.update_cmd import (
 )
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="launchd fleet restart is macOS-only; helpers use POSIX os.getuid",
-)
+pytestmark = pytest.mark.macos_only  # launchd fleet restart is macOS-only; helpers use POSIX os.getuid
 
 UID = 501
 
@@ -197,8 +194,10 @@ class TestProbeLaunchdDomainForLabel:
 
 class TestGetServicePidsScoping:
     def _wire(self, monkeypatch):
-        monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+        # The all_profiles branch also runs a real ``launchctl list`` prefix scan; a developer
+        # box with a live ai.hermes.gateway* fleet would leak its PIDs into the assertion.
+        monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: _completed(0, ""))
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(
             gw,
@@ -245,7 +244,8 @@ class TestGetServicePidsScoping:
 
 def _fleet(monkeypatch, tmp_path, *, current, labels, located,
            registered=None, plist_exists=True,
-           drain_results=None, kick_errors=None, wait_results=None):
+           drain_results=None, kick_errors=None, wait_results=None,
+           current_supervised=True):
     """Wire a fake launchd fleet through hermes_cli.gateway seams.
 
     ``located`` maps label -> (domain, pid) as ``_locate_launchd_gateway_service``
@@ -259,7 +259,7 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
 
     rec = SimpleNamespace(
         kickstarts=[], drains=[], current_restarts=[], waits=[],
-        locates=[], registered_checks=[],
+        locates=[], registered_checks=[], current_verifies=[],
     )
 
     plist = tmp_path / f"{current}.plist"
@@ -292,7 +292,7 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(
         gw,
         "_graceful_restart_via_sigusr1",
-        lambda pid, drain_timeout: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
+        lambda pid, drain_timeout, **_: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
     )
 
     def fake_kickstart(label, domain):
@@ -310,6 +310,18 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(gw, "_wait_for_launchd_service_pid", fake_wait)
     monkeypatch.setattr(
         gw, "launchd_restart", lambda: rec.current_restarts.append(current)
+    )
+
+    # The current profile is now verified the same way siblings are: a
+    # successful launchd_restart() only counts once launchd reports it is
+    # supervising the job (#88848). Stubbed here so the fleet cases keep
+    # asserting on routing rather than on a real launchctl probe.
+    def fake_verify_current(*, label=None, **_kw):
+        rec.current_verifies.append(label)
+        return current_supervised
+
+    monkeypatch.setattr(
+        gw, "wait_for_launchd_gateway_supervision", fake_verify_current
     )
     return rec
 
@@ -628,15 +640,13 @@ class TestWaitForLaunchdServicePid:
         )
 
 
-class TestIncompleteWarningMentionsLaunchctl:
-    def test_launchd_labels_get_launchctl_hint(self, capsys):
+class TestIncompleteWarningOnMacos:
+    """On the launchd host the hint is bootstrap/list, never the systemd or the
+    ``kickstart`` line — a label in this list is likely deregistered (#88848)."""
+
+    def test_launchd_labels_get_bootstrap_hint(self, capsys):
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
-
-    def test_systemd_units_keep_systemctl_hint(self, capsys):
-        _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
-        out = capsys.readouterr().out
-        assert "systemctl" in out
-        assert "launchctl" not in out
+        assert "launchctl bootstrap" in out
+        assert "systemctl" not in out

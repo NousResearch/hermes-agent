@@ -119,9 +119,10 @@ def test_should_clear_holds_latch_when_idle_unknown():
 
 def test_format_session_stall_notification_minutes():
     msg = format_session_stall_notification(125)
-    assert "2 min ago" in msg
-    assert "/new" in msg
-    assert format_session_stall_notification(30).count("1 min ago") == 1
+    assert "2 min" in msg
+    # /stop (cancel the task) is offered before /new (discards the conversation).
+    assert "/stop" in msg and "/new" in msg and msg.index("/stop") < msg.index("/new")
+    assert format_session_stall_notification(30).count("1 min") == 1
 
 
 def test_resolve_idle_uses_shared_activity_snapshot_only():
@@ -452,6 +453,18 @@ def test_resolve_idle_rejects_nonfinite_seconds_since_activity():
         now=now,
     )
     assert idle == 15.0
+
+
+def test_resolve_idle_rejects_boolean_seconds_and_uses_timestamp():
+    now = 1_000_000.0
+    idle = resolve_session_idle_seconds_from_activity(
+        {
+            "seconds_since_activity": True,
+            "last_activity_ts": now - 3,
+        },
+        now=now,
+    )
+    assert idle == 3.0
 
 
 def test_session_stall_timeout_in_default_config():

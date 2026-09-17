@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -5,10 +6,11 @@ import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $settingsOwner } from '@/store/settings-scope'
 import { CHAT_FONT_SUGGESTIONS, normalizeChatFontFamily, setChatFontFamilyFromConfig } from '@/themes/chat-font'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
@@ -30,7 +32,13 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
+  const settingsOwner = useStore($settingsOwner)
+
+  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord(
+    settingsOwner ?? undefined,
+    Boolean(settingsOwner)
+  )
+
   const [draft, setDraft] = useState<string | null>(null)
   // The seed effect refuses to reseed while the query still carries the
   // previous profile's stamp. A structurally-shared refetch keeps the object
@@ -80,7 +88,7 @@ export function ChatFontSetting() {
 
       // Sparse patch: PUT /api/config deep-merges; echoing the cached snapshot
       // would overwrite keys other surfaces changed since it loaded.
-      void saveHermesConfig(setNested({}, CONFIG_PATH, value))
+      void saveHermesConfig(setNested({}, CONFIG_PATH, value), settingsOwner ?? undefined)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)
@@ -90,7 +98,7 @@ export function ChatFontSetting() {
             return
           }
 
-          setHermesConfigCache(next)
+          hermesConfigCacheWriter(settingsOwner ?? undefined)(next)
         })
         .catch(error => {
           if (saveVersionRef.current !== version) {
@@ -106,7 +114,7 @@ export function ChatFontSetting() {
     }, AUTOSAVE_DELAY_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed])
+  }, [draft, loadedConfig, saveVersion, settingsOwner, t.settings.config.autosaveFailed])
 
   const update = (value: string) => {
     saveVersionRef.current += 1
@@ -141,7 +149,10 @@ export function ChatFontSetting() {
             ))}
           </datalist>
           {/* Inherits --dt-font-sans, so it IS the live result, not a simulation. */}
-          <div aria-label={copy.chatFontPreview} className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)">
+          <div
+            aria-label={copy.chatFontPreview}
+            className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
+          >
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.chatFontPreview}
             </span>

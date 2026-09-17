@@ -290,20 +290,25 @@ export interface ScopedServerRequest extends ServerRequest {
   profile: string
 }
 
-/** Fan a primary-socket server request into the registry handler with the active source tags. */
-export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
-  // Fail fast, never swallow: the backend blocks on this answer (clarify waits
-  // its full 3600s deadline). Without a registry there is nobody to answer —
-  // -32601 tells the tool immediately instead of stalling the turn.
+/**
+ * Route a server→client request into the registry handler with its source tags.
+ * Fail fast, never swallow: the backend blocks on this answer (clarify waits
+ * its full 3600s deadline). Without a registry there is nobody to answer —
+ * -32601 tells the tool immediately instead of stalling the turn.
+ */
+function dispatchServerRequest(request: ServerRequest, profile: string, connectionId: null | string): void {
   if (!g.config?.onServerRequest) {
     request.fail(JSON_RPC_METHOD_NOT_FOUND, 'Hermes Desktop has no server-request registry yet')
 
     return
   }
 
-  const connectionId = g.config.activeConnectionId?.() ?? null
-
   g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+}
+
+/** Fan a primary-socket server request into the registry handler with the active source tags. */
+export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
+  dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
@@ -872,20 +877,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     releaseTerminalTurnLease(entry.scope, event)
   })
   entry.offRequest =
-    gateway.onRequest?.(request => {
-      // Same contract as dispatchPrimaryServerRequest: no registry = fail fast
-      // with -32601 (the backend blocks on the answer; silent drops stall the
-      // tool for its whole deadline).
-      if (!g.config?.onServerRequest) {
-        request.fail(JSON_RPC_METHOD_NOT_FOUND, 'Hermes Desktop has no server-request registry yet')
-
-        return
-      }
-
-      const scopedConnectionId = connectionId ?? (g.config.activeConnectionId?.() ?? null)
-
-      g.config.onServerRequest({ ...request, ...(scopedConnectionId ? { connectionId: scopedConnectionId } : {}), profile })
-    }) ?? (() => {})
+    gateway.onRequest?.(request => dispatchServerRequest(request, profile, connectionId)) ?? (() => {})
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 

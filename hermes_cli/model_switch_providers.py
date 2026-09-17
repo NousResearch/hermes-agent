@@ -937,6 +937,14 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        if not has_creds and cp_config is not None and getattr(cp_config, "auth_type", "") == "external_process":
+            # Subprocess-backed providers own their auth; structural reachability
+            # (the binary resolves) is the credential evidence for listing.
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+                has_creds = bool(get_external_process_provider_status(cp.slug).get("configured"))
+            except Exception:
+                has_creds = False
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):
@@ -944,6 +952,10 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
+        if not model_ids and cp_config is not None and getattr(cp_config, "auth_type", "") == "external_process":
+            # No models.dev / curated entry exists for agent CLIs; the provider
+            # name is itself the selectable model (maps to the session default).
+            model_ids = [cp.slug]
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 

@@ -40,6 +40,67 @@ def test_api_key_plugin_providers_unchanged():
     assert _plugin_provider_enters_picker(_profile("acme-api", "api_key")) is True
 
 
+def test_external_process_providers_in_model_options_payload(monkeypatch):
+    """Layer 1 admits it into CANONICAL_PROVIDERS; layer 2 (inventory) seats a
+    row with a self-named model, reachability as the credential."""
+    import hermes_cli.auth as auth
+    import hermes_cli.inventory as inv
+    import hermes_cli.models as models
+
+    fake = _make_registry_profile()
+    monkeypatch.setattr("providers.list_providers", lambda: [fake])
+    monkeypatch.setattr(auth, "get_external_process_provider_status", lambda slug: {"configured": True})
+    entry = models.ProviderEntry("ext-proc", "Ext Proc", "external process test provider")
+    monkeypatch.setattr(models, "CANONICAL_PROVIDERS", list(models.CANONICAL_PROVIDERS) + [entry])
+    ctx = inv.ConfigContext(
+        current_provider="zai", current_model="glm-5.3",
+        current_base_url="https://api.z.ai/api/coding/paas/v4",
+        user_providers={}, custom_providers=[])
+    payload = inv.build_model_options_payload(ctx, explicit_only=False)
+    rows = [p for p in payload["providers"] if p.get("slug") == "ext-proc"]
+    assert rows, "external_process plugin provider missing from model.options payload"
+    assert rows[0]["models"] == ["ext-proc"]
+    assert rows[0]["authenticated"] is True
+
+
+def test_unresolvable_external_process_binary_not_listed(monkeypatch):
+    """Reachability is the credential: a binary that doesn't resolve stays hidden."""
+    import hermes_cli.auth as auth
+    import hermes_cli.inventory as inv
+    import hermes_cli.models as models
+
+    fake = _make_registry_profile()
+    monkeypatch.setattr("providers.list_providers", lambda: [fake])
+    monkeypatch.setattr(
+        auth, "get_external_process_provider_status",
+        lambda slug: {"configured": False})
+    entry = models.ProviderEntry("ext-proc", "Ext Proc", "external process test provider")
+    monkeypatch.setattr(models, "CANONICAL_PROVIDERS", list(models.CANONICAL_PROVIDERS) + [entry])
+    ctx = inv.ConfigContext(
+        current_provider="zai", current_model="glm-5.3", current_base_url="",
+        user_providers={}, custom_providers=[])
+    payload = inv.build_model_options_payload(ctx, explicit_only=False)
+    assert not [p for p in payload["providers"] if p.get("slug") == "ext-proc"]
+
+
+def _make_registry_profile():
+    """A profile + matching ProviderConfig, registered in both registries."""
+    from types import SimpleNamespace
+    profile = SimpleNamespace(
+        name="ext-proc", auth_type="external_process", display_name="Ext Proc",
+        description="external process test provider", aliases=(),
+        process_command="/fake/does-not-exist", process_args=("acp",),
+    )
+    import hermes_cli.auth as auth
+    registry_entry = SimpleNamespace(
+        name="ext-proc", display_name="Ext Proc", auth_type="external_process",
+        api_key_env_vars=(), base_url="acp://ext", inference_base_url="acp://ext",
+        command="ext-proc", args=("acp",), base_url_env_var=None,
+    )
+    auth.PROVIDER_REGISTRY.setdefault("ext-proc", registry_entry)
+    return profile
+
+
 def test_auto_extend_seats_external_process_provider(monkeypatch):
     """Integration through the real auto-extend loop (reloaded with a stubbed
     plugin registry, mirroring discovery output)."""

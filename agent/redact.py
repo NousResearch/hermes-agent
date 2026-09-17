@@ -1219,4 +1219,6 @@ class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_sensitive_text(super().format(record))
+        # Logs are not interactive tool output: URL credentials must not survive
+        # in formatted messages or exception tracebacks written to disk.
+        return redact_sensitive_text(super().format(record), redact_url_credentials=True)

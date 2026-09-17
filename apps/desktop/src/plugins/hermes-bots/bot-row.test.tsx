@@ -252,7 +252,9 @@ describe('a group row', () => {
   it('names the reader in the active language when their line is the latest, without touching the log marker', () => {
     // 'You' is the persisted author sentinel on the log entry; only its rendering localizes.
     act(() =>
-      $groupChats.set({ crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} } })
+      $groupChats.set({
+        crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} }
+      })
     )
     locale.current = 'zh'
 

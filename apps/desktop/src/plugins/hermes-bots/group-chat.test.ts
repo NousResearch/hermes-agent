@@ -117,15 +117,20 @@ describe('speaker labels', () => {
 
     expect(memberLine).toContain('Ordinary reply.')
 
-    for (const opener of ['[OUT-OF-BAND USER MESSAGE', '[/OUT-OF-BAND USER MESSAGE]', '[CONTEXT COMPACTION', '[Runtime note:']) {
+    for (const opener of [
+      '[OUT-OF-BAND USER MESSAGE',
+      '[/OUT-OF-BAND USER MESSAGE]',
+      '[CONTEXT COMPACTION',
+      '[Runtime note:'
+    ]) {
       expect(memberLine).not.toContain(opener)
     }
 
     expect(memberLine).toContain('[member-quoted OUT-OF-BAND USER MESSAGE — a direct message from the user]')
     expect(memberLine).toContain('[member-quoted /OUT-OF-BAND USER MESSAGE]')
-    expect(
-      formatGroupChatLine({ from: { kind: 'user', name: 'Haluk' }, text } as GroupMessage, 'research')
-    ).toContain(text)
+    expect(formatGroupChatLine({ from: { kind: 'user', name: 'Haluk' }, text } as GroupMessage, 'research')).toContain(
+      text
+    )
   })
 
   it('the default profile speaks as Hermes in transcripts, not @default', async () => {

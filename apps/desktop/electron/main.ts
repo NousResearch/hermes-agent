@@ -3481,9 +3481,7 @@ function repairMacUpdaterHelper(updater) {
 function venvHermesShimPath(updateRoot) {
   const venvDir = resolveVenvDir(updateRoot)
 
-  return IS_WINDOWS
-    ? path.join(venvDir, 'Scripts', 'hermes.exe')
-    : path.join(venvDir, 'bin', 'hermes')
+  return IS_WINDOWS ? path.join(venvDir, 'Scripts', 'hermes.exe') : path.join(venvDir, 'bin', 'hermes')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -10181,9 +10179,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -13012,6 +13012,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13829,6 +13830,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -15134,7 +15136,10 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, spawnPriority)
+  return connectDesktopProfileRoute(
+    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
+    spawnPriority
+  )
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -16847,6 +16852,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
@@ -16991,6 +16997,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
       teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
     })
+
     desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response)
 
     return response

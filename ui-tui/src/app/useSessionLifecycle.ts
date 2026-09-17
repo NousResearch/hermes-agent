@@ -349,7 +349,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw
+          .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult>(raw)
 

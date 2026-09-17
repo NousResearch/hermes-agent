@@ -1,6 +1,6 @@
 name: toolaria
 repo: https://github.com/Sahil-SS9/Toolaria
-sha: 7ce41a7399de9e7f6174e6ddc61c067024c488dd
+sha: 667df67ef5bd23160b1b87a93ebf895c122b6b17
 description: Rescues oversized MCP and web tool results before they flood context.
 maintainer: Sahil-SS9
 tier: community

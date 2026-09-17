@@ -1,6 +1,6 @@
 name: memlock
 repo: https://github.com/Sahil-SS9/hermes-memlock
-sha: 87dca4af79e7c26cdb9c954abfa7fabc298fcf2e
+sha: 05f6d0faaa7cbf9a804a6cd7c119c49e7eb5c938
 description: Reasserts pinned standing instructions after context compaction.
 maintainer: Sahil-SS9
 tier: community

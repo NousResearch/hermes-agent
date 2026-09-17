@@ -1,6 +1,6 @@
 name: hermes-peer
 repo: https://github.com/Sahil-SS9/hermes-walkie-talkie
-sha: 188133eb93ebd4963c925f8c2ae52802cbd05775
+sha: d25511adf7f438d66faedab28e780a99c57ff373
 subdir: ""
 description: Same-machine peer messaging between Hermes sessions.
 maintainer: Sahil-SS9
@@ -10,10 +10,7 @@ requires_hermes: ">=0.21"
 docs_url: https://github.com/Sahil-SS9/hermes-walkie-talkie
 platforms: []
 capabilities:
-  provides_tools:
-    - hermes_peer
-  provides_hooks:
-    - on_session_start
-    - on_session_end
+  provides_tools: []
+  provides_hooks: []
   provides_middleware: []
   requires_env: []

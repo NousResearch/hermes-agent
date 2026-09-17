@@ -137,7 +137,30 @@ def test_try_dispatch_background_run_calls_recovery_before_claiming(monkeypatch)
     # ran before that point, not exercise the full dispatch.
     cronjob_tools._try_dispatch_background_run(job, session_id=None)
 
+def test_one_shot_path_reaps_stale_executions_when_async_delivery_unsupported(
+    monkeypatch,
+):
+    """Regression for #113923: on the CLI one-shot path
+    (async_delivery_supported() is False) the dispatch function returned
+    before _reap_stale_executions, so a killed run's live fire_claim
+    blocked manual retriggers for the full 300s TTL."""
+    import tools.cronjob_tools as cronjob_tools
+
+    calls = []
+    monkeypatch.setattr(
+        "cron.executions.recover_interrupted_executions",
+        lambda: calls.append("recovered") or 0,
+    )
+    # CLI one-shot reality: no async delivery, so the early return below
+    # must not skip the stale-execution reap.
+    monkeypatch.setattr(
+        "gateway.session_context.async_delivery_supported", lambda: False
+    )
+
+    job = {"id": "unit-test-job-oneshot", "name": "one shot job", "deliver": "local"}
+    cronjob_tools._try_dispatch_background_run(job, session_id=None)
+
     assert calls == ["recovered"], (
-        "recover_interrupted_executions() must be called before any claim "
-        "attempt in the one-shot dispatch path"
+        "recover_interrupted_executions() must run on the one-shot path "
+        "before any claim attempt"
     )

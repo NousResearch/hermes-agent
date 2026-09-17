@@ -24,6 +24,26 @@ class TestGatewayLifecyclePattern:
     """Verify the regex catches gateway lifecycle commands."""
 
     @pytest.mark.parametrize("text", [
+        "taskkill /F /IM python.exe",
+        "taskkill /IM python.exe /F",
+        'taskkill /F /IM "python.exe"',
+        '"taskkill" /IM "python.exe" /F',
+        'task"kill" /I"M" "python.exe" /F',
+        "taskkill.exe /T /IM python.exe",
+        'subprocess.run(["taskkill", "/IM", "python.exe", "/F"])',
+    ])
+    def test_taskkill_gateway_interpreter_image_is_blocked(self, text):
+        """Image-name taskkill can terminate the gateway's Python process (#113667)."""
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "taskkill /F /IM notepad.exe",
+        "taskkill /IM chrome.exe /F",
+    ])
+    def test_taskkill_other_image_names_are_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
         "hermes gateway restart",
         "hermes gateway stop",
         "hermes gateway uninstall",

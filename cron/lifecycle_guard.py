@@ -60,6 +60,17 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
+# Branch E: Windows image-name termination of the interpreter that runs the gateway.  A gateway
+# process normally has the image name ``python.exe``; unlike a PID-targeted taskkill, ``/IM
+# python.exe`` terminates it even when the agent does not know its PID.  Keep this tied to the
+# concrete taskkill command and its ``/IM`` option so other image names remain available to jobs.
+# The tokenized re-scan in ``contains_gateway_lifecycle_command`` applies this pattern after shell
+# quotes and escapes are resolved, just as it does for the other lifecycle branches (#113667).
+_TASKKILL_GATEWAY_INTERPRETER_PATTERN = re.compile(
+    r"(?i)(?<![/\w.\-])taskkill(?:\.exe)?\b"
+    r"(?=[^;\n|&]*(?:/im(?:\s+|:)\s*(?:['\"]?python\.exe['\"]?)(?=$|[\s,;|&\)])))"
+)
+
 # Every branch uses `[^\n]*` between verb and label so matches cannot span unrelated lines. A POSIX
 # backslash-newline continuation is therefore collapsed to a space before matching (as the shell
 # does) rather than loosening `[^\n]*`.
@@ -268,7 +279,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
     text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
+    if (
+        _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+        or _TASKKILL_GATEWAY_INTERPRETER_PATTERN.search(normalized)
+    ):
         return True
     # Profile-flag form: blocked only when the named profile IS the one running the guard.
     # Profile-flag form (#78028): `hermes -p <profile> gateway restart|stop` bypasses Branch A because the
@@ -289,10 +303,16 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # passes apply independently.
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
-        if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
+        if joined and (
+            _GATEWAY_LIFECYCLE_PATTERN.search(joined)
+            or _TASKKILL_GATEWAY_INTERPRETER_PATTERN.search(joined)
+        ):
             return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
-        if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
+        if stripped != joined and (
+            _GATEWAY_LIFECYCLE_PATTERN.search(stripped)
+            or _TASKKILL_GATEWAY_INTERPRETER_PATTERN.search(stripped)
+        ):
             return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable

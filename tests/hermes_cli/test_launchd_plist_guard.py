@@ -12,6 +12,8 @@ import plistlib
 import xml.parsers.expat
 from unittest import mock
 
+import pytest
+
 from hermes_cli import main_dashboard
 
 
@@ -50,10 +52,10 @@ def test_fixture_really_raises_expat_error_not_valueerror(tmp_path):
     raise AssertionError("fixture plist must be unparseable XML")
 
 
-def test_malformed_plist_is_skipped_not_fatal(tmp_path, monkeypatch):
+@pytest.mark.macos_only
+def test_malformed_plist_is_skipped_not_fatal(tmp_path):
     p = tmp_path / "com.example.bad.plist"
     p.write_text(MALFORMED_PLIST)
-    monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
     with mock.patch(
         "hermes_cli.gateway._launchd_print_service_pid", return_value=(False, None)
     ) as probe:
@@ -61,10 +63,10 @@ def test_malformed_plist_is_skipped_not_fatal(tmp_path, monkeypatch):
     probe.assert_not_called()  # the malformed job never reaches the launchctl probe
 
 
-def test_malformed_sibling_does_not_hide_the_good_job(tmp_path, monkeypatch):
+@pytest.mark.macos_only
+def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
     (tmp_path / "com.example.bad.plist").write_text(MALFORMED_PLIST)
     (tmp_path / "ai.hermes.dashboard.test.plist").write_text(GOOD_PLIST)
-    monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
     with mock.patch(
         "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
     ) as probe:

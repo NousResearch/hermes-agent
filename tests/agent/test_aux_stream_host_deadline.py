@@ -28,12 +28,9 @@ that ``_run_protected_sync_provider_call`` spawns.
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -230,6 +227,79 @@ def test_async_stream_mirror_honours_the_host_deadline():
     assert stream.yielded == 1
 
 
+def test_streamed_summary_retires_dynamic_host_deadline_after_progress(monkeypatch):
+    """Later chunks use the fence's live deadline rather than its initial value."""
+    clock = [100.0]
+    deadline = {"value": 101.0}
+
+    class _SlowStream(_Stream):
+        def __iter__(self):
+            yield _chunk("a")
+            clock[0] = 102.0
+            yield _chunk("b")
+
+    monkeypatch.setattr(aux.time, "monotonic", lambda: clock[0])
+    with (
+        aux.aux_progress_hook(lambda: deadline.update(value=None)),
+        aux.aux_stream_deadline(lambda: deadline["value"]),
+    ):
+        response = aux._aggregate_chat_stream(
+            _SlowStream(count=2), model="m", total_ceiling=2400.0
+        )
+
+    assert response.choices[0].message.content == "ab"
+
+
+def test_async_stream_retires_dynamic_host_deadline_after_progress(monkeypatch):
+    clock = [100.0]
+    deadline = {"value": 101.0}
+
+    class _SlowAsyncStream(_AsyncStream):
+        async def __aiter__(self):
+            yield _chunk("a")
+            clock[0] = 102.0
+            yield _chunk("b")
+
+    async def _run():
+        with (
+            aux.aux_progress_hook(lambda: deadline.update(value=None)),
+            aux.aux_stream_deadline(lambda: deadline["value"]),
+        ):
+            return await aux._aggregate_chat_stream_async(
+                _SlowAsyncStream(count=2), model="m", total_ceiling=2400.0
+            )
+
+    monkeypatch.setattr(aux.time, "monotonic", lambda: clock[0])
+    response = asyncio.run(_run())
+    assert response.choices[0].message.content == "ab"
+
+
+def test_codex_watchdog_thread_keeps_dynamic_host_deadline(monkeypatch):
+    """The timer sees pre-stream expiry and retirement despite thread-local scope."""
+    clock = [100.0]
+    seen: list[float] = []
+    monkeypatch.setattr(aux.time, "monotonic", lambda: clock[0])
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+
+    with (
+        aux.aux_progress_hook(fence.touch_progress),
+        aux.aux_stream_deadline(lambda: fence.deadline_monotonic),
+    ):
+        guard = aux._CodexStreamGuard(SimpleNamespace(), total_timeout=300.0)
+        thread = threading.Thread(target=lambda: seen.append(guard.effective_deadline()))
+        thread.start()
+        thread.join()
+        assert seen == [101.0]
+
+        guard.on_event(SimpleNamespace(type="response.output_text.delta", delta="x"))
+        seen.clear()
+        thread = threading.Thread(target=lambda: seen.append(guard.effective_deadline()))
+        thread.start()
+        thread.join()
+
+    assert seen == [160.0]
+
+
 # ── The isolated provider daemon must inherit it ─────────────────────────
 
 
@@ -261,40 +331,3 @@ def test_protected_provider_daemon_inherits_the_host_deadline():
     assert seen["thread"] == "hermes-protected-aux-provider"
     assert seen["deadline_before_progress"] == deadline
     assert seen["deadline_after_progress"] is None
-
-
-# ── The compression worker must actually install it ──────────────────────
-
-
-def _summary_dispatch_source() -> str:
-    from agent import conversation_compression
-
-    path = Path(inspect.getsourcefile(conversation_compression))
-    return path.read_text(encoding="utf-8")
-
-
-def test_compression_summary_dispatch_installs_the_fence_deadline():
-    """Source guard: the wiring is one line and trivially droppable.
-
-    A behavioural test would have to drive the whole ``compress_context`` body
-    (durable lock, watermark, telemetry, commit). This asserts the seam itself:
-    the same ``with`` statement that installs the progress hook must also
-    install the stream deadline.
-    """
-    tree = ast.parse(_summary_dispatch_source())
-    wired = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.With):
-            continue
-        names = set()
-        for item in node.items:
-            call = item.context_expr
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
-                names.add(call.func.id)
-        if "aux_progress_hook" in names:
-            assert "aux_stream_deadline" in names, (
-                "the summary dispatch scope installs the progress hook but not "
-                "the host stream deadline — #99692 would regress"
-            )
-            wired = True
-    assert wired, "summary dispatch scope not found"

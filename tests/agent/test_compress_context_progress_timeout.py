@@ -277,11 +277,10 @@ class TestRunCompressContextWithProgressTimeout:
         original = [{"role": "user", "content": "a"}]
         compressed = [{"role": "user", "content": "summarized"}]
 
-        progress_started = threading.Event()
-
         def worker(fence: CompressionCommitFence):
-            fence.touch_progress()
-            progress_started.set()
+            # The executor below publishes the first semantic-progress tick
+            # synchronously, before the host starts waiting. Subsequent ticks
+            # model the active provider stream.
             for _ in range(6):
                 time.sleep(0.03)
                 fence.touch_progress()
@@ -293,13 +292,12 @@ class TestRunCompressContextWithProgressTimeout:
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-        class _StartBeforeReturnExecutor:
-            def submit(self, fn, *args):
-                future = executor.submit(fn, *args)
-                assert progress_started.wait(timeout=2)
-                return future
+        class _ProgressBeforeReturnExecutor:
+            def submit(self, fn, fence):
+                fence.touch_progress()
+                return executor.submit(fn, fence)
 
-        monkeypatch.setattr(cc, "_get_compress_timeout_executor", lambda: _StartBeforeReturnExecutor())
+        monkeypatch.setattr(cc, "_get_compress_timeout_executor", lambda: _ProgressBeforeReturnExecutor())
         try:
             result = run_compress_context_with_progress_timeout(
                 worker=worker,

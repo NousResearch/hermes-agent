@@ -312,6 +312,37 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     return None
 
 
+def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
+    """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
+
+    Runs AFTER cron MCP discovery. The server's toolset alias is process-global while its tools
+    are registered per profile overlay, so under a multiplexer a job can name a server that is
+    connected for another profile and build a tool-less agent that ``quiet_mode`` never reports.
+    Only servers the job explicitly asked for count; the implicit enabled-server merge does not.
+    """
+    requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
+    if not requested:
+        return None
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from toolsets import resolve_toolset
+    missing = [name for name in requested
+               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    if not missing:
+        return None
+    # The reason is what the operator reads in the gateway log and the alert. It must say the
+    # block is not sticky: a server that is merely unreachable for a minute (router reboot, DNS
+    # blip) is parked and self-probed by the MCP layer, and this check re-runs on every dispatch,
+    # so the job resumes on its own — two operators misread the old text as a config error to
+    # repair by hand (#112871).
+    return (
+        f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
+        "resolved to zero tools for this profile (not connected, or connected for another "
+        "profile only). If the server is only temporarily unreachable this clears by itself — "
+        "the check re-runs on every dispatch and the job resumes once the server reconnects. "
+        "If the name is wrong or belongs to another profile, fix the server or remove it from "
+        "the job's toolsets.")
+
+
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """Pre-dispatch validation: return a reason (missing key, unconfigured delivery, unready skill)
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails

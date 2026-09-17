@@ -134,7 +134,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -263,6 +263,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+        # Union Alpha is exposed through /v1/messages on both relays.
+        assert opencode_model_api_mode("opencode-go", "union-alpha") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/union-alpha") == "anthropic_messages"
         # GPT models on Go are Responses-only (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
         assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
@@ -285,7 +288,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
@@ -335,6 +338,29 @@ class TestNormalizeOpencodeBaseUrl:
         assert normalize_opencode_base_url(
             "openrouter", "chat_completions", "https://openrouter.ai/api"
         ) == "https://openrouter.ai/api"
+
+
+class TestNormalizeOpencodeBaseUrlFamilyPath:
+    """A carried-over base_url is healed on the FAMILY path segment (``/zen`` vs ``/zen/go``), not
+    just ``/v1`` (#112600): ``model.base_url`` pinned to the Zen relay survived a switch to
+    ``opencode-go`` and every request 401'd ("Model mimo-v2.5 is not supported")."""
+
+    @pytest.mark.parametrize("provider, api_mode, url, expected", [
+        ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
+        # opencode-free is served on the Zen relay, so it maps back to /zen (not /zen/go).
+        ("opencode-free", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
+        # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
+        ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
+        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite.
+        ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
+        # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
+        ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
+    ])
+    def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
 
 class TestAzureFoundryModelApiMode:
@@ -827,3 +853,17 @@ class TestValidateCustomUnreachableFallback:
         assert "was not saved" in result["message"]
         # A reachable catalog keeps authoritative validation regardless of mode.
         assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True
+
+    def test_anthropic_messages_reachable_listing_without_slug_is_not_called_unimplemented(self):
+        """A listing that answered 200 but lacks the slug must not be described as a proxy that
+        'does not implement GET /v1/models'; it names the alias candidates instead (#111436)."""
+        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "do not implement" not in result["message"]
+        assert "not named in this endpoint's model listing" in result["message"]
+        assert "`k3`" in result["message"]
+        # Case-only spelling differences are a match, not a warning.
+        assert self._validate("K3", "kimi-coding", models=["k3"], api_mode="anthropic_messages")["recognized"] is True
+        # The unreachable-listing wording is unchanged.
+        unreachable = self._validate("kimi-k3", "kimi-coding", models=None, api_mode="anthropic_messages")
+        assert "do not implement GET /v1/models" in unreachable["message"]

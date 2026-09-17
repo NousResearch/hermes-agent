@@ -35,6 +35,18 @@ def _session_has_live_transport(session: dict | None, *, excluding=None) -> bool
     return any(peer is not excluding for peer in _session_live_transports(session))
 
 
+def _warn_foreign_login(session: dict, transport) -> None:
+    """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
+    creator's user id."""
+    attaching = _transport_auth_user_id(transport)
+    if attaching is None:
+        return
+    creator = _session_auth_user_id(session)
+    if creator != attaching:
+        logger.warning("Session %s keeps the user id %s it was created with; a client logged in as %s attached",
+                       session.get("session_key"), creator or "(none)", attaching)
+
+
 def _attach_session_transport(session: dict | None, transport) -> bool:
     """Add live peers; flatten captured queued fanouts without nesting authority."""
     if not session or transport is None:
@@ -58,9 +70,12 @@ def _attach_session_transport(session: dict | None, transport) -> bool:
         if existing is transport:
             return True
         if isinstance(existing, FanoutTransport):
+            if not existing.contains(transport):
+                _warn_foreign_login(session, transport)
             existing.attach(transport)
             return existing.contains(transport)
-        elif _transport_is_live_peer(existing):
+        _warn_foreign_login(session, transport)
+        if _transport_is_live_peer(existing):
             session["transport"] = FanoutTransport(existing, transport)
         else:
             session["transport"] = transport

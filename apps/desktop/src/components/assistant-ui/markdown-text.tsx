@@ -13,9 +13,11 @@ import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -218,7 +220,7 @@ function MediaAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <video
+        <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
           onError={() => setFailed(true)}
@@ -748,6 +750,19 @@ function MarkdownTextSurface({
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
+}
+
+/** Render raw assistant-style message text through the complete Desktop text
+ * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
+ * so the canonical link component can route them to inline players/previews.
+ * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
+ * outside a session — a Bot Mode group room — has no session to own artifact
+ * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
+ * against the ACTIVE gateway, so a message written on another machine (a
+ * Connections Bot in a cross-machine room) must not have its path read here —
+ * that is a broken image at best and a same-path local file at worst. */
+export function MessageTextContent({ media = true, text }: { media?: boolean; text: string }) {
+  return <MarkdownTextContent disableArtifacts isRunning={false} text={media ? renderMediaTags(text) : text} />
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {

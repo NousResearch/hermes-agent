@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import type { DesktopProfileRoute } from './desktop-profile'
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -41,7 +43,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
-  openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
@@ -172,6 +174,34 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  // macOS native screenshot gesture; captures require a main-issued request.
+  screenshot: process.platform === 'darwin' ? {
+    getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+    setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+    openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+    capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+    onStatus: callback => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('hermes:screenshot:status', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+    },
+    onRequest: callback => {
+      const channel = 'hermes:screenshot:request'
+      const listener = (_event, requestId) => callback(requestId)
+      if (ipcRenderer.listenerCount(channel) === 0) {
+        ipcRenderer.send('hermes:screenshot:subscribe', true)
+      }
+      ipcRenderer.on(channel, listener)
+
+      return () => {
+        ipcRenderer.removeListener(channel, listener)
+        if (ipcRenderer.listenerCount(channel) === 0) {
+          ipcRenderer.send('hermes:screenshot:subscribe', false)
+        }
+      }
+    }
+  } : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal
@@ -254,6 +284,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
   },
   profile: {
+    getDefault: () => ipcRenderer.invoke('hermes:profile:default:get'),
+    setDefault: (route: DesktopProfileRoute) => ipcRenderer.invoke('hermes:profile:default:set', route),
+    onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, route: DesktopProfileRoute | null) => callback(route)
+      ipcRenderer.on('hermes:profile:default:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:profile:default:changed', listener)
+    },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
@@ -384,7 +422,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
       prList: (repoPath, branches, numbers) =>
         ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
-      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }
   },

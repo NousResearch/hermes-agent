@@ -1,13 +1,14 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
-import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -38,6 +39,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
+import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
@@ -577,6 +579,14 @@ export function usePromptActions({
       if (cleanup?.state === 'completed') {
         return markCompleted()
       }
+
+      // The messaging service can be started from the app — offer it here
+      // instead of asking a desktop user a CLI question (desktop-17).
+      notify({
+        kind: 'error',
+        message: copy.handoff.timedOut,
+        action: { label: copy.handoff.startMessaging, onClick: () => void runGatewayRestart() }
+      })
 
       return { error: copy.handoff.timedOut, ok: false }
     },

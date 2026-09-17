@@ -60,6 +60,7 @@ def turn_env(monkeypatch, tmp_path):
 def test_live_relay_stamps_the_sender_as_a_delivery_author(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     (home / "profiles" / "ops").mkdir(parents=True)
+    (home / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(home))
     submitted = []
     monkeypatch.setitem(srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))

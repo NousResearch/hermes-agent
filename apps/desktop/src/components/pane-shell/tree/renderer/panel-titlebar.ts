@@ -70,6 +70,7 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     // repaints the clusters from the new chrome vars.
     let lastChrome = chromeKey()
     let frame = 0
+
     const unsubscribeChrome = $connection.subscribe(() => {
       const nextChrome = chromeKey()
 

@@ -111,7 +111,8 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        from hermes_constants import get_hermes_home
+        print(f"channel discovery can populate {get_hermes_home() / 'channel_directory.json'}.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
@@ -132,16 +133,18 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate the credential environment from ``~/.hermes/.env`` AND bridge top-level ``config.yaml``
-    keys into it so the gateway config loader sees platform credentials and home channels.
+    """Populate the credential environment from the profile's full secret scope (``.env`` plus any
+    external secret-manager sources, via ``build_profile_secret_scope``) AND bridge top-level
+    ``config.yaml`` keys into it so the gateway config loader sees platform credentials and home
+    channels.
 
     The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
     running ``send`` for profile B under its secret scope) it is the installed scope mapping: writing B's
-    ``.env`` into the shared process env would hand every other profile's later reads B's tokens
+    secrets into the shared process env would hand every other profile's later reads B's tokens
     (``gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
-    The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
-    the profile's external secret sources over it — so it is authoritative as-is; replaying raw
-    ``.env`` over it would let a stale user value beat the secret-manager one for this request.
+    The installed scope is already ``build_profile_secret_scope``'s composition for the *active* profile
+    — user ``.env``, then external secret sources over it — so newly-resolved values for this profile are
+    merged in with ``setdefault`` only, never clobbering a value the host already installed.
     """
     import os
     try:
@@ -149,19 +152,20 @@ def _load_hermes_env() -> None:
         home = get_hermes_home()
     except Exception:
         return
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope, is_multiplex_active
+    try:
+        secrets = build_profile_secret_scope(home)
+    except Exception:
+        secrets = {}
     scope = current_secret_scope() if is_multiplex_active() else None
     if isinstance(scope, dict):
         target: dict = scope
+        for key, val in secrets.items():
+            target.setdefault(key, val)
     else:
         target = os.environ
-        env_path = home / ".env"
-        if env_path.exists():
-            try:
-                from hermes_cli.env_loader import _load_dotenv_with_fallback
-                _load_dotenv_with_fallback(env_path, override=True)
-            except Exception:
-                pass
+        for key, val in secrets.items():
+            target[key] = val
 
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
@@ -236,13 +240,16 @@ _SEND_ARGUMENTS = (
 
 def register_send_subparser(subparsers) -> argparse.ArgumentParser:
     """Create the ``send`` subparser and return it."""
+    from hermes_constants import get_hermes_home
+    hermes_home = get_hermes_home()
     parser = subparsers.add_parser(
         "send",
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
             "Pipe text from any shell script to any messaging platform Hermes "
             "is already configured for. Reuses the gateway's platform "
-            "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
+            f"credentials ({hermes_home / '.env'} + "
+            f"{hermes_home / 'config.yaml'}) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
             "platforms like Telegram/Discord/Slack/Signal."
         ),

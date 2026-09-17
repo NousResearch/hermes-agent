@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -376,3 +377,65 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
 
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
+
+
+def test_register_send_subparser_help_reflects_resolved_home(tmp_path, monkeypatch):
+    """Regression for BUG 1: the help/description text must reflect whatever
+    ``get_hermes_home()`` actually resolves to (e.g. a Windows-style profile
+    home), not a hardcoded ``~/.hermes`` path baked in at import time."""
+    import argparse
+
+    windows_style_home = tmp_path / "AppData" / "Roaming" / "hermes-profile"
+    windows_style_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(windows_style_home))
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+    import hermes_constants
+    reload(hermes_constants)
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    send_cmd.register_send_subparser(subparsers)
+
+    help_text = subparsers.choices["send"].format_help()
+    assert str(windows_style_home) in help_text
+    assert "~/.hermes" not in help_text
+
+
+def test_load_hermes_env_picks_up_secret_scope_only_credential(tmp_path, monkeypatch):
+    """Regression for BUG 2: a credential that is only resolvable through
+    ``build_profile_secret_scope`` (e.g. sourced from an external secret
+    manager, not present in plain ``.env`` text) must reach ``os.environ`` so
+    ``hermes send`` can authenticate with it. Asserts the fix now calls
+    ``build_profile_secret_scope`` instead of only re-parsing ``.env``."""
+    import os
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    # Deliberately no matching key in .env — proves the value can only have
+    # come from the mocked build_profile_secret_scope, not dotenv parsing.
+    (hermes_home / ".env").write_text("UNRELATED_KEY=unrelated\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("VAULT_ONLY_BOT_TOKEN", raising=False)
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+
+    import agent.secret_scope as secret_scope_module
+
+    def _fake_build_profile_secret_scope(home):
+        assert Path(home) == hermes_home
+        return {"VAULT_ONLY_BOT_TOKEN": "from-secret-manager"}
+
+    monkeypatch.setattr(
+        secret_scope_module, "build_profile_secret_scope", _fake_build_profile_secret_scope
+    )
+
+    send_cmd._load_hermes_env()
+
+    assert os.environ.get("VAULT_ONLY_BOT_TOKEN") == "from-secret-manager"

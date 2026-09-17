@@ -295,8 +295,10 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
+        from hermes_constants import get_hermes_home
+        config_path = get_hermes_home() / "config.yaml"
         return None, None, None, (f"Platform '{platform_name}' is not configured. Set up credentials in "
-                                  "~/.hermes/config.yaml or environment variables.")
+                                  f"{config_path} or environment variables.")
     return platform, pconfig, entry, None
 
 

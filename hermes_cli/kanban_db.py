@@ -808,6 +808,11 @@ class Task:
     epic_id: Optional[str] = None
     done_at: Optional[int] = None
     archived_at: Optional[int] = None
+    # Declared PR acceptance: 'local-only', OWNER/REPO, or an exact GitHub PR
+    # URL; see hermes_cli/kanban_pr_acceptance.py. Read at the completion
+    # boundary via raw SQL — carried on the dataclass so the output layer
+    # (kanban_output._TASK_DICT_FIELDS) renders it without an AttributeError.
+    completion_contract: Optional[str] = None
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
@@ -847,6 +852,7 @@ _TASK_OPTIONAL_COLUMNS = (
     # KENSEI CUSTOM (fork re-anchor): fork-only task columns.
     "theme", "tier", "pipeline_stage", "pipeline_mode", "status_reason", "reviewer",
     "parent_task_id", "epic_id", "done_at", "archived_at",
+    "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -1476,6 +1482,10 @@ def create_task(
     parent_task_id: Optional[str] = None,
     # P2a: attach the new task to an epic (same-board). Validated on create.
     epic_id: Optional[str] = None,
+    # Declared PR acceptance: 'local-only', OWNER/REPO, or an exact GitHub PR
+    # URL; validated below, enforced at the completion boundary (see
+    # kanban_pr_acceptance.py). Upstream ac07da2674, restored after fork merge.
+    completion_contract: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1536,6 +1546,8 @@ def create_task(
     if task_kind == "subtask" and parent_task_id is None:
         raise ValueError("subtask requires parent_task_id")
     epic_id = (epic_id or "").strip() or None
+    from hermes_cli.kanban_pr_acceptance import validate_contract
+    completion_contract = validate_contract(completion_contract)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1709,8 +1721,8 @@ def create_task(
                         max_runtime_seconds, skills, max_retries,
                         model_override, provider_override, reasoning_effort,
                         goal_mode, goal_max_turns, session_id, theme, tier, pipeline_mode,
-                        task_kind, parent_task_id, epic_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        task_kind, parent_task_id, epic_id, completion_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1742,6 +1754,7 @@ def create_task(
                         task_kind,
                         parent_task_id,
                         epic_id,
+                        completion_contract,
                     ),
                 )
                 for pid in parents:

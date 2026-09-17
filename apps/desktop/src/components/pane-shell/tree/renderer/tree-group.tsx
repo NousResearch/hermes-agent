@@ -43,6 +43,7 @@ import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
+import { $paneStates, setPaneHeightLocked, setPaneHeightOverride, setPaneWidthLocked, setPaneWidthOverride } from '@/store/panes'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
@@ -56,10 +57,12 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
+import { findParentSplit } from '../model'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+  $layoutTree,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -110,6 +113,11 @@ import { useZoneHeaderLayout } from './zone-header-layout'
  *  tab's menu, so every tab in a strip answers a right-click the same way —
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
+interface SizeLock {
+  locked: boolean
+  setLocked: (locked: boolean) => void
+}
+
 function ZoneMenu({
   allowOpen,
   children,
@@ -283,6 +291,7 @@ function ZoneBodyMenu({ children, label, ...menu }: ZoneBodyMenuProps) {
 }
 
 interface EditVeilProps extends Omit<ZoneMenuProps, 'children'> {
+  children?: ReactNode
   label: string
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   /** Where the zone's header ends. */
@@ -290,7 +299,7 @@ interface EditVeilProps extends Omit<ZoneMenuProps, 'children'> {
 }
 
 /** The edit-mode drag veil over a zone's body, carrying the zone menu. */
-function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
+function EditVeil({ children, label, onPointerDown, top, ...menu }: EditVeilProps) {
   return (
     <ZoneMenu {...menu}>
       <div
@@ -312,6 +321,7 @@ function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
         <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
           <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
           <span className="min-w-0 truncate">{label}</span>
+          {children}
         </span>
       </div>
     </ZoneMenu>
@@ -423,6 +433,10 @@ export function TreeGroup({
   const activeId = shown.includes(node.active)
     ? node.active
     : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
+
+  // Locks can be owned by any shown tenant in a zone or its containing column,
+  // so subscribe to the consolidated snapshot rather than only the active tab.
+  const paneStates = useStore($paneStates)
 
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
@@ -592,6 +606,77 @@ export function TreeGroup({
   // does not collapse: a tap on the header of a lone docked tile used to fold
   // the zone and take the tab with it.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
+
+  // A direct split answers the local dimension. A vertically stacked column
+  // nested in a row also exposes one column-wide width lock: its members share
+  // the same outer track, so a width lock must be written to every visible pane
+  // in that column—not merely the tab the user happened to right-click.
+  const tree = $layoutTree.get()
+  const parent = tree ? findParentSplit(tree, node.id) : null
+  const columnParent = tree && parent?.orientation === 'column' ? findParentSplit(tree, parent.id) : null
+
+  const lockAxis: 'height' | 'width' | null =
+    parent?.orientation === 'row' ? 'width' : parent?.orientation === 'column' ? 'height' : null
+
+  const sharedColumnWidth = parent?.orientation === 'column' && columnParent?.orientation === 'row' && shown.length > 0
+
+  const makeSizeLock = (axis: 'height' | 'width', paneIds: string[]): SizeLock => {
+    // A unified editor control is locked only when every pane that shares an
+    // axis is pinned. A partial/corrupt state is still resizable, and one click
+    // repairs it by pinning the complete pane instead of inverting each axis.
+    const locked = paneIds.length > 0 && paneIds.every(id => Boolean(paneStates[id]?.[axis === 'width' ? 'widthLocked' : 'heightLocked']))
+
+    return {
+      locked,
+      setLocked: nextLocked => {
+        const bounds = ref.current?.getBoundingClientRect()
+
+        if (!bounds) {
+          return
+        }
+
+        const size = Math.round(axis === 'width' ? bounds.width : bounds.height)
+
+        for (const paneId of paneIds) {
+          if (axis === 'width') {
+            if (nextLocked) {
+              setPaneWidthOverride(paneId, size)
+            }
+
+            setPaneWidthLocked(paneId, nextLocked)
+          } else {
+            if (nextLocked) {
+              setPaneHeightOverride(paneId, size)
+            }
+
+            setPaneHeightLocked(paneId, nextLocked)
+          }
+        }
+      }
+    }
+  }
+
+  const sizeLocks: SizeLock[] = []
+
+  if (lockAxis && parent && parent.children.length > 1 && shown.length > 0) {
+    sizeLocks.push(makeSizeLock(lockAxis, shown))
+  }
+
+  if (sharedColumnWidth && columnParent && columnParent.children.length > 1) {
+    // A child in a vertical rail shares its column width with its siblings, but
+    // only this zone owns the lock. The track model uses this locked child as
+    // the column boundary; copying it into Review/Files would double-count the
+    // upper row and force the column wider.
+    sizeLocks.push(makeSizeLock('width', shown))
+  }
+
+  // A pane-level control deliberately hides the width/height implementation
+  // detail: locked means every relevant axis is fixed; resizable means clicking
+  // will pin all of them. This prevents nested column panes from showing two
+  // competing padlocks in the editor.
+  const paneLocked = sizeLocks.length > 0 && sizeLocks.every(sizeLock => sizeLock.locked)
+  const paneLockLabel = paneLocked ? 'Pane is locked — click to unlock' : 'Pane is resizable — click to lock'
+  const togglePaneLock = () => sizeLocks.forEach(sizeLock => sizeLock.setLocked(!paneLocked))
 
   // Same menu on the header strip and the edit veil — one prop bag.
   const minimizeLabel = paneChrome(active).lifecycleKeepAlive ? t.preview.hide : t.zones.minimize
@@ -1015,7 +1100,23 @@ export function TreeGroup({
           label={tabText(activeId)}
           onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
           top={topEdge ? topHeaderHeight : headerVisible ? tabStripHeight : 0}
-        />
+        >
+          {sizeLocks.length > 0 && (
+            <button
+              aria-label={paneLockLabel}
+              aria-pressed={paneLocked}
+              className="-my-0.5 -mr-1 rounded p-1 text-(--ui-text-secondary) hover:bg-(--ui-bg-hover) hover:text-foreground focus-visible:outline-2 focus-visible:outline-(--ui-focus-border)"
+              onClick={event => {
+                event.stopPropagation()
+                togglePaneLock()
+              }}
+              onPointerDown={event => event.stopPropagation()}
+              type="button"
+            >
+              <Codicon name={paneLocked ? 'lock' : 'unlock'} size="0.8125rem" />
+            </button>
+          )}
+        </EditVeil>
       )}
 
       {/* FancyZones drop overlay — its own component so the per-frame drop

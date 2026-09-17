@@ -376,8 +376,8 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
     wrote = []
     orig = update_cmd._write_fleet_restart_pending_marker
 
-    def _spy(*, expected_sha=""):
-        orig(expected_sha=expected_sha)
+    def _spy(*, expected_sha="", runtimes=None):
+        orig(expected_sha=expected_sha, runtimes=runtimes)
         wrote.append(update_cmd._fleet_restart_pending_marker_path().is_file())
 
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", _spy)
@@ -695,7 +695,7 @@ def _patch_marker_sha(monkeypatch, disk_sha):
 
 def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     disk_sha = "e" * 40
-    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
@@ -716,13 +716,14 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
         ("e" * 40, [{"profile": "default", "pid": 42, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}]),
         ("e" * 40, []),  # probe answered empty: no proof either way
         ("e" * 40, [{"profile": "default", "pid": 42, "code_sha": None, "code_version": None, "state": "unknown"}]),
+        (None, [{"profile": "default", "code_sha": "e" * 40, "state": "current"}]),
         # checkout advanced past the marker: a newer pull owns a fresh obligation
         ("f" * 40, [{"profile": "default", "pid": 42, "code_sha": "e" * 40, "code_version": None, "state": "current"}]),
     ],
-    ids=["stale-row", "empty-probe", "unknown-identity", "checkout-moved"],
+    ids=["stale-row", "empty-probe", "unknown-identity", "unknown-checkout", "checkout-moved"],
 )
 def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_sha, fleet):
-    update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40)
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40, runtimes=[{"kind": "gateway", "profile": "default"}])
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: fleet)
 
@@ -733,9 +734,9 @@ def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_s
 
 
 def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys):
-    """A sibling the restart phase killed yields NO startup row; the receipt still owes it."""
+    """A sibling the restart phase killed yields no startup row; the marker still owns it."""
     disk_sha = "e" * 40
-    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": p} for p in ("alpha", "beta")])
     _patch_marker_sha(monkeypatch, disk_sha)
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)

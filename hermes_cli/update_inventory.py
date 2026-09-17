@@ -400,7 +400,13 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
     exists to kill.
     """
-    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    manual = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") == "respawn-argv"]
+    if manual:
+        print()
+        print("  ⚠ Manual serve restarts deferred to their owner (reminders retained until the old processes exit):")
+        for o in manual:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}: relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend")
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") != "respawn-argv"]
     if deferred:
         # Surfaced but not escalated: the updater has no authority over these, so holding
         # ``fleet_restart_pending`` for them would never be discharged. See #111494.

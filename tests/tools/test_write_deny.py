@@ -1,9 +1,12 @@
 """Tests for _is_write_denied() — verifies deny list blocks sensitive paths on all platforms."""
 
+import json
 import os
 
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from agent.file_safety import is_write_denied as _is_write_denied
 
@@ -93,3 +96,64 @@ class TestWriteAllowed:
         home = get_hermes_home()
         for name in ["auth.json", "config.yaml", "webhook_subscriptions.json"]:
             assert _is_write_denied(str(home / name)) is False, f"{name} should be writable"
+
+
+class TestProfileHomeE2E:
+    """End-to-end through ``write_file_tool``: with the process HOME pinned to
+    ``{HERMES_HOME}/home`` (TERMINAL_HOME_MODE=profile / container / spawned worker),
+    a write aimed at the OS user's real home must still hit the credential guards —
+    before the fix, absolute real-home paths sailed through untouched."""
+
+    @pytest.fixture()
+    def pinned_profile_home(self, tmp_path, monkeypatch):
+        profile = tmp_path / "profile"
+        (profile / "home").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("HOME", str(profile / "home"))
+        return profile
+
+    @staticmethod
+    def _real_home() -> Path:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+    def test_absolute_real_home_write_denied_end_to_end(self, pinned_profile_home):
+        from tools.file_tools import write_file_tool
+
+        target = self._real_home() / ".ssh" / "e2e_guard_probe_key"
+        assert not target.exists()
+        try:
+            result = json.loads(write_file_tool(str(target), "not-a-key"))
+            assert result.get("error"), f"write slipped through: {result}"
+            assert not target.exists()
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_tilde_write_denied_end_to_end(self, pinned_profile_home):
+        """``~`` resolves to the real home via _expand_tilde's repair — and is denied."""
+        from tools.file_tools import write_file_tool
+
+        target = self._real_home() / ".aws" / "e2e_guard_probe_credentials"
+        assert not target.exists()
+        try:
+            result = json.loads(write_file_tool("~/.aws/e2e_guard_probe_credentials", "x"))
+            assert result.get("error"), f"write slipped through: {result}"
+            assert not target.exists()
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_named_user_tilde_denied(self, pinned_profile_home):
+        """``~root/...`` resolves to another account's home — still a credential write."""
+        import agent.file_safety as fs
+        assert fs.is_write_denied("~root/.ssh/authorized_keys") is True
+        assert fs.is_write_denied("~nosuchuser-hopefully/.ssh/authorized_keys") is False
+
+    def test_benign_write_still_lands(self, pinned_profile_home, tmp_path):
+        from tools.file_tools import write_file_tool
+
+        target = tmp_path / "scratch" / "ok.txt"
+        target.parent.mkdir(parents=True)
+        result = json.loads(write_file_tool(str(target), "hello"))
+        assert not result.get("error"), result
+        assert target.read_text() == "hello"

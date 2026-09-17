@@ -55,3 +55,49 @@ def test_control_files_and_lookalikes_outside_home_stay_writable(hermes_layout, 
             assert fs.is_write_denied(str(_touch(base, rel))) is False, f"#45947 regression: {rel}"
     assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "cache/bws_cache.json"))) is False
     assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "vault/vault.key"))) is False
+
+
+class TestProfileHomeProcessHome:
+    """The write guard must cover the OS user's real home even when the process HOME is
+    pinned to ``{HERMES_HOME}/home`` (TERMINAL_HOME_MODE=profile / container / spawned
+    worker). Anchoring the deny and approval lists on ``expanduser("~")`` alone left the
+    real home's credential paths writable via absolute paths — while file tools resolve
+    ``~`` through ``get_subprocess_home()`` and can land a ``~``-spelled write on the real
+    home too."""
+
+    @pytest.fixture()
+    def profile_home_env(self, tmp_path, monkeypatch):
+        profile = tmp_path / "profile"
+        (profile / "home").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setenv("HOME", str(profile / "home"))
+        monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
+        monkeypatch.setattr(fs, "_hermes_root_path", lambda: profile.parent)
+        return profile
+
+    def test_real_home_credentials_denied(self, profile_home_env):
+        import pwd
+
+        real_home = Path(pwd.getpwuid(__import__("os").getuid()).pw_dir)
+        for rel in (".aws/credentials", ".ssh/id_ed25519", ".netrc", ".config/gh/hosts.yml"):
+            assert fs.is_write_denied(str(real_home / rel)), rel
+
+    def test_real_home_ssh_config_still_approval_gated(self, profile_home_env):
+        import pwd
+
+        real_home = Path(pwd.getpwuid(__import__("os").getuid()).pw_dir)
+        assert fs.is_write_approval_required(str(real_home / ".ssh" / "config"))
+
+    def test_profile_home_credentials_also_denied(self, profile_home_env):
+        """A pinned-HOME process still guards the profile home children see as ``~``."""
+        for rel in (".aws/credentials", ".ssh/id_rsa"):
+            assert fs.is_write_denied(str(profile_home_env / "home" / rel)), rel
+
+    def test_tilde_spelling_still_gated(self, profile_home_env):
+        assert fs.is_write_denied("~/.aws/credentials")
+        assert fs.is_write_approval_required("~/.ssh/config")
+
+    def test_benign_path_unaffected(self, profile_home_env, tmp_path):
+        benign = tmp_path / "scratch" / "notes.txt"
+        assert fs.is_write_denied(str(benign)) is False
+        assert fs.is_write_approval_required(str(benign)) is False

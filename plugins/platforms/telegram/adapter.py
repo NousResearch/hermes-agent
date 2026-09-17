@@ -144,6 +144,9 @@ from gateway.platforms.base import (
 _UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_background_locations import (
+    TelegramBackgroundLocationsMixin,
+)
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
@@ -378,7 +381,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(TelegramBackgroundLocationsMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     MAX_MESSAGE_LENGTH = 4096
@@ -393,6 +396,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # delivery ledger until next boot, so wait briefly for _bot (or a replacement adapter) instead.
     _RECONNECT_WAIT_SECONDS = 15.0
     _RECONNECT_POLL_INTERVAL = 0.5
+    _BACKGROUND_LOCATION_LIFECYCLE_HANDLER_GROUP = -10_000
 
     # Large-image compression for Telegram photo sends. Behind an HTTP proxy the PTB
     # media_write_timeout is easily exceeded by raw PNGs > 1-2MB; pre-compressing to
@@ -444,6 +448,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
+        self._init_background_locations(config)
         extra = self.config.extra
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
@@ -1611,6 +1616,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Mark polling closed: no progress accepted, send path degraded."""
         self._polling_progress_accepting = False
         self._send_path_degraded = True
+        self._clear_background_locations()
 
     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
         """Start accepting progress for a new getUpdates polling generation."""
@@ -1625,6 +1631,7 @@ class TelegramAdapter(BasePlatformAdapter):
             verifier.cancel()
         self._polling_progress_verifier_task = None
         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._begin_background_location_polling_generation(self._polling_generation)
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
@@ -1678,6 +1685,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(envelope, dict) and envelope.get("ok") is True and "result" in envelope:
             if self._record_polling_progress(generation):
                 self._record_updates_received(envelope.get("result"))
+                self._observe_background_location_poll_result(generation, envelope)
 
     def _record_updates_received(self, result) -> None:
         """Count updates Telegram handed us on the getUpdates wire (#102260). Only reached for the
@@ -1978,6 +1986,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         A confirmed polling stall (``_PollingStallError``) skips the ladder entirely: the Updater's long-poll
         action never quiesced, so it is handed to the supervisor for a rebuild before any backoff."""
+        self._clear_background_locations()
         if self._teardown_started or self.has_fatal_error:
             return
         if isinstance(error, _PollingStallError):
@@ -2333,6 +2342,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Recover a 409 Conflict: the previous gateway process was killed but Telegram holds its
         getUpdates session ~30s. Stop, wait (growing delay), drain, restart — MAX_CONFLICT_RETRIES
         times before going fatal; a failed retry must never return silently (limbo)."""
+        self._clear_background_locations()
         if self._teardown_started:
             return
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -2784,12 +2794,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 "text": text[:8192] if text is not None else None, "edited_at": edited_at},
         }
 
+    def _register_background_location_lifecycle_handler(self, app) -> None:
+        """Register the privacy lifecycle observer before native plugin handlers."""
+        app.add_handler(
+            TelegramMessageHandler(filters.LOCATION, self._handle_background_location_lifecycle),
+            group=self._BACKGROUND_LOCATION_LIFECYCLE_HANDLER_GROUP,
+        )
+
     def _register_handlers(self, app) -> None:
-        """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
+        """Register every ordinary core PTB handler on ``app``."""
         app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(
-            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_one_time_location_message,
+        ))
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
@@ -2948,7 +2967,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     old_app = self._app
                     self._app = builder.build()
                     self._bot = self._app.bot
-                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
+                    self._register_background_location_lifecycle_handler(self._app)
+                    self._wire_plugin_handlers(self._app)
+                    self._register_handlers(self._app)
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
 
@@ -2988,6 +3009,7 @@ class TelegramAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _polling_error_callback(error: Exception) -> None:
+            self._clear_background_locations()
             if self._teardown_started or self._recovery_in_flight():
                 return
             if self._looks_like_polling_conflict(error):
@@ -3019,6 +3041,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         self._polling_teardown_started = False
         self._webhook_mode = False  # re-evaluated on every explicit connection
+        self._background_locations_enabled = getattr(
+            self, "_background_locations_configured", False
+        )
         if not TELEGRAM_AVAILABLE:
             logger.error("[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot", self.name)
             self._set_fatal_error("missing_dependency", "python-telegram-bot not installed", retryable=False)
@@ -3030,6 +3055,20 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
+            await self._prepare_background_locations_for_connect()
+            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+            # default's listener (and stops polling for it).
+            webhook_url = (_get_scoped_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
+            if self._background_locations_enabled and webhook_url:
+                # Webhook mode has no independent receive-progress proof. Missing a stop
+                # indefinitely would retain stale coordinates, so the feature fails closed.
+                self._background_locations_enabled = False
+                logger.warning(
+                    "[%s] Telegram background_locations is disabled in webhook mode; "
+                    "use long polling for verifiable receive continuity",
+                    self.name,
+                )
             builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
@@ -3045,15 +3084,14 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.
+            # The lifecycle observer is privacy-critical and must not be displaced by a
+            # plugin handler in PTB's ordinary group.
+            self._register_background_location_lifecycle_handler(self._app)
+            # Other plugin PTB handlers go before ordinary core message handlers.
             self._wire_plugin_handlers(self._app)
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
-            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
-            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
-            # default's listener (and stops polling for it).
-            webhook_url = (_get_scoped_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:
@@ -3216,6 +3254,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
         # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
         self._mark_disconnected()
+        self._clear_background_locations()
         self._polling_teardown_started = True
         self._polling_progress_accepting = False
         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
@@ -6002,7 +6041,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
-        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+        event = await self._build_triggered_event(msg, update, MessageType.TEXT)
+        self._enqueue_text_event(await self._attach_background_location_context(event, msg))
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -6016,6 +6056,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
+        event = await self._attach_background_location_context(event, msg)
         # A >4096-char command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
         # immediately would orphan them. Near-limit commands go through text batching.
         if len(event.text or "") >= self._SPLIT_THRESHOLD:
@@ -6028,6 +6069,43 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
+
+        background_locations_enabled = getattr(self, "_background_locations_enabled", False)
+        background_locations_configured = getattr(
+            self, "_background_locations_configured", background_locations_enabled
+        )
+        if background_locations_configured and self._is_background_live_location_update(update, msg):
+            # Opted-in live telemetry is always silent. If the current transport cannot
+            # prove receive continuity (webhook/recovery/teardown), drop it fail-closed
+            # instead of reclassifying it as a durable one-time pin.
+            if not background_locations_enabled:
+                return
+            if self._is_background_location_business_update(update, msg):
+                logger.warning(
+                    "[Telegram] Ignoring business-account live location until its "
+                    "connection identity is supported"
+                )
+                return
+            period = self._active_live_location_period(getattr(msg, "location", None))
+            is_stop = self._is_background_location_edited_update(update) and period is None
+            if not is_stop and (
+                period is None
+                or getattr(self, "_send_path_degraded", False)
+                or not self._background_location_active_update_is_admissible(update)
+            ):
+                return
+            # A stop removes only this authenticated Telegram sender's share and is
+            # honored even if allowlists changed after the share began.
+            if is_stop:
+                await self._record_background_location(update, msg)
+                return
+            if not self._is_background_location_authorized(msg):
+                self._log_blocked_user(msg, what="background location")
+                return
+            if self._should_accept_background_location(msg):
+                await self._record_background_location(update, msg)
+            return
+
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
@@ -6037,11 +6115,23 @@ class TelegramAdapter(BasePlatformAdapter):
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
         if not location:
             return
-        lat = getattr(location, "latitude", None)
-        lon = getattr(location, "longitude", None)
+        lat = self._coerce_finite_float(
+            getattr(location, "latitude", None), minimum=-90, maximum=90
+        )
+        lon = self._coerce_finite_float(
+            getattr(location, "longitude", None), minimum=-180, maximum=180
+        )
         if lat is None or lon is None:
             return
-        parts = ["[The user shared a location pin.]"]
+        parts = [
+            "[The user shared a one-time venue location.]"
+            if background_locations_configured and venue
+            else (
+                "[The user shared a one-time location pin.]"
+                if background_locations_configured
+                else "[The user shared a location pin.]"
+            )
+        ]
         if venue:
             title = getattr(venue, "title", None)
             address = getattr(venue, "address", None)
@@ -6050,11 +6140,54 @@ class TelegramAdapter(BasePlatformAdapter):
             if address:
                 parts.append(f"Address: {address}")
         parts += [
-            f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-            "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+            f"latitude: {lat}",
+            f"longitude: {lon}",
+            f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+            (
+                "Use this pin to continue any clear request in the recent conversation. "
+                "If no request is clear, ask what the user would like to do with it."
+                if background_locations_configured
+                else "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."
+            ),
+        ]
+        event = self._build_message_event(
+            msg,
+            MessageType.TEXT if background_locations_configured else MessageType.LOCATION,
+            update_id=update.update_id,
+        )
         event.text = "\n".join(parts)
-        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+        event = self._apply_telegram_group_observe_attribution(event)
+        if background_locations_configured:
+            # The fixed pin is authoritative for this batched turn. The coordinate-free
+            # blocker survives either arrival order via the base merge helper.
+            event._ephemeral_context_blocked = True
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    async def _handle_background_location_lifecycle(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Observe live-location lifecycle updates in a reserved early PTB group."""
+        if not getattr(self, "_background_locations_configured", False):
+            return
+        msg = self._effective_update_message(update)
+        if msg is None or not self._is_background_live_location_update(update, msg):
+            return
+        await self._handle_location_message(update, context)
+
+    async def _handle_one_time_location_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Dispatch fixed pins/venues through PTB's ordinary handler group."""
+        msg = self._effective_update_message(update)
+        if (
+            getattr(self, "_background_locations_configured", False)
+            and msg is not None
+            and self._is_background_live_location_update(update, msg)
+        ):
+            return
+        await self._handle_location_message(update, context)
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
@@ -6807,27 +6940,42 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         extras.setdefault("proxy_url", str(telegram_cfg["proxy_url"]).strip())
         _set_env("TELEGRAM_PROXY", str(telegram_cfg["proxy_url"]).strip())
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+
+    def _top_level_or_legacy_extra(key: str) -> Any:
+        # Presence is authority: an explicit []/False disables a stale legacy
+        # ``telegram.extra`` value rather than falling through to it.
+        return telegram_cfg[key] if key in telegram_cfg else _telegram_extra.get(key)
+
     _telegram_rtm = telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg else _telegram_extra.get("reply_to_mode")
     if _telegram_rtm is not None:
         _set_env("TELEGRAM_REPLY_TO_MODE", "off" if _telegram_rtm is False else str(_telegram_rtm).lower())
-    _bridge_gate("allow_from", "TELEGRAM_ALLOWED_USERS", telegram_cfg.get("allow_from"))
     _bridge_gate(
-        "group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
+        "allow_from", "TELEGRAM_ALLOWED_USERS", _top_level_or_legacy_extra("allow_from")
+    )
+    _bridge_gate(
+        "group_allow_from",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        _top_level_or_legacy_extra("group_allow_from"),
+    )
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
-        telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+        _top_level_or_legacy_extra("group_allowed_chats"),
+    )
+    for _key in (
+        "guest_mode", "disable_link_previews", "observe_unmentioned_group_messages",
+        "free_response_topics", "background_locations",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
-    # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map
-    # already applied top-level-over-nested precedence and re-emitting them via dict.update() would undo it.
-    _GENERIC_MERGE_KEYS = {
-        "reply_prefix", "reply_in_thread", "reply_to_mode", "unauthorized_dm_behavior", "notice_delivery",
-        "require_mention", "channel_skill_bindings", "channel_prompts", "gateway_restart_notification", "allow_from",
-        "allow_admin_from", "dm_policy", "group_policy"}
+    # Pass through Telegram-specific legacy extras, but never re-emit a shared key
+    # when the platform section supplied an explicit value (including []/False).
+    from gateway.config_loader import shared_platform_config_keys
+
+    _shared_config_keys = shared_platform_config_keys(Platform.TELEGRAM)
     for _k, _v in _telegram_extra.items():
-        if _k not in _GENERIC_MERGE_KEYS:
-            extras.setdefault(_k, _v)
+        if _k in _shared_config_keys and _k in telegram_cfg:
+            continue
+        extras.setdefault(_k, _v)
     return extras or None
 
 

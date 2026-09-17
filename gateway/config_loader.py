@@ -223,6 +223,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
+def shared_platform_config_keys(platform: Platform) -> frozenset[str]:
+    """Shared keys whose explicit platform-section value outranks plugin extras."""
+    return frozenset(
+        key
+        for key, only, _transform in _SHARED_KEYS
+        if only is None or platform in only
+    )
+
+
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
     """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
     never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
@@ -310,7 +319,17 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue
         if isinstance(seeded, dict) and seeded:
-            _dict_slot(_dict_slot(platforms_data, entry.name), "extra").update(seeded)
+            # The shared-key bridge ran first and uses presence-based precedence.
+            # A plugin may also read legacy ``extra`` keys, but its hook must never
+            # replace an explicit (including empty/False) platform-section value.
+            try:
+                authoritative = shared_platform_config_keys(Platform(entry.name)).intersection(
+                    platform_cfg
+                )
+            except (TypeError, ValueError):
+                authoritative = frozenset()
+            filtered = {key: value for key, value in seeded.items() if key not in authoritative}
+            _dict_slot(_dict_slot(platforms_data, entry.name), "extra").update(filtered)
 
 
 def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:

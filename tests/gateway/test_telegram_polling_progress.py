@@ -40,8 +40,14 @@ class _ControlledRequest:
         return self.result
 
 
-def _make_adapter() -> TelegramAdapter:
-    return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+def _make_adapter(*, background_locations: bool = False) -> TelegramAdapter:
+    return TelegramAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"background_locations": background_locations},
+        )
+    )
 
 
 def _mock_polling_app(*, get_me=None):
@@ -359,6 +365,38 @@ async def test_current_polling_generation_success_records_progress():
     assert adapter._polling_network_error_count == 0
     assert adapter._send_path_degraded is False
     assert generation > 0
+    assert adapter._background_location_polling_generation is None
+    assert not adapter._background_location_update_receipts
+
+
+@pytest.mark.asyncio
+async def test_location_receipts_become_eligible_only_after_empty_poll():
+    adapter = _make_adapter(background_locations=True)
+    generation, _ = adapter._begin_polling_generation()
+    request = adapter._instrument_polling_request(
+        _ControlledRequest(
+            result=(200, b'{"ok":true,"result":[{"update_id":10}]}')
+        )
+    )
+
+    await _request_for_generation(
+        generation, request, "https://api.telegram.org/getUpdates"
+    )
+    assert adapter._background_location_update_receipts[10] == (generation, False)
+    assert adapter._background_location_polling_ready_generation is None
+
+    request.result = (200, b'{"ok":true,"result":[]}')
+    await _request_for_generation(
+        generation, request, "https://api.telegram.org/getUpdates"
+    )
+    assert adapter._background_location_polling_ready_generation == generation
+
+    request.result = (200, b'{"ok":true,"result":[{"update_id":11}]}')
+    await _request_for_generation(
+        generation, request, "https://api.telegram.org/getUpdates"
+    )
+    assert adapter._background_location_update_receipts[10] == (generation, False)
+    assert adapter._background_location_update_receipts[11] == (generation, True)
 
 
 @pytest.mark.asyncio

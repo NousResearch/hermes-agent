@@ -49,7 +49,9 @@ def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response
         pass
 
 
-def flatten_exception_chain(error: BaseException) -> str:
+def flatten_exception_chain(
+    error: BaseException, *, include_messages: bool = True,
+) -> str:
     """Compact ``Outer(msg) <- Inner(msg) <- ...`` rendering, walking ``__cause__`` then ``__context__``
     (deduped, max 4 deep): the OpenAI SDK wraps httpx errors so only the wrapper class is visible at
     the catch site; the inner RemoteProtocolError/ConnectError/ReadError says WHY the stream died."""
@@ -63,6 +65,8 @@ def flatten_exception_chain(error: BaseException) -> str:
         link = nxt
 
     def render(e: BaseException) -> str:
+        if not include_messages:
+            return type(e).__name__
         msg = str(e).strip().replace("\n", " ")
         msg = msg[:140] + "…" if len(msg) > 140 else msg
         return f"{type(e).__name__}({msg})" if msg else type(e).__name__
@@ -103,16 +107,26 @@ def log_stream_retry(
     UI verbosity. With *diag*, also records upstream headers, HTTP status, bytes/chunks, elapsed and TTFB on
     the dying attempt — enough to tell "one CF edge / downstream provider" from "random across runs"."""
     try:
+        from agent.redact import has_volatile_sensitive_text
+
+        private_context = has_volatile_sensitive_text()
         try:
             _summary = agent._summarize_api_error(error)
         except Exception:
-            _summary = str(error)
+            _summary = type(error).__name__ if private_context else str(error)
         if _summary and len(_summary) > 240:
             _summary = _summary[:240] + "…"
         try:
-            _chain = flatten_exception_chain(error)
+            _chain = flatten_exception_chain(
+                error, include_messages=not private_context
+            )
         except Exception:
             _chain = type(error).__name__
+        diag_fields = list(_diag_fields(diag))
+        if private_context:
+            # The remote endpoint owns these strings and can echo request data in
+            # headers. Keep transport timing/counts but suppress upstream text.
+            diag_fields[-1] = "withheld"
 
         logger.warning(
             "Stream %s on attempt %s/%s — retrying. subagent_id=%s depth=%s provider=%s base_url=%s "
@@ -120,7 +134,7 @@ def log_stream_retry(
             kind, attempt, max_attempts,
             getattr(agent, "_subagent_id", None) or "-", getattr(agent, "_delegate_depth", 0),
             agent.provider or "-", agent.base_url or "-",
-            type(error).__name__, _summary, _chain, *_diag_fields(diag),
+            type(error).__name__, _summary, _chain, *diag_fields,
             extra={"mid_tool_call": mid_tool_call},
         )
     except Exception:

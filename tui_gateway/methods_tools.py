@@ -199,12 +199,19 @@ def _redacted_exec_output(output: str, limit: int = 48_000) -> str:
     boundary. Shared by every exec-shaped reply so no caller can forget the
     redact step (`cli.exec` skipped it while `command.exec` had it — a headless
     `hermes` run can reach credential-bearing output and the reply lands in a
-    renderer)."""
+    renderer). Fails closed: if the redactor is unavailable the output is
+    withheld rather than sent raw."""
     from agent.redact import redact_sensitive_text
 
     text = output[:limit]
 
-    return redact_sensitive_text(text) if text else text
+    if not text:
+        return text
+
+    try:
+        return redact_sensitive_text(text)
+    except Exception:
+        return "(output withheld: redaction unavailable)"
 
 
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:

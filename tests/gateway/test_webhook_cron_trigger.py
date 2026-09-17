@@ -10,13 +10,14 @@ Covers:
   snapshot with the rendered prompt as transient per-run context
 - The normal webhook agent session is NOT started (``handle_message``
   never called)
-- HTTP 202 means durable fire-claim admission, not "a background task
-  was created"
-- Paused/unknown/busy targets are retryable non-2xx and do not consume
-  the delivery ID
-- A claim-exception result (``claimed: true`` without a job snapshot)
-  is the same retryable refusal: 503 + Retry-After, ID unconsumed, no
-  dispatch; ``execute_job_for_event`` returns the error dict
+- HTTP 202 means durable store admission (claim or queued batch), not
+  "a background task was created"
+- Paused/unknown/unrunnable targets are retryable non-2xx and do not
+  consume the delivery ID
+- A busy in-flight job durably queues the wake and still returns 202
+- A claim-exception / store-failure is the same retryable refusal:
+  503 + Retry-After, ID unconsumed, no dispatch;
+  ``execute_job_for_event`` returns the error dict
 - Startup validation rejects routes that set both ``cron_job`` and
   ``deliver_only``
 - ``execute_job_for_event`` resolves refs and fails cleanly on unknowns
@@ -247,23 +248,24 @@ class TestCronJobTrigger:
 
     @pytest.mark.asyncio
     async def test_runnable_job_claims_before_202_and_worker_does_not_reclaim(self):
-        """202 is returned only after the at-most-once fire claim; the worker
-        executes that snapshot and must not claim again."""
-        from cron.jobs import create_job
+        """202 is returned only after durable store admission; the worker
+        executes that snapshot and must not claim again. A second distinct
+        event while the claim is held is queued, not dropped."""
+        from cron.jobs import admit_job_event, create_job, get_job
         from tools import cronjob_tools
 
         job = create_job(prompt="sweep reviews", schedule="every 5m", name="review-sweeper")
-        original_claim = cronjob_tools.claim_job_for_fire
+        original_admit = admit_job_event
         claim_started = threading.Event()
         release_claim = threading.Event()
-        claim_calls = []
+        admit_calls = []
         ran = []
 
-        def _blocking_claim(job_id, **kwargs):
-            claim_calls.append(job_id)
+        def _blocking_admit(job_ref, **kwargs):
+            admit_calls.append(job_ref)
             claim_started.set()
             assert release_claim.wait(timeout=2)
-            return original_claim(job_id, **kwargs)
+            return original_admit(job_ref, **kwargs)
 
         def _fake_run(claimed_job, extra_prompt=None):
             ran.append((claimed_job, extra_prompt))
@@ -285,7 +287,7 @@ class TestCronJobTrigger:
 
         adapter.handle_message = _capture
 
-        with patch.object(cronjob_tools, "claim_job_for_fire", side_effect=_blocking_claim), patch.object(
+        with patch.object(cronjob_tools, "admit_job_event", side_effect=_blocking_admit), patch.object(
             cronjob_tools, "_run_claimed_job", side_effect=_fake_run
         ):
             async with TestClient(TestServer(_create_app(adapter))) as cli:
@@ -309,8 +311,6 @@ class TestCronJobTrigger:
                 assert resp.status == 202
                 assert data["status"] == "accepted"
                 assert data["cron_job"] == job["id"]
-                # A second event while the claim is held must not be dropped as
-                # success/duplicate — there is no second fire queue.
                 busy = await cli.post(
                     "/webhooks/pr-feedback",
                     data=b'{"number": 8}',
@@ -320,12 +320,11 @@ class TestCronJobTrigger:
                     },
                 )
                 busy_body = await busy.json()
-                assert busy.status == 503
-                assert busy_body.get("status") != "duplicate"
+                assert busy.status == 202
+                assert busy_body.get("status") == "accepted"
                 await _drain_background_tasks(adapter)
 
-        # Admission + the busy retry both hit the CAS; the worker must not claim again.
-        assert claim_calls == [job["id"], job["id"]]
+        assert admit_calls == [job["id"], job["id"]]
         assert len(ran) == 1
         claimed_job, extra_prompt = ran[0]
         assert claimed_job["id"] == job["id"]
@@ -333,6 +332,13 @@ class TestCronJobTrigger:
         assert "PR #7 received feedback" in extra_prompt
         assert "pull_request_review" in extra_prompt
         assert handle_message_calls == []
+        pending = (get_job(job["id"]) or {}).get("pending_event_batch") or {}
+        pending_ctx = " ".join(
+            str(event.get("context") or "")
+            for event in (pending.get("events") or [])
+            if isinstance(event, dict)
+        )
+        assert "PR #8 received feedback" in pending_ctx
 
     @pytest.mark.asyncio
     async def test_claim_exception_is_retryable_and_does_not_consume_delivery_id(self):
@@ -376,7 +382,7 @@ class TestCronJobTrigger:
         }
 
         with patch.object(
-            cronjob_tools, "claim_job_for_fire", side_effect=OSError("disk")
+            cronjob_tools, "admit_job_event", side_effect=OSError("disk")
         ), patch.object(cronjob_tools, "_run_claimed_job", side_effect=_fake_run):
             async with TestClient(TestServer(_create_app(adapter))) as cli:
                 resp = await cli.post(
@@ -435,38 +441,28 @@ class TestExecuteJobForEvent:
     def test_unknown_job_returns_error(self):
         from tools import cronjob_tools
 
-        with patch.object(cronjob_tools, "resolve_job_ref", return_value=None):
-            result = cronjob_tools.execute_job_for_event("nope")
+        result = cronjob_tools.execute_job_for_event("nope")
         assert result["claimed"] is False
         assert result["success"] is False
         assert "not found" in result["error"]
 
     def test_ambiguous_ref_returns_error(self):
-        from cron.jobs import AmbiguousJobReference
+        from cron.jobs import create_job
         from tools import cronjob_tools
 
-        with patch.object(
-            cronjob_tools,
-            "resolve_job_ref",
-            side_effect=AmbiguousJobReference(
-                "x", [{"id": "job-a"}, {"id": "job-b"}]
-            ),
-        ):
-            result = cronjob_tools.execute_job_for_event("x")
+        create_job(prompt="a", schedule="every 5m", name="x")
+        create_job(prompt="b", schedule="every 5m", name="x")
+        result = cronjob_tools.execute_job_for_event("x")
         assert result["claimed"] is False
         assert result["success"] is False
         assert "ambiguous" in result["error"].lower()
 
     def test_resolved_job_fires_with_extra_prompt(self):
+        from cron.jobs import create_job
         from tools import cronjob_tools
 
-        job = {"id": "job-123", "name": "sweeper"}
-        claimed = {**job, "fire_claim": {"by": "event"}}
+        job = create_job(prompt="sweep", schedule="every 5m", name="sweeper")
         with patch.object(
-            cronjob_tools, "resolve_job_ref", return_value=job
-        ), patch.object(
-            cronjob_tools, "_claim_for_manual_run", return_value=(claimed, None)
-        ), patch.object(
             cronjob_tools,
             "_run_claimed_job",
             return_value={"claimed": True, "success": True, "error": None},
@@ -475,23 +471,27 @@ class TestExecuteJobForEvent:
                 "sweeper", extra_prompt="event context"
             )
         assert result["success"] is True
-        mock_exec.assert_called_once_with(claimed, extra_prompt="event context")
+        assert mock_exec.call_count == 1
+        claimed, kwargs = mock_exec.call_args[0][0], mock_exec.call_args.kwargs
+        if mock_exec.call_args.args[1:]:
+            extra = mock_exec.call_args.args[1]
+        else:
+            extra = kwargs.get("extra_prompt")
+        assert claimed["id"] == job["id"]
+        assert claimed.get("fire_claim")
+        assert extra == "event context"
 
     def test_claim_exception_returns_error_dict_without_raising(self):
-        """Claim-exception results have claimed:true and no job snapshot.
+        """Store-failure results must not KeyError into a run.
 
-        Base ``execute_job_for_event`` returned the error dict; H KeyError'd
-        on ``admitted["job"]``. Public contract is the error dict, no run.
+        Public contract is the error dict, no run.
         """
+        from cron.jobs import create_job
         from tools import cronjob_tools
 
-        job = {"id": "job-123", "name": "sweeper"}
+        create_job(prompt="sweep", schedule="every 5m", name="sweeper")
         with patch.object(
-            cronjob_tools, "resolve_job_ref", return_value=job
-        ), patch.object(
-            cronjob_tools, "claim_job_for_fire", side_effect=OSError("disk")
-        ), patch.object(
-            cronjob_tools, "mark_job_run"
+            cronjob_tools, "admit_job_event", side_effect=OSError("disk")
         ), patch.object(
             cronjob_tools, "_run_claimed_job"
         ) as mock_exec:

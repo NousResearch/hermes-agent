@@ -527,10 +527,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
         The rendered prompt is transient per-run context (same rail as ``cronjob(action='run', prompt=...)``);
         the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script pipeline
-        as agent routes. 202 is returned only after the at-most-once fire claim is acquired under the
-        routed profile; the delivery ID is consumed at that same moment. A later worker runs the claimed
-        snapshot without claiming again. Unknown/unrunnable/busy targets are 503 and leave the delivery
-        ID unconsumed so the producer can retry. There is no second fire queue.
+        as agent routes. 202 is returned only after a durable store admission under the routed profile
+        (immediate fire claim with the event batch embedded, or a merge into the pending rerun batch).
+        The delivery ID is consumed at that same moment. A claimed snapshot is run without claiming
+        again; a queued wake waits for the in-flight owner to finish. Unknown, paused, disabled,
+        completed, overflow, or store-failure targets are 503 and leave the delivery ID unconsumed.
         """
         job_ref = str(route_config["cron_job"])
         event_context = (f"This run was triggered by webhook event '{event_type}' on route '{route_name}' "
@@ -546,10 +547,18 @@ class WebhookAdapter(BasePlatformAdapter):
             # The job store belongs to the ROUTED profile, not the gateway's default home;
             # to_thread copies contextvars so the scope follows.
             with self._profile_scope(profile):
-                admitted = await asyncio.to_thread(admit_job_for_event, job_ref)
+                admitted = await asyncio.to_thread(
+                    admit_job_for_event, job_ref, delivery_id, event_context)
         except Exception:
             logger.exception("[webhook] cron-trigger admission failed job=%s route=%s", job_ref, route_name)
             return self._cron_trigger_unavailable()
+        if admitted.get("duplicate"):
+            self._record_delivery_id(delivery_id, now)
+            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        if admitted.get("queued"):
+            self._record_delivery_id(delivery_id, now)
+            return web.json_response({"status": "accepted", "route": route_name, "cron_job": job_ref,
+                                      "event": event_type, "delivery_id": delivery_id}, status=202)
         # claimed:true without a job snapshot is the claim-exception dict, not admission.
         if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
             logger.warning("[webhook] cron-trigger job=%s route=%s not admitted: %s", job_ref, route_name,

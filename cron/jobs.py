@@ -2174,13 +2174,16 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         raise ValueError(
             f"Cannot resume: one-shot time {run_at} is in the past "
             f"(grace window: {ONESHOT_GRACE_SECONDS}s) and will never fire.")
-    return update_job(job["id"], {
+    updates = {
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": next_run_at,
-    })
+    }
+    if _coerce_event_items(job.get("pending_event_batch")):
+        updates["event_rerun_due"] = True
+    return update_job(job["id"], updates)
 
 
 def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -2465,16 +2468,36 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
+        event_run = bool(
+            _coerce_event_items((job.get("fire_claim") or {}).get("event_batch"))
+        )
+        scheduled_next = job.get("next_run_at")
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now)
+        if event_run:
+            # Event reruns must not consume or re-anchor future scheduled occurrences.
+            job["next_run_at"] = scheduled_next
+            if job.get("state") != "paused" and job.get("next_run_at"):
+                job["state"] = "scheduled"
+        else:
+            _advance_after_run(job, now)
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not success and model_unreachable and not is_terminal_job(job):
+        if not event_run and not success and model_unreachable and not is_terminal_job(job):
             plan_retry(job)
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
+        pending = _coerce_event_items(job.get("pending_event_batch"))
+        if pending:
+            job["event_rerun_due"] = True
+            if is_terminal_job(job):
+                job["enabled"] = True
+                job["state"] = "scheduled"
+        else:
+            job.pop("event_rerun_due", None)
+            if event_run:
+                _complete_event_run_if_exhausted(job)
         save_jobs(jobs)
         return True
 
@@ -2666,6 +2689,7 @@ def advance_next_runs(job_ids) -> int:
         for job in jobs:
             if (
                 job["id"] not in ids
+                or job.get("event_rerun_due")
                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
             ):
@@ -2724,6 +2748,20 @@ def claim_job_for_fire(
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
+        pending_events = _recover_stale_event_claim(job, now, claim_ttl_seconds)
+        event_rerun = bool(job.get("event_rerun_due")) and bool(pending_events)
+        if event_rerun:
+            if force:
+                _activate_job_record(job)
+            job["fire_claim"] = {
+                "at": now.isoformat(),
+                "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+                "event_batch": {"events": pending_events},
+            }
+            job.pop("pending_event_batch", None)
+            job.pop("event_rerun_due", None)
+            save_jobs(jobs)
+            return dict(copy.deepcopy(job), _scheduled_instant=None) if return_job else True
         from cron.occurrences import completed_occurrence, scheduled_instant
 
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
@@ -2768,6 +2806,236 @@ def claim_job_for_fire(
         return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+
+
+# Durable webhook/event wakes. fire_claim is the at-most-once run lease; this batch is a
+# separate per-job intent so a busy or lost in-memory running guard cannot drop an accepted
+# event. Bounds are strict: overflow refuses the new delivery without consuming it.
+EVENT_BATCH_MAX_EVENTS = 16
+EVENT_BATCH_MAX_BYTES = 256 * 1024
+EVENT_RECEIPT_MAX = 256
+
+
+def _coerce_event_items(batch: Any) -> List[Dict[str, str]]:
+    """Normalize a stored event batch to ``[{delivery_id, context, accepted_at}, ...]``."""
+    if isinstance(batch, dict):
+        events = batch.get("events")
+    else:
+        events = batch
+    if not isinstance(events, list):
+        return []
+    items: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for event in events:
+        if isinstance(event, dict):
+            delivery_id = str(event.get("delivery_id") or "")
+            context = str(event.get("context") or "")
+            accepted_at = str(event.get("accepted_at") or "")
+        elif isinstance(event, str) and event:
+            delivery_id, context, accepted_at = "", event, ""
+        else:
+            continue
+        if delivery_id and delivery_id in seen:
+            continue
+        if delivery_id:
+            seen.add(delivery_id)
+        if not delivery_id and not context:
+            continue
+        items.append({"delivery_id": delivery_id, "context": context, "accepted_at": accepted_at})
+    return items
+
+
+def _event_batch_bytes(events: List[Dict[str, str]]) -> int:
+    return sum(
+        len(event["context"].encode("utf-8")) + len(event["delivery_id"].encode("utf-8"))
+        for event in events
+    )
+
+
+def _event_batch_overflows(events: List[Dict[str, str]]) -> bool:
+    return (
+        len(events) > EVENT_BATCH_MAX_EVENTS
+        or _event_batch_bytes(events) > EVENT_BATCH_MAX_BYTES
+    )
+
+
+def event_batch_prompt(job_or_claim: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Join retained event contexts in admission order for one run."""
+    if not isinstance(job_or_claim, dict):
+        return None
+    claim = job_or_claim.get("fire_claim") if isinstance(job_or_claim.get("fire_claim"), dict) else None
+    events = _coerce_event_items(
+        (claim or {}).get("event_batch") if claim is not None else job_or_claim.get("event_batch")
+    )
+    if not events:
+        events = _coerce_event_items(job_or_claim.get("pending_event_batch"))
+    parts = [event["context"] for event in events if event.get("context")]
+    return "\n\n".join(parts) if parts else None
+
+
+def _event_receipts(job: Dict[str, Any]) -> Dict[str, Any]:
+    raw = job.get("event_delivery_receipts")
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items()}
+    if isinstance(raw, list):
+        receipts: Dict[str, Any] = {}
+        for item in raw:
+            if isinstance(item, dict) and item.get("delivery_id"):
+                receipts[str(item["delivery_id"])] = item
+        return receipts
+    return {}
+
+
+def _put_event_receipt(job: Dict[str, Any], delivery_id: str, now: datetime) -> None:
+    receipts = _event_receipts(job)
+    receipts[delivery_id] = {"at": now.isoformat()}
+    if len(receipts) > EVENT_RECEIPT_MAX:
+        ordered = sorted(
+            receipts.items(),
+            key=lambda item: str((item[1] or {}).get("at") if isinstance(item[1], dict) else ""),
+        )
+        receipts = dict(ordered[-EVENT_RECEIPT_MAX:])
+    job["event_delivery_receipts"] = receipts
+
+
+def _set_pending_event_batch(job: Dict[str, Any], events: List[Dict[str, str]]) -> None:
+    if events:
+        job["pending_event_batch"] = {"events": events}
+    else:
+        job.pop("pending_event_batch", None)
+
+
+def _recover_stale_event_claim(job: Dict[str, Any], now: datetime, ttl_seconds: float) -> List[Dict[str, str]]:
+    """Move a stale event-bearing fire_claim's batch onto pending; return pending events."""
+    pending = _coerce_event_items(job.get("pending_event_batch"))
+    claim = job.get("fire_claim")
+    if not isinstance(claim, dict) or _claim_is_live(claim, now, ttl_seconds):
+        return pending
+    stale_events = _coerce_event_items(claim.get("event_batch"))
+    if not stale_events:
+        return pending
+    known = {event["delivery_id"] for event in pending if event["delivery_id"]}
+    for event in stale_events:
+        if event["delivery_id"] and event["delivery_id"] in known:
+            continue
+        pending.append(event)
+        if event["delivery_id"]:
+            known.add(event["delivery_id"])
+    _set_pending_event_batch(job, pending)
+    job["event_rerun_due"] = True
+    job["fire_claim"] = None
+    return pending
+
+
+def admit_job_event(
+    job_ref: str, *, delivery_id: str, context: str,
+    claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS,
+) -> Dict[str, Any]:
+    """Atomically admit one event wake under the profile-scoped job store.
+
+    Returns ``{"status": "claimed", "job": snapshot}``, ``{"status": "queued"}``,
+    ``{"status": "duplicate"}``, or ``{"status": "unavailable", "error": ...}``.
+    Immediate claims embed the event batch on ``fire_claim`` without shifting
+    ``next_run_at``. A live fire claim merges into one pending rerun batch.
+    Overflow and write failures do not record a delivery receipt.
+    """
+    try:
+        job = resolve_job_ref(job_ref)
+    except AmbiguousJobReference as exc:
+        return {"status": "unavailable", "error": str(exc)}
+    if job is None:
+        return {
+            "status": "unavailable",
+            "error": f"Cron job '{job_ref}' not found.",
+        }
+    delivery_id = str(delivery_id or "").strip()
+    if not delivery_id:
+        return {"status": "unavailable", "error": "delivery id required"}
+    event = {
+        "delivery_id": delivery_id,
+        "context": str(context or ""),
+        "accepted_at": "",
+    }
+    if _event_batch_overflows([event]):
+        return {"status": "unavailable", "error": "event batch overflow"}
+
+    def apply(jobs, _i, record):
+        if is_terminal_job(record) and not _is_recoverable_error_job(record):
+            return {"status": "unavailable", "error": "Cron job is not available"}
+        if not is_job_runnable(record):
+            return {"status": "unavailable", "error": "Cron job is not available"}
+        now = _hermes_now()
+        event["accepted_at"] = now.isoformat()
+        if delivery_id in _event_receipts(record):
+            return {"status": "duplicate"}
+        pending = _recover_stale_event_claim(record, now, claim_ttl_seconds)
+        claim = record.get("fire_claim")
+        if _claim_is_live(claim, now, claim_ttl_seconds):
+            merged = pending + [event]
+            if _event_batch_overflows(merged):
+                return {"status": "unavailable", "error": "event batch overflow"}
+            _set_pending_event_batch(record, merged)
+            record["event_rerun_due"] = True
+            _put_event_receipt(record, delivery_id, now)
+            save_jobs(jobs)
+            return {"status": "queued"}
+        merged = pending + [event]
+        if _event_batch_overflows(merged):
+            return {"status": "unavailable", "error": "event batch overflow"}
+        record["fire_claim"] = {
+            "at": now.isoformat(),
+            "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+            "event_batch": {"events": merged},
+        }
+        record.pop("pending_event_batch", None)
+        record.pop("event_rerun_due", None)
+        _put_event_receipt(record, delivery_id, now)
+        save_jobs(jobs)
+        return {"status": "claimed", "job": copy.deepcopy(record)}
+
+    try:
+        result = _under_fire_fence(job["id"], lambda: _with_job(job["id"], apply, _MISSING))
+    except Exception as exc:
+        logger.error("admit_job_event failed for %s: %s", job_ref, exc)
+        return {"status": "unavailable", "error": str(exc)}
+    if result is False or result is _MISSING or not isinstance(result, dict):
+        return {"status": "unavailable", "error": "Cron job is not available"}
+    return result
+
+
+def requeue_claimed_event_batch(job_id: str, *, expected_owner: str) -> bool:
+    """Move this owner's exact claimed event batch back to pending and drop the lease.
+
+    Used when a claimed event snapshot loses ``try_register_running_job``. Already-accepted
+    events are requeued even if the merge exceeds admission bounds.
+    """
+    def apply(jobs, _i, record):
+        claim = record.get("fire_claim")
+        if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+            return False
+        claimed_events = _coerce_event_items(claim.get("event_batch"))
+        if not claimed_events:
+            return False
+        pending = _coerce_event_items(record.get("pending_event_batch"))
+        known = {event["delivery_id"] for event in pending if event["delivery_id"]}
+        for event in claimed_events:
+            if event["delivery_id"] and event["delivery_id"] in known:
+                continue
+            pending.append(event)
+            if event["delivery_id"]:
+                known.add(event["delivery_id"])
+        _set_pending_event_batch(record, pending)
+        record["fire_claim"] = None
+        record["event_rerun_due"] = True
+        save_jobs(jobs)
+        return True
+
+    try:
+        result = _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    except Exception:
+        logger.exception("requeue_claimed_event_batch failed for %s", job_id)
+        return False
+    return bool(result)
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
@@ -3174,12 +3442,58 @@ def _restore_unclaimed_slot(job: Dict[str, Any], scan: _DueScan) -> Optional[str
     return slot
 
 
+def _complete_event_run_if_exhausted(job: Dict[str, Any]) -> None:
+    """Retire a finite/one-shot job after its event batch drains, without shifting a live schedule."""
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    completed = int(repeat.get("completed") or 0)
+    kind = (job.get("schedule") or {}).get("kind")
+    if times is not None and times > 0 and completed >= times:
+        _complete_job_record(job)
+        return
+    if kind == "once" and not job.get("next_run_at"):
+        _complete_job_record(job)
+
+
+def is_event_claim(job: Optional[Dict[str, Any]]) -> bool:
+    """True when this snapshot is an event-batch fire, not a scheduled occurrence."""
+    if not isinstance(job, dict):
+        return False
+    if job.get("_event_rerun"):
+        return True
+    claim = job.get("fire_claim") if isinstance(job.get("fire_claim"), dict) else {}
+    return bool(_coerce_event_items(claim.get("event_batch")))
+
+
+def _due_for_event_rerun(job: Dict[str, Any], now: datetime) -> bool:
+    """True when pending event intent should fire off-schedule without touching next_run_at."""
+    if not job.get("event_rerun_due"):
+        return False
+    if not _coerce_event_items(job.get("pending_event_batch")):
+        return False
+    if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS):
+        return False
+    job["_event_rerun"] = True
+    job["_scheduled_instant"] = None
+    return True
+
+
 def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float) -> bool:
     """Decide whether one enabled, non-terminal job fires this tick, persisting any repairs.
     Ordering matters: recover missing next_run_at, repair timezone shifts, re-arm stale-error
     recurring jobs; then once due: re-anchor stale cron instants, fast-forward missed recurring
     runs, retire/guard one-shots, and finally stamp the run claim / dispatch record."""
     now = scan.now
+    pending_before = job.get("pending_event_batch")
+    claim_before = job.get("fire_claim")
+    _recover_stale_event_claim(job, now, FIRE_CLAIM_TTL_SECONDS)
+    if job.get("pending_event_batch") != pending_before or job.get("fire_claim") != claim_before:
+        scan.persist(
+            job["id"],
+            pending_event_batch=job.get("pending_event_batch"),
+            event_rerun_due=job.get("event_rerun_due"),
+            fire_claim=job.get("fire_claim"),
+        )
     # Cross-process guard: another process's live one-shot run_claim (younger than TTL) — do NOT
     # re-dispatch. Malformed/future-dated claims (clock/TZ skew) count as stale, never eternally
     # fresh.
@@ -3191,7 +3505,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
 
     next_run = _restore_unclaimed_slot(job, scan) or job.get("next_run_at") or _recover_missing_next_run(job, scan)
     if not next_run:
-        return False
+        return _due_for_event_rerun(job, now)
     raw_next_run_dt = datetime.fromisoformat(next_run)
     d = _DueJob(job, scan, next_run, raw_next_run_dt, _ensure_aware(raw_next_run_dt))
     kind = d.kind
@@ -3211,7 +3525,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)
     if d.next_run_dt > now:
-        return False
+        return _due_for_event_rerun(job, now)
 
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
     job["_scheduled_instant"] = None if manual_run else scheduled_instant(job.get("next_run_at"))

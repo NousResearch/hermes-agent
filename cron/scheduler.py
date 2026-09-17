@@ -432,9 +432,10 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, event_batch_prompt,
+    fire_claim_fence, is_event_claim, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
+    heartbeat_run_claim, mark_job_run, save_job_output, self_removal_delivery_allowed,
+    self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -2478,6 +2479,8 @@ def run_one_job(
         _stamped = job.get("manual_run_prompt")
         if _stamped and job.get("manual_run_at"):
             extra_prompt = str(_stamped)
+        if extra_prompt is None:
+            extra_prompt = event_batch_prompt(job)
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
@@ -2845,7 +2848,7 @@ def _run_one_job_body(
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
         # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
         # fire_due) get at-most-times semantics. See #38758.
-        if not claim_dispatch(job["id"]):
+        if not is_event_claim(job) and not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]))

@@ -443,7 +443,7 @@ How it works:
 
 1. The event passes the same HMAC auth, rate limiting, and `events`/`filters`/`script` filtering as any other route.
 2. The route's `prompt` template is rendered from the payload and injected into the job as **transient per-run context** (the same rail as `cronjob(action='run', prompt=...)` — the job's stored prompt is never mutated).
-3. Hermes preflights the referenced job under the routed profile and acquires the scheduler's at-most-once fire claim **before** acknowledging the POST. Only then is the delivery ID consumed and `202 Accepted` returned; a worker runs the claimed snapshot without claiming again. Unknown, paused, disabled, completed, or busy targets return a retryable `503` with a generic error and leave the delivery ID unconsumed so the producer can retry.
+3. Hermes preflights the referenced job under the routed profile and durably admits the event **before** acknowledging the POST: if the job is free, the fire claim embeds this event batch; if a run is already in flight, the event is merged into one pending rerun batch. Only then is the delivery ID consumed and `202 Accepted` returned. A claimed snapshot is run without claiming again; a queued wake is drained by exactly one follow-up run after the in-flight owner finishes. Unknown, paused, disabled, completed, overflow, or store-failure targets return a retryable `503` with a generic error and leave the delivery ID unconsumed so the producer can retry.
 
 ### Example: fire a PR-review job on review feedback
 
@@ -477,8 +477,9 @@ The job reference is validated when you create the subscription, so typos surfac
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
 - The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
-- Paused, disabled, completed, unknown, or otherwise unrunnable jobs are not fired. The POST returns retryable `503` with a generic error and does **not** consume the delivery ID, so the producer can retry after the job is resumed. A job that is already running is also `503` (there is no second fire queue).
-- The POST returns `202 Accepted` only after the fire claim is acquired; the claimed run then executes in the background.
+- Paused, disabled, completed, unknown, or otherwise unrunnable jobs are not fired. The POST returns retryable `503` with a generic error and does **not** consume the delivery ID, so the producer can retry after the job is resumed. Queue overflow or a store write failure is the same retryable `503` and also leaves the delivery ID unconsumed.
+- If the job is already running, the event is still accepted (`202`) and coalesced onto one pending rerun batch (duplicates of the same delivery ID do not add another run). That batch is consumed by a single off-schedule follow-up after the current run; it does not skip or shift future scheduled occurrences.
+- The POST returns `202 Accepted` only after durable admission (immediate claim or queued batch); a claimed run then executes in the background.
 
 ---
 

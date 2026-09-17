@@ -1313,7 +1313,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             tools={rightTitlebarTools}
           />
         )}
-        {!isHudWindow() && !isBrowserWindow() && customWindowControls && (
+        {!isHudWindow() && customWindowControls && (
           <WslgWindowControls isFullscreen={Boolean(connection?.isFullscreen)} isMaximized={Boolean(connection?.isMaximized)} />
         )}
         {children}

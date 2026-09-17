@@ -59,12 +59,17 @@ describe('WslgWindowControls', () => {
     expect(screen.getByRole('button', { name: 'Restore window' })).toBeTruthy()
   })
 
-  it('stays hidden while a full-screen overlay owns the window chrome', () => {
+  it.each(['/settings', '/agents', '/command-center'])('keeps OS controls available on %s', path => {
     desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
 
-    renderControls(false, '/settings')
+    renderControls(false, path)
 
-    expect(screen.queryByLabelText('Window controls')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize window' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize window' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close window' }))
+    expect(windowControls.minimize).toHaveBeenCalledExactlyOnceWith()
+    expect(windowControls.toggleMaximize).toHaveBeenCalledExactlyOnceWith()
+    expect(windowControls.close).toHaveBeenCalledExactlyOnceWith()
   })
 
   it('stays hidden while the BrowserWindow is fullscreen', () => {

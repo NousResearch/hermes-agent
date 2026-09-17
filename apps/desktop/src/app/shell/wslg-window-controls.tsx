@@ -1,10 +1,7 @@
 import type { CSSProperties, PointerEvent } from 'react'
-import { useLocation } from 'react-router'
 
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
-
-import { appViewForPath, isOverlayView } from '../routes'
 
 import { TITLEBAR_HEIGHT } from './titlebar'
 
@@ -30,10 +27,9 @@ const buttonClass =
 const stopTitlebarDrag = (event: PointerEvent<HTMLButtonElement>) => event.stopPropagation()
 
 export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowControlsProps) {
-  const location = useLocation()
   const controls = window.hermesDesktop?.windowControls
 
-  if (!controls || isFullscreen || isOverlayView(appViewForPath(location.pathname))) {
+  if (!controls || isFullscreen) {
     return null
   }
 

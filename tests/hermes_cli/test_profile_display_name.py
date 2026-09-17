@@ -16,6 +16,7 @@ from hermes_cli.profiles import (
     format_profile_label,
     get_profile_dir,
     list_profiles,
+    profile_has_avatar,
     profile_exists,
     read_profile_meta,
     rename_profile,
@@ -67,10 +68,75 @@ class TestMetaAndValidation:
             "ui_meta:\n  hermes-bots: 7\n", encoding="utf-8")  # not a mapping
         assert read_profile_meta(profile_env)["bot_title"] == ""
 
+    @pytest.mark.parametrize("extension", ["png", "jpg", "webp"])
+    def test_profile_info_exposes_supported_avatar_assets(
+        self, profile_env, extension
+    ):
+        assets = profile_env / "assets"
+        assets.mkdir()
+        (assets / f"avatar.{extension}").write_bytes(b"avatar")
+
+        info = list_profiles()[0]
+        assert profile_has_avatar(profile_env) is True
+        assert info.has_avatar is True
+
+        from hermes_cli.web_routers.profiles import _profile_to_dict
+        assert _profile_to_dict(info)["has_avatar"] is True
+
+    def test_avatar_probe_ignores_unsupported_extensions_and_directories(
+        self, profile_env
+    ):
+        assets = profile_env / "assets"
+        assets.mkdir()
+        (assets / "avatar.jpeg").write_bytes(b"avatar")
+        (assets / "avatar.png").mkdir()
+
+        assert profile_has_avatar(profile_env) is False
+        assert list_profiles()[0].has_avatar is False
+
+    def test_fallback_profile_row_preserves_identity_metadata(
+        self, profile_env, monkeypatch
+    ):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server_profiles import _fallback_profile_entry
+
+        (profile_env / "profile.yaml").write_text(
+            "display_name: Builder\n"
+            "ui_meta:\n  hermes-bots:\n    title: Build Bot\n",
+            encoding="utf-8",
+        )
+        assets = profile_env / "assets"
+        assets.mkdir()
+        (assets / "avatar.webp").write_bytes(b"avatar")
+        reads = 0
+        original_read = profiles_mod.read_profile_meta
+
+        def counted_read(path):
+            nonlocal reads
+            reads += 1
+            return original_read(path)
+
+        monkeypatch.setattr(profiles_mod, "read_profile_meta", counted_read)
+        row = _fallback_profile_entry(
+            profiles_mod,
+            "default",
+            profile_env,
+            is_default=True,
+            has_env=False,
+            gateway_running=lambda: False,
+        )
+
+        assert reads == 1
+        assert row["display_name"] == "Builder"
+        assert row["bot_title"] == "Build Bot"
+        assert row["has_avatar"] is True
+
     def test_empty_clears_key_from_file(self, profile_env):
         write_profile_meta(profile_env, display_name="Harumesu")
         write_profile_meta(profile_env, display_name="")
-        data = yaml.safe_load((profile_env / "profile.yaml").read_text())
+        data = yaml.safe_load(
+            (profile_env / "profile.yaml").read_text(encoding="utf-8")
+        )
         assert "display_name" not in data
 
     def test_setter_strips_and_caps_length(self, profile_env):

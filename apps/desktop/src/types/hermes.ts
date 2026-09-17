@@ -994,6 +994,8 @@ export interface ProfileInfo {
   /** Bot Mode title (profile.yaml ui_meta['hermes-bots'].title) — the name the
    *  Bots roster shows for this profile. Presentation-only. */
   bot_title?: string
+  /** Whether profiles.get_asset can serve an avatar for this profile. */
+  has_avatar?: boolean
   has_env: boolean
   is_default: boolean
   model: null | string

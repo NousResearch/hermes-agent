@@ -101,15 +101,19 @@ def _parse_model_ids(resp: "Any") -> List[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> Dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(  # noqa: E731
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    profile_meta = _safe(lambda: profiles_mod.read_profile_meta(home), {})
+    if not isinstance(profile_meta, dict):
+        profile_meta = {}
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
         "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
         "gateway_running": _safe(gateway_running, False),
-        "description": meta("description", ""), "description_auto": meta("description_auto", False),
-        "bot_title": meta("bot_title", ""),
+        "description": profile_meta.get("description", "") or "",
+        "description_auto": bool(profile_meta.get("description_auto", False)),
+        "display_name": profile_meta.get("display_name", "") or "",
+        "bot_title": profile_meta.get("bot_title", "") or "",
+        "has_avatar": bool(_safe(lambda: profiles_mod.profile_has_avatar(home), False)),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 

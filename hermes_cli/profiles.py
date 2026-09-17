@@ -25,6 +25,7 @@ from hermes_constants import (
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_AVATAR_EXTENSIONS = ("png", "jpg", "webp")
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -548,6 +549,8 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Whether the profile has an avatar asset that ``profiles.get_asset`` can serve.
+    has_avatar: bool = False
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -699,9 +702,9 @@ def _count_skills(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name}`` (empty
-    defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
-    break ``hermes profile list``."""
+    """Read presentation metadata from ``profile.yaml`` (empty defaults when
+    missing/unreadable). Never raises — a corrupt file on one profile must not break
+    ``hermes profile list``."""
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
     ui_meta = data.get("ui_meta")
     bot_title = ""
@@ -715,6 +718,18 @@ def read_profile_meta(profile_dir: Path) -> dict:
         "display_name": str(data.get("display_name") or "").strip(),
         "bot_title": bot_title,
     }
+
+
+def profile_has_avatar(profile_dir: Path) -> bool:
+    """Whether ``profile_dir`` contains an avatar format served by the gateway."""
+    try:
+        assets_dir = profile_dir / "assets"
+        return any(
+            (assets_dir / f"avatar.{ext}").is_file()
+            for ext in _PROFILE_AVATAR_EXTENSIONS
+        )
+    except OSError:
+        return False
 
 
 def write_profile_meta(
@@ -778,6 +793,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     return ProfileInfo(
         name=name, path=path, is_default=is_default, gateway_running=gateway_running, model=model,
         provider=provider, has_env=(path / ".env").exists(), skill_count=_count_skills(path),
+        has_avatar=profile_has_avatar(path),
         alias_path=alias_path, alias_name=alias_name, distribution_name=dist_name,
         distribution_version=dist_version, distribution_source=dist_source,
         **meta,

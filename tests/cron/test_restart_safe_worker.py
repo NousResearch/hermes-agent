@@ -129,6 +129,87 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
     assert dispatch.argv is command
 
 
+@pytest.mark.linux_only
+def test_oneshot_unit_dispatcher_is_scope_wrapped_when_required(monkeypatch):
+    """#113612: a dispatcher under a Type=oneshot systemd unit (not the
+    supervised gateway) must not spawn workers as direct children of a cgroup
+    that dies at service exit; require=True routes it through the scope wrap."""
+    import tools.process_registry as process_registry
+
+    command = ["python", "worker.py"]
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.setenv("INVOCATION_ID", "oneshot-sequencer-unit")
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr(
+        process_registry,
+        "_build_systemd_scope_argv",
+        lambda cmd, unit_suffix: ["systemd-run", "--scope", *cmd],
+    )
+
+    dispatch = process_registry.restart_safe_gateway_child_argv(
+        command, unit_suffix="kanban-t1-run-1", require_restart_safe_scope=True
+    )
+    assert dispatch.mode == "scoped"
+    assert dispatch.argv[:2] == ["systemd-run", "--scope"]
+    assert dispatch.argv[2:] == command
+
+
+@pytest.mark.linux_only
+def test_oneshot_unit_dispatcher_fails_loud_without_scope_when_required(monkeypatch):
+    """#113612: when no user scope can be created under the oneshot unit,
+    require=True raises instead of silently minting doomed workers."""
+    import tools.process_registry as process_registry
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.setenv("INVOCATION_ID", "oneshot-sequencer-unit")
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="cannot create restart-safe systemd scope"):
+        process_registry.restart_safe_gateway_child_argv(
+            ["python", "worker.py"],
+            unit_suffix="kanban-t1-run-1",
+            require_restart_safe_scope=True,
+        )
+
+
+def test_terminal_dispatcher_keeps_in_process_path_when_required(monkeypatch):
+    """#113612: no systemd parent (plain terminal dispatcher) is unchanged —
+    require=True cannot create a scope there and must not raise."""
+    import tools.process_registry as process_registry
+
+    command = ["python", "worker.py"]
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    probe = Mock(side_effect=AssertionError("systemd probe ran for a terminal dispatcher"))
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
+
+    dispatch = process_registry.restart_safe_gateway_child_argv(
+        command, unit_suffix="kanban-t1-run-1", require_restart_safe_scope=True
+    )
+    assert dispatch.mode == "in_process"
+    assert dispatch.argv is command
+    probe.assert_not_called()
+
+
+def test_oneshot_unit_dispatcher_stays_in_process_when_scope_not_required(monkeypatch):
+    """#113612: require=False keeps the existing in-process passthrough under a
+    systemd unit — only require=True callers opt into the scope wrap."""
+    import tools.process_registry as process_registry
+
+    command = ["python", "worker.py"]
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.setenv("INVOCATION_ID", "oneshot-sequencer-unit")
+    probe = Mock(side_effect=AssertionError("systemd probe ran when scope not required"))
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
+
+    dispatch = process_registry.restart_safe_gateway_child_argv(
+        command, unit_suffix="cron-job-1", require_restart_safe_scope=False
+    )
+    assert dispatch.mode == "in_process"
+    assert dispatch.argv is command
+    probe.assert_not_called()
+
+
 def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
     import tools.process_registry as process_registry
 

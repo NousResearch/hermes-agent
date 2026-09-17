@@ -358,10 +358,19 @@ def restart_safe_gateway_child_argv(
     policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
     workers), ``False`` degrades to a direct external subprocess with a
     once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
+
+    A dispatcher under any *other* systemd unit (timer-driven kanban dispatch,
+    Type=oneshot wave loops) also loses its cgroup when the unit exits, so
+    ``require_restart_safe_scope=True`` routes it through the same scope wrap
+    instead of silently spawning doomed children (#113612). A plain terminal
+    dispatcher (no INVOCATION_ID) keeps the in-process path.
     """
     if not _IS_LINUX:
         return GatewayChildDispatch("in_process", command)
-    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+    under_systemd = bool(os.environ.get("INVOCATION_ID"))
+    if not under_systemd:
+        return GatewayChildDispatch("in_process", command)
+    if not _is_supervised_gateway_process() and not require_restart_safe_scope:
         return GatewayChildDispatch("in_process", command)
 
     def _degrade(detail: str) -> GatewayChildDispatch:

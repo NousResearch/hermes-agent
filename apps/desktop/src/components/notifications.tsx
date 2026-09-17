@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, AlertTriangle, CheckCircle2, type IconComponent, Info } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $inAppToastCorner, type InAppToastCorner } from '@/store/in-app-toast-corner'
 import {
   $notifications,
   type AppNotification,
@@ -47,6 +48,7 @@ function partitionNotifications(notifications: AppNotification[]) {
 
 export function NotificationStack() {
   const notifications = useStore($notifications)
+  const inAppToastCorner = useStore($inAppToastCorner)
   const { bottomRightStack, defaultStack } = partitionNotifications(notifications)
   const { t } = useI18n()
   const lastNotificationIdRef = useRef<string | null>(null)
@@ -78,34 +80,44 @@ export function NotificationStack() {
     }
   }, [notifications])
 
+  const ambientIsTop = inAppToastCorner.startsWith('top-')
+
   return (
     <>
       <TopCenterStack
+        ambientCorner={ambientIsTop ? inAppToastCorner : null}
+        ambientNotifications={bottomRightStack}
         copy={copy}
         expanded={expanded}
         notifications={defaultStack}
         onToggleExpanded={() => setExpanded(v => !v)}
       />
-      <BottomRightStack copy={copy} notifications={bottomRightStack} />
+      {!ambientIsTop && <AmbientStack copy={copy} corner={inAppToastCorner} notifications={bottomRightStack} />}
     </>
   )
 }
 
 // Portaled to <body> on the over-modal rung so a toast clears an open dialog —
 // see the top-center variant below for why.
-const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
+const REGION_BASE = 'pointer-events-none z-(--z-over-modal) flex gap-2'
 
 // Primary stack: top-center, collapsed to the latest toast with a "+N more"
 // expander + clear-all — the noisy/important surface (errors, warnings,
-// action toasts). Without the portal it lives inside the React root subtree,
-// which any body-level dialog/overlay portal paints over — so a toast fired
-// while a dialog is open was invisible.
+// action toasts). Top-corner ambient toasts share this vertical lane so they
+// always flow below urgent notices instead of overlapping them in narrow windows.
+// Without the portal it lives inside the React root subtree, which any body-level
+// dialog/overlay portal paints over — so a toast fired while a dialog is open
+// was invisible.
 function TopCenterStack({
+  ambientCorner,
+  ambientNotifications,
   copy,
   expanded,
   notifications,
   onToggleExpanded
 }: {
+  ambientCorner: InAppToastCorner | null
+  ambientNotifications: AppNotification[]
   copy: ReturnType<typeof useI18n>['t']['notifications']
   expanded: boolean
   notifications: AppNotification[]
@@ -115,36 +127,59 @@ function TopCenterStack({
 
   return createPortal(
     <div
-      aria-label={copy.region}
-      className={cn(
-        REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1',
-        expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
-      )}
-      role="region"
+      className="pointer-events-none fixed inset-x-0 top-[calc(var(--titlebar-height,34px)+0.75rem)] z-(--z-over-modal) flex flex-col items-center gap-2"
+      data-slot="top-notification-lane"
     >
-      <NotificationDeck expanded={expanded} notifications={notifications} />
-      {older.length > 0 && (
-        <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
-          <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
-            {expanded ? copy.hide : copy.show} {copy.more(older.length)}
-          </Button>
-          <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">
-            {copy.clearAll}
-          </Button>
-        </div>
+      <div
+        aria-label={copy.region}
+        className={cn(
+          REGION_BASE,
+          'w-[min(28rem,calc(100%-2rem))] flex-col p-1',
+          expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
+        )}
+        role="region"
+      >
+        <NotificationDeck expanded={expanded} notifications={notifications} />
+        {older.length > 0 && (
+          <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
+            <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
+              {expanded ? copy.hide : copy.show} {copy.more(older.length)}
+            </Button>
+            <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">
+              {copy.clearAll}
+            </Button>
+          </div>
+        )}
+      </div>
+      {ambientCorner && ambientNotifications.length > 0 && (
+        <AmbientStack copy={copy} corner={ambientCorner} inline notifications={ambientNotifications} />
       )}
     </div>,
     document.body
   )
 }
 
-// Ambient confirmations use the same bounded depth, rising from the corner.
-function BottomRightStack({
+const AMBIENT_CORNER_CLASSES: Record<InAppToastCorner, string> = {
+  'top-left': 'ml-4 self-start flex-col',
+  'top-right': 'mr-4 self-end flex-col',
+  'bottom-left': 'fixed bottom-4 left-4 flex-col-reverse',
+  'bottom-right': 'fixed right-4 bottom-4 flex-col-reverse'
+}
+
+export function ambientStackClassName(corner: InAppToastCorner) {
+  return cn(REGION_BASE, 'w-[min(24rem,calc(100%-2rem))] p-1', AMBIENT_CORNER_CLASSES[corner])
+}
+
+// Ambient confirmations use the same bounded depth in the user's chosen corner.
+function AmbientStack({
   copy,
+  corner,
+  inline = false,
   notifications
 }: {
   copy: ReturnType<typeof useI18n>['t']['notifications']
+  corner: InAppToastCorner
+  inline?: boolean
   notifications: AppNotification[]
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -156,14 +191,10 @@ function BottomRightStack({
     }
   }, [older.length])
 
-  return createPortal(
+  const content = (
     <div
       aria-label={copy.region}
-      className={cn(
-        REGION_BASE,
-        'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse p-1',
-        expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
-      )}
+      className={cn(ambientStackClassName(corner), expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain')}
       role="region"
     >
       {older.length > 0 && (
@@ -181,9 +212,10 @@ function BottomRightStack({
         </div>
       )}
       <NotificationDeck expanded={expanded} notifications={notifications} />
-    </div>,
-    document.body
+    </div>
   )
+
+  return inline ? content : createPortal(content, document.body)
 }
 
 export function NotificationDeck({

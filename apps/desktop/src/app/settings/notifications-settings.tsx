@@ -10,6 +10,12 @@ import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
 import {
+  $inAppToastCorner,
+  IN_APP_TOAST_CORNERS,
+  type InAppToastCorner,
+  setInAppToastCorner
+} from '@/store/in-app-toast-corner'
+import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
   sendTestNativeNotification,
@@ -31,6 +37,7 @@ export function NotificationsSettings() {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const inAppToastCorner = useStore($inAppToastCorner)
   const copy = t.settings.notifications
 
   const runTest = async () => {
@@ -43,6 +50,25 @@ export function NotificationsSettings() {
     <SettingsContent>
       <SectionHeading icon={Bell} title={copy.title} />
       <Caption className="mb-2 leading-(--conversation-caption-line-height)">{copy.intro}</Caption>
+
+      <ListRow
+        action={
+          <Select onValueChange={value => setInAppToastCorner(value as InAppToastCorner)} value={inAppToastCorner}>
+            <SelectTrigger aria-label={copy.inAppPositionTitle} className={cn('min-w-44', CONTROL_TEXT)}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {IN_APP_TOAST_CORNERS.map(corner => (
+                <SelectItem key={corner} value={corner}>
+                  {copy.inAppPositions[corner]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+        description={copy.inAppPositionDesc}
+        title={copy.inAppPositionTitle}
+      />
 
       <ToggleRow
         checked={prefs.enabled}

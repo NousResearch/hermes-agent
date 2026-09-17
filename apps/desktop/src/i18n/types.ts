@@ -634,6 +634,9 @@ export interface Translations {
       enableAll: string
       enableAllDesc: string
       focusedHint: string
+      inAppPositionTitle: string
+      inAppPositionDesc: string
+      inAppPositions: Record<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right', string>
       kinds: Record<
         'approval' | 'backgroundDone' | 'credits' | 'input' | 'plugin' | 'turnDone' | 'turnError',
         { label: string; description: string }

@@ -439,10 +439,18 @@ export const zhHant = defineLocale({
     },
     notifications: {
       title: '通知',
-      intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
+      intro: '控制應用程式內提示、原生桌面通知和完成提示音。設定會依裝置保存，每台電腦各自獨立。',
       enableAll: '啟用通知',
       enableAllDesc: '關閉後靜音下方所有通知。',
       focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
+      inAppPositionTitle: '應用程式內提示位置',
+      inAppPositionDesc: '選擇一般應用程式內通知的顯示位置。錯誤和操作通知仍顯示在頂部中央。',
+      inAppPositions: {
+        'top-left': '左上角',
+        'top-right': '右上角',
+        'bottom-left': '左下角',
+        'bottom-right': '右下角'
+      },
       kinds: {
         approval: {
           label: '需要核准',

@@ -696,10 +696,19 @@ export const en: Translations = {
     },
     notifications: {
       title: 'Notifications',
-      intro: 'OS notifications (not in-app toasts). Per device.',
+      intro: 'Control in-app toasts, native OS notifications, and completion sounds. Per device.',
       enableAll: 'Enable notifications',
       enableAllDesc: 'Off silences every notification below.',
       focusedHint: 'Completion alerts only fire while Hermes is in the background.',
+      inAppPositionTitle: 'In-app toast position',
+      inAppPositionDesc:
+        'Choose where routine in-app notifications appear. Errors and actions stay centered at the top.',
+      inAppPositions: {
+        'top-left': 'Top left',
+        'top-right': 'Top right',
+        'bottom-left': 'Bottom left',
+        'bottom-right': 'Bottom right'
+      },
       kinds: {
         approval: {
           label: 'Approval needed',

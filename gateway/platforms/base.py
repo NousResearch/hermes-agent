@@ -3851,15 +3851,22 @@ class BasePlatformAdapter(ABC):
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
         metadata: Dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
+        """Play one synthesized TTS file. Returns True when the text send should be skipped:
+        the ORIGINAL reply text rode along as a Telegram caption (first file, ≤1024 chars), or
+        ``gateway.tts_reply_text`` is off and the voice message landed (voice-only reply). When
+        the voice send fails the text is always delivered, so a TTS outage never silences a reply."""
+        reply_text = bool(getattr(getattr(self.gateway_runner, "config", None), "tts_reply_text", True))
         caption = None
-        if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
+        if (reply_text and first and self.platform == Platform.TELEGRAM and text_content
+                and text_content[:1024] == text_content):
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
+        voice_ok = bool(getattr(tts_result, "success", False))
+        if not reply_text:
+            return voice_ok
+        return bool(caption and voice_ok)
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,

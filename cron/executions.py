@@ -88,14 +88,105 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_projection_settled", "delivery_projection_settled INTEGER NOT NULL DEFAULT 0")
     # Durable intent written BEFORE any deferred (Bot Chat) send: while set, the row's manifest is
     # incomplete and no reader may project/settle/prune from it. Cleared by the manifest write itself.
-    if add_column_if_missing(conn, "executions", "delivery_manifest_pending", "delivery_manifest_pending INTEGER NOT NULL DEFAULT 0"):
-        _adopt_legacy_outstanding_journals(conn)
+    add_column_if_missing(conn, "executions", "delivery_manifest_pending", "delivery_manifest_pending INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
     )
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    # Column existence is NOT the migration authority (DDL commits on its own). The fence row
+    # below is: until it exists, readers hold pre-flag rows conservatively and every
+    # initialization retries adoption.
+    _try_adopt_legacy_intent(conn)
+
+
+_ADOPTION_KEY = "manifest_intent_adopted"
+_adoption_complete: set = set()  # ledger paths whose fence row was observed (monotonic: it never disappears)
+
+
+def _ledger_key() -> str:
+    return str(EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db"))
+
+
+def _legacy_intent_adopted(conn: Optional[sqlite3.Connection] = None) -> bool:
+    """True once the one-time adoption of pre-flag journaled intent has durably completed."""
+    key = _ledger_key()
+    if key in _adoption_complete:
+        return True
+    if conn is None:
+        with _transaction() as own:
+            return _legacy_intent_adopted(own)
+    row = conn.execute("SELECT 1 FROM schema_meta WHERE key=?", (_ADOPTION_KEY,)).fetchone()
+    if row is not None:
+        _adoption_complete.add(key)
+    return row is not None
+
+
+def _journal_inventory_strict() -> Dict[str, dict]:
+    """Journal inventory that RAISES on any unreadable directory or entry.
+
+    Adoption must distinguish a genuinely empty journal from one it could not read: an
+    incomplete inventory is not proof that no outstanding intent exists.
+    """
+    root = _journal_root()
+    if not root.exists():
+        return {}
+    out: Dict[str, dict] = {}
+    for path in sorted(root.iterdir()):  # raises PermissionError on an unreadable directory
+        if path.suffix != ".json":
+            continue
+        record = json.loads(path.read_text(encoding="utf-8"))  # raises on an unreadable entry
+        if record.get("execution_id") and record.get("manifest"):
+            out[record["execution_id"]] = record["manifest"]
+    return out
+
+
+def _try_adopt_legacy_intent(conn: sqlite3.Connection) -> bool:
+    """One-time, retryable, atomic adoption of pre-flag outstanding journals.
+
+    In ONE write transaction: every row whose real manifest is still only journaled gets
+    ``delivery_manifest_pending=1``, then the fence row is written. Any failure (unreadable
+    journal, rejected write) rolls back everything, logs, and leaves the fence absent so the
+    next initialization retries and readers keep holding legacy rows conservatively.
+    """
+    if _legacy_intent_adopted(conn):
+        return True
+    try:
+        inventory = _journal_inventory_strict()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM schema_meta WHERE key=?", (_ADOPTION_KEY,)).fetchone():
+                conn.execute("ROLLBACK")  # a concurrent initializer won the race
+                _adoption_complete.add(_ledger_key())
+                return True
+            for execution_id in inventory:
+                conn.execute(
+                    "UPDATE executions SET delivery_manifest_pending=1 WHERE id=? AND "
+                    "(delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')=0)",
+                    (execution_id,))
+            conn.execute("INSERT INTO schema_meta(key, value) VALUES (?, ?)", (_ADOPTION_KEY, _hermes_now().isoformat()))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    except Exception:
+        logging.getLogger(__name__).error(
+            "Cron ledger: legacy delivery-intent adoption incomplete; pre-flag rows are held until it succeeds",
+            exc_info=True)
+        return False
+    _adoption_complete.add(_ledger_key())
+    return True
+
+
+def _held_by_incomplete_adoption(record: Optional[dict], conn: Optional[sqlite3.Connection] = None) -> bool:
+    """Conservative fence while adoption is incomplete: a row carrying only the external
+    placeholder may still have an outstanding journaled child we cannot see."""
+    if not record or _legacy_intent_adopted(conn):
+        return False
+    manifest = record.get("delivery_manifest")
+    return bool(manifest) and "bot" not in json.loads(manifest)
 
 
 @contextmanager
@@ -145,13 +236,16 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    # While legacy-intent adoption is incomplete, rows carrying only a placeholder manifest may
+    # still anchor an unseen journaled child: never prune them.
+    hold = "" if _legacy_intent_adopted(conn) else " AND (delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')>0)"
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
+        f"""DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
                AND (delivery_outcome IS NULL OR delivery_outcome != 'queued')
                AND (delivery_manifest IS NULL OR delivery_projection_settled=1)
-               AND delivery_manifest_pending=0
+               AND delivery_manifest_pending=0{hold}
              ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
@@ -269,7 +363,7 @@ def finish_execution(
     # classification as restart reconciliation, in particular unknown != failed.
     with _transaction() as conn:
         pending = _fetch(conn, execution_id)
-        if pending and pending.get("delivery_manifest_pending"):
+        if pending and (pending.get("delivery_manifest_pending") or _held_by_incomplete_adoption(pending, conn)):
             # Deferred children were sent but their manifest is not in the ledger yet: the
             # caller's classification (and any placeholder) is incomplete by construction.
             delivery_outcome = "queued"
@@ -360,18 +454,6 @@ def manifest_pending(record: Optional[dict]) -> bool:
     return not (manifest and "bot" in json.loads(manifest))
 
 
-def _adopt_legacy_outstanding_journals(conn) -> None:
-    """Upgrade step: rows whose real manifest is still only in the (pre-flag) journal must carry
-    the authoritative intent BEFORE any reader projects their placeholder. Idempotent."""
-    for execution_id, manifest in journaled_manifests().items():
-        row = _fetch(conn, execution_id)
-        if row is None:
-            continue
-        stored = json.loads(row["delivery_manifest"]) if row.get("delivery_manifest") else {}
-        if "bot" not in stored:
-            conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (execution_id,))
-
-
 def _journal_root() -> Path:
     return (EXECUTIONS_FILE.parent if EXECUTIONS_FILE else get_hermes_home().resolve() / "cron") / "manifest_journal"
 
@@ -458,7 +540,7 @@ def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
     from cron import delivery_queue, bot_chat_delivery
     from tools.bot_live_delivery import read_delivery_result
 
-    if manifest_pending(record):
+    if manifest_pending(record) or _held_by_incomplete_adoption(record):
         return None  # children were sent; their manifest is not in the ledger yet
     manifest = json.loads(record["delivery_manifest"])
     external_outcome = None
@@ -587,13 +669,16 @@ def recover_interrupted_executions() -> int:
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
                        handoff_pending=0, handoff_started_at=NULL,
-                       delivery_outcome=CASE WHEN delivery_manifest_pending=1 THEN 'queued' ELSE delivery_outcome END
+                       delivery_outcome=CASE WHEN delivery_manifest_pending=1 OR (? AND delivery_manifest IS NOT NULL
+                                                  AND instr(delivery_manifest, '"bot"')=0)
+                                             THEN 'queued' ELSE delivery_outcome END
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?""",
                 (now,
                  "Scheduler restarted after this execution's owner exited before a durable "
                  "terminal state; whether side effects ran is unknown.",
+                 0 if _legacy_intent_adopted(conn) else 1,
                  row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"]),
             )

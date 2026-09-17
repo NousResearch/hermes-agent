@@ -49,3 +49,25 @@ def test_migration_adopts_journal_before_any_reader_even_without_replay(store, m
     assert ex.get_execution(eid) is not None
     ex.reconcile_delivery_projections()
     assert ex.get_execution(eid)['delivery_outcome'] == 'queued'
+
+
+def test_finish_holds_placeholder_row_regardless_of_caller_outcome_while_adoption_incomplete(store, monkeypatch):
+    """K2a finish path isolated: the caller says 'failed' (its own classification) for a legacy
+    placeholder-only row while adoption is incomplete. finish must write queued, not trust the
+    caller — the projection fence alone cannot do this because a None projection keeps the
+    caller's value."""
+    from tests.cron.test_r6_salt_migration_authority import legacy_running
+    eid, manifest = legacy_running(store)
+    root = store / 'cron' / 'manifest_journal'
+    mode = root.stat().st_mode & 0o777
+    root.chmod(0)
+    try:
+        ex.get_execution(eid)  # initialization: adoption fails, fence row absent
+        assert not ex._legacy_intent_adopted()
+        finished = ex.finish_execution(eid, success=False, error='worker failure', delivery_outcome='failed')
+    finally:
+        root.chmod(mode)
+    assert finished['delivery_outcome'] == 'queued'
+    ex.reconcile_delivery_projections()
+    after = ex.get_execution(eid)
+    assert after['delivery_outcome'] == 'queued' and '"bot"' in after['delivery_manifest']

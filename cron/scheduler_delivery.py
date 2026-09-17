@@ -1862,8 +1862,13 @@ def _deliver_result(
                          for_failure, delivery_errors, unverified_targets)
     except BaseException as exc:
         # Any exit after the mark MUST settle the manifest (possibly with no children), else the
-        # row is pending forever. The exception itself is retained in the manifest error.
-        _settle_manifest(job, targets, delivery_errors + [f"{type(exc).__name__}: {exc}"], unverified_targets)
+        # row is pending forever. The exception itself is retained in the manifest error, and a
+        # second failure inside settlement never masks it (the row simply stays pending).
+        try:
+            _settle_manifest(job, targets, delivery_errors + [f"{type(exc).__name__}: {exc}"], unverified_targets)
+        except BaseException as settle_exc:  # noqa: BLE001 - deliberate: preserve the original
+            logger.error("Job '%s': manifest settlement interrupted (%r); row stays pending",
+                         job.get("id"), settle_exc)
         raise
     return _settle_manifest(job, targets, delivery_errors, unverified_targets)
 

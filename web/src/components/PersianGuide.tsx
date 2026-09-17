@@ -59,13 +59,21 @@ const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
 ];
 
 /**
- * عیب‌یابی — mirrors the standalone guide.html troubleshooting table (the
- * (-6) dist error, the misleading WS "session token" boot failure, the
- * pip-environment drift checklist, and the npm/Node drift checklist).
- * Keep in sync with guide.html بخش ۱۷ — both sides currently carry four
- * entries: (-6), WS token, pip drift, npm drift.
+ * عیب‌یابی — full mirror of the guide.html بخش ۱۷ troubleshooting table:
+ * all 15 rows in table order (IPC bridge, desktop setup, (-6) dist error,
+ * WS "session token" boot failure, pip drift, npm drift, postinstall
+ * scripts, first run, gateway, backend version, terminal font, language
+ * apply, hermes doctor, credit, MCP). Keep row-for-row in sync.
  */
 const TROUBLESHOOTING: Array<{ problem: string; fix: string }> = [
+  {
+    problem: "«پل IPC دسکتاپ در دسترس نیست» (Desktop IPC bridge is unavailable)",
+    fix: "یعنی نشانی سرور توسعه (127.0.0.1:5174) را در یک مرورگر معمولی باز کرده‌اید — پل IPC فقط در پنجره الکترون تزریق می‌شود. پنجره برنامه دسکتاپ Hermes را باز کنید؛ صفحه در مرورگر بالا می‌آید اما برنامه دسکتاپ نیست.",
+  },
+  {
+    problem: "راه‌اندازی دسکتاپ ناموفق بود",
+    fix: "از صفحه خطا «تلاش دوباره»، «تعمیر نصب» یا «استفاده از دروازه محلی» را امتحان کنید؛ هیچ‌کدام گفتگوها یا تنظیمات را حذف نمی‌کنند. لاگ‌ها از دکمه «باز کردن لاگ‌ها» در دسترس‌اند.",
+  },
   {
     problem: "«Hermes couldn't start the desktop UI» با کد (-6) و مسیر apps\\desktop\\dist\\index.html",
     fix: "برنامه بدون متغیر محیطیِ سرور توسعه اجرا شده: الکترون به‌دنبال باندل ساخته‌شده (dist) می‌گردد که در مخزن توسعه وجود نیست (-6 = فایل پیدا نشد). برنامه را با cd apps/desktop و سپس npm run dev اجرا کنید؛ اجرای مستقیم electron . دقیقاً همین خطا را می‌دهد. گزینه hermes desktop --force-build فقط برای نسخه نصب‌شده کاربرد دارد.",
@@ -79,8 +87,44 @@ const TROUBLESHOOTING: Array<{ problem: string; fix: string }> = [
     fix: "۱) pip check باید «No broken requirements found» بدهد. ۲) نسخه‌ها را با پین‌های pyproject.toml بسنجید و با pip install -e \".[web]\" هم‌تراز کنید. ۳) اگر pip هشدار «Ignoring invalid distribution ~xyz» داد، پوشه‌های «~...» را در Lib/site-packages حذف کنید (خرده‌نصب خراب). ۴) آزمون نهایی: python -c \"import uvicorn, fastapi, websockets; from tui_gateway.ws import handle_ws\" — بدون خطا یعنی محیط سالم است.",
   },
   {
-    problem: "چک‌لیست ناهم‌خوانی محیط npm/Node (خطاهای نصب، EENGINE، EALLOWSCRIPTS)",
-    fix: "۱) نصب‌های تکراری را با npm ci انجام دهید تا node_modules دقیقاً مطابق package-lock.json بازسازی شود؛ npm install ممکن است lockfile را جابه‌جا کند. ۲) بهداشت lockfile: این مخزن تک‌قفل‌نامه است — نصب از ریشه مخزن انجام شود و package-lock.json همراه هر تغییر وابستگی کامیت گردد؛ npm install در زیرپوشه‌ها (مثل ui-tui) رزولوشن پکیج‌های داخلی را می‌شکند. ۳) خطای EENGINE یعنی npm نصب‌شده در بازه مجاز engines پروژه نیست (<11.10.0 || >=11.17.0) — با npm i -g npm@12 هم‌تراز کنید و از دورزدن با --engine-strict=false جز در موارد ضروری پرهیز کنید. ۴) خطای EALLOWSCRIPTS یعنی ~/.npmrc کاربر اسکریپت‌های postinstall را غیرفعال کرده — خط allow-scripts را از آن حذف کنید تا postinstallهای لازم (مثل باینری Electron) اجرا شوند.",
+    problem: "چک‌لیست ناهم‌خوانی محیط npm/Node (خطاهای نصب، EENGINE)",
+    fix: "۱) نصب‌های تکراری را با npm ci انجام دهید تا node_modules دقیقاً مطابق package-lock.json بازسازی شود؛ npm install ممکن است lockfile را جابه‌جا کند. ۲) بهداشت lockfile: این مخزن تک‌قفل‌نامه است — نصب از ریشه مخزن انجام شود و package-lock.json همراه هر تغییر وابستگی کامیت گردد؛ npm install در زیرپوشه‌ها (مثل ui-tui) رزولوشن پکیج‌های داخلی را می‌شکند. ۳) خطای EENGINE یعنی npm نصب‌شده در بازه مجاز engines پروژه نیست (<11.10.0 || >=11.17.0) — با npm i -g npm@12 هم‌تراز کنید و از دورزدن با --engine-strict=false جز در موارد ضروری پرهیز کنید.",
+  },
+  {
+    problem: "خطای EALLOWSCRIPTS یا اجرا نشدن اسکریپت‌های postinstall",
+    fix: "این خطا یعنی postinstallهای بسته‌ها (مثل دانلود باینری Electron) اجرا نشده‌اند. علت رایج: خط allow-scripts در ~/.npmrc کاربر — آن خط را حذف کنید تا پیکربندی پروژه حاکم شود. اگر ممنوعیت اسکریپت عمدی است، به‌جای غیرفعال‌سازی سراسری از npm ci --ignore-scripts آگاهانه استفاده کنید. آزمون سلامت: باینری Electron باید در node_modules/electron/dist باشد؛ نبودش یعنی postinstall اجرا نشده است.",
+  },
+  {
+    problem: "اولین اجرا طول می‌کشد",
+    fix: "در اولین اجرا، برنامه باک‌اند را از صفر راه می‌اندازد (نصب وابستگی‌ها)؛ صفحه پیشرفت را باز بگذارید. اجراهای بعدی سریع‌اند.",
+  },
+  {
+    problem: "اتصال با دروازه قطع شد",
+    fix: "برنامه خودش در پس‌زمینه تلاش مجدد می‌کند؛ اگر باقی ماند، تنظیمات دروازه را باز کنید و برای دروازه راه دور دوباره وارد شوید.",
+  },
+  {
+    problem: "«باک‌اند قدیمی است»",
+    fix: "زمان اجرای Hermes از برنامه دسکتاپ عقب است — از اعلان «به‌روزرسانی Hermes» استفاده کنید.",
+  },
+  {
+    problem: "متن فارسی به‌هم‌ریخته در ترمینال",
+    fix: "فونت ترمینال را در تنظیمات ← ظاهر به یک فونت پشتیبان RTL (مثل Vazirmatn یا JetBrains Mono) تغییر دهید.",
+  },
+  {
+    problem: "فارسی اعمال نشد",
+    fix: "در ترمینال: hermes config get display.language — مقدار باید fa باشد. متغیر HERMES_LANGUAGE بر پیکربندی اولویت دارد.",
+  },
+  {
+    problem: "خطای کلی",
+    fix: "از ترمینال hermes doctor را اجرا کنید؛ برای ارسال گزارش به Nous از «ارسال عیب‌یابی» استفاده کنید (اسرار سانسور و بسته پس از ۱۴ روز حذف می‌شود).",
+  },
+  {
+    problem: "اعتبار تمام شد",
+    fix: "از هشدار «افزودن اعتبار» یا بخش صورت‌حساب در Portal ادامه دهید؛ مدل‌های جایگزین در تنظیمات مدل توقف‌گاه میانی می‌سازند.",
+  },
+  {
+    problem: "سرویس MCP در دسترس نیست",
+    fix: "از تنظیمات ← MCP حالت سرور را ببینید؛ اگر «نیازمند احراز هویت» است دوباره وارد شوید و «بارگذاری مجدد MCP» را بزنید.",
   },
 ];
 

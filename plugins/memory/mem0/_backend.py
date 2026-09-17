@@ -141,6 +141,12 @@ class OSSBackend(Mem0Backend):
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
         config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
+        custom_instructions = oss_config.get("custom_instructions")
+        if custom_instructions is not None:
+            if not isinstance(custom_instructions, str):
+                raise TypeError("Mem0 OSS custom_instructions must be a string")
+            if custom_instructions := custom_instructions.strip():
+                config["custom_instructions"] = custom_instructions
         if str(config["llm"].get("provider") or "").strip().lower() == "openai":
             # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
             _register_direct_openai_provider()

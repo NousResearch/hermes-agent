@@ -12,7 +12,24 @@ from typing import Any, Iterable, Optional
 from agent.delegation_context import owned_kanban_task
 
 
-_TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# A kanban worker run reaches a terminal board state via any of these tools.
+# ``kanban_complete``/``kanban_block`` are the classic terminal transitions, but
+# ``kanban_request_review`` and ``kanban_request_changes`` are ALSO terminal for
+# the originating run: the tool call ends the run row (outcome=review_requested /
+# changes_requested) and the dispatcher immediately claims a successor run. If
+# the stop-guard omitted them, an implementation worker that validly handed off
+# to review would keep getting nudged to call complete/block — and worse, could
+# be driven to mutate the newer review run that the dispatcher already spawned.
+# session_called_kanban_terminal only scans THIS conversation's messages, so
+# recognizing the handoff anchors terminal state to this session's own run.
+_TERMINAL_KANBAN_TOOLS = frozenset(
+    {
+        "kanban_complete",
+        "kanban_block",
+        "kanban_request_review",
+        "kanban_request_changes",
+    }
+)
 
 _DEFAULT_MAX_ATTEMPTS = 2
 

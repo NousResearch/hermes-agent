@@ -256,3 +256,97 @@ class TestCrossProfileProjectTree:
         # The healthy profile's tree still lands; only the broken one drops out.
         assert "Healthy" in [project["label"] for project in payload["projects"]]
         assert [project["sessionCount"] for project in payload["projects"] if project["isNoProject"]] == [1]
+
+
+class TestSidebarRecentsTruncated:
+    """``profiles_truncated`` gates the sidebar's "Load more" affordance (#113866).
+
+    The flag must answer "did the LIMIT window fill up". A pin that made the
+    window on its own holds a slot like any other row and must count toward
+    it; only back-filled pins (fetched past the LIMIT) are extra.
+    """
+
+    def _seed_timed(self, home, session_id, *, age_seconds, pinned=False):
+        """A session pinned or not, whose recency is pinned down by hand.
+
+        The endpoint orders by last activity, so staggered timestamps are what
+        make "inside the window" vs "aged past it" deterministic.
+        """
+        import time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            db.create_session(session_id, source="cli")
+            db.append_message(session_id=session_id, role="user", content="hi")
+            stamp = time.time() - age_seconds
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (stamp, session_id)
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?", (stamp, session_id)
+            )
+            if pinned:
+                db.set_session_pinned(session_id, True)
+            db._conn.commit()
+        finally:
+            db.close()
+
+    def test_pin_inside_the_window_keeps_load_more_alive(self, client, profiles_on_disk):
+        # Three sessions, page of two, the newest one pinned: the pin made the
+        # window on its own, so the window is full and "Load more" must stay
+        # offered. The old pinned-discounted count under-reported it as False
+        # and the sidebar's Load more row never mounted — older sessions
+        # became unreachable.
+        home = profiles_on_disk["default"]
+        self._seed_timed(home, "old", age_seconds=3600)
+        self._seed_timed(home, "mid", age_seconds=1800)
+        self._seed_timed(home, "new", age_seconds=60, pinned=True)
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "recents_limit": 2},
+        ).json()
+
+        assert payload["errors"] == []
+        assert payload["recents"]["profiles_truncated"]["default"] is True
+
+    def test_backfilled_pin_does_not_fake_a_full_page(self, client, profiles_on_disk):
+        # The reverse edge, for a store that is genuinely short: two sessions
+        # against a page of three never fills the window, so "Load more" must
+        # not be offered even though one of the two rows is pinned.
+        home = profiles_on_disk["default"]
+        self._seed_timed(home, "aged-pin", age_seconds=86400 * 30, pinned=True)
+        self._seed_timed(home, "new", age_seconds=60)
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "recents_limit": 3},
+        ).json()
+
+        assert payload["recents"]["profiles_truncated"]["default"] is False
+        by_id = {row["id"]: row for row in payload["recents"]["sessions"]}
+        assert by_id["aged-pin"]["pinned"] is True, "the pin still reaches the page"
+
+    def test_backfill_implies_more_rows_and_reports_truncated(self, client, profiles_on_disk):
+        # A pin aged past the window is back-filled past the LIMIT — which can
+        # only happen when the store holds more rows than the window fetched.
+        # The back-filled pin arriving alongside a full window must keep "Load
+        # more" offered, not read as a short list.
+        home = profiles_on_disk["default"]
+        self._seed_timed(home, "pin-b", age_seconds=86400 * 60, pinned=True)
+        self._seed_timed(home, "pin-a", age_seconds=86400 * 30, pinned=True)
+        self._seed_timed(home, "mid", age_seconds=1800)
+        self._seed_timed(home, "new", age_seconds=60)
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "recents_limit": 3},
+        ).json()
+
+        assert payload["recents"]["profiles_truncated"]["default"] is True
+        by_id = {row["id"]: row for row in payload["recents"]["sessions"]}
+        # Window = new, mid, pin-a (the pin made the page on its own);
+        # pin-b only reaches the list through the back-fill.
+        assert set(by_id) == {"new", "mid", "pin-a", "pin-b"}

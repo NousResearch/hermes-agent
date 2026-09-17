@@ -402,3 +402,45 @@ The fix is a core change to `hermes_cli/kanban_db.py` (terminate-then-release
 in the review transitions, mirroring the reclaim paths) plus its own tests
 under `tests/`; it is carved out as a separate card rather than smuggled into
 this opt-in plugin.
+
+## Review round 2 (PR #4 @ 94f68a8144) — CI and the two new criteria
+
+**Blocker 1 — CI red on the PR head.** `Python lints / ruff enforcement` failed
+on `unspecified-encoding` at `contrib/den-plugins/kanban-wake/__init__.py:54`
+(`open(p).read()`), a file inside this PR's stack, not upstream. Fixed by
+passing `encoding="utf-8"`; `uvx ruff check .` -> `All checks passed!`.
+`check-attribution` failed because the fork's commit author emails
+(`engineer@gray-knight-m1.local`, `guard@localhost`) had no mapping file; both
+are now mapped to `dzianisv` under `contributors/emails/` via
+`scripts/add_contributor.py` (the sanctioned path — `AUTHOR_MAP` in
+`release.py` is frozen).
+
+**Blocker 2 — the two lifecycle criteria added mid-round.** Both are core
+`hermes_cli/kanban_db.py` defects, same class as the round-1 carve-out and for
+the same reason: this plugin is a session-scoped observer with no dispatcher
+authority.
+
+* (a) `schedule_task` (`kanban_db.py:8060`) matches
+  `status IN ('todo','ready','running','blocked')` — `review`/`triage` are
+  absent, so parking a review-phase card returns False, the card stays in
+  `review`, and the dispatcher's review lane (`~:10863` ->
+  `claim_review_task` `:4739`) re-claims it and spawns duplicate review over
+  unchanged work.
+* (b) A card legitimately waiting twice on the same known external gate hits
+  `BLOCK_RECURRENCE_LIMIT` (`:134`, routing at `:6365`) and is routed to
+  `triage`: the real wake is lost and a human is pulled into a wait that was
+  never ambiguous. The loop-breaker itself is correct and must not be weakened;
+  what is missing is a status/path that carries the wake.
+
+Reproduced on an isolated temporary board, no real card touched:
+
+    python contrib/den-plugins/agentpod-stop-check/repro_review_park_unsupported.py
+    (a) schedule_task(review) returned:       False
+    (a) status after park attempt:            review
+    (a) review re-claimed (respawn):          True
+    (b) status after 2nd identical wait:      triage
+    (b) BLOCK_RECURRENCE_LIMIT:               2
+    RESULT (a) REPRODUCED / RESULT (b) REPRODUCED        (exit 0)
+
+Carved onto card `t_76bca50a` (`parents=[t_8c480dce]`) with the acceptance
+criteria, alongside the round-1 carve-out `t_f0b49db9`. Not implemented here.

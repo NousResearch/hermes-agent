@@ -231,7 +231,23 @@ Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in He
 Open WebUI persists OpenAI-compatible connection settings in its own database after first launch. If you accidentally saved a wrong key in the Admin UI, fixing the environment variables alone is not enough — update or delete the saved connection in **Admin Settings → Connections**, or reset the Open WebUI data directory / database.
 :::
 
-## Multi-User Setup with Profiles
+## Multi-User Setup
+
+The API server now supports two complementary multi-user strategies — pick one (or combine them) based on whether you want process-level isolation or a single shared instance.
+
+### Strategy A — Single shared instance, per-request identity headers
+
+If you don't need per-user process isolation (separate skills, separate `~/.hermes`), a single Hermes process can serve all Open WebUI users when each request carries `X-Hermes-User-Id` (and friends). This is **simpler to operate** — one port, one process, one config — and lets memory providers like Honcho build per-user peer cards inside the shared instance.
+
+**Catch**: Open WebUI's stock OpenAI connection sends only the model + messages — there's no built-in way to inject `X-Hermes-User-Id` from the logged-in Open WebUI user. Use one of:
+
+- **A reverse proxy / pipeline in front of Hermes** — Open WebUI talks to your proxy; the proxy reads the OpenAI `user` body field (Open WebUI sends this when configured to forward user info) or its own auth layer, then adds the `X-Hermes-*` headers before forwarding to Hermes.
+- **An [Open WebUI Pipeline](https://github.com/open-webui/pipelines)** — a Python plugin that intercepts requests and adds the headers.
+- **The OpenAI `user` body field as fallback** — Hermes accepts the standard top-level `user` field as a fallback for `X-Hermes-User-Id` (header wins when both set). If your Open WebUI deployment is configured to populate `user` automatically (search the Open WebUI codebase for the `user` field setting), no proxy is needed for at least the user-identifier hop.
+
+Strategy A is the right pick for chat-bot bridges, multi-tenant SaaS, or any deployment where shared infrastructure cost matters. See [api_server multi-user identity headers](/docs/user-guide/features/api-server#multi-user-identity-headers) for the full header reference.
+
+### Strategy B — Profile per user (full process isolation)
 
 To run separate Hermes instances per user — each with their own config, memory, and skills — use [profiles](/user-guide/profiles). Each profile runs its own API server on a different port and automatically advertises the profile name as the model in Open WebUI.
 

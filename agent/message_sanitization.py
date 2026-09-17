@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from functools import partial
 from typing import Any, Callable
@@ -131,6 +132,15 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 # content that can hold real user data (a truncated write_file), so bound it generously.
 _FULL_ARGS_LOG_BOUND = 100_000
 
+# A1 (RCA 2026-09-17): repaired-but-wrong args are the highest-risk class (valid JSON,
+# wrong content — executes silently, writes lost). Default OFF; enable via env while we
+# gather A3 attribution data for a week.
+_WRITE_CLASS_TOOLS = {"skill_manage", "memory", "write_file", "patch"}
+
+
+def _strict_repaired_writes_enabled() -> bool:
+    return os.environ.get("HERMES_STRICT_REPAIRED_ARGS", "").strip().lower() in ("1", "true", "yes")
+
 
 def _loads_ok(text: str) -> bool:
     try:
@@ -140,10 +150,20 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
-def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+def _repair_tool_call_arguments(
+    raw_args: str,
+    tool_name: str = "?",
+    *,
+    model: Any = None,
+    session: Any = None,
+) -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
-    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
+    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING.
+    ``model``/``session`` (optional) add attribution to the log census lines (A3, RCA 2026-09-17)."""
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+    _attr = ""
+    if model is not None or session is not None:
+        _attr = " [model={} session={}]".format(model or "?", session or "?")
 
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
@@ -176,21 +196,33 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         fixed = fixed[:-1]
 
     if _loads_ok(fixed):
-        logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
+        if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+            logger.warning(
+                "Strict repaired-args mode: refusing repaired write-class args for %s%s (was: %s → %s)",
+                tool_name, _attr, raw_stripped[:80], fixed[:80],
+            )
+            return "{}"
+        logger.warning("Repaired malformed tool_call arguments for %s%s: %s → %s", tool_name, _attr, raw_stripped[:80], fixed[:80])
         return fixed
 
     # Pass 4: escape control chars inside strings (strict=False alone fails when other
     # malformations are present too), then retry.
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):
+        if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+            logger.warning(
+                "Strict repaired-args mode: refusing repaired write-class args for %s%s (was: %s → %s)",
+                tool_name, _attr, raw_stripped[:80], escaped[:80],
+            )
+            return "{}"
         logger.warning(
-            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], escaped[:80],
+            "Repaired control-char-laced tool_call arguments for %s%s: %s → %s", tool_name, _attr, raw_stripped[:80], escaped[:80],
         )
         return escaped
 
     logger.warning(
-        "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
-        tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
+        "Unrepairable tool_call arguments for %s%s — replaced with empty object (was: %s)",
+        tool_name, _attr, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
     return "{}"
 

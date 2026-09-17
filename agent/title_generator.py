@@ -278,6 +278,32 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _is_structured_output_rejection(exc: Exception) -> bool:
+    """True only for a provider refusing ``response_format`` — not for timeouts, auth or outages.
+
+    Retrying on *every* exception doubles latency and rate-limit pressure on real failures, which is
+    how a narrow compatibility fallback turns into a second full LLM call per failed session.
+    """
+    text = str(exc)
+    if "response_format" in text or "json_schema" in text or "structured output" in text.lower():
+        return True
+    return getattr(exc, "status_code", None) in (400, 422)
+
+
+def _reasoning_consumed_the_budget(response) -> bool:
+    """True when the answer was cut off before the title: a ``length`` finish, or an unclosed
+    thinking block that swallowed the whole ceiling (MiniMax M2.x and friends ignore
+    ``reasoning_config`` and reason anyway)."""
+    try:
+        choice = response.choices[0]
+    except Exception:
+        return False
+    if getattr(choice, "finish_reason", None) == "length":
+        return True
+    content = (getattr(choice.message, "content", "") or "")
+    return "<think" in content and "</think" not in content
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -291,6 +317,11 @@ def generate_title(
     If it returns False (e.g. the user's model was switched since the background thread captured its runtime
     snapshot), the call is skipped silently — no request is sent, so a stale title request can't reload a
     model the runtime already unloaded (#19027).
+
+    Structured output is an OpenAI-style extension that several providers reject outright (DeepSeek
+    direct, Anthropic, Ollama, some OpenRouter backends) with a 400/422. Those get one retry without
+    ``response_format`` — ``_extract_title_text`` parses the plain answer identically — while any
+    other failure keeps its existing handler.
     """
     if not _auto_title_enabled():
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
@@ -310,20 +341,56 @@ def generate_title(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
     )
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
-            reasoning_config={"enabled": False},
-        )
+        # Reasoning models (MiniMax M2.x, DeepSeek-R1, OpenAI o-series, …)
+        # emit chain-of-thought tokens before the answer. A 64-token budget
+        # is exhausted inside <think> before the JSON title is ever produced,
+        # so the LLM upgrade silently fell back to the derived first-line
+        # title on every session (verified 2026-08: against M2.7, a 64-token
+        # cap never produced a single 'llm' title). 512 stays cheap while
+        # leaving room for reasoning + the ~20-token JSON answer.
+        #
+        # Structured output is an OpenAI-style extension; several providers
+        # (DeepSeek direct, Anthropic, Ollama, some OpenRouter backends)
+        # reject json_schema with 400/422. Retry without response_format —
+        # _extract_title_text already strips think blocks and markdown
+        # fences and parses loose JSON, so a plain-prompt answer is handled
+        # identically.
+        def _attempt(*, use_response_format: bool, max_tokens: int):
+            """One title request. The two variables are exactly what the retry path changes."""
+            kwargs = {"extra_body": {"response_format": _TITLE_RESPONSE_FORMAT}} if use_response_format else {}
+            return call_llm(
+                task="title_generation",
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
+                max_tokens=max_tokens, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+                # The module contract above promises thinking-disabled operation,
+                # but nothing enforced it: with the aux default reasoning_effort
+                # "" (provider default), Gemini enables internal thinking and
+                # bills thought tokens against max_tokens — the JSON payload
+                # never lands, and the prose fallback stores the opening fence
+                # ("```json") as the session title (#91927).
+                reasoning_config={"enabled": False},
+                **kwargs,
+            )
+
+        # At most ONE retry, and the two reasons for it are mutually exclusive: the truncation
+        # escalation belongs to the first attempt only. Keeping it outside the ``except`` would let a
+        # rejection retry fall through into it, re-sending the ``response_format`` the provider just
+        # refused (a guaranteed second failure) and spending a third call.
+        try:
+            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds, so the
+            # small budget is the default and only the retry below escalates it.
+            response = _attempt(use_response_format=True, max_tokens=64)
+            if _reasoning_consumed_the_budget(response):
+                # Truncated inside a thinking block: the ceiling, not the prompt, is the problem.
+                logger.debug("Title generation: response truncated before the answer, retrying with a larger budget")
+                response = _attempt(use_response_format=True, max_tokens=512)
+        except Exception as e:
+            if not _is_structured_output_rejection(e):
+                raise
+            # 400/422 on ``response_format``: retry once without structured output, with room for a
+            # reasoning preamble the provider's ``reasoning_config`` switch did not disable.
+            logger.debug("Title generation: provider rejected structured output, retrying plain (%s)", e)
+            response = _attempt(use_response_format=False, max_tokens=512)
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not

@@ -110,6 +110,71 @@ describe('model visibility', () => {
   })
 })
 
+describe('seen baseline — new models surface on customized providers (#114369)', () => {
+  const curated = (models: string[]): ModelOptionProvider => provider('uneeq-dev', models)
+
+  it('shows a family the catalog gained AFTER curation, hidden or not', () => {
+    const stored = new Set([modelVisibilityKey('uneeq-dev', 'gemma-e4b')])
+    const seen = new Set([modelVisibilityKey('uneeq-dev', 'gemma-e4b'), modelVisibilityKey('uneeq-dev', 'gemma-26b')])
+    // qwen38-flash-next was discovered after the user last curated.
+    const providers = [curated(['gemma-e4b', 'gemma-26b', 'qwen38-flash-next'])]
+
+    const visible = effectiveVisibleKeys(stored, providers, seen)
+
+    expect(visible.has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))).toBe(true)
+    // Baseline members absent from the visible set are still deliberate hides.
+    expect(visible.has(modelVisibilityKey('uneeq-dev', 'gemma-26b'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('uneeq-dev', 'gemma-e4b'))).toBe(true)
+  })
+
+  it('keeps new models hidden for a provider hidden wholesale (hide-all is provider-level intent)', () => {
+    const stored = new Set([emptyProviderSentinelKey('uneeq-dev')])
+    const seen = new Set<string>()
+    const providers = [curated(['qwen38-flash-next'])]
+
+    expect(effectiveVisibleKeys(stored, providers, seen).has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))).toBe(
+      false
+    )
+  })
+
+  it('honors the stored set exactly when no baseline exists (legacy pre-baseline state)', () => {
+    const stored = new Set([modelVisibilityKey('uneeq-dev', 'gemma-e4b')])
+    const providers = [curated(['gemma-e4b', 'qwen38-flash-next'])]
+
+    expect(effectiveVisibleKeys(stored, providers, null).has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))).toBe(
+      false
+    )
+    expect(effectiveVisibleKeys(stored, providers).has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))).toBe(
+      false
+    )
+  })
+
+  it('committing with the catalog re-baselines: hiding the surfaced addition sticks', () => {
+    const stored = new Set([modelVisibilityKey('uneeq-dev', 'gemma-e4b')])
+    const seen = new Set([modelVisibilityKey('uneeq-dev', 'gemma-e4b')])
+    const providers = [curated(['gemma-e4b', 'qwen38-flash-next'])]
+
+    // The addition auto-surfaces, so its dialog switch reads ON; toggling it
+    // is the user HIDING it — the key leaves the working set.
+    const hidden = toggleModelVisibility(stored, providers, 'uneeq-dev', 'qwen38-flash-next', seen)
+    expect(hidden.has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))).toBe(false)
+
+    // Once committed with the current catalog, the family is in the seen
+    // baseline: it is now a known model the stored set lacks — hidden for good,
+    // not re-surfaced as "new" on the next open.
+    const seenNow = new Set([...seen, modelVisibilityKey('uneeq-dev', 'qwen38-flash-next')])
+
+    expect(
+      effectiveVisibleKeys(hidden, providers, seenNow).has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))
+    ).toBe(false)
+
+    // Without the re-baseline it would wrongly surface again.
+    expect(
+      effectiveVisibleKeys(hidden, providers, seen).has(modelVisibilityKey('uneeq-dev', 'qwen38-flash-next'))
+    ).toBe(true)
+  })
+})
+
 describe('toggleModelVisibility', () => {
   const providers = [provider('openai', ['gpt-a', 'gpt-b']), provider('nous', ['hermes-x', 'hermes-y'])]
 

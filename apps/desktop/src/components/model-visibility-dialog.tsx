@@ -17,9 +17,11 @@ import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
+  $seenFamilies,
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
+  ensureSeenBaseline,
   modelVisibilityKey,
   setProviderVisibility,
   setVisibleModels,
@@ -50,6 +52,7 @@ export function ModelVisibilityDialog({
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
+  const seenFamilies = useStore($seenFamilies)
   const collapsedProviders = useStore($collapsedProviders)
 
   const modelOptions = useQuery({
@@ -63,14 +66,21 @@ export function ModelVisibilityDialog({
     [modelOptions.data]
   )
 
-  const visible = effectiveVisibleKeys(stored, providers)
+  const visible = useMemo(
+    () => effectiveVisibleKeys(stored, providers, ensureSeenBaseline(stored, providers, seenFamilies)),
+    [stored, providers, seenFamilies]
+  )
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
+    const seen = $seenFamilies.get()
+
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model, seen), providers)
   }
 
   const setProviderVisible = (provider: ModelOptionProvider, next: boolean) => {
-    setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next))
+    const seen = $seenFamilies.get()
+
+    setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next, seen), providers)
   }
 
   const q = normalize(search)

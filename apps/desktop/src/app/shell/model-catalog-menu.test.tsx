@@ -7,6 +7,7 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
   $modelVisibilityOpen,
+  $seenFamilies,
   $visibleModels,
   modelVisibilityKey,
   setModelVisibilityOpen,
@@ -41,6 +42,7 @@ vi.mock('@/hermes', () => ({
 
 beforeEach(() => {
   $visibleModels.set(null)
+  $seenFamilies.set(null)
   $localRuntimeJobs.set([])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
@@ -131,6 +133,27 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+
+  it('shows a catalog addition that post-dates the curated shortlist (seen baseline, #114369)', async () => {
+    // Curated when the catalog had two models; a third gets discovered later.
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
+    $seenFamilies.set(
+      new Set([modelVisibilityKey('google', 'gemini-3.1-pro'), modelVisibilityKey('google', 'gemini-2.5-flash')])
+    )
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash', 'gemini-3.5-flash'], name: 'Google', slug: 'google' }]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 2\.5 Flash/i)
+    // The known-but-hidden model stays hidden; the never-seen one surfaces.
+    expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText(/Gemini 3\.5 Flash/i)).toBeTruthy()
+    })
   })
 })
 

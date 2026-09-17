@@ -18,6 +18,7 @@ from hermes_cli.plugin_catalog import (
     PluginCatalogEntry, entry_capability_summary, filter_entries, find_removed, get_live_catalog_entry,
     load_catalog_live, load_removed_list, _NAME_RE,
 )
+from hermes_cli.plugin_catalog import match_removed, resolved_removed_entries
 
 logger = logging.getLogger(__name__)
 
@@ -93,14 +94,45 @@ def catalog_annotation(dir_path) -> Optional[str]:
     return f"catalog:{sidecar.get('tier') or 'community'}@{str(sidecar.get('sha') or '')[:8]}"
 
 
-def removed_annotation(name: str, dir_path) -> Optional[str]:
-    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``."""
+def removed_annotation(name: str, dir_path, *, removed_entries=None) -> Optional[str]:
+    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``.
+
+    ``removed_entries`` reuses one pre-resolved kill list (``resolved_removed_entries()``) across
+    many rows; resolving per row costs a live-catalog fetch per installed plugin.
+    """
+    if removed_entries is not None:
+        return removed_annotation_batch([(name, dir_path)], removed_entries).get(name)
     sidecar = read_catalog_sidecar(dir_path) or {}
     for candidate in (name, sidecar.get("catalog_name"), sidecar.get("repo")):
         removed = find_removed(str(candidate)) if candidate else None
         if removed is not None:
             return removed.reason or "no reason recorded"
     return None
+
+
+def removed_annotation_batch(
+    names_and_dirs, removed_entries
+) -> Dict[str, Optional[str]]:
+    """``removed_annotation`` for many plugins against ONE pre-resolved kill list.
+
+    The dashboard plugins hub annotates every installed plugin on every rebuild; resolving the kill
+    list per plugin turns the hub into one live-catalog fetch per row. Callers resolve the list once
+    (:func:`plugin_catalog.resolved_removed_entries`) and pass it here.
+    """
+    annotations: Dict[str, Optional[str]] = {}
+    for name, dir_path in names_and_dirs:
+        sidecar = read_catalog_sidecar(dir_path) or {}
+        candidates = (name, sidecar.get("catalog_name"), sidecar.get("repo"))
+        for candidate in candidates:
+            if not candidate:
+                continue
+            removed = match_removed(str(candidate), removed_entries)
+            if removed is not None:
+                annotations[name] = removed.reason or "no reason recorded"
+                break
+        else:
+            annotations[name] = None
+    return annotations
 
 
 # ── Catalog-aware install / update ───────────────────────────────────────────

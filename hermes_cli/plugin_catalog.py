@@ -32,6 +32,7 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
+LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
@@ -235,10 +236,31 @@ def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optio
     """
     if not name_or_repo:
         return None
-    candidate = name_or_repo.strip()
-    candidate_repo = _normalize_repo(candidate)
-    for entry in load_removed_list(catalog_dir) + (live_removed_list() if catalog_dir is None else []):
-        if candidate == entry.name or (entry.repo and candidate_repo == _normalize_repo(entry.repo)):
+    entries = load_removed_list(catalog_dir)
+    if catalog_dir is None:
+        entries = entries + live_removed_list()
+    return match_removed(name_or_repo, entries)
+
+
+def resolved_removed_entries() -> List[RemovedEntry]:
+    """The full kill list (in-tree UNION live) in one resolution. Callers that match many candidates
+    — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
+    of paying a live-catalog fetch per candidate."""
+    return load_removed_list() + live_removed_list()
+
+
+def match_removed(
+    candidate: str, entries: List[RemovedEntry]
+) -> Optional[RemovedEntry]:
+    """One candidate against a pre-resolved kill list: exact name or normalized repo URL match."""
+    if not candidate:
+        return None
+    text = candidate.strip()
+    text_repo = _normalize_repo(text)
+    for entry in entries:
+        if text == entry.name or (
+            entry.repo and text_repo == _normalize_repo(entry.repo)
+        ):
             return entry
     return None
 
@@ -250,10 +272,37 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+# Last failed live fetch: without it, a dead catalog host costs one full request
+# timeout PER CALLER (the plugins hub alone asks once per installed plugin), so
+# the dashboard event loop stalls for minutes. A remembered failure keeps those
+# callers on the in-tree copy until the TTL lets one fresh attempt through.
+_live_fetch_failed_until: Dict[str, float] = {}
+
+
+def _live_fetch_failure_recent() -> bool:
+    failed_until = _live_fetch_failed_until.get(LIVE_CATALOG_URL)
+    return failed_until is not None and time.time() < failed_until
+
+
+def _remember_live_fetch_failure() -> None:
+    failed_until = time.time() + LIVE_CATALOG_FAILURE_TTL_SECONDS
+    _live_fetch_failed_until[LIVE_CATALOG_URL] = failed_until
+
+
 def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
-    back to the in-tree catalog."""
+    back to the in-tree catalog. A failed network attempt is remembered for
+    :data:`LIVE_CATALOG_FAILURE_TTL_SECONDS` so a dead host costs one timeout per TTL window, not one
+    per caller (``force`` bypasses both caches)."""
+    if not force and _live_fetch_failure_recent():
+        try:  # stale cache still beats the in-tree copy when the network is down
+            cache = _live_cache_path()
+            if cache.is_file():
+                return json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return None
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
@@ -276,6 +325,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)
+        _remember_live_fetch_failure()
         try:  # stale cache still beats the in-tree copy when the network is down
             return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
         except Exception:

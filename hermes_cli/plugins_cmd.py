@@ -1430,10 +1430,18 @@ def cmd_list(args: Any | None = None) -> None:
     # Source shows catalog provenance (``catalog:<tier>@<sha8>``) or a ``--ref`` pin
     # (``git pinned@<sha8>``) so a team can eyeball that everyone runs the same commit.
     pins = _read_install_metadata()
+    # One kill-list resolution for the whole listing: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    resolved_removed = catalog.resolved_removed_entries()
     rows = [
-        (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
-         catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
-         catalog.removed_annotation(name, _dir))
+        (
+            name,
+            _plugin_status(name, enabled, disabled, key=key),
+            str(version),
+            description,
+            catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
+            catalog.removed_annotation(name, _dir, removed_entries=resolved_removed),
+        )
         for name, version, description, source, _dir, key in entries
     ]
 

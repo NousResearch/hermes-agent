@@ -50,7 +50,7 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 - **模型与 provider 锁定**——为 Bot 指定专属模型。Hermes 支持的任意 provider/model 组合都可以使用，不同的 Bot 可以并排运行在不同的模型上。留空则继承自启动 profile。
 - **自定义 SOUL.md**——Bot 的人格与常驻指令。
 - **按技能、按工具集、按 MCP 服务器逐项启用**——精确勾选这个专精 Bot 需要的能力。
-- **共享密钥**——默认情况下，新 Bot 与主 profile 共用一个 OAuth/token 池，这样凭据刷新不会互相失效。（较旧的 gateway 会改为复制凭据——依然可用，只是分叉了。）
+- **凭据**——每个新 Bot 都拥有隔离的凭据存储；它绝不会与主 profile 共用 OAuth/token 池，因此每个 profile 只刷新自己的凭据。启用凭据镜像时，Hermes 会把受支持的凭据复制到新 profile，而不是共享它们。旧版的 `share_auth` 和 `shared_auth` 创建字段会被忽略。
 
 ### 选择它运行在哪台机器上（"Create on"）
 

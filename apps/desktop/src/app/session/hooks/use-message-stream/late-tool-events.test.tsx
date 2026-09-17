@@ -1,4 +1,4 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventName } from '@hermes/shared'
 // Tool events route to the bubble that owns the call id, not to whatever is
 // streaming now. A result that lands AFTER its part was sealed (interim
 // commentary, mid-turn user insert, turn settle) must re-attach to that part
@@ -17,7 +17,8 @@ const SID = 'late-tool-events-session'
 let stream: MessageStreamHarness
 
 const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
-  act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
+  // SAFETY: `timestamp` rides on payloads ahead of the contract (GatewayEventPayload reads it); the rest is the wire.
+  act(() => stream.handleEvent({ payload: { ...payload, timestamp } as GatewayEvent['payload'], session_id: SID, type }))
 
 const toolRows = (toolCallId: string) =>
   (stream.state(SID).messages ?? []).flatMap((message, messageIndex) =>

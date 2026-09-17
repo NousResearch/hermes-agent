@@ -1226,7 +1226,7 @@ export async function deleteProject(id: string): Promise<void> {
 
   await persistOrRollback(snap, async () => {
     applyPayload(
-      await gatewayRequestOn<ProjectsPayload>(
+      await gatewayRequestOn(
         context.gateway,
         'projects.delete',
         projectParams({ id }, context.profile)
@@ -1239,7 +1239,7 @@ export async function deleteProject(id: string): Promise<void> {
 export async function setActiveProject(id: null | string): Promise<void> {
   const context = await activeProjectsContext(writableProjectProfile())
 
-  const res = await gatewayRequestOn<{ active_id: null | string }>(
+  const res = await gatewayRequestOn(
     context.gateway,
     'projects.set_active',
     projectParams({ id }, context.profile)

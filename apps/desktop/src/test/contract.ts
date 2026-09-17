@@ -167,6 +167,8 @@ export const inflightTurn = (over: Partial<InflightTurn> = {}): InflightTurn => 
   assistant: '',
   streaming: false,
   user: '',
+  display_kind: null,
+  display_metadata: null,
   corrections: null,
   correction_offsets: null,
   error: null,
@@ -261,6 +263,7 @@ export const agentPluginRow = (over: Partial<AgentPluginRow> = {}): AgentPluginR
   catalog_tier: null,
   installed_sha: null,
   catalog_sha: null,
+  catalog_version: null,
   update_available: null,
   pinned_sha: null,
   ...over

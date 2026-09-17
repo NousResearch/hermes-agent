@@ -1,3 +1,4 @@
+import type { SessionResumeResult } from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as groupChat from './group-chat'
@@ -6,12 +7,13 @@ import {
   clarifyOpenRequest,
   createGroupGateway,
   drain,
+  inflightTurn,
   pendingApproval,
   resumeSnapshot,
   runTimersInline,
   scriptedStorage
 } from './group-test-utils'
-import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
+import type { GatewayOptions, ResumeInflightTurn, ScriptedGateway } from './group-test-utils'
 import type * as groupTurns from './group-turns'
 import type { Attachment, GroupChat, GroupMember } from './types'
 
@@ -330,9 +332,16 @@ describe('session-gone classification', () => {
       // The submit itself succeeded once; no timed-out/stranded marker was left behind.
       expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
       expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
-      expect(room.turns.groupSessionBusy({ inflight: { status: 'error' }, running: false })).toBe(false)
-      expect(room.turns.groupSessionBusy({ inflight: { status: 'streaming' }, running: false })).toBe(true)
-      expect(room.turns.groupSessionBusy({ inflight: true })).toBe(true)
+      expect(room.turns.groupSessionBusy(resumeSnapshot({ inflight: inflightTurn({ status: 'error' }), running: false }))).toBe(false)
+      expect(room.turns.groupSessionBusy(resumeSnapshot({ inflight: inflightTurn({ status: 'streaming' }), running: false }))).toBe(
+        true
+      )
+      // Older gateways replayed `inflight: true` instead of the turn object. The
+      // contract no longer admits it, but `retainedGroupTurnError` still guards
+      // `typeof inflight === 'object'` for exactly that wire, so keep the legacy
+      // shape as a deliberate off-contract runtime probe.
+      const legacyBooleanInflight: SessionResumeResult = { ...resumeSnapshot(), inflight: true as unknown as ResumeInflightTurn }
+      expect(room.turns.groupSessionBusy(legacyBooleanInflight)).toBe(true)
     } finally {
       clock.mockRestore()
     }

@@ -100,6 +100,27 @@ export function resumeSnapshot(overrides: Partial<SessionResumeResult> = {}): Se
   }
 }
 
+/** The turn object a current gateway replays under `session.resume.inflight`. */
+export type ResumeInflightTurn = NonNullable<SessionResumeResult['inflight']>
+
+/** An in-flight (or retained failed) turn with only the fields a test cares about. */
+export function inflightTurn(overrides: Partial<ResumeInflightTurn> = {}): ResumeInflightTurn {
+  return {
+    assistant: '',
+    streaming: false,
+    user: '',
+    display_kind: null,
+    display_metadata: null,
+    corrections: null,
+    correction_offsets: null,
+    error: null,
+    status: null,
+    recoverable: null,
+    error_surface: null,
+    ...overrides
+  }
+}
+
 /** The clarify request as the snapshot carries it: an open server→client
  *  request frame whose params are the clarify question, flattened to the JSON
  *  the contract types every open request's params as. */

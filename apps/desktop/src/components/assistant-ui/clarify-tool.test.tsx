@@ -697,12 +697,11 @@ describe('ClarifyTool batch card', () => {
     act(() => {
       liveServerRequest('request-batch')
       setClarifyRequest({
-        choices: null,
-        multiSelect: false,
-        question: '',
+        kind: 'batch',
+        lockedAnswers: null,
         questions: [
-          { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
-          { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+          { choices: ['red', 'blue'], multi_select: false, qid: 'q0', question: 'Color?' },
+          { choices: null, multi_select: false, qid: 'q1', question: 'Name?' }
         ],
         requestId: 'request-batch',
         sessionId: 'session-1'

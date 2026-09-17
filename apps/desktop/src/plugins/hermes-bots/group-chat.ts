@@ -24,7 +24,8 @@ import type {
   GroupMember,
   GroupMessage,
   GroupMessageAuthor,
-  GroupPrompt
+  GroupPrompt,
+  RosterRow
 } from './types'
 
 /** Optional secondary navigation inside the Bots pane (group-chat rooms). */

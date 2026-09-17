@@ -1272,13 +1272,14 @@ describe('appendLiveSessionProjection', () => {
   it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
     const typed = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: '[IMPORTANT: Background process finished] fixture',
         display_kind: 'process_complete',
         display_metadata: { display_text: 'Background Process Finished: fixture' },
         assistant: '',
         streaming: true
-      }
+      })
     })
 
     const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
@@ -1289,7 +1290,8 @@ describe('appendLiveSessionProjection', () => {
 
     const quoted = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+      queued: null,
+      inflight: inflightTurn({ user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true })
     })
 
     expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
@@ -1300,7 +1302,8 @@ describe('appendLiveSessionProjection', () => {
   it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+      queued: null,
+      inflight: inflightTurn({ user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true })
     })
 
     expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])

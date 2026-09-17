@@ -193,14 +193,15 @@ describe('approval prompt store', () => {
     }
 
     await replayPendingApproval(
-      {
-        request: async () => ({
+      fakeGateway({
+        'approval.pending': {
           approvals: [
-            { command: 'r1', request_id: 'r1' },
-            { command: 'r2', request_id: 'r2' }
+            pendingApproval({ command: 'r1', description: 'r1', request_id: 'r1' }),
+            pendingApproval({ command: 'r2', description: 'r2', request_id: 'r2' })
           ]
-        })
-      },
+        },
+        'approval.received': { acknowledged: true }
+      }).gateway,
       's1'
     )
     expect(
@@ -221,23 +222,31 @@ describe('approval prompt store', () => {
         .get()
         .map(request => request.requestId)
     ).toEqual(['r1', 'r2'])
-    let finish!: (result: unknown) => void
+    let finish!: () => void
+
+    const gate = new Promise<void>(resolve => {
+      finish = resolve
+    })
+
     const replay = replayPendingApproval(
-      {
-        request: () =>
-          new Promise(resolve => {
-            finish = resolve
-          })
-      },
+      fakeGateway(
+        {
+          'approval.pending': {
+            approvals: [
+              pendingApproval({ command: 'first', description: 'd', request_id: 'r1' }),
+              pendingApproval({ command: 'second', description: 'd', request_id: 'r2' })
+            ]
+          },
+          'approval.received': { acknowledged: true }
+        },
+        undefined,
+        gate
+      ).gateway,
       's1'
     )
+
     clearApprovalRequest('s1', 'r1')
-    finish({
-      approvals: [
-        { command: 'first', request_id: 'r1' },
-        { command: 'second', request_id: 'r2' }
-      ]
-    })
+    finish()
     await replay
     expect(sessionApprovalRequests('s1').get()).toEqual([second])
     clearAllPrompts('s1')

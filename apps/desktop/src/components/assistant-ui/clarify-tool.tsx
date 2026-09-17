@@ -980,7 +980,7 @@ function ClarifyToolBatchPending({
     () =>
       (fromArgs?.questions ?? []).map((entry, index) => ({
         choices: entry.choices ?? null,
-        multiSelect: entry.multiSelect ?? false,
+        multi_select: entry.multiSelect ?? false,
         qid: `args-${index}`,
         question: entry.question
       })),

@@ -67,7 +67,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     let stateAtRequest = $sessionStates.get()
     publishSessionState('runtime-race', live)
     rehydrateLiveSessionStatuses(
-      { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'idle' }] },
+      { sessions: [sessionActiveItem({ id: 'runtime-race', session_key: 'stored-race', status: 'idle' })] },
       Date.now(),
       'default',
       stateAtRequest
@@ -80,7 +80,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     stateAtRequest = $sessionStates.get()
     publishSessionState('runtime-race', { ...live, busy: false, turnLive: false })
     rehydrateLiveSessionStatuses(
-      { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }] },
+      { sessions: [sessionActiveItem({ id: 'runtime-race', session_key: 'stored-race', status: 'working' })] },
       Date.now(),
       'default',
       stateAtRequest
@@ -92,7 +92,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
   it('retries absence reconciliation after a newer live event', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-race', session_key: 'stored-race', status: 'working' })]
     })
     const stateAtRequest = $sessionStates.get()
 
@@ -117,7 +117,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     const live = { ...createClientSessionState('stored-race'), busy: true, sawAssistantPayload: true, turnLive: true }
 
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-race', session_key: 'stored-race', status: 'working' })]
     })
     publishSessionState('runtime-race', live)
     reconcileBusyStatesOnReconnect()
@@ -125,7 +125,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
     // Still working on the backend: the arc comes back, no completion.
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-race', session_key: 'stored-race', status: 'working' })]
     })
     expect($workingSessionIds.get()).toContain('stored-race')
     expect($unreadFinishedSessionIds.get()).not.toContain('stored-race')

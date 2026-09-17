@@ -180,11 +180,11 @@ const approval: Handler<'approval'> = ctx => {
     dispatchNativeNotification({
       actions: [
         {
-          id: str(p.request_id) ? `approve:${str(p.request_id)}` : 'approve',
+          id: p.request_id ? `approve:${p.request_id}` : 'approve',
           text: translateNow('notifications.native.approveAction')
         },
         {
-          id: str(p.request_id) ? `reject:${str(p.request_id)}` : 'reject',
+          id: p.request_id ? `reject:${p.request_id}` : 'reject',
           text: translateNow('notifications.native.rejectAction')
         }
       ],

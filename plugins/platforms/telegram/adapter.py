@@ -370,6 +370,14 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+class _PollingStallError(RuntimeError):
+    """A confirmed getUpdates stall (watchdog or post-reconnect verifier), as opposed to a transport drop.
+
+    Typed so the recovery ladder can hand the adapter to the supervisor instead of classifying log text:
+    restarting the same Updater cannot heal a wedged long-poll consumer whose stop() did not quiesce (#113618).
+    """
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -1196,24 +1204,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    @classmethod
-    def _looks_like_polling_stall(cls, error: Exception) -> bool:
-        """True when the error represents a confirmed polling stall rather than a transient transport drop.
-
-        A wedged getUpdates consumer (CLOSE-WAIT socket or unquiesced server session) cannot safely be recovered
-        by restarting the same Updater in-place: stop() may return while the underlying action did not quiesce,
-        leaving subsequent in-place polling attempts deaf (#113618).
-        """
-        for cur in _iter_exception_graph(error):
-            text = str(cur).lower()
-            if (
-                "polling stall watchdog" in text
-                or "general path healthy but getupdates stalled" in text
-                or "getupdates made no progress" in text
-            ):
-                return True
-        return False
-
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -2014,7 +2004,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._drain_polling_connections()
         if self._teardown_started:
             return
-        if self._looks_like_polling_stall(error):
+        if any(isinstance(cur, _PollingStallError) for cur in _iter_exception_graph(error)):
             message = (
                 "Telegram polling stall confirmed (getUpdates made no progress); "
                 "rebuilding the adapter instead of reusing an Updater whose long-poll action did not quiesce."
@@ -2263,7 +2253,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._spawn_polling_recovery(
             asyncio.get_running_loop(),
             self._handle_polling_network_error(
-                RuntimeError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for)))
+                _PollingStallError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for)))
 
     def _verifier_stale(self, generation: int, progress: asyncio.Event) -> bool:
         """True when a verifier's generation no longer matters (progressed, fatal, replaced, torn down)."""
@@ -2310,7 +2300,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._verifier_stale(generation, progress):
             return
         self._schedule_polling_recovery(
-            RuntimeError("getUpdates made no progress before verifier deadline"),
+            _PollingStallError("getUpdates made no progress before verifier deadline"),
             reason="polling progress verifier: general path healthy but getUpdates stalled")
 
     def _disarm_ptb_retry_loop(self) -> None:

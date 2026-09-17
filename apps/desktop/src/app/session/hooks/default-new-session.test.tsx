@@ -51,6 +51,7 @@ function mountActions() {
   const requestGateway = vi.fn(async () => ({ session_id: 'ambient', stored_session_id: 'ambient-stored' }) as never)
   const navigate = vi.fn()
   const state = createClientSessionState()
+
   const result = renderHook(() =>
     useSessionActions({
       activeSessionId: 'existing-runtime',
@@ -71,6 +72,7 @@ function mountActions() {
       updateSessionState: () => state
     })
   )
+
   return { ...result, navigate, requestGateway }
 }
 
@@ -170,6 +172,7 @@ describe('generic new session default routing', () => {
 
   it('routes /new to the saved default', async () => {
     const { result } = mountActions()
+
     const slash = renderHook(() =>
       useSlashCommand({
         activeSessionIdRef: { current: 'existing-runtime' },
@@ -182,6 +185,7 @@ describe('generic new session default routing', () => {
         getRuntimeIdForStoredSession: () => null
       } as never)
     )
+
     await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
     await act(() => slash.result.current('/new'))
     expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })

@@ -20,6 +20,8 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Tuple
 
+from utils import file_signature
+
 
 # Process-global (describes the deployment mode, not a per-task value): set once
 # at gateway startup when gateway.multiplex_profiles is true.
@@ -225,21 +227,17 @@ def _parse_env_value(raw_value: str) -> str:
 # turn, cron fire, MCP/browser adoption and housekeeping drain, and each call used to re-read and
 # re-parse the whole file.
 #
-# FRESHNESS: every call still OPENS the file and keys on the ``fstat`` of that descriptor
-# (mtime_ns, size, inode, device), re-checked after the read. The open keeps close-to-open
+# FRESHNESS: every call still OPENS the file and keys on ``utils.file_signature`` of that
+# descriptor's ``fstat`` (mtime_ns, size, inode, ctime_ns — ctime can't be backdated, so a pinned-
+# timestamp rewrite is still seen), re-checked after the read. The open keeps close-to-open
 # revalidation on NFS, a vanished/unreadable file fails the open and is never cached (a transient
 # EACCES must not become "this profile has no secrets"), and the descriptor pins one inode so a
-# symlink repointed mid-read can't file one file's contents under another's identity. Accepted gap: a
-# rewrite keeping length, inode AND nanosecond mtime identical; ``invalidate_env_file_cache()`` is the
-# knob, and ``hermes_cli.config.invalidate_env_cache()`` calls it for Hermes's own .env writers.
+# symlink repointed mid-read can't file one file's contents under another's identity.
+# ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
+# calls it for Hermes's own .env writers.
 _ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
-
-
-def _fd_fingerprint(fileno: int) -> tuple:
-    st = os.fstat(fileno)
-    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
 
 
 def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
@@ -293,7 +291,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     key = str(env_path)
     try:
         with open(env_path, "rb") as handle:
-            fingerprint = _fd_fingerprint(handle.fileno())
+            fingerprint = file_signature(os.fstat(handle.fileno()))
             with _ENV_FILE_CACHE_LOCK:
                 cached = _ENV_FILE_CACHE.get(key)
                 if cached is not None and cached[0] == fingerprint:
@@ -302,7 +300,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             raw = handle.read()
             # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
             # stored under the pre-write fingerprint.
-            settled = _fd_fingerprint(handle.fileno()) == fingerprint
+            settled = file_signature(os.fstat(handle.fileno())) == fingerprint
     except OSError:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)

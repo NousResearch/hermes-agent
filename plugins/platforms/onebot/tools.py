@@ -31,10 +31,11 @@ _BASE = os.environ.get("ONEBOT_TOOL_BASE", "http://127.0.0.1:8643").rstrip("/")
 
 # OneBot actions a model may invoke through qq_napcat_api (read-only queries,
 # file URL resolution, uploads, OCR, AI chat) — mirrors dsh-onebot's list.
-# 权威定义在 onebot_utils.py；此处双层导入兼容两种加载方式（包内相对导入 /
-# 生产裸模块加载，plugins.platforms.* 不可导入）。
+# 权威定义在 onebot_utils.py；相对导入优先（开发仓 plugins.platforms.onebot.*
+# 与生产 hermes_plugins.onebot_platform.* 两种包加载均可达），裸导入仅兜底
+# 单文件直载场景。
 try:
-    from plugins.platforms.onebot.onebot_utils import NAPCAT_API_WHITELIST
+    from .onebot_utils import NAPCAT_API_WHITELIST
 except ImportError:
     from onebot_utils import NAPCAT_API_WHITELIST
 

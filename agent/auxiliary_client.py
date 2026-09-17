@@ -3929,9 +3929,9 @@ def _quarantine_fallback_candidate(
     _mark_provider_unhealthy(
         fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
         base_url=base_url, reason=reason or "stale fallback credential")
-    why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
-    logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
-                   task or "call", tag, fb_label, why, type(fb_err).__name__)
+    # Candidate labels and exception text can carry provider URLs or
+    # credential-derived details. Keep this operational breadcrumb value-free.
+    logger.warning("Auxiliary fallback candidate quarantined; skipping to next fallback")
 
 
 def _plan_fallback_auth_retry(

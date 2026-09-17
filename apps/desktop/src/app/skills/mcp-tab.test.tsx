@@ -135,11 +135,25 @@ vi.mock('@/components/ui/popover', () => ({
   PopoverTrigger: ({ children }: PropsWithChildren) => <>{children}</>
 }))
 vi.mock('@/components/ui/switch', () => ({
-  Switch: ({ checked, onCheckedChange, ...props }: { checked?: boolean; onCheckedChange?: (value: boolean) => void }) => (
-    <input {...props} checked={checked} onChange={event => onCheckedChange?.(event.currentTarget.checked)} type="checkbox" />
+  Switch: ({
+    checked,
+    onCheckedChange,
+    ...props
+  }: {
+    checked?: boolean
+    onCheckedChange?: (value: boolean) => void
+  }) => (
+    <input
+      {...props}
+      checked={checked}
+      onChange={event => onCheckedChange?.(event.currentTarget.checked)}
+      type="checkbox"
+    />
   )
 }))
-vi.mock('@/components/ui/text-tab', () => ({ TextTab: ({ children, ...props }: PropsWithChildren) => <button {...props}>{children}</button> }))
+vi.mock('@/components/ui/text-tab', () => ({
+  TextTab: ({ children, ...props }: PropsWithChildren) => <button {...props}>{children}</button>
+}))
 vi.mock('@/components/ui/textarea', () => ({ Textarea: (props: Record<string, unknown>) => <textarea {...props} /> }))
 vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: PropsWithChildren) => <>{children}</> }))
 
@@ -205,7 +219,11 @@ describe('McpTab owner changes', () => {
     })
 
     await waitFor(() => {
-      expect(testMcpServer).toHaveBeenCalledWith('shared', { connectionId: 'connection-b', profile: 'default' })
+      expect(testMcpServer).toHaveBeenCalledWith('shared', {
+        connectionId: 'connection-b',
+        priority: 'foreground',
+        profile: 'default'
+      })
       expect(probeCache.has(probeKey('shared', server, 'connection-b::default'))).toBe(true)
     })
 

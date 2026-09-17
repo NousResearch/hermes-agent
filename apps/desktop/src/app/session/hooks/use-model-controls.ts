@@ -335,14 +335,7 @@ export function useModelControls({
         return false
       }
     },
-    [
-      cacheOwnerConnectionId,
-      cacheProfile,
-      copy.modelSwitchFailed,
-      queryClient,
-      requestGateway,
-      updateModelOptionsCache
-    ]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

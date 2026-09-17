@@ -383,11 +383,13 @@ describe('default-route profile adoption', () => {
     async connectionId => {
       const base = fakeDesktop()
       const route = { connectionId, profile: 'coder' }
+
       const desktop = {
         ...base,
         getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
         profile: { ...base.profile, getDefault: vi.fn(async () => route) }
       }
+
       ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
       render(<Harness />)
       await flushAsync()
@@ -398,6 +400,7 @@ describe('default-route profile adoption', () => {
         expect(desktop.getConnection).toHaveBeenCalledWith('coder')
         expect(desktop.getConnectionFor).not.toHaveBeenCalled()
       }
+
       expect($connection.get()?.profile).toBe('coder')
       expect($desktopBoot.get().running).toBe(false)
     }

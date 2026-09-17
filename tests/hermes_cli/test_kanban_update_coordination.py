@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import time
+
 
 def test_live_update_pauses_dispatch_and_quiesce_reclaims_without_failure(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
@@ -73,6 +76,23 @@ def test_unknown_update_marker_state_keeps_dispatch_paused(monkeypatch):
     monkeypatch.setattr(update_lock, "read_update_marker_state", lambda: "unknown")
 
     assert coordination.update_dispatch_paused() is True
+
+
+def test_stale_partial_update_marker_allows_dispatch(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    marker = home / ".hermes-update-in-progress"
+    marker.write_text("12345", encoding="utf-8")
+
+    from hermes_cli import kanban_update_coordination as coordination
+    from hermes_cli.update_lock import UPDATE_MARKER_MAX_AGE_SECONDS
+
+    stale_time = time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 60
+    os.utime(marker, (stale_time, stale_time))
+
+    assert coordination.update_dispatch_paused() is False
+    assert marker.exists(), "authorization is logical; only the update owner removes the marker"
 
 
 def test_quiesce_retains_claim_when_worker_tree_survives(tmp_path, monkeypatch):

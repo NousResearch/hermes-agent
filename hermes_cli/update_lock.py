@@ -114,7 +114,9 @@ def read_update_marker_state(*, path: Path | None = None) -> str:
     """
     marker = path or update_marker_path()
     try:
-        lines = marker.read_text(encoding="utf-8").splitlines()
+        with marker.open(encoding="utf-8") as marker_file:
+            lines = marker_file.read().splitlines()
+            marker_mtime = os.fstat(marker_file.fileno()).st_mtime
     except FileNotFoundError:
         return "absent"
     except OSError:
@@ -123,7 +125,8 @@ def read_update_marker_state(*, path: Path | None = None) -> str:
         pid = int(lines[0].strip())
         started_at = float(lines[1].strip())
     except (IndexError, ValueError):
-        return "unknown"
+        marker_age = time.time() - marker_mtime
+        return "absent" if marker_age > UPDATE_MARKER_MAX_AGE_SECONDS else "unknown"
 
     age = time.time() - started_at
     if age > UPDATE_MARKER_MAX_AGE_SECONDS:

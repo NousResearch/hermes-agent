@@ -277,6 +277,48 @@ def _detect_macos_system_proxy() -> str | None:
     return None
 
 
+def _detect_windows_system_proxy() -> str | None:
+    """Read the Windows system HTTP(S) proxy from the registry: ``http://host:port``
+    when an HTTP(S) proxy is enabled, else None (non-Windows or any registry error).
+
+    Mirrors ``_detect_macos_system_proxy`` — the last-resort system-proxy probe for
+    hosts where no env vars are set. ``winreg`` is imported lazily so the module
+    stays importable on non-Windows hosts."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        ) as key:
+            try:
+                proxy_enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            except FileNotFoundError:
+                return None
+            if not proxy_enable:
+                return None
+            try:
+                proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
+            except FileNotFoundError:
+                return None
+            if not proxy_server:
+                return None
+            # Windows may store "host:port" or "host:port;host:port" (auto-detect);
+            # use the first entry.
+            proxy_server = str(proxy_server).split(";")[0].strip()
+            if not proxy_server:
+                return None
+            if "://" not in proxy_server:
+                proxy_server = f"http://{proxy_server}"
+            return proxy_server
+    except Exception:
+        return None
+
+
 def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
     """True when NO_PROXY/no_proxy matches at least one target host (exact hosts, domain /
     wildcard suffixes, IP literals, CIDR ranges, optional host:port entries, ``*``)."""
@@ -289,7 +331,7 @@ def resolve_proxy_url(
     configured: str | None = None) -> str | None:
     """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
     value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
-    case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
+    case), then the macOS/Windows system proxy — the latter two only when ``gateway.trust_env`` is true.
     None when nothing is found or NO_PROXY matches a target.
 
     *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
@@ -307,7 +349,10 @@ def resolve_proxy_url(
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
         value = first_proxy_env_value()
-    proxy = normalize_proxy_url(value or _detect_macos_system_proxy())
+    detected = _detect_macos_system_proxy()
+    if not detected:
+        detected = _detect_windows_system_proxy()
+    proxy = normalize_proxy_url(value or detected)
     return None if proxy and should_bypass_proxy(target_hosts) else proxy
 
 

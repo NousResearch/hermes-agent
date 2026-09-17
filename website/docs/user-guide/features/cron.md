@@ -74,6 +74,34 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 
 Hermes will use the unified `cronjob` tool internally.
 
+### Creating a job needs a running gateway
+
+The built-in scheduler ticker lives **inside** the gateway process, so a job created while
+no gateway is running would be stored with nothing to ever fire it. Every creation path —
+`/cron add`, `hermes cron create`, the `cronjob` tool, [blueprints](/guides/automation-blueprints),
+`/suggestions accept`, and the dashboard's `POST /api/cron/jobs` — therefore **refuses** the
+create rather than reporting a job as scheduled that never runs:
+
+```text
+The Hermes gateway is not running — this job would be saved but will NOT fire until the
+gateway is started (hermes gateway install / hermes gateway start). Refusing to create a
+job that can never fire: start the gateway and try again, or re-run with
+--allow-dead-store to schedule it anyway.
+```
+
+Start the gateway and retry, or store the job inert on purpose:
+
+- `hermes cron create … --allow-dead-store` (CLI) and `allow_dead_store: true` (the `cronjob`
+  tool) create the job anyway; it stays inert until a gateway runs.
+- `--paused` creates are exempt from the refusal — a paused job is deliberately inert, and
+  resuming it needs a gateway anyway. On the paths with no override flag (blueprints,
+  `/suggestions accept`, the dashboard) this is the way to store a job ahead of the gateway.
+
+Two cases never refuse: an external scheduler provider (managed cron on hosted deployments)
+is active, since there is no in-gateway ticker to miss; and a dispatcher-spawned board
+(kanban) worker scheduling a follow-up, which has no human at the prompt to start a gateway
+and so gets the loud warning instead of a hard stop.
+
 ## Pre-dispatch configuration validation
 
 Before constructing any agent machinery for a scheduled run, the scheduler

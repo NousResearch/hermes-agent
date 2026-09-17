@@ -26,6 +26,14 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   finds the stamp with a dead owner restores the instant ONCE (`cron/occurrences.py`), the
   executions ledger's `scheduled_instant` blocks a second fire, `cron.catch_up_missed: false`
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
+- **Dead-store gate at the one creation boundary.** The builtin ticker only runs inside the
+  gateway process, so creating a job with no gateway running stores one that can never fire
+  (#87033). `scheduler.py::create_job_with_scheduler_registration` raises `CronDeadStoreError`
+  in that case — every creation surface (tool, CLI, blueprints, suggestions, REST) routes
+  through it, so new surfaces inherit the gate instead of re-implementing it. Exempt: `paused`
+  creates, a live/unknown probe, non-builtin providers, and dispatcher-spawned board workers
+  (warned, not refused — no human at the prompt to start a gateway). Decision text lives once in
+  `tools/cronjob_job_args.py::_dead_store_refusal`; tests `tests/cron/test_cronjob_gateway_liveness.py`.
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**

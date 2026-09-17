@@ -523,6 +523,8 @@ Returns all configured cron jobs with their state, schedule, and run history.
 
 Creates a new cron job. Body: `{"prompt": "...", "schedule": "0 9 * * *", "name": "...", "deliver": "local"}`.
 
+Refused with `400` when no gateway is running — the scheduler ticker lives in the gateway process, so the job could never fire. This endpoint has no override flag; start the gateway, or create the job paused. See [Creating a job needs a running gateway](/user-guide/features/cron#creating-a-job-needs-a-running-gateway).
+
 ### POST /api/cron/jobs/\{job_id\}/pause
 
 Pauses a cron job.

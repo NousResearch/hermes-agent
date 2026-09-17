@@ -340,7 +340,7 @@ class TestVisionAnalyzeNative:
         except ImportError:
             pytest.skip("Pillow not installed — proactive resize is a no-op")
 
-        from tools.vision_tools import _EMBED_TARGET_BYTES
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
         big = tmp_path / "big.png"
@@ -364,7 +364,8 @@ class TestVisionAnalyzeNative:
     def test_embed_caps_are_sized_for_history_reuse(self):
         """Native embeds ride every later turn, so caps must stay well below
         the Anthropic 5 MB / 8000px reject limits (#92699)."""
-        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+        from tools.vision_tools import _EMBED_MAX_DIMENSION
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         assert _EMBED_TARGET_BYTES <= 512 * 1024
         assert _EMBED_MAX_DIMENSION <= 2048

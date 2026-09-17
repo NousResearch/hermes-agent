@@ -3232,12 +3232,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
+    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
+    # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    repo_root = Path(__file__).resolve().parent.parent
+    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             process = subprocess.Popen(
                 dispatch.argv,
-                cwd=str(Path(__file__).resolve().parent.parent),
+                cwd=str(repo_root),
                 env=worker_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

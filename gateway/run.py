@@ -756,51 +756,6 @@ def _approval_send_outcome(future, timeout: float) -> str:
     return "failed"
 
 
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
-    """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``.
-
-    Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
-    and proceeds to the bounded wait, whose response timeout covers a lost card."""
-    outcome = _approval_send_outcome(fut, timeout=15)
-    if outcome == "declined":
-        # P5(b): a connector DECLINE is MORE definitive than a failure — the
-        # destination was authorized and refused, so the card cannot arrive and
-        # no late reply can resolve it. Without this branch `declined` fell
-        # through to the bounded wait and the agent blocked until
-        # clarify_timeout (indefinitely when that is configured non-positive).
-        logger.warning(
-            "Clarify prompt DECLINED by the connector's egress guard; "
-            "clearing registration"
-        )
-        clarify_mod.clear_session(session_key)
-        return "[clarify prompt could not be delivered: destination refused]"
-    if outcome == "failed":
-        # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
-        logger.warning("Clarify send failed definitively; clearing registration")
-        clarify_mod.clear_session(session_key)
-        return "[clarify prompt could not be delivered]"
-    if outcome == "ambiguous":
-        logger.warning(
-            "Clarify prompt send timed out — treating as possibly-delivered "
-            "(no teardown; the registration stays armed for a late reply)")
-    return None
-
-
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
-    """Resolve a clarify prompt: send disposition, then the bounded wait.
-
-    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
-    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
-    if abort is not None:
-        return abort, False
-    timeout = clarify_mod.get_clarify_timeout()
-    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-    if response is None or response == "":
-        return f"[user did not respond within {int(timeout / 60)}m]", False
-    return response, True
-
-
 def _resolve_progress_thread_id(
     platform: Any, source_thread_id: Any, event_message_id: Any, *, reply_in_thread: bool = True
 ) -> Optional[str]:
@@ -2381,11 +2336,15 @@ def _resolve_gateway_model_context(
         context_length=context_length, context_source=context_source)
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Optional[str] = None) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override).
+
+    ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
+    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
+    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -2430,7 +2389,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                 from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry))
+                    explicit_api_key=resolve_entry_api_key(entry), target_model=entry.get("model") or None)
                 # Named custom entries resolve to the bare "custom" billing class; persist the configured
                 # identity so UI/billing rows match the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -5397,7 +5356,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     def _recover_pending() -> None:
         from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db()
+        recovered = recover_pending_to_db(
+            session_resolver=runner.session_store.resolve_session_id_for_key,
+        )
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 

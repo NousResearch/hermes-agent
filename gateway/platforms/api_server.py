@@ -2006,7 +2006,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             with suppress(Exception):
                 from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                return _resolve_runtime_agent_kwargs_for_provider(provider_name)
+                return _resolve_runtime_agent_kwargs_for_provider(provider_name, target_model=target_model or None)
             if required:
                 raise _ProviderAuthResolutionError(str(exc)) from exc
             logger.debug(

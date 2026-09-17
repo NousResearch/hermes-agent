@@ -508,12 +508,13 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             m["content"] = new_content if new_content else [_text_block("(tool result removed)")]
 
 
-def _concat_content(prev: Any, curr: Any) -> Any:
-    """Merge two message contents: str+str joined by newline, list+list concatenated, mixed shapes
-    promoted to block lists."""
-    if isinstance(prev, str) and isinstance(curr, str):
-        return prev + "\n" + curr
-    as_blocks = lambda c: [_text_block(c)] if isinstance(c, str) else c  # noqa: E731
+def _concat_content(prev: Any, curr: Any) -> List[Any]:
+    """Merge two message contents into one block list, each side's blocks kept intact (a string
+    becomes its own text block). Strings are never joined: the first turn's bytes must equal what a
+    later request replays as a standalone turn, or the prompt-cache prefix diverges at that block
+    (MoA appends per-turn guidance after ``user(task)`` on iteration 1 and replays ``user(task)``
+    alone on iteration 2 — #112358)."""
+    as_blocks = lambda c: [_text_block(c)] if isinstance(c, str) else list(c)  # noqa: E731
     return as_blocks(prev) + as_blocks(curr)
 
 

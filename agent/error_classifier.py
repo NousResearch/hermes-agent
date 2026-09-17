@@ -101,6 +101,9 @@ _BILLING_PATTERNS = (
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
+    # OpenRouter org-level monthly cap arrives as 403 "Budget limit exceeded (monthly limit)" (#107166):
+    # account exhaustion, not a credential problem.
+    "budget limit exceeded",
     *_FREE_TIER_REFUSAL_PATTERNS,
     # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
     # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing

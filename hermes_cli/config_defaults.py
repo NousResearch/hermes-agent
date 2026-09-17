@@ -714,6 +714,7 @@ DEFAULT_CONFIG = {
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
             "enabled": True,
+            "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
             # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
             # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
             # values in user config.yaml files are harmless leftovers and ignored.
@@ -1160,6 +1161,17 @@ DEFAULT_CONFIG = {
         # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
+    },
+    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
+    # conversation history and are re-sent on every later API call.
+    "vision": {
+        # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
+        # screenshots of tables the model calls "unreadable" at 256 KB.
+        "embed_target_bytes": 256 * 1024,
+        # How often vision_analyze may embed the SAME image (region crops included) per session.
+        # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
+        # an explicit number applies everywhere; 0 = unlimited.
+        "max_calls_per_image": None,
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
@@ -2085,15 +2097,15 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # Prune ENDED sessions inactive for retention_days (activity = latest message, else
-        # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
+        # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
+        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a
         # full retention window before removal.
         "auto_prune": True,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the latest message timestamp, falling back to creation
-        # time for empty sessions. Sessions that are still open, pinned, or mid-turn are never deleted — the
+        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
+        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
         # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
         # whose process died without closing them; those are *closed*, not deleted, and get a further full
         # retention window before removal. Default true since #54189: without it state.db grows without

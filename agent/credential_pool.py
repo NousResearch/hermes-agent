@@ -1439,6 +1439,17 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
                     return self._adopt(synced, **_MARK_OK)
+            from agent.anthropic_credentials import is_terminal_anthropic_refresh_error
+            if is_terminal_anthropic_refresh_error(exc):
+                # A dead grant is not "exhausted": benching it for a TTL replays the dead token every
+                # hour at DEBUG, so the lost login left no trace (#113023). Never touch the external
+                # CLI's credentials file here — only Hermes' own row goes DEAD.
+                logger.warning(
+                    "Anthropic OAuth refresh token for %s is terminally invalid (%s); the credential "
+                    "leaves rotation. Re-run 'hermes auth add anthropic' to sign in again.",
+                    entry.label or entry.id[:8], exc)
+                self._mark_dead_refresh_grant(entry, exc)
+                return None
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
             synced = self._sync_entry_from_auth_store(entry)
@@ -1457,6 +1468,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
+                self._mark_dead_refresh_grant(entry, exc)
                 return None
         elif self.provider == "nous":
             synced = self._sync_nous_entry_from_auth_store(entry)
@@ -1481,9 +1493,31 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry,
                     {auth_mod.NOUS_DEVICE_CODE_SOURCE, f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}"},
                 )
+                self._mark_dead_refresh_grant(entry, exc)
                 return None
         self._mark_exhausted(entry, None)
         return None
+
+    def _mark_dead_refresh_grant(self, entry: PooledCredential, exc: Exception) -> None:
+        """Mark a row whose refresh token was terminally rejected DEAD, if the quarantine kept it.
+
+        ``_quarantine_sources`` drops only singleton-seeded rows; an independent ``manual:*`` login
+        (``hermes auth add``) survives, and an unmarked survivor re-enters rotation and re-fires the
+        terminal WARNING on every later refresh attempt. DEAD leaves rotation until a write-side
+        re-auth sync clears it (never via TTL).
+        """
+        with self._lock:
+            current = next((item for item in self._entries if item.id == entry.id), None)
+            if current is None or current.last_status == STATUS_DEAD:
+                return
+            self._adopt(
+                current,
+                last_status=STATUS_DEAD,
+                last_status_at=time.time(),
+                last_error_code=None,
+                last_error_reason=str(getattr(exc, "code", None) or "invalid_grant"),
+                last_error_message=str(exc),
+            )
 
     def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
         """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""

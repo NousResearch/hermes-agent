@@ -23,6 +23,9 @@ export interface ThemeColors {
   tool: string
   /** Reasoning/thinking body text. Defaults to `muted`. */
   thinking: string
+  /** Transcript roles; unset skins retain label/accent and an unfilled user row. */
+  user: string
+  heading: string
 
   /** Code-block syntax highlight. Default to accent/text/border/muted. */
   syntaxString: string
@@ -61,6 +64,8 @@ export interface ThemeBrand {
 }
 
 export interface Theme {
+  /** Optional filled, padded Ink user-message surface. */
+  userMessageBg?: string
   color: ThemeColors
   brand: ThemeBrand
   bannerLogo: string
@@ -342,6 +347,8 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     // parents (tool marker → accent, reasoning body → muted).
     tool: seeds.accent,
     thinking: muted,
+    user: tones.label,
+    heading: seeds.accent,
 
     // Code-syntax tokens default to brand tokens (unchanged highlighting)
     // but are independently skinnable.
@@ -487,7 +494,9 @@ const DISPLAY_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'muted',
   'sessionLabel',
   'sessionBorder',
-  'shellDollar'
+  'shellDollar',
+  'heading',
+  'user'
 ]
 
 const SEMANTIC_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
@@ -785,6 +794,12 @@ export function normalizeThemeForAnsiLightTerminal(
     color[key] = normalizeAnsiForeground(color[key])
   }
 
+  // A dark authored user surface needs a bright foreground even when the
+  // surrounding terminal is light. Do not apply the light-canvas darkening.
+  if (!theme.userMessageBg || (backgroundLuminance(theme.userMessageBg) ?? 1) >= LUMA_LIGHT_THRESHOLD) {
+    color.user = normalizeAnsiForeground(color.user)
+  }
+
   for (const key of ANSI_MUTED_FOREGROUNDS) {
     color[key] = `ansi256(${ANSI_MUTED_BUCKET})`
   }
@@ -921,6 +936,8 @@ export function fromSkin(
     // just derived.muted, so recoloring muted carries the reasoning body with it.
     tool: c('ui_tool') ?? derived.tool,
     thinking: c('ui_thinking') ?? c('banner_dim') ?? derived.thinking,
+    user: c('ui_user') ?? c('ui_label') ?? derived.label,
+    heading: c('ui_heading') ?? derived.accent,
     diffAdded: c('diff_added') ?? derived.diffAdded,
     diffRemoved: c('diff_removed') ?? derived.diffRemoved,
     diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,
@@ -941,6 +958,19 @@ export function fromSkin(
     ? assembled
     : adaptColorsToBackground(assembled, isLight, derived, bg)
 
+  const userSurface = c('user_message_bg')
+  const userSurfaceIsLight = userSurface ? (backgroundLuminance(userSurface) ?? 0) >= LUMA_LIGHT_THRESHOLD : isLight
+
+  const user = userSurface
+    ? liftForContrast(
+        assembled.user,
+        userSurface,
+        userSurfaceIsLight ? LIGHT_DISPLAY_MIN_CONTRAST : DISPLAY_MIN_CONTRAST
+      )
+    : c('ui_user')
+      ? adapted.user
+      : adapted.label
+
   return normalizeThemeForAnsiLightTerminal(
     {
       // The element tokens theme-sdk introduced (ui_primary, ui_text,
@@ -950,7 +980,8 @@ export function fromSkin(
       // already honors them AND applies #20379's contrast/polarity machinery.
       // Emitting a hand-mapped color block here would bypass that adaptation
       // and regress theme quality.
-      color: adapted,
+      userMessageBg: userSurface,
+      color: { ...adapted, user },
 
       brand: {
         name: branding.agent_name ?? d.brand.name,

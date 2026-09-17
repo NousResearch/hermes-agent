@@ -922,7 +922,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+          <Text bold color={t.color.heading} key={key} wrap="wrap-trim">
             <MdInline t={t} text={heading} />
           </Text>
         )
@@ -934,7 +934,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+          <Text bold color={t.color.heading} key={key} wrap="wrap-trim">
             <MdInline t={t} text={line.trim()} />
           </Text>
         )

@@ -43,7 +43,10 @@ key in its row (element-specific keys fall back to the shared one when unset).
 | **Thinking / reasoning text** | `ui_thinking` | `banner_dim` |
 | Accent — headings, links, chevrons, `Σ` | `ui_accent` / `banner_accent` | — |
 | Heading / primary text | `banner_title` / `ui_primary` | — |
-| Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |
+| Body / label text | `ui_text` / `banner_text`, `ui_label` | — |
+| Ink user-message text / prompt glyph | `ui_user` | `ui_label` |
+| Ink user-message shaded, padded surface | `user_message_bg` | transparent, no padding |
+| Ink Markdown headings | `ui_heading` | `ui_accent` |
 | Muted / secondary, tree connectors | `banner_dim` | — |
 | Borders, rules, gutters | `ui_border` / `banner_border` | — |
 | Prompt symbol color | `prompt` | `banner_text` |
@@ -55,6 +58,10 @@ key in its row (element-specific keys fall back to the shared one when unset).
 
 Note the sharing: `ui_accent` colors tool markers **and** headings/links/chevrons,
 so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_tool`.
+In Ink, set `ui_heading` to separate Markdown headings from the accent and `ui_user`
+to independently color user messages. Setting `user_message_bg` adds a full-width
+surface with one cell of padding on each side (horizontal padding shrinks at narrow
+widths); leaving it unset preserves the existing transparent, unpadded layout.
 `branding` (`agent_name`, `prompt_symbol`, `welcome`, `goodbye`, `help_header`),
 `spinner`, and `tool_prefix` are optional flavor; full schema in
 `hermes_cli/skin_engine.py`.

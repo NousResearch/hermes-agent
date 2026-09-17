@@ -384,7 +384,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const userMessageFilled = Boolean(ui.theme.userMessageBg)
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}:${userMessageFilled}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -423,6 +424,7 @@ export function useMainApp(gw: GatewayClient) {
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
+        userMessageFilled,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
     [
@@ -437,6 +439,7 @@ export function useMainApp(gw: GatewayClient) {
       ui.detailsModeCommandOverride,
       ui.sections,
       ui.theme.brand.prompt,
+      userMessageFilled,
       virtualRows
     ]
   )

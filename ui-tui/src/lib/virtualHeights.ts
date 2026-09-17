@@ -1,7 +1,7 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
-import { transcriptBodyWidth } from './inputMetrics.js'
+import { transcriptBodyWidth, userMessageLayout } from './inputMetrics.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -77,6 +77,7 @@ export const estimatedMsgHeight = (
     thinkingExpanded = thinkingVisible,
     toolsVisible = details,
     userPrompt = '',
+    userMessageFilled = false,
     withSeparator = false
   }: {
     compact: boolean
@@ -86,6 +87,7 @@ export const estimatedMsgHeight = (
     thinkingVisible?: boolean
     toolsVisible?: boolean
     userPrompt?: string
+    userMessageFilled?: boolean
     withSeparator?: boolean
   }
 ) => {
@@ -105,9 +107,13 @@ export const estimatedMsgHeight = (
     return Math.max(2, msg.todos.length + 2)
   }
 
-  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
+  const userLayout = userMessageLayout(cols, userPrompt, userMessageFilled, TERMUX_TUI_MODE)
+
+  const bodyWidth =
+    msg.role === 'user' ? userLayout.bodyWidth : transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
+
   const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  let h = wrappedLines(text || ' ', bodyWidth) + (msg.role === 'user' ? userLayout.paddingY * 2 : 0)
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice

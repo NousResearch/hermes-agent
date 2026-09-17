@@ -120,23 +120,24 @@ class OnePasswordLoginBackend(LoginBackend):
 
         The same helper backs both ``has_otp`` (the agent's "codes are minted automatically"
         hint) and ``resolve_otp``, so a stored item is never announced as automatic unless a
-        code can actually be minted from it. The value is therefore accepted only when it
-        normalizes AND the shared minter can really run on it: the base32 alphabet check alone
-        would accept an alphabet-valid but undecodable secret (e.g. "A"), or a period too large
-        for the runtime division, and announce a capability the backend cannot deliver.
+        code can actually be minted from it. Every eligible field is examined: an unusable
+        candidate (blank, unnormalisable, or one the minter rejects) must not hide a later
+        usable seed — the base32 alphabet check alone would accept an alphabet-valid but
+        undecodable secret (e.g. "A"), or a period too large for the runtime division.
         """
-        raw = next((f.get("value") for f in item.get("fields", [])
-                    if f.get("type") == "OTP" or f.get("purpose") == "ONE_TIME_PASSWORD"), None)
-        if not isinstance(raw, str) or not raw.strip():
-            return None
-        try:
-            seed = normalize_otp_secret(raw)
-            if not seed:
-                return None
-            totp_now(seed)  # fail closed: no mintable seed, no automatic-2FA claim
-            return seed
-        except Exception:
-            return None
+        for field in item.get("fields", []):
+            if field.get("type") != "OTP" and field.get("purpose") != "ONE_TIME_PASSWORD":
+                continue
+            raw = field.get("value")
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                seed = normalize_otp_secret(raw)
+                if seed and totp_now(seed):  # fail closed: no mintable seed, no claim
+                    return seed
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _connect_meta(item, vault_id):

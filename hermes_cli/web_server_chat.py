@@ -313,7 +313,11 @@ def _resolve_chat_argv(
         _hermes_home_scope,
         _resolve_profile_dir,
     )
-    from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
+    from hermes_cli.web_server_sessions import (
+        _open_session_db_at_path,
+        _open_session_db_for_profile,
+        _session_latest_descendant,
+    )
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
 
@@ -389,8 +393,10 @@ def _resolve_chat_argv(
             # served_profile_child_env drops every bridged TERMINAL_* value. Restore
             # only operator exports not owned by the launch profile, then let the
             # selected profile's explicit config override them as before. Values
-            # loaded from the launch profile's .env are profile residue, not exports.
+            # loaded from the launch profile's .env or external secret sources are
+            # profile residue, not exports.
             from agent.secret_scope import load_env_file
+            from hermes_cli.env_loader import get_secret_source_owned_names
 
             with _hermes_home_scope(authority.home):
                 raw_launch_terminal = read_raw_config().get("terminal")
@@ -398,11 +404,15 @@ def _resolve_chat_argv(
             if isinstance(raw_launch_terminal, dict) and "home_mode" in raw_launch_terminal:
                 launch_owned.add("TERMINAL_HOME_MODE")
             launch_dotenv_owned = set(load_env_file(authority.home / ".env"))
+            launch_external_owned = set(get_secret_source_owned_names(authority.home))
             restorable_terminal = set(TERMINAL_CONFIG_ENV_MAP.values()) | {
                 "TERMINAL_HOME_MODE"
             }
-            for env_var in restorable_terminal - launch_owned - launch_dotenv_owned:
-                if env_var in launch_env:
+            launch_profile_owned = (
+                launch_owned | launch_dotenv_owned | launch_external_owned
+            )
+            for env_var in restorable_terminal - launch_profile_owned:
+                if env_var in launch_env and env_var not in env:
                     env[env_var] = launch_env[env_var]
             with _config_profile_scope(
                 requested,
@@ -454,8 +464,12 @@ def _resolve_chat_argv(
     env["HERMES_TUI_DASHBOARD"] = "1"
 
     if resume:
-        _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None, read_only=True)
+        if profile_dir is not None:
+            _resume_db = _open_session_db_at_path(
+                profile_dir / "state.db", read_only=True
+            )
+        else:
+            _resume_db = _open_session_db_for_profile(None, read_only=True)
         try:
             latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)
         finally:

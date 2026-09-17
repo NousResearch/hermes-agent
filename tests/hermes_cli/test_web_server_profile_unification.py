@@ -1106,6 +1106,93 @@ class TestProfileScopedChatPty:
             "UNRELATED_SETTING": "launch-global",
         }
 
+    def test_chat_argv_does_not_restore_launch_external_source_terminal_secret(
+        self, isolated_profiles, monkeypatch
+    ):
+        from hermes_cli import env_loader
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        marker = '{"LAUNCH_TOKEN":"external-source-secret"}'
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setenv("TERMINAL_DOCKER_ENV", marker)
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(launch_home.resolve()),
+            {
+                "TERMINAL_DOCKER_ENV": marker,
+                # External sources snapshot skipped-existing values too. This
+                # one remains a genuine operator export, not source-owned.
+                "TERMINAL_SSH_USER": "operator-user",
+            },
+        )
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME,
+            str(launch_home.resolve()),
+            frozenset({"TERMINAL_DOCKER_ENV"}),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env.get("TERMINAL_DOCKER_ENV") != marker
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_resume_uses_frozen_profile_store(
+        self, isolated_profiles, monkeypatch
+    ):
+        import os
+
+        from hermes_cli import profiles
+        from hermes_state import SessionDB
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        launch_profile = isolated_profiles["worker_beta"]
+        late_root = launch_home / "late-root"
+        late_profile = late_root / "profiles" / "worker_beta"
+        late_profile.mkdir(parents=True)
+        (late_profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        for home, child in (
+            (launch_profile, "child-from-launch-root"),
+            (late_profile, "child-from-poison-root"),
+        ):
+            db = SessionDB(db_path=home / "state.db")
+            db.create_session("resume-parent", source="webui")
+            db.create_session(child, source="webui", parent_session_id="resume-parent")
+            db.close()
+
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setattr(
+            profiles,
+            "_get_profiles_root",
+            lambda: Path(os.environ["HERMES_HOME"]) / "profiles",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        monkeypatch.setenv("HERMES_HOME", str(late_root))
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(
+            profile="worker_beta", resume="resume-parent"
+        )
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(launch_profile)
+        assert env["HERMES_TUI_RESUME"] == "child-from-launch-root"
+
     def test_chat_argv_keeps_profile_authority_over_dotenv_overrides(
         self, isolated_profiles, monkeypatch
     ):

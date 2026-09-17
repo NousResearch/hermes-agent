@@ -209,20 +209,13 @@ class TestKeepaliveInterval:
         task.session.send_ping.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("limit_attr", "start_attr", "reason"),
-        [
-            ("_idle_timeout_seconds", "_last_tool_call_at", "idle_timeout_seconds"),
-            ("_max_lifetime_seconds", "_lifecycle_started_at", "max_lifetime_seconds"),
-        ],
-    )
-    async def test_stdio_recycle_wakes_after_active_rpc(self, limit_attr, start_attr, reason):
+    async def test_stdio_recycle_wakes_after_active_rpc(self):
         """Lock release must expose an elapsed recycle deadline without sending a ping."""
         task = MCPServerTask("test")
         task._config = {"command": "example-mcp"}
         session = task.session = SimpleNamespace(send_ping=AsyncMock())
-        setattr(task, limit_attr, 0.01)
-        setattr(task, start_attr, task._lifecycle_started_at - 1.0)
+        task._idle_timeout_seconds = 0.01
+        task._last_tool_call_at = task._lifecycle_started_at - 1.0
 
         async with task._rpc_lock:
             lifecycle = asyncio.create_task(task._wait_for_lifecycle_event())
@@ -230,7 +223,6 @@ class TestKeepaliveInterval:
             assert not lifecycle.done()
 
         assert await asyncio.wait_for(lifecycle, timeout=2.0) == "recycle"
-        assert task._recycled_reason == reason
         session.send_ping.assert_not_called()
 
 

@@ -495,19 +495,13 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     lines = extracted_text.splitlines()
     total_lines = len(lines)
     end_line = offset + limit - 1
-    # Terminate the raw page with a newline, matching the
-    # native file_ops read path (sed/cut always newline-
-    # terminate their output). With line_numbers=True the
-    # gutter join reproduces that shape anyway; with
-    # line_numbers=False the raw page must be byte-identical
-    # to the same window served through file_ops.
-    page_text = "\n".join(lines[offset - 1:end_line])
+    # Keep a terminator for every selected line, including a final blank line.
+    window = lines[offset - 1:end_line]
+    page_text = "".join(line + "\n" for line in window)
     max_line_length = get_max_line_length()
-    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
-    if lines[offset - 1:end_line] and not page_text.endswith("\n"):
-        page_text += "\n"
+    truncated_lines = any(len(line) > max_line_length for line in window)
     result_dict = {
-        "content": (file_ops._add_line_numbers(page_text.rstrip("\n"), offset) if page_text and line_numbers else page_text),
+        "content": (file_ops._add_line_numbers(page_text, offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -576,7 +570,8 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None,
+                            deduplicate: bool = True) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -588,12 +583,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     OUTSIDE our lock (no nested locking): the cross-agent registry, and the
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
+
+    With ``deduplicate=False`` (programmatic callers) the dedup/stub/loop
+    machinery stays untouched — a sandbox read must neither arm a stub for a
+    later chat read nor count toward the consecutive-read warnings — while the
+    "this task has seen the current content" bookkeeping still records: a
+    script that read the file must be able to write it.
     """
     version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
     with _read_tracker_lock:
-        count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
+        if deduplicate:
+            count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
+        else:
+            count, dedup = 0, {}
         task_data["read_history"].add((path, offset, limit))
         try:
             if _on_host(resolved_str):
@@ -785,13 +789,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
-        count = (_record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
-                                        end_line=end_line, total_lines=total_lines,
-                                        version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
-                 if deduplicate else 0)
+        # Programmatic reads bypass the stub/loop machinery but still record
+        # the "seen current content" contract (baseline, timestamps, registry).
+        count = _record_successful_read(
+            task_data, task_id, path, resolved_str, offset, limit,
+            dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+            redacted=redacted or bool(result_dict.get("truncated_lines")),
+            end_line=end_line, total_lines=total_lines,
+            version_before=version_before, snapshot=getattr(result, "_snapshot", None),
+            deduplicate=deduplicate)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "

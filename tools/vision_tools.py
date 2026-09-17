@@ -461,13 +461,21 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[st
     """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
     (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
     results are known to carry media or the capability lookup (config override → catalog → probes → profile)
-    attests the model as vision-capable."""
+    attests the model as vision-capable — and is a hard stop when it resolves known-blind."""
     if _profile_rejects_tool_media(provider, model):
         return False
-    if _supports_media_in_tool_results(provider, model):
-        return True
     from agent.image_routing import _lookup_supports_vision
-    return _lookup_supports_vision(provider, model, cfg) is True
+    # The decisive signal is the MODEL. `_supports_media_in_tool_results` answers for the
+    # PROVIDER (`openrouter` is in `_TOOL_RESULT_MEDIA_PROVIDERS`), so asking it first sent
+    # the image to a text-only model and the turn died with `404 No endpoints found that
+    # support image input` (aggregators filter endpoints by image support and find none).
+    # Measured 2026-09-17 on nvidia/nemotron-3-{ultra-550b,super-120b}:free.
+    vision_capable = _lookup_supports_vision(provider, model, cfg)
+    if vision_capable is False:
+        return False
+    # `None` = model absent from every catalog: the provider channel decides, which keeps
+    # the documented escape hatch for custom/local endpoints.
+    return _supports_media_in_tool_results(provider, model) or vision_capable is True
 
 
 def _should_use_native_vision_fast_path() -> bool:

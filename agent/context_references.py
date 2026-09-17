@@ -94,7 +94,7 @@ _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",
     ".profile", ".bash_profile", ".zprofile", ".netrc", ".pgpass", ".npmrc", ".pypirc",
 ))
-_TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
+_TEXT_EXTENSIONS = (".py", ".md", ".txt", ".eml", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
 _FENCE_LANGUAGES = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
     ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
@@ -286,7 +286,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8", errors="replace" if path.suffix.lower() == ".eml" else "strict")
     if ref.line_start is not None:
         text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
@@ -348,7 +348,17 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
     if allowed_root is not None and not _is_under(resolved, allowed_root):
-        raise ValueError("path is outside the allowed workspace")
+        # Desktop/file.attach stages out-of-workspace payloads in the active
+        # profile's managed attachments directory so local and container
+        # backends can share one path. That one narrow cache root is trusted;
+        # arbitrary paths elsewhere outside the workspace remain blocked.
+        try:
+            from hermes_constants import get_hermes_home
+            managed_attachments = (get_hermes_home() / "attachments").resolve()
+        except Exception:
+            managed_attachments = None
+        if managed_attachments is None or not _is_under(resolved, managed_attachments):
+            raise ValueError("path is outside the allowed workspace")
     return resolved
 
 
@@ -400,7 +410,7 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
 
 def _is_binary_file(path: Path) -> bool:
     mime = mimetypes.guess_type(path.name)[0]
-    return bool(mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS)) or (
+    return bool(mime and not mime.startswith("text/") and not path.name.lower().endswith(_TEXT_EXTENSIONS)) or (
         b"\x00" in path.read_bytes()[:4096]
     )
 

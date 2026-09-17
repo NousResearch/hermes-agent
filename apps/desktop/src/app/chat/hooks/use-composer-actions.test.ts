@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { createElement, type PropsWithChildren, StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
@@ -24,6 +25,15 @@ const osDrop = (path: string): DroppedFile => ({ file: new File(['x'], path.spli
 const inAppRef = (path: string, extra: Partial<DroppedFile> = {}): DroppedFile => ({ path, ...extra })
 
 describe('partitionDroppedFiles', () => {
+  it('routes Apple Mail message URI drops through the local attachment pipeline', () => {
+    const mail = { mailUri: 'message:%3Cexample%40example.com%3E', path: '' } as DroppedFile
+
+    const { inAppRefs, osDrops } = partitionDroppedFiles([mail])
+
+    expect(osDrops).toEqual([mail])
+    expect(inAppRefs).toEqual([])
+  })
+
   it('routes File-bearing OS drops to osDrops and path-only in-app drags to inAppRefs', () => {
     const finderPdf = osDrop('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
     const projectFile = inAppRef('src/index.ts')
@@ -130,6 +140,19 @@ describe('extractDroppedFiles', () => {
       }
     })
   }
+
+  it('extracts an Apple Mail message URI from a text/uri-list drop', () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+
+    const transfer = {
+      files: { item: () => null, length: 0 },
+      getData: (mime: string) => (mime === 'text/uri-list' ? mailUri : ''),
+      items: { length: 0 },
+      types: ['text/plain', 'text/uri-list']
+    } as unknown as DataTransfer
+
+    expect(extractDroppedFiles(transfer)).toEqual([{ mailUri, path: '' }])
+  })
 
   it('emits a dropped directory as a path-only entry with isDirectory (no File to upload)', () => {
     const transfer = stubTransfer([{ path: '/Users/jeff/projects/hermes', isDirectory: true }]) as DataTransfer & {
@@ -383,6 +406,337 @@ describe('useComposerActions native image drops', () => {
         path: durablePath
       })
     )
+  })
+})
+
+describe('useComposerActions Apple Mail drops', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('exports the selected Apple Mail message and attaches the resulting eml path', async () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+    const exportedPath = '/tmp/Hermes/apple-mail/message.eml'
+    const exportAppleMailMessage = vi.fn(async () => exportedPath)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/Users/test/project',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    let attached = false
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ mailUri, path: '' } as DroppedFile])
+    })
+
+    expect(attached).toBe(true)
+    expect(exportAppleMailMessage).toHaveBeenCalledWith(mailUri)
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'file',
+        label: 'message.eml',
+        managedTemporaryPath: exportedPath,
+        path: exportedPath
+      })
+    )
+  })
+
+  it('rejects a late new-draft export when another stored session becomes active', async () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+    const exportedPath = '/tmp/Hermes/apple-mail/new-draft.eml'
+    let resolveExport!: (path: string) => void
+    const exportAppleMailMessage = vi.fn(() => new Promise<string>(resolve => (resolveExport = resolve)))
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    const scope = {
+      add,
+      remove: vi.fn(() => null),
+      target: 'test-composer',
+      update: vi.fn(() => true),
+      updateIfCurrent: vi.fn(() => true)
+    }
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage, removeManagedAppleMailExport }
+    })
+
+    const { rerender, result } = renderHook(
+      ({ attachmentTargetKey }) =>
+        useComposerActions({
+          activeSessionId: null,
+          attachmentTargetKey,
+          currentCwd: '/Users/test/project',
+          requestGateway: vi.fn(),
+          scope
+        }),
+      { initialProps: { attachmentTargetKey: null as string | null } }
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachDroppedItems([{ mailUri, path: '' } as DroppedFile])
+    })
+    rerender({ attachmentTargetKey: 'stored-session-b' })
+
+    await act(async () => {
+      resolveExport(exportedPath)
+      await pending
+    })
+
+    expect(add).not.toHaveBeenCalled()
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(exportedPath)
+  })
+
+  it('keeps one immutable target identity for every message in a multi-mail drop', async () => {
+    const firstUri = 'message:%3Cfirst%40example.com%3E'
+    const secondUri = 'message:%3Csecond%40example.com%3E'
+    const firstPath = '/tmp/Hermes/apple-mail/first.eml'
+    const secondPath = '/tmp/Hermes/apple-mail/second.eml'
+    let resolveFirst!: (path: string) => void
+
+    const exportAppleMailMessage = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<string>(resolve => (resolveFirst = resolve)))
+      .mockResolvedValueOnce(secondPath)
+
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    const scope = {
+      add,
+      remove: vi.fn(() => null),
+      target: 'test-composer',
+      update: vi.fn(() => true),
+      updateIfCurrent: vi.fn(() => true)
+    }
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage, removeManagedAppleMailExport }
+    })
+
+    const { rerender, result } = renderHook(
+      ({ attachmentTargetKey }) =>
+        useComposerActions({
+          activeSessionId: 'runtime-a',
+          attachmentTargetKey,
+          currentCwd: '/Users/test/project',
+          requestGateway: vi.fn(),
+          scope
+        }),
+      { initialProps: { attachmentTargetKey: 'stored-session-a' } }
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachDroppedItems([
+        { mailUri: firstUri, path: '' } as DroppedFile,
+        { mailUri: secondUri, path: '' } as DroppedFile
+      ])
+    })
+    rerender({ attachmentTargetKey: 'stored-session-b' })
+
+    await act(async () => {
+      resolveFirst(firstPath)
+      await pending
+    })
+
+    expect(add).not.toHaveBeenCalled()
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(firstPath)
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(secondPath)
+  })
+
+  it('keeps the composer mounted through React Strict Mode effect replay', async () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+    const exportedPath = '/tmp/Hermes/apple-mail/strict.eml'
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    const wrapper = ({ children }: PropsWithChildren) => createElement(StrictMode, null, children)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage: vi.fn(async () => exportedPath) }
+    })
+
+    const { result } = renderHook(
+      () =>
+        useComposerActions({
+          activeSessionId: null,
+          currentCwd: '/Users/test/project',
+          requestGateway: vi.fn(),
+          scope: {
+            add,
+            remove: vi.fn(() => null),
+            target: 'test-composer',
+            update: vi.fn(() => true),
+            updateIfCurrent: vi.fn(() => true)
+          }
+        }),
+      { wrapper }
+    )
+
+    await act(async () => {
+      await result.current.attachDroppedItems([{ mailUri, path: '' } as DroppedFile])
+    })
+
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ managedTemporaryPath: exportedPath }))
+  })
+
+  it('deletes a late export instead of attaching it after the target session changes', async () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+    const exportedPath = '/tmp/Hermes/apple-mail/late.eml'
+    let resolveExport!: (path: string) => void
+    const exportAppleMailMessage = vi.fn(() => new Promise<string>(resolve => (resolveExport = resolve)))
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    const scope = {
+      add,
+      remove: vi.fn(() => null),
+      target: 'test-composer',
+      update: vi.fn(() => true),
+      updateIfCurrent: vi.fn(() => true)
+    }
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage, removeManagedAppleMailExport }
+    })
+
+    const { rerender, result } = renderHook(
+      ({ activeSessionId }) =>
+        useComposerActions({
+          activeSessionId,
+          currentCwd: '/Users/test/project',
+          requestGateway: vi.fn(),
+          scope
+        }),
+      { initialProps: { activeSessionId: 'session-a' } }
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachDroppedItems([{ mailUri, path: '' } as DroppedFile])
+    })
+    rerender({ activeSessionId: 'session-b' })
+
+    await act(async () => {
+      resolveExport(exportedPath)
+      await pending
+    })
+
+    expect(add).not.toHaveBeenCalled()
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(exportedPath)
+  })
+
+  it('keeps a late export bound to the same stored session across runtime recovery', async () => {
+    const mailUri = 'message:%3Cexample%40example.com%3E'
+    const exportedPath = '/tmp/Hermes/apple-mail/recovered.eml'
+    let resolveExport!: (path: string) => void
+    const exportAppleMailMessage = vi.fn(() => new Promise<string>(resolve => (resolveExport = resolve)))
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    const scope = {
+      add,
+      remove: vi.fn(() => null),
+      target: 'test-composer',
+      update: vi.fn(() => true),
+      updateIfCurrent: vi.fn(() => true)
+    }
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { exportAppleMailMessage, removeManagedAppleMailExport: vi.fn(async () => true) }
+    })
+
+    const { rerender, result } = renderHook(
+      ({ activeSessionId }) =>
+        useComposerActions({
+          activeSessionId,
+          attachmentTargetKey: 'stored-session',
+          currentCwd: '/Users/test/project',
+          requestGateway: vi.fn(),
+          scope
+        }),
+      { initialProps: { activeSessionId: 'runtime-a' } }
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachDroppedItems([{ mailUri, path: '' } as DroppedFile])
+    })
+    rerender({ activeSessionId: 'runtime-b' })
+
+    await act(async () => {
+      resolveExport(exportedPath)
+      await pending
+    })
+
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ managedTemporaryPath: exportedPath, path: exportedPath }))
+  })
+
+  it('deletes the managed eml source when the user removes its attachment chip', async () => {
+    const exportedPath = '/tmp/Hermes/apple-mail/message.eml'
+
+    const removed: ComposerAttachment = {
+      id: `file:${exportedPath}`,
+      kind: 'file',
+      label: 'message.eml',
+      managedTemporaryPath: exportedPath,
+      path: exportedPath
+    }
+
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { removeManagedAppleMailExport }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/Users/test/project',
+        requestGateway: vi.fn(),
+        scope: {
+          add: vi.fn(),
+          remove: vi.fn(() => removed),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    await act(async () => {
+      await result.current.removeAttachment(removed.id)
+    })
+
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(exportedPath)
   })
 })
 

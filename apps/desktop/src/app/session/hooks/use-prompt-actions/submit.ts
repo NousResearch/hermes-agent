@@ -89,6 +89,23 @@ interface SubmitPromptDeps {
   }
 }
 
+export async function cleanupSubmittedManagedAttachments(attachments: readonly ComposerAttachment[]): Promise<void> {
+  const remove = window.hermesDesktop?.removeManagedAppleMailExport
+
+  if (!remove) {
+    return
+  }
+
+  const copiedPaths = new Set(
+    attachments
+      .filter(attachment => attachment.managedTemporaryUploaded === true)
+      .map(attachment => attachment.managedTemporaryPath)
+      .filter((path): path is string => Boolean(path))
+  )
+
+  await Promise.allSettled([...copiedPaths].map(path => remove(path)))
+}
+
 // Stable identity — a fresh default object per render would churn the
 // useCallback below on every render.
 const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
@@ -834,6 +851,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (submitErr !== null) {
           throw submitErr
         }
+
+        await cleanupSubmittedManagedAttachments(syncedAttachments)
 
         if (usingComposerAttachments) {
           // A submit owns only the occurrences that actually reached the

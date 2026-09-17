@@ -18,6 +18,10 @@ export interface ComposerAttachment {
   previewUrl?: string
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
+  /** Local source that Desktop owns and deletes after staging/removal. */
+  managedTemporaryPath?: string
+  /** True only when file.attach copied the managed source into gateway storage. */
+  managedTemporaryUploaded?: boolean
   path?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session

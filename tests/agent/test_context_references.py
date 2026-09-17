@@ -182,6 +182,72 @@ def test_multiple_individually_safe_files_still_obey_aggregate_limit(tmp_path: P
     assert "context injection refused" in "\n".join(result.warnings)
 
 
+@pytest.mark.asyncio
+async def test_sync_wrapper_in_running_loop_preserves_profile_home_override(tmp_path: Path, monkeypatch):
+    """The sync wrapper offloads to a thread when called inside an event loop;
+    that thread must inherit the active profile ContextVar."""
+    from agent.context_references import preprocess_context_references
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    process_home = tmp_path / "process-home"
+    active_home = tmp_path / "active-profile"
+    for home, text in ((process_home, "process secret"), (active_home, "active attachment")):
+        attachments = home / "attachments"
+        attachments.mkdir(parents=True)
+        (attachments / "mail.eml").write_text(text, encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    token = set_hermes_home_override(active_home)
+    try:
+        active = preprocess_context_references(
+            f"Read @file:{active_home / 'attachments' / 'mail.eml'}",
+            cwd=workspace,
+            allowed_root=workspace,
+            context_length=100_000,
+        )
+        process = preprocess_context_references(
+            f"Read @file:{process_home / 'attachments' / 'mail.eml'}",
+            cwd=workspace,
+            allowed_root=workspace,
+            context_length=100_000,
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert "active attachment" in active.message
+    assert "process secret" not in process.message
+    assert "outside the allowed workspace" in process.message
+
+
+def test_managed_text_attachment_outside_workspace_is_allowed(tmp_path: Path, monkeypatch):
+    """Desktop-staged attachments live under the profile home, not the project
+    workspace. They remain a narrow trusted root so @file content can expand."""
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "state" / ".hermes"
+    attachments = hermes_home / "attachments"
+    attachments.mkdir(parents=True)
+    payload = attachments / "MESSAGE.EML"
+    payload.write_text("Subject: Test\n\nHello from Mail", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must stay blocked", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    attached = preprocess_context_references(
+        f"Read @file:{payload}", cwd=workspace, allowed_root=workspace, context_length=100_000
+    )
+    blocked = preprocess_context_references(
+        f"Read @file:{outside}", cwd=workspace, allowed_root=workspace, context_length=100_000
+    )
+
+    assert "Hello from Mail" in attached.message
+    assert "outside the allowed workspace" in blocked.message
+
+
 def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path: Path, monkeypatch):
     """Docker backend: a staged binary attachment's host path is rendered as the
     bind-mounted in-container path so the agent's tools can read it.

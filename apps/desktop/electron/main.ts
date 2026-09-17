@@ -28,6 +28,7 @@ import {
   shell,
   systemPreferences
 } from 'electron'
+import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
@@ -40,6 +41,13 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import {
+  AppleMailDropCapabilityRegistry,
+  cleanupAllAppleMailExports,
+  exportSelectedAppleMailMessage,
+  isTrustedDesktopRendererUrl,
+  removeAppleMailExport
+} from './apple-mail-drop'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -13614,7 +13622,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
   )
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (isTrustedDesktopRendererUrl(url, DEV_SERVER, pathToFileURL(resolveRendererIndex()).toString())) {
       return
     }
 
@@ -17334,6 +17342,65 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
   return writeComposerPaste(app.getPath('userData'), text)
 })
 
+const appleMailDropCapabilities = new AppleMailDropCapabilityRegistry()
+const appleMailDropCapabilityOwners = new Set<number>()
+
+function isTrustedDesktopRenderer(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame
+
+  if (!frame || frame !== event.sender.mainFrame) {
+    return false
+  }
+
+  return isTrustedDesktopRendererUrl(frame.url, DEV_SERVER, pathToFileURL(resolveRendererIndex()).toString())
+}
+
+ipcMain.handle('hermes:apple-mail-drop:register', (event, payload) => {
+  const messageUri = typeof payload?.messageUri === 'string' ? payload.messageUri : ''
+  const token = typeof payload?.token === 'string' ? payload.token : ''
+  const senderId = event.sender.id
+
+  const accepted = isTrustedDesktopRenderer(event) && appleMailDropCapabilities.register(senderId, messageUri, token)
+
+  if (accepted && !appleMailDropCapabilityOwners.has(senderId)) {
+    appleMailDropCapabilityOwners.add(senderId)
+    event.sender.once('destroyed', () => {
+      appleMailDropCapabilities.clearSender(senderId)
+      appleMailDropCapabilityOwners.delete(senderId)
+    })
+  }
+
+  return accepted
+})
+
+ipcMain.handle('hermes:exportAppleMailMessage', async (event, payload) => {
+  const messageUri = typeof payload?.messageUri === 'string' ? payload.messageUri : ''
+  const token = typeof payload?.token === 'string' ? payload.token : ''
+
+  if (!messageUri) {
+    throw new Error('exportAppleMailMessage: missing message URI')
+  }
+
+  const trusted = isTrustedDesktopRenderer(event)
+  const consumed = trusted && appleMailDropCapabilities.consume(event.sender.id, messageUri, token)
+
+  if (!consumed) {
+    throw new Error('Apple Mail message export requires a fresh trusted drop')
+  }
+
+  return exportSelectedAppleMailMessage({ messageUri, userDataDir: app.getPath('userData') })
+})
+
+ipcMain.handle('hermes:removeManagedAppleMailExport', async (event, payload) => {
+  const filePath = typeof payload?.filePath === 'string' ? payload.filePath : ''
+
+  if (!filePath || !isTrustedDesktopRenderer(event)) {
+    throw new Error('removeManagedAppleMailExport: missing path')
+  }
+
+  return removeAppleMailExport(app.getPath('userData'), filePath)
+})
+
 ipcMain.handle('hermes:saveClipboardImage', async () => {
   const image = clipboard.readImage()
 
@@ -18354,6 +18421,12 @@ function registerDeepLinkProtocol() {
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 const isPrimaryInstance = _gotSingleInstanceLock
 
+const appleMailStartupCleanup = app.whenReady().then(async () => {
+  await cleanupAllAppleMailExports(app.getPath('userData')).catch(err =>
+    rememberLog(`[apple-mail-drop] abandoned export cleanup failed: ${err instanceof Error ? err.message : String(err)}`)
+  )
+})
+
 if (!isPrimaryInstance) {
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
   // plain quit (event.preventDefault + async backend shutdown), and in that
@@ -18371,13 +18444,15 @@ if (!isPrimaryInstance) {
       handleDeepLink(url)
     }
 
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
-      createWindow,
-      focusWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
-    })
+    void appleMailStartupCleanup.then(() =>
+      ensureMainWindow(mainWindow, {
+        isReady: app.isReady(),
+        createWindow,
+        focusWindow,
+        // deep-link delivery focuses a live window after its renderer is ready.
+        focusExisting: !url
+      })
+    )
   })
 }
 
@@ -18388,10 +18463,11 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
+  await appleMailStartupCleanup
 
   const systemCa = installWindowsSystemCaTrust(tls)
 

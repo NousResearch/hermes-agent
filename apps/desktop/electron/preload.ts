@@ -14,6 +14,65 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
+const APPLE_MAIL_DROP_TOKEN_TTL_MS = 15_000
+
+const pendingAppleMailDropTokens = new Map<
+  string,
+  { expiresAt: number; registration: Promise<string | null> }
+>()
+
+// The private isolated-world listener is the drop-provenance boundary. Page
+// JavaScript cannot mint a capability: synthetic events have isTrusted=false,
+// and ipcRenderer itself is never exposed through contextBridge.
+window.addEventListener(
+  'drop',
+  event => {
+    if (!event.isTrusted || !event.dataTransfer) {
+      return
+    }
+
+    const uriList = event.dataTransfer.getData('text/uri-list')
+
+    for (const line of uriList.split(/\r?\n/)) {
+      const messageUri = line.trim()
+
+      if (!/^message:/i.test(messageUri)) {
+        continue
+      }
+
+      const token = globalThis.crypto?.randomUUID?.()
+
+      if (!token) {
+        continue
+      }
+
+      const registration = ipcRenderer
+        .invoke('hermes:apple-mail-drop:register', { messageUri, token })
+        .then(accepted => (accepted === true ? token : null))
+        .catch(() => null)
+
+      // One native drop owns one capability per message URI. Replacing an
+      // unconsumed predecessor prevents an expired token from blocking a later
+      // legitimate re-drop of the same Mail message.
+      pendingAppleMailDropTokens.set(messageUri, {
+        expiresAt: Date.now() + APPLE_MAIL_DROP_TOKEN_TTL_MS,
+        registration
+      })
+    }
+  },
+  true
+)
+
+const takeAppleMailDropToken = async (messageUri: string): Promise<string | null> => {
+  const pending = pendingAppleMailDropTokens.get(messageUri)
+  pendingAppleMailDropTokens.delete(messageUri)
+
+  if (!pending || pending.expiresAt < Date.now()) {
+    return null
+  }
+
+  return await pending.registration
+}
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
@@ -335,6 +394,17 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   capturePreview: payload => ipcRenderer.invoke('hermes:capturePreview', payload),
   savePastedText: text => ipcRenderer.invoke('hermes:savePastedText', { text }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
+  exportAppleMailMessage: async (messageUri: string) => {
+    const token = await takeAppleMailDropToken(messageUri)
+
+    if (!token) {
+      return Promise.reject(new Error('Apple Mail message export requires a fresh trusted drop.'))
+    }
+
+    return ipcRenderer.invoke('hermes:exportAppleMailMessage', { messageUri, token })
+  },
+  removeManagedAppleMailExport: (filePath: string) =>
+    ipcRenderer.invoke('hermes:removeManagedAppleMailExport', { filePath }),
   getPathForFile: file => {
     try {
       return webUtils.getPathForFile(file) || ''

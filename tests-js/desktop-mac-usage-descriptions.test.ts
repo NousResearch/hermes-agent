@@ -101,6 +101,11 @@ function extendInfo(): Record<string, string> {
 // while still catching silent drops of the key itself.
 const EXPECTED_USAGE_DESCRIPTIONS: UsageDescriptionRow[] = [
   {
+    key: 'NSAppleEventsUsageDescription',
+    requiredSubstring: 'Apple Mail',
+    reason: 'Apple Events access exports a message only after the user explicitly drops it into Hermes.'
+  },
+  {
     key: 'NSMicrophoneUsageDescription',
     requiredSubstring: 'microphone',
     reason: 'Microphone capture is required for voice input mode.'

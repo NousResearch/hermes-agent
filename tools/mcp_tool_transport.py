@@ -112,7 +112,87 @@ class MCPServerTransportMixin:
             kwargs["message_handler"] = self._make_message_handler()
         if _core._MCP_LOGGING_CALLBACK_SUPPORTED:
             kwargs["logging_callback"] = self._make_logging_callback()
+        from tools.mcp_skills_protocol import SKILLS_EXTENSION, skills_opted_in
+        if skills_opted_in(getattr(self, "_config", {})):
+            kwargs["extensions"] = {SKILLS_EXTENSION: {}}
         return kwargs
+
+    def _revoke_skills_readiness(self) -> None:
+        """Remove every live Skills claim before a connection generation changes."""
+        from tools.mcp_skills_registry import drop_live_catalog
+
+        # Revoke the generation identity first so concurrent source capture
+        # fails closed while the remaining diagnostic/catalog fields clear.
+        self._skills_ready_epoch = None
+        self._skills_ready_session = None
+        catalog_home = getattr(self, "_skills_home", "")
+        if catalog_home:
+            drop_live_catalog(catalog_home, getattr(self, "name", ""))
+        self._skills_catalog = ()
+        self._skills_diagnostic = None
+        self._skills_config_fingerprint = ""
+        self._skills_directory_read = False
+        self._skills_home = ""
+        self._skills_local_opt_in = False
+        self._skills_advertised = False
+        self._skills_list_completed = False
+        self._skills_connected = False
+
+    async def _discover_skills(self) -> None:
+        """Publish validated metadata for opted-in advertising servers.
+
+        Failure is server-scoped: ordinary MCP tools remain available and no
+        resource body is read during startup.
+        """
+        from hermes_constants import get_hermes_home
+        from tools.mcp_skills_protocol import (
+            advertised_skills_settings, directory_read_advertised, list_skills, skills_opted_in,
+        )
+        from tools.mcp_skills_registry import publish_live_catalog, server_config_fingerprint
+        from tools.mcp_skills_auth import source_authorization_context
+        config = getattr(self, "_config", {})
+        name = getattr(self, "name", "")
+        current_home = str(get_hermes_home())
+        generation_session = self.session
+        generation_epoch = self._skills_epoch
+        self._revoke_skills_readiness()
+        if not skills_opted_in(config):
+            return
+        self._skills_local_opt_in = True
+        if advertised_skills_settings(self.initialize_result) is None:
+            self._skills_diagnostic = "server did not advertise io.modelcontextprotocol/skills"
+            return
+        self._skills_advertised = True
+        try:
+            auth_context = source_authorization_context(name, self, current_home)
+            async with getattr(self, "_rpc_lock"):
+                entries, _metadata = await list_skills(generation_session, name)
+            if self.session is not generation_session or self._skills_epoch != generation_epoch:
+                raise RuntimeError("MCP Skills connection generation changed during skills/list")
+            if source_authorization_context(name, self, current_home) != auth_context:
+                raise RuntimeError("MCP skill authorization context changed during skills/list; result discarded")
+            fingerprint = server_config_fingerprint(config)
+            directory_read = directory_read_advertised(self.initialize_result)
+            publish_live_catalog(current_home, name, fingerprint, entries, auth_context=auth_context)
+            self._skills_catalog = tuple(entries)
+            self._skills_config_fingerprint = fingerprint
+            self._skills_directory_read = directory_read
+            self._skills_home = current_home
+            # A successful empty list is still positive source-capability
+            # evidence for exact URI point lookup.
+            self._skills_list_completed = True
+            self._skills_connected = True
+            self._skills_ready_session = generation_session
+            self._skills_ready_epoch = generation_epoch
+        except Exception as exc:
+            generation_unchanged = (
+                self.session is generation_session and self._skills_epoch == generation_epoch)
+            self._revoke_skills_readiness()
+            if generation_unchanged:
+                self._skills_local_opt_in = True
+                self._skills_advertised = True
+            self._skills_diagnostic = str(exc)
+            logger.warning("MCP server '%s': remote skills catalog excluded: %s", name, exc)
 
     async def _negotiate_session(self, session, connect_timeout: float):
         """Negotiate the protocol era (``initialize`` vs ``server/discover``; both expose
@@ -151,11 +231,18 @@ class MCPServerTransportMixin:
         """Handshake, discover, publish readiness, then serve until a lifecycle event. Clears stale
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
+        # The previous transport is already gone. Revoke its Skills catalog and
+        # positive capability identity before either awaiting the replacement
+        # handshake or publishing the replacement session object.
+        self._revoke_skills_readiness()
+        self.initialize_result = None
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
+        self._skills_epoch += 1
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()
         await self._discover_tools()
+        await self._discover_skills()
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)
@@ -372,11 +459,13 @@ class MCPServerTransportMixin:
     def _build_oauth_auth(self, url: str, config: dict):
         """OAuth 2.1 PKCE via the central MCPOAuthManager (one provider reused across reconnects and
         CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed."""
+        self._oauth_provider = None
         if self._auth_type != "oauth":
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            self._oauth_provider = get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            return self._oauth_provider
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise

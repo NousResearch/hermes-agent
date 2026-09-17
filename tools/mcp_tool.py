@@ -311,12 +311,15 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     __slots__ = (
         "name", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config", "_sampling", "_elicitation", "_registered_tool_names",
-        "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
+        "_auth_type", "_oauth_provider", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback")
+        "_ever_connected", "_sse_fallback", "_skills_catalog", "_skills_diagnostic", "_skills_directory_read",
+        "_skills_config_fingerprint", "_skills_home", "_skills_local_opt_in",
+        "_skills_advertised", "_skills_list_completed", "_skills_connected", "_skills_epoch",
+        "_skills_ready_session", "_skills_ready_epoch")
 
     def __init__(self, name: str):
         self.name = name
@@ -371,6 +374,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # (#81995).
         self._stdio_child_pids: Set[int] = set()
         self._auth_type: str = ""
+        self._oauth_provider: Any = None
         self._refresh_lock = asyncio.Lock()
         # A stdio session is one JSON-RPC stream (a concurrent list_tools can wedge a tool
         # call): serialize client-initiated RPCs per server (HTTP too, for ordering).
@@ -391,6 +395,22 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._list_cache_meta: dict = {}
         # Latched when ``ping`` returns -32601; keepalives then use list_tools. Reset per connect.
         self._ping_unsupported: bool = False
+        # SEP-2640 metadata only. Resource bodies remain lazy and live in the
+        # profile-local verified cache, never on the connection object.
+        self._skills_catalog: tuple = ()
+        self._skills_diagnostic: Optional[str] = None
+        self._skills_directory_read: bool = False
+        self._skills_config_fingerprint: str = ""
+        self._skills_home: Optional[str] = None
+        self._skills_local_opt_in: bool = False
+        self._skills_advertised: bool = False
+        self._skills_list_completed: bool = False
+        self._skills_connected: bool = False
+        self._skills_epoch: int = 0
+        # Positive Skills capability belongs to one negotiated connection
+        # generation, never to this long-lived server task generally.
+        self._skills_ready_session: Optional[Any] = None
+        self._skills_ready_epoch: Optional[int] = None
 
     # Content types a real Streamable-HTTP endpoint may return on the initial POST/GET;
     # anything else on a 2xx means the URL is not an MCP endpoint.

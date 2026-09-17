@@ -90,6 +90,42 @@ A practical test prompt:
 Tell me which MCP-backed tools are available right now.
 ```
 
+### Opt in to remote skills from a server
+
+Servers that advertise the SEP-2640 Skills extension can contribute remote
+skill descriptions to the initial Hermes skill index. This is disabled per
+server unless explicitly enabled:
+
+```yaml
+mcp_servers:
+  internal_docs:
+    url: "https://mcp.example.com/mcp"
+    skills:
+      enabled: true
+```
+
+Start a new session after enabling it. `skills_list` returns remote rows with a
+qualified identifier such as
+`mcp:internal_docs:skill://catalog/research/SKILL.md`; pass that complete value
+to `skill_view`. Discovery fetches metadata only. File content is fetched and
+SHA-256/size verified lazily when viewed, and remote skill permissions or setup
+instructions never widen Hermes capabilities.
+
+For an editable file copy, request one manifested file with
+`skill_view(..., file_path="templates/example.yaml", materialize=true)`. Hermes
+requires the parent remote `SKILL.md` to be loaded first, uses a managed
+origin/version-bound tree below `.hermes/mcp-skills/materialized/` in the local
+agent workspace, writes provenance beside the copy, and never overwrites later
+user edits. A `destination` is relative to that managed tree; it cannot target a
+local skill discovery directory. Materialization fails explicitly on remote
+terminal backends whose filesystem cannot see the controller-local workspace.
+
+Generic MCP `read_resource` remains an ordinary data read and does not activate
+a skill, even when it reads `SKILL.md`. Use the qualified native `skill_view`
+path to activate remote instructions. Content-bound execution consent and active
+origin state follow a real compression continuation but not a new session or a
+different profile.
+
 ## Step 4: start filtering immediately
 
 Do not wait until later if the server exposes a lot of tools.

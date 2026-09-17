@@ -719,6 +719,8 @@ class GeminiReceiptStore:
         worker_status: str,
         response_text: str | None,
         error_code: str | None,
+        response_sha256: str | None = None,
+        response_bytes: int | None = None,
         commit_fence: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         """Persist the actual terminal Sol identity without replacing Gemini audit data."""
@@ -726,9 +728,23 @@ class GeminiReceiptStore:
             raise ValueError(f"fallback worker_status is not terminal: {worker_status}")
         if worker_route != "sol" or not provider or not model:
             raise ValueError("fallback route, provider, and model must identify Sol")
-        response_excerpt, response_sha256, response_bytes = _bounded_text_evidence(
+        response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
             response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
         )
+        if (response_sha256 is None) != (response_bytes is None):
+            raise ValueError("response_sha256 and response_bytes must be provided together")
+        if response_sha256 is None:
+            response_sha256 = computed_response_sha256
+            response_bytes = computed_response_bytes
+        else:
+            if len(response_sha256) != 64 or any(
+                char not in "0123456789abcdef" for char in response_sha256
+            ):
+                raise ValueError("response_sha256 must be lowercase SHA-256 hex")
+            if type(response_bytes) is not int or response_bytes < 0:
+                raise ValueError("response_bytes must be a non-negative integer")
+            if response_bytes < len((response_excerpt or "").encode("utf-8")):
+                raise ValueError("response_bytes cannot be smaller than the persisted excerpt")
         with self._transaction(commit_fence) as conn:
             cursor = conn.execute(
                 """UPDATE gemini_attempts

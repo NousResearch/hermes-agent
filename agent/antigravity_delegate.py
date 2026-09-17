@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 import threading
 import time
@@ -10,6 +11,11 @@ from typing import Any, Mapping
 
 from agent.antigravity_worker import AntigravityResult, AntigravityWorker
 from agent.gemini_route_receipts import GeminiReceiptStore
+from agent.route_receipts import (
+    RouteReceiptChild,
+    RouteReceiptStore,
+    route_usage_from_mapping,
+)
 from agent.interrupt_compat import request_hard_interrupt
 
 
@@ -27,6 +33,20 @@ _ERROR_STATUS = {
 
 class _TerminalCommitCancelled(RuntimeError):
     """Cancellation won before a terminal receipt transaction committed."""
+
+
+def _text_evidence_metadata(
+    text: str | None,
+    sha256: str | None,
+    byte_count: int | None,
+) -> tuple[str | None, int | None]:
+    """Return integrity metadata without retaining the source text."""
+    if text is None:
+        return sha256, byte_count
+    encoded = text.encode("utf-8")
+    return sha256 or hashlib.sha256(encoded).hexdigest(), (
+        byte_count if byte_count is not None else len(encoded)
+    )
 
 
 class AntigravityDelegateChild:
@@ -51,10 +71,14 @@ class AntigravityDelegateChild:
         requested_effort: str,
         parent_session_id: str,
         parent_turn_id: str,
+        route_store: RouteReceiptStore | None = None,
+        run_kind: str = "production",
     ) -> None:
         self.worker = worker
         self.fallback_child = fallback_child
         self.store = store
+        self.route_store = route_store or RouteReceiptStore(store.path)
+        self.run_kind = run_kind
         self.task_index = int(task_index)
         self.goal = goal
         self.context = context
@@ -112,12 +136,29 @@ class AntigravityDelegateChild:
             route_reason=self.route_reason,
             data_classification=self.data_classification,
             output_contract=self.output_contract,
-            goal_text=self.goal,
-            context_text=self.context,
+            goal_text="",
+            context_text="",
             requested_provider=self.requested_provider,
             requested_model=self.requested_model,
             requested_effort=self.requested_effort,
         )
+        self.route_store.prepare_attempt(
+            stable_call_id=self.receipt_id,
+            parent_session_id=self.parent_session_id,
+            parent_turn_id=self.parent_turn_id,
+            child_session_id=self.session_id,
+            task_index=self.task_index,
+            run_kind=self.run_kind,
+            route_requested=self.route_requested,
+            route_decision="gemini",
+            route_reason=self.route_reason,
+            data_classification=self.data_classification,
+            output_contract=self.output_contract,
+            provider=self.requested_provider,
+            model=self.requested_model,
+        )
+        if isinstance(self.fallback_child, RouteReceiptChild):
+            self.fallback_child.bind_fallback_from(self.receipt_id)
         self._route_metadata = {
             "route": "gemini",
             "route_reason": self.route_reason,
@@ -209,26 +250,56 @@ class AntigravityDelegateChild:
             else _ERROR_STATUS.get(result.error_code or "", "failed")
         )
         commit_fence = self._pending_commit_fence if fallback else self._result_commit_fence
+        response_sha256, response_bytes = _text_evidence_metadata(
+            result.response or result.output_excerpt,
+            result.output_sha256,
+            result.output_bytes,
+        )
+        route_usage = route_usage_from_mapping(result.usage)
+        # The legacy table is compatibility-only. Its failure must not roll back
+        # or suppress the authoritative route-neutral receipt, but its fence
+        # still gives cancellation the same admission point as before.
         try:
             with self._receipt_lock:
-                if self._cancel_event.is_set():
-                    return self._cancelled_result()
                 self.store.complete_attempt(
                     self.receipt_id,
                     worker_status=terminal_status,
-                    response_text=result.response or result.output_excerpt,
-                    response_sha256=result.output_sha256,
-                    response_bytes=result.output_bytes,
+                    response_text=None,
+                    response_sha256=response_sha256,
+                    response_bytes=response_bytes,
                     process_exit_code=result.exit_code,
                     duration_ms=result.duration_ms,
                     conversation_id=result.conversation_id,
                     usage=result.usage,
-                    raw_envelope=result.raw_envelope,
+                    raw_envelope=None,
                     fallback_used=fallback,
                     error_code=result.error_code,
-                    error_message=result.error_message,
+                    error_message=None,
                     commit_fence=commit_fence,
                 )
+        except _TerminalCommitCancelled:
+            return self._cancelled_result()
+        except Exception:
+            pass
+
+        try:
+            with self._receipt_lock:
+                if self._cancel_event.is_set():
+                    return self._cancelled_result()
+                with commit_fence():
+                    self.route_store.complete_attempt(
+                        self.receipt_id,
+                        status=terminal_status,
+                        terminal_route="gemini",
+                        terminal_provider=self.requested_provider,
+                        terminal_model=self.requested_model,
+                        usage=route_usage,
+                        usage_status=(
+                            "complete" if route_usage is not None else "unavailable"
+                        ),
+                        fallback_used=fallback,
+                        error_code=result.error_code,
+                    )
         except _TerminalCommitCancelled:
             return self._cancelled_result()
         except Exception:
@@ -336,7 +407,20 @@ class AntigravityDelegateChild:
                 if result.get("completed") is True and result.get("final_response")
                 else "failed"
             )
+            fallback_response = (
+                str(result["final_response"])
+                if isinstance(result.get("final_response"), str)
+                and result.get("final_response")
+                else None
+            )
+            fallback_response_sha256, fallback_response_bytes = _text_evidence_metadata(
+                fallback_response, None, None
+            )
             if self.receipt_id:
+                if isinstance(self.fallback_child, RouteReceiptChild):
+                    fallback_metadata["fallback_route_receipt_id"] = (
+                        self.fallback_child.route_receipt_id
+                    )
                 try:
                     with self._receipt_lock:
                         if self._cancel_event.is_set():
@@ -347,12 +431,9 @@ class AntigravityDelegateChild:
                             provider=str(fallback_metadata["worker_provider"]),
                             model=str(fallback_metadata["worker_model_requested"]),
                             worker_status=fallback_status,
-                            response_text=(
-                                str(result["final_response"])
-                                if isinstance(result.get("final_response"), str)
-                                and result.get("final_response")
-                                else None
-                            ),
+                            response_text=None,
+                            response_sha256=fallback_response_sha256,
+                            response_bytes=fallback_response_bytes,
                             error_code=(
                                 None
                                 if fallback_status == "completed"
@@ -363,9 +444,17 @@ class AntigravityDelegateChild:
                 except _TerminalCommitCancelled:
                     return self._cancelled_result()
                 except Exception:
-                    if self._cancel_event.is_set():
-                        return self._cancelled_result()
-                    result["route_receipt_error"] = "fallback_outcome_not_recorded"
+                    result["legacy_receipt_error"] = "fallback_outcome_not_recorded"
+                if isinstance(self.fallback_child, RouteReceiptChild):
+                    try:
+                        with self._receipt_lock:
+                            self.route_store.link_fallback(
+                                self.receipt_id, self.fallback_child.route_receipt_id
+                            )
+                    except Exception:
+                        if self._cancel_event.is_set():
+                            return self._cancelled_result()
+                        result["route_receipt_error"] = "fallback_link_not_recorded"
             if not self._claim_result_publication():
                 return self._cancelled_result()
             self._route_metadata = dict(fallback_metadata)
@@ -428,6 +517,16 @@ class AntigravityDelegateChild:
                     error_code="cancelled",
                     error_message="Gemini-routed delegation cancelled",
                     commit_fence=self._cancelled_commit_fence,
+                )
+                self.route_store.complete_attempt(
+                    self.receipt_id,
+                    status="cancelled",
+                    terminal_route="gemini",
+                    terminal_provider=self.requested_provider,
+                    terminal_model=self.requested_model,
+                    usage=None,
+                    usage_status="unavailable",
+                    error_code="cancelled",
                 )
             except (KeyError, ValueError):
                 pass

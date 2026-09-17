@@ -15,6 +15,7 @@ import pytest
 from agent.antigravity_delegate import AntigravityDelegateChild
 from agent.antigravity_worker import AntigravityResult
 from agent.gemini_route_receipts import GeminiReceiptStore
+from agent.route_receipts import RouteReceiptChild, RouteReceiptStore
 from run_agent import AIAgent
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
@@ -134,7 +135,7 @@ def test_schema_exposes_only_bounded_routing_metadata():
     assert properties["output_contract"]["enum"] == ["text", "json"]
 
 
-def test_disabled_config_preserves_existing_sol_child_path():
+def test_disabled_config_preserves_sol_execution_and_writes_frontier_receipt():
     sol = fake_child()
     stops: list[dict] = []
 
@@ -155,23 +156,14 @@ def test_disabled_config_preserves_existing_sol_child_path():
     ):
         result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
 
-    assert result["results"][0]["summary"] == "sol answer"
-    assert not {
-        "route",
-        "route_reason",
-        "worker_route",
-        "worker_provider",
-        "worker_model_requested",
-        "route_receipt_id",
-        "fallback_used",
-    } & result["results"][0].keys()
-    assert not {
-        "worker_route",
-        "worker_provider",
-        "worker_model_requested",
-        "route_receipt_id",
-        "fallback_used",
-    } & stops[0].keys()
+    public = result["results"][0]
+    assert public["summary"] == "sol answer"
+    assert public["route"] == "sol"
+    assert public["worker_route"] == "sol"
+    assert public["route_receipt_id"]
+    assert public["fallback_used"] is False
+    assert stops[0]["worker_route"] == "sol"
+    assert stops[0]["route_receipt_id"] == public["route_receipt_id"]
     build_sol.assert_called_once()
     build_gemini.assert_not_called()
 
@@ -222,6 +214,30 @@ def test_malformed_enabled_routing_config_fails_closed_to_sol(overrides):
 
     assert result["results"][0]["summary"] == "sol answer"
     assert result["results"][0]["worker_route"] == "sol"
+    assert result["results"][0]["route_receipt_id"]
+    build_gemini.assert_not_called()
+
+
+def test_absent_gemini_routing_config_still_writes_frontier_receipt():
+    sol = fake_child()
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child") as build_gemini,
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["summary"] == "sol answer"
+    assert public["route"] == "sol"
+    assert public["worker_route"] == "sol"
+    assert public["route_receipt_id"]
+    assert public["fallback_used"] is False
     build_gemini.assert_not_called()
 
 
@@ -284,7 +300,8 @@ def test_eligible_leaf_builds_gemini_adapter_with_sol_fallback():
     build_sol.assert_called_once()
     build_gemini.assert_called_once()
     kwargs = build_gemini.call_args.kwargs
-    assert kwargs["fallback_child"] is sol
+    assert isinstance(kwargs["fallback_child"], RouteReceiptChild)
+    assert kwargs["fallback_child"].child is sol
     assert kwargs["route_reason"] == "eligible output-only leaf delegation"
 
 
@@ -293,6 +310,7 @@ def test_receipt_initialization_failure_runs_prebuilt_sol_fallback(
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     sol = fake_child("fallback answer")
+    parent_agent = parent()
     stops: list[dict] = []
 
     def stop_hook(event, **kwargs):
@@ -314,7 +332,9 @@ def test_receipt_initialization_failure_runs_prebuilt_sol_fallback(
         ),
         patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
     ):
-        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+        result = json.loads(
+            delegate_task(goal="summarize", parent_agent=parent_agent)
+        )
 
     public = result["results"][0]
     assert public["summary"] == "fallback answer"
@@ -322,13 +342,17 @@ def test_receipt_initialization_failure_runs_prebuilt_sol_fallback(
     assert public["worker_route"] == "sol"
     assert public["fallback_used"] is True
     assert public["gemini_error_code"] == "receipt_initialization_failed"
-    assert "route_receipt_id" in public
-    assert public["route_receipt_id"] is None
+    assert public["route_receipt_id"]
     assert stops[0]["worker_route"] == "sol"
     assert stops[0]["fallback_used"] is True
     assert stops[0]["gemini_error_code"] == "receipt_initialization_failed"
-    assert "route_receipt_id" in stops[0]
-    assert stops[0]["route_receipt_id"] is None
+    assert stops[0]["route_receipt_id"] == public["route_receipt_id"]
+    assert parent_agent._active_children == []
+    row = RouteReceiptStore(
+        tmp_path / "routing" / "gemini-routing.sqlite3"
+    ).get_attempt(public["route_receipt_id"])
+    assert row["route_decision"] == "frontier"
+    assert row["status"] == "completed"
 
 
 def test_receipt_initialization_failure_without_fallback_is_structured(
@@ -420,9 +444,9 @@ def test_omitted_classification_uses_restricted_profile_default_and_blocks_expli
 
     assert result["results"][0]["worker_route"] == "sol"
     assert "route_receipt_id" in result["results"][0]
-    assert result["results"][0]["route_receipt_id"] is None
-    assert "route_receipt_id" in stops[0]
-    assert stops[0]["route_receipt_id"] is None
+    assert isinstance(result["results"][0]["route_receipt_id"], str)
+    assert result["results"][0]["route_receipt_id"]
+    assert stops[0]["route_receipt_id"] == result["results"][0]["route_receipt_id"]
     assert "restricted" in result["results"][0]["route_reason"]
     build_gemini.assert_not_called()
 
@@ -755,7 +779,10 @@ def test_batch_fabricated_exit_keeps_current_gemini_fallback_metadata(
     ):
         result = json.loads(
             delegate_task(
-                tasks=[{"goal": "first"}, {"goal": "second"}],
+                tasks=[
+                    {"goal": "first routed task"},
+                    {"goal": "second routed task"},
+                ],
                 parent_agent=parent_agent,
             )
         )
@@ -1121,6 +1148,11 @@ def test_deferred_child_cleanup_is_serialized_against_parent_release_clients():
     parent_agent._active_children.append(child)
     parent_agent._codex_session_lock = None
     parent_agent.client = None
+    # Current main factors child teardown into this method; bind the real
+    # implementation on the MagicMock parent used by this focused test.
+    parent_agent._close_active_children = AIAgent._close_active_children.__get__(
+        parent_agent, AIAgent
+    )
     release_thread = None
 
     try:
@@ -1214,10 +1246,19 @@ def test_background_cleanup_failure_retains_parent_retry_ownership(dispatch_acce
         if dispatch_accepted:
             captured_runner["runner"]()
 
-    assert child in parent_agent._active_children
-    release_ownership = getattr(child, "_delegate_release_ownership")
-    assert release_ownership() is True
-    assert child not in parent_agent._active_children
+    tracked = next(
+        item
+        for item in parent_agent._active_children
+        if isinstance(item, RouteReceiptChild) and item.child is child
+    )
+    release_ownership = getattr(tracked, "_delegate_release_ownership")
+    released = False
+    for _ in range(close_succeeds_on):
+        released = release_ownership()
+        if released:
+            break
+    assert released is True
+    assert tracked not in parent_agent._active_children
     assert close_attempts == close_succeeds_on
 
 
@@ -1296,15 +1337,19 @@ def test_background_timeout_defers_cleanup_until_child_execution_quiesces(
 
         assert run_started.is_set()
         assert not premature_close.is_set()
-        assert child in parent_agent._active_children
+        tracked = next(
+            item
+            for item in parent_agent._active_children
+            if isinstance(item, RouteReceiptChild) and item.child is child
+        )
     finally:
         release_run.set()
 
     assert close_called.wait(timeout=2)
     deadline = time.monotonic() + 2
-    while child in parent_agent._active_children and time.monotonic() < deadline:
+    while tracked in parent_agent._active_children and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert child not in parent_agent._active_children
+    assert tracked not in parent_agent._active_children
 
 
 def test_child_ownership_is_retained_until_credential_release_succeeds():
@@ -2009,10 +2054,11 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
     assert row["terminal_provider"] == "openai-codex"
     assert row["terminal_model"] == "gpt-5.6-sol"
     assert row["terminal_worker_status"] == "completed"
-    assert row["terminal_response_text"] == "fallback answer"
+    assert row["terminal_response_text"] is None
     assert row["terminal_response_sha256"] == hashlib.sha256(
         b"fallback answer"
     ).hexdigest()
+    assert row["terminal_response_bytes"] == len(b"fallback answer")
     assert row["terminal_error_code"] is None
 
 
@@ -2026,8 +2072,7 @@ def test_adapter_bounds_persisted_fallback_response_but_hashes_complete_value(tm
 
     assert result["final_response"] == complete_response
     row = adapter.store.get_attempt(adapter.receipt_id)
-    assert row["terminal_response_text"] != complete_response
-    assert len(row["terminal_response_text"].encode("utf-8")) <= 32_768
+    assert row["terminal_response_text"] is None
     assert row["terminal_response_sha256"] == hashlib.sha256(
         complete_response.encode("utf-8")
     ).hexdigest()
@@ -2056,7 +2101,7 @@ def test_adapter_persists_complete_oversized_gemini_output_digest(tmp_path: Path
     adapter.run_conversation("summarize", task_id="child-task")
 
     row = adapter.store.get_attempt(adapter.receipt_id)
-    assert row["response_text"] == oversized.output_excerpt
+    assert row["response_text"] is None
     assert row["response_sha256"] == hashlib.sha256(encoded).hexdigest()
     assert row["response_bytes"] == len(encoded)
 
@@ -2115,7 +2160,7 @@ def test_adapter_returns_structured_metadata_when_sol_fallback_raises(tmp_path: 
     assert row["terminal_error_code"] == "sol_fallback_failed"
 
 
-def test_receipt_completion_failure_without_fallback_preserves_gemini_worker_truth(
+def test_legacy_completion_failure_without_fallback_preserves_gemini_result(
     tmp_path: Path,
 ):
     adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)), fallback=False)
@@ -2123,25 +2168,30 @@ def test_receipt_completion_failure_without_fallback_preserves_gemini_worker_tru
 
     result = adapter.run_conversation("summarize", task_id="child-task")
 
-    assert result["completed"] is False
-    assert result["route"] == "sol_after_receipt_error"
+    assert result["completed"] is True
+    assert result["route"] == "gemini"
     assert result["worker_route"] == "gemini"
     assert result["worker_provider"] == "antigravity-subscription"
     assert result["worker_model_requested"] == "gemini-3.8-flash-low"
     assert result["fallback_used"] is False
+    assert adapter.route_store.get_attempt(adapter.receipt_id)["status"] == "completed"
 
 
-def test_receipt_completion_failure_with_fallback_reports_sol_worker(tmp_path: Path):
+def test_legacy_completion_failure_with_unused_fallback_preserves_gemini_result(
+    tmp_path: Path,
+):
     adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)))
     adapter.store.complete_attempt = MagicMock(side_effect=sqlite3.OperationalError("locked"))
 
     result = adapter.run_conversation("summarize", task_id="child-task")
 
-    assert result["route"] == "sol_after_receipt_error"
-    assert result["worker_route"] == "sol"
-    assert result["worker_provider"] == "openai-codex"
-    assert result["worker_model_requested"] == "gpt-5.6-sol"
-    assert result["fallback_used"] is True
+    assert result["completed"] is True
+    assert result["route"] == "gemini"
+    assert result["worker_route"] == "gemini"
+    assert result["worker_provider"] == "antigravity-subscription"
+    assert result["worker_model_requested"] == "gemini-3.8-flash-low"
+    assert result["fallback_used"] is False
+    assert adapter.route_store.get_attempt(adapter.receipt_id)["status"] == "completed"
 
 
 def test_adapter_without_fallback_returns_a_structured_failure(tmp_path: Path):

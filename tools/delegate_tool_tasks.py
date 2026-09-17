@@ -65,7 +65,8 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 def _normalize_task_list(
-    goal, context, tasks, output_schema, top_role: str, max_children: int
+    goal, context, tasks, output_schema, top_role: str, max_children: int,
+    route=None, data_classification=None, output_contract=None, run_kind=None,
 ) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(task_list, None)`` from ``tasks=[...]`` or the legacy single ``goal``, else ``(None, error)``."""
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -86,9 +87,20 @@ def _normalize_task_list(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
-        if output_schema is not None:
-            task_list[0]["output_schema"] = output_schema
+        task_list = [{
+            key: value
+            for key, value in {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "route": route,
+                "run_kind": run_kind,
+                "data_classification": data_classification,
+                "output_contract": output_contract,
+                "output_schema": output_schema,
+            }.items()
+            if value is not None
+        }]
     else:
         return None, (
             "No tasks provided. Pass tasks=[{goal: '...', context: '...'}, "
@@ -100,6 +112,26 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        if task.get("route") not in {None, "auto", "gemini", "sol"}:
+            return None, f"Task {i} route must be one of: auto, gemini, sol."
+        if task.get("run_kind") not in {
+            None,
+            "production",
+            "canary",
+            "synthetic",
+            "evaluation",
+        }:
+            return None, (
+                f"Task {i} run_kind must be one of: production, canary, "
+                "synthetic, evaluation."
+            )
+        if (
+            "data_classification" in task
+            and task.get("data_classification") != "standard"
+        ):
+            task["data_classification"] = "restricted"
+        if task.get("output_contract") not in {None, "text", "json"}:
+            return None, f"Task {i} output_contract must be text or json."
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

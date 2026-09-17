@@ -227,6 +227,58 @@ class TestTranscribeCommandSTT:
         assert result["transcript"] == DEFAULT_COMMAND_STT_LANGUAGE
 
 
+    def test_prompt_placeholder_receives_effective_prompt(self, tmp_path):
+        """``{prompt}`` renders the effective prompt (config/hook) into the command line."""
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{prompt}} {{output_path}}',
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, prompt="Hermes, OpenVINO"
+        )
+        assert result["success"] is True
+        assert result["transcript"] == "Hermes, OpenVINO"
+
+    def test_prompt_placeholder_empty_when_no_prompt(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(repr(sys.argv[1]))"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{prompt}} {{output_path}}',
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is True
+        assert result["transcript"] == "''"
+
+    def test_prompt_placeholder_quotes_hostile_characters(self, tmp_path):
+        """The prompt is shell-quoted for its context — spaces/quotes/``$`` never split argv."""
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{prompt}} {{output_path}}',
+        }
+        hostile = 'vocab "hint"; $(id) `pwd`'
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, prompt=hostile
+        )
+        assert result["success"] is True
+        assert result["transcript"] == hostile
+
+    def test_template_without_prompt_placeholder_unchanged(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {
+            "command": _python_emit_command("no prompt slot"),
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, prompt="ignored"
+        )
+        assert result["success"] is True
+        assert result["transcript"] == "no prompt slot"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end via transcribe_audio(): dispatcher integration
 # ---------------------------------------------------------------------------

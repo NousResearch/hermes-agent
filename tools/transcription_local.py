@@ -21,8 +21,7 @@ from typing import Any, Dict, Optional
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (
     DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV,
-    OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
-    _process_error_detail)
+    OPENAI_MODELS, _config_number, _error_result, _ok_result, _process_error_detail)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -263,8 +262,6 @@ def _transcribe_local_command(
 ) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
     from tools.transcription_tools import _resolve_stt_language
-    if prompt:
-        _log_prompt_unsupported("STT provider 'local_command'")
     command_template = _get_local_command_template()
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
@@ -278,7 +275,8 @@ def _transcribe_local_command(
                 return _error_result(prep_error)
             command = command_template.format(
                 input_path=shlex.quote(prepared_input), output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language), model=shlex.quote(normalized_model))
+                language=shlex.quote(language), model=shlex.quote(normalized_model),
+                prompt=shlex.quote(prompt or ""))
             # Scrub Hermes secrets from the child env (same policy as _run_command_stt).
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -326,24 +327,66 @@ def _store_manifest(conn, execution_id: str, manifest: dict) -> None:
                  (json.dumps(manifest, sort_keys=True), execution_id, placeholder))
 
 
-def _recover_unrecorded_manifests() -> None:
-    """Replay manifests the worker could only park on its durable Bot Chat receipts.
+def _journal_root() -> Path:
+    return (EXECUTIONS_FILE.parent if EXECUTIONS_FILE else get_hermes_home().resolve() / "cron") / "manifest_journal"
 
-    A post-send ledger fault must not lose the receipt association: the worker attaches
-    the intended manifest to the receipt file, and the reconciler stores it here before
-    projecting. Idempotent through the same CAS as the primary write.
+
+def journal_manifest(execution_id: str, manifest: dict) -> None:
+    """Durably record a delivery manifest the ledger could not store (post-send fault).
+
+    Source-owned: independent of which receipt store (deferred file or live-owner mailbox)
+    holds the children, and never mutated by receipt consumers. Replayed by
+    :func:`_recover_unrecorded_manifests`; deleted only after the ledger holds it.
     """
-    from cron import bot_chat_delivery
-    root = bot_chat_delivery._root()
+    from utils import atomic_json_write
+    root = _journal_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    atomic_json_write(root / f"{execution_id}.json", {"execution_id": execution_id, "manifest": manifest},
+                      fsync_dir=True, mode=0o600)
+
+
+def journaled_manifests() -> Dict[str, dict]:
+    root = _journal_root()
     if not root.is_dir():
-        return
-    for _, record in bot_chat_delivery._records(root):
-        manifest, execution_id = record.get("manifest"), record.get("execution_id")
-        if not manifest or not execution_id:
+        return {}
+    out: Dict[str, dict] = {}
+    for path in root.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            logging.getLogger(__name__).error("Unreadable cron manifest journal entry %s", path)
             continue
-        with _transaction() as conn:
-            if _fetch(conn, execution_id) is not None:
+        if record.get("execution_id") and record.get("manifest"):
+            out[record["execution_id"]] = record["manifest"]
+    return out
+
+
+def _recover_unrecorded_manifests() -> Dict[str, dict]:
+    """Replay journaled manifests into the ledger; return what is STILL outstanding.
+
+    Idempotent through the same CAS as the primary write. An entry is removed only once
+    the ledger row actually carries a manifest with the children; while outstanding, the
+    row's placeholder manifest must not be projected or pruned (see callers).
+    """
+    outstanding: Dict[str, dict] = {}
+    for execution_id, manifest in journaled_manifests().items():
+        try:
+            with _transaction() as conn:
+                row = _fetch(conn, execution_id)
+                if row is None:
+                    outstanding[execution_id] = manifest
+                    continue
                 _store_manifest(conn, execution_id, manifest)
+                row = _fetch(conn, execution_id)
+            stored = json.loads(row["delivery_manifest"]) if row and row.get("delivery_manifest") else {}
+            if stored.get("bot") == manifest.get("bot"):
+                (_journal_root() / f"{execution_id}.json").unlink(missing_ok=True)
+            else:
+                outstanding[execution_id] = manifest
+        except Exception:
+            logging.getLogger(__name__).exception("Could not replay journaled cron manifest %s", execution_id)
+            outstanding[execution_id] = manifest
+    return outstanding
 
 
 def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
@@ -404,14 +447,20 @@ def reconcile_delivery_projections() -> None:
     from cron.incidents import _initialize_schema as init_incidents
 
     try:
-        _recover_unrecorded_manifests()
+        outstanding = _recover_unrecorded_manifests()
     except Exception:
-        logging.getLogger(__name__).exception("Could not replay parked cron delivery manifests")
+        logging.getLogger(__name__).exception("Could not replay journaled cron delivery manifests")
+        outstanding = journaled_manifests()
     with _transaction() as conn:
         records = [dict(row) for row in conn.execute(
             "SELECT * FROM executions WHERE delivery_manifest IS NOT NULL "
             "AND status IN ('completed','failed','unknown')").fetchall()]
     for record in records:
+        if record["id"] in outstanding:
+            # The ledger holds at most the external placeholder for this run while its real
+            # manifest (with pending children) is journaled: an incomplete manifest must not be
+            # projected as a terminal disposition. Stay queued until the replay succeeds.
+            continue
         try:
             projection = _delivery_projection(record)
             if projection is None:

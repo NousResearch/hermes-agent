@@ -202,6 +202,23 @@ def upsert_incident(
         return incident_id, True
 
 
+def mark_alerted_for_execution(incident_id: str, execution_id: str) -> bool:
+    """Mark ``alerted`` only if the incident is still on the occurrence this execution bound.
+
+    A run whose failure ping went out for occurrence N must not mark occurrence N+1 (the job
+    recovered and reopened with the same signature meanwhile). Returns whether it changed.
+    """
+    with _transaction() as conn:
+        _executions._initialize_schema(conn)
+        cur = conn.execute(
+            """UPDATE cron_incidents SET state='alerted'
+               WHERE id=? AND state='detected'
+                 AND generation=(SELECT incident_generation FROM executions WHERE id=? AND incident_id=?)""",
+            (incident_id, execution_id, incident_id),
+        )
+        return cur.rowcount == 1
+
+
 def set_incident_state(incident_id: str, state: str) -> bool:
     """Transition an incident's lifecycle state; return whether it changed. ``closed`` is terminal
     for that signature (re-open happens by a changed error minting a NEW incident). Unknown states

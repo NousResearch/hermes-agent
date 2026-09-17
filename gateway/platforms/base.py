@@ -2841,7 +2841,8 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
-        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata,
+                                             shown_metadata=metadata)
 
     async def emit_warning(
         self, chat_id: str, content: str, *, reply_to=None, metadata=None, logical_platform=None,
@@ -2858,14 +2859,17 @@ class BasePlatformAdapter(ABC):
 
     async def emit_media_warning(
         self, chat_id: str, notice: str, *, caption=None, reply_to=None, metadata=None,
+        shown_metadata=None,
     ) -> SendResult:
         """Present an optional media diagnostic without losing the requested caption.
 
-        Preserve the legacy fallback-text receipt when shown. When hidden, preserve
-        the media failure even if the independent caption itself was delivered.
+        Preserve the legacy fallback-text receipt when shown (``shown_metadata`` is the exact
+        metadata the legacy shown path passed; default None keeps callers that sent none
+        byte-identical). When hidden, preserve the media failure even if the independent
+        caption itself was delivered.
         """
         result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
-                                         reply_to=reply_to, metadata=metadata)
+                                         reply_to=reply_to, metadata=shown_metadata)
         if result is not None:
             return result
         if caption:

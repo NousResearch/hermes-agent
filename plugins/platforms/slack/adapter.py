@@ -2159,10 +2159,12 @@ class SlackAdapter(BasePlatformAdapter):
             if slash_ctx:
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
-            # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content)
-            if stream_result is not None:
-                return stream_result
+            # message: seal it instead of posting a duplicate. Explicit interim sends
+            # (classified warnings beside the stream) never finalize, whatever their text.
+            if not (metadata or {}).get("_interim_send"):
+                stream_result = await self._try_finalize_stream(chat_id, content)
+                if stream_result is not None:
+                    return stream_result
             formatted = self.format_message(content)
             if not formatted or not formatted.strip():
                 # Slack returns ``no_text`` for blank posts; still the end of a
@@ -3268,7 +3270,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Post ``notice`` (prefixed by the caption) in place of a failed media delivery; the
         host-local path is never echoed into chat."""
         return await self.emit_media_warning(chat_id, notice, caption=caption,
-                                             reply_to=reply_to, metadata=metadata)
+                                             reply_to=reply_to, metadata=metadata, shown_metadata=metadata)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,

@@ -318,14 +318,21 @@ def _resolve_incidents_for_recovered_job(job: dict) -> None:
         logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
 
 
-def _mark_incident_alerted(incident_id: Optional[str]) -> None:
-    """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one)."""
+def _mark_incident_alerted(incident_id: Optional[str], execution_id: Optional[str] = None) -> None:
+    """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one).
+
+    Fenced to the occurrence THIS execution bound: a native alert whose run belongs to an
+    older occurrence (the incident recovered and reopened meanwhile) must not mark the new one.
+    """
     if not incident_id:
         return
     try:
-        from cron.incidents import set_incident_state
+        from cron.incidents import mark_alerted_for_execution, set_incident_state
 
-        set_incident_state(incident_id, "alerted")
+        if execution_id:
+            mark_alerted_for_execution(incident_id, execution_id)
+        else:
+            set_incident_state(incident_id, "alerted")
     except Exception as exc:
         logger.debug("Failed marking incident %s alerted: %s", incident_id, exc)
 
@@ -2781,7 +2788,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     )
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
-        _mark_incident_alerted(d.failure_incident_id)
+        _mark_incident_alerted(d.failure_incident_id, execution_id)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     return True
@@ -2821,7 +2828,7 @@ def _deliver_crash_failure(
         delivery_queued=job.get("last_delivery_queued"),
         notification_suppressed=bool(job.get("_notification_all_targets_suppressed")))
     if delivery_outcome in ("delivered", "not_configured"):
-        _mark_incident_alerted(failure_incident_id)
+        _mark_incident_alerted(failure_incident_id, job.get("execution_id"))
     return delivery_error, delivery_outcome
 
 

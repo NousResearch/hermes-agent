@@ -4056,10 +4056,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     f"Command: {command_text}\n"
                     f"Reason: {reason}"
                 )
-                # Policy is the DISCORD owner's (self); a veto is not transport failure or permission to reroute.
-                if not self.warning_notifications_enabled(target):
+                # Policy is the DISCORD owner's (self) evaluated for the foreign target lane; a veto
+                # is not transport failure or permission to reroute to the next target.
+                from gateway.warning_notifications import present_notification
+                result = None
+                async def send_alert():
+                    nonlocal result
+                    result = await adapter.send(str(home.chat_id), msg)
+                if not await present_notification(send_alert, platform=target,
+                                                  diagnostic=True):
                     return
-                result = await adapter.send(str(home.chat_id), msg)
                 # Only return on confirmed delivery.
                 if getattr(result, "success", None) is False:
                     logger.debug(

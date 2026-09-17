@@ -1889,15 +1889,13 @@ def _deliver_result(
             record_delivery_manifest(job.get("execution_id"), manifest)
         except Exception:
             # Post-send bookkeeping: the sends above already happened and the receipts are
-            # durable. Park the manifest on them for the reconciler; never report a transport
-            # failure (which would discard the pending sibling or invite a resend).
-            logger.exception("Job '%s': delivery manifest not recorded; parked on receipts", job.get("id"))
-            from cron.bot_chat_delivery import attach_manifest
-            for ref in bot_receipts.values():
-                try:
-                    attach_manifest(ref["delivery_id"], manifest, str(job.get("execution_id") or ""))
-                except Exception:
-                    logger.exception("Job '%s': could not park manifest on receipt %s", job.get("id"), ref["delivery_id"])
+            # durable. Journal the manifest for the reconciler (source-owned, independent of
+            # which receipt store holds the children); never report a transport failure, which
+            # would discard the pending sibling or invite a resend.
+            logger.exception("Job '%s': delivery manifest not recorded; journaled", job.get("id"))
+            if job.get("execution_id"):
+                from cron.executions import journal_manifest
+                journal_manifest(str(job["execution_id"]), manifest)
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

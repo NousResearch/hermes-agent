@@ -67,17 +67,6 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
         return record
 
 
-def attach_manifest(key: str, manifest: dict, execution_id: str) -> None:
-    """Park the execution's delivery manifest on its durable receipt when the ledger write failed."""
-    root = _root()
-    with _FileLock(root / ".lock"):
-        record = read_pending(key)
-        if record is None:
-            raise FileNotFoundError(f"no deferred Bot Chat receipt {key}")
-        record.update(manifest=manifest, execution_id=execution_id)
-        atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
-
-
 def drain(root: Path | None = None) -> None:
     """Serialize drains across processes without holding the producer lock."""
     root = root if root is not None else _root()

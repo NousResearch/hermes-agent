@@ -23,6 +23,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **IO Intelligence** | `IONET_API_KEY` in `~/.hermes/.env` (provider: `ionet`; aliases: `io-intelligence`, `io_net`; open-weight models from io.net) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -405,6 +406,29 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### IO Intelligence
+
+[IO Intelligence](https://io.net/intelligence) is io.net's managed API for open-weight models — DeepSeek, GLM, Kimi, Qwen, Llama and more behind one OpenAI-compatible endpoint.
+
+```bash
+# Use any available model
+hermes chat --provider ionet --model deepseek-ai/DeepSeek-V4.1-Flash
+# Requires: IONET_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider io-intelligence --model meta-llama/Llama-3.3-70B-Instruct
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "ionet"
+  default: "deepseek-ai/DeepSeek-V4.1-Flash"
+  base_url: "https://api.intelligence.io.solutions/api/v1"
+```
+
+Get your API key at [io.net/docs/guides/intelligence/api-keys-and-secrets](https://io.net/docs/guides/intelligence/api-keys-and-secrets). The base URL can be overridden with `IONET_BASE_URL`. The model catalog is fetched live from the IO Intelligence `/models` endpoint; model IDs are `org/name` (e.g. `deepseek-ai/DeepSeek-R1-0528`).
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

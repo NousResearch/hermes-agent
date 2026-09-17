@@ -1162,6 +1162,7 @@ class _CodexStreamGuard:
         # owner's ``finally`` the shared client's FDs still need a real close.
         self.timeout_release_pending = threading.Event()
         self.stream_finished = threading.Event()
+        self._timeout_cause: Optional[str] = None
         self._timer = None
         # The owner may return on hard cancel while this attempt is still blocked in the SDK
         # stream. Timer threads don't inherit the worker's thread-local protection state, so
@@ -1172,11 +1173,19 @@ class _CodexStreamGuard:
         # The request-driving thread owns the transport FDs — see _close_client_on_timeout.
         self._owner_tid = threading.get_ident()
 
-    def effective_deadline(self) -> float:
+    def _effective_deadline_state(self) -> Tuple[float, str]:
         with self._deadline_lock:
-            deadline = min(self.hard_deadline, self._progress_deadline)
+            if self.hard_deadline <= self._progress_deadline:
+                deadline, cause = self.hard_deadline, "hard"
+            else:
+                deadline, cause = self._progress_deadline, "progress"
             host_deadline = _resolve_aux_stream_deadline(self._host_deadline_source)
-            return min(deadline, host_deadline) if host_deadline is not None else deadline
+            if host_deadline is not None and host_deadline <= deadline:
+                return host_deadline, "host"
+            return deadline, cause
+
+    def effective_deadline(self) -> float:
+        return self._effective_deadline_state()[0]
 
     def cancel_requested(self) -> bool:
         """True when the frozen hard-cancel source says the owner already cancelled."""
@@ -1204,9 +1213,15 @@ class _CodexStreamGuard:
         with self._deadline_lock:
             self._progress_deadline = time.monotonic() + self.no_progress_timeout
 
-    def timeout_message(self) -> str:
-        elapsed = time.monotonic() - self._start
-        if time.monotonic() >= self.hard_deadline:
+    def timeout_message(self, now: Optional[float] = None, cause: Optional[str] = None) -> str:
+        now = time.monotonic() if now is None else now
+        elapsed = now - self._start
+        cause = cause or self._timeout_cause
+        if cause == "host":
+            return (
+                "Codex auxiliary Responses stream timed out at the host compression "
+                f"deadline after {elapsed:.1f}s (the caller already stopped waiting)")
+        if cause == "hard" or (cause is None and now >= self.hard_deadline):
             return f"Codex auxiliary Responses stream exceeded {self.hard_deadline - self._start:.1f}s hard ceiling"
         if not self.saw_content.is_set():
             return (
@@ -1266,10 +1281,13 @@ class _CodexStreamGuard:
             logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
     def check_cancelled(self) -> None:
-        if self.total_timeout is not None and time.monotonic() >= self.effective_deadline():
+        now = time.monotonic()
+        deadline, cause = self._effective_deadline_state()
+        if self.total_timeout is not None and now >= deadline:
+            self._timeout_cause = cause
             if not self.timed_out.is_set():
                 self._close_client_on_timeout()
-            raise TimeoutError(self.timeout_message())
+            raise TimeoutError(self.timeout_message(now, cause))
         try:
             from tools.interrupt import is_interrupted
             # Protected atomic aux tasks (compression) must not abort on a mid-flight gateway
@@ -1289,11 +1307,13 @@ class _CodexStreamGuard:
     def _watchdog_fire(self) -> None:
         # Re-armable: if progress moved the deadline forward, reschedule instead of killing a
         # live stream.
-        remaining = self.effective_deadline() - time.monotonic()
+        deadline, cause = self._effective_deadline_state()
+        remaining = deadline - time.monotonic()
         if remaining > 0:
             if not (self.timed_out.is_set() or self.stream_finished.is_set()):
                 self._arm_timer(remaining)
             return
+        self._timeout_cause = cause
         self._close_client_on_timeout()
 
     def _arm_timer(self, delay: float) -> None:

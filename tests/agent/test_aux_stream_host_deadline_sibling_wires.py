@@ -74,13 +74,14 @@ def test_codex_stream_stops_at_the_host_deadline_not_its_own_ceiling():
     with (
         patch("agent.codex_runtime._consume_codex_event_stream", _consume_codex),
         aux.aux_stream_deadline(time.monotonic() + 0.4),
-        pytest.raises(TimeoutError, match="hard ceiling"),
+        pytest.raises(TimeoutError, match="host compression deadline") as excinfo,
     ):
         adapter.create(
             messages=[{"role": "user", "content": "summarize"}],
             timeout=300,
         )
     elapsed = time.monotonic() - start
+    assert "60.0s" not in str(excinfo.value)
     assert elapsed < 5.0, f"stream outlived the host deadline by {elapsed:.1f}s"
     assert yielded[0] < 100
 

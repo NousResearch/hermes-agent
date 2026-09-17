@@ -919,25 +919,71 @@ def take_sanitation_retry(agent: Any, messages: list) -> list | None:
         agent._pending_sanitation_retry = None
         return None
     agent._pending_sanitation_retry = None
+    stripped_messages = _strip_persistence_marker(messages)
+    stripped_original = _strip_persistence_marker(retry.original)
+    rebased = _rebase_retry_onto_prefix(stripped_messages, stripped_original, retry.candidate)
+    if rebased is not None:
+        return rebased
     return copy.deepcopy(retry.candidate)
 
 
 def has_sanitation_retry(agent: Any, messages: list) -> bool:
     """Whether the retained candidate is still safe for this exact transcript."""
     retry = getattr(agent, "_pending_sanitation_retry", None)
-    if (
-        not isinstance(retry, SanitationRetryCandidate)
-        or retry.session_id != agent.session_id
-        or not _same_typed_value(
-            _strip_persistence_marker(messages),
-            _strip_persistence_marker(retry.original),
-        )
-    ):
+    if not isinstance(retry, SanitationRetryCandidate):
         return False
+    if retry.session_id != agent.session_id:
+        return False
+    stripped_messages = _strip_persistence_marker(messages)
+    stripped_original = _strip_persistence_marker(retry.original)
+    if _same_typed_value(stripped_messages, stripped_original):
+        return _candidate_validates_for(agent, messages, retry.candidate)
+    # Append-only tail rebase (round-8 finding): after a refusal the raw request
+    # continues and appends, so the retry-time transcript is no longer byte-equal
+    # and the byte-equality check would drop the validated candidate permanently
+    # (the secret stays in SQLite/FTS). When the candidate's original is an exact
+    # PREFIX of the current transcript, rebase onto that prefix and preserve the
+    # unchanged tail — mirroring the concurrent-tail preservation in
+    # sanitize_and_compact. Anything else (edited mid-list content) still drops.
+    rebased = _rebase_retry_onto_prefix(stripped_messages, stripped_original, retry.candidate)
+    if rebased is None:
+        return False
+    return _candidate_validates_for(agent, messages, rebased)
+
+
+def _rebase_retry_onto_prefix(
+    stripped_messages: Any,
+    stripped_original: Any,
+    candidate: list,
+) -> Optional[list]:
+    """Candidate for a transcript whose head is the retry's exact original.
+
+    Returns the candidate extended with the unchanged append-only tail, or
+    ``None`` when the transcript is not an exact original-prefix growth.
+    """
+    if not isinstance(stripped_messages, list) or not isinstance(stripped_original, list):
+        return None
+    if len(stripped_messages) <= len(stripped_original):
+        return None
+    if not _same_typed_value(stripped_messages[: len(stripped_original)], stripped_original):
+        return None
+    if len(candidate) != len(stripped_original):
+        return None
+    return [
+        *copy.deepcopy(candidate),
+        *copy.deepcopy(stripped_messages[len(stripped_original):]),
+    ]
+
+
+def _candidate_validates_for(
+    agent: Any,
+    messages: list,
+    candidate: list,
+) -> bool:
     return (
         validate_sanitation_candidate(
             messages,
-            retry.candidate,
+            candidate,
             externalized_payload_loader=externalized_payload_loader(agent),
         )
         is not None

@@ -280,3 +280,75 @@ def test_salvage_gate_refusal_leaves_rollback_snapshot_intact():
     assert all(
         "api_content" in message for message in messages
     ), "a refusal must not strip api_content from the live rollback snapshot"
+
+
+def test_retained_retry_rebases_onto_append_only_tail():
+    """Finding 4030343995: take_sanitation_retry required a byte-equal
+    transcript, so once the raw request continued and appended after a
+    refusal, the retained candidate was dropped permanently and the secret
+    stayed in SQLite/FTS. The candidate must rebase onto its exact original
+    PREFIX while preserving the unchanged append-only tail."""
+    from agent.conversation_sanitation import (
+        SanitationRetryCandidate,
+        has_sanitation_retry,
+        take_sanitation_retry,
+    )
+
+    class _Compressor:
+        def load_externalized_payload_sidecar(self, _ref):
+            return None
+
+    class _Agent:
+        session_id = "s1"
+        _pending_sanitation_retry = None
+        context_compressor = _Compressor()
+
+    secret = "password=hostpw7-retry"
+    placeholder = _placeholder("password_assignment", "hostpw7-retry")
+    original = [
+        {"role": "user", "content": secret},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+    candidate = [
+        {"role": "user", "content": f"password={placeholder}"},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+    agent = _Agent()
+    agent._pending_sanitation_retry = SanitationRetryCandidate(
+        session_id="s1",
+        original=copy.deepcopy(original),
+        candidate=copy.deepcopy(candidate),
+    )
+
+    # The retry-time transcript: the refusal answer stayed, the provider
+    # response and next user turn appended.
+    grown = original + [
+        {"role": "assistant", "content": "provider reply after refusal"},
+        {"role": "user", "content": "next turn"},
+    ]
+    rebased = take_sanitation_retry(agent, grown)
+    assert rebased is not None, (
+        "a retained candidate whose original is an exact prefix of the grown "
+        "transcript must rebase instead of being dropped"
+    )
+    assert rebased[: len(candidate)] == candidate
+    assert rebased[len(candidate):] == grown[len(candidate):], (
+        "the append-only tail must be preserved untouched"
+    )
+
+    # A NON-prefix transcript (content edited mid-list) still drops today.
+    agent2 = _Agent()
+    agent2._pending_sanitation_retry = SanitationRetryCandidate(
+        session_id="s1",
+        original=copy.deepcopy(original),
+        candidate=copy.deepcopy(candidate),
+    )
+    edited = [
+        {"role": "user", "content": "different first message"},
+        {"role": "assistant", "content": "refused answer"},
+    ] + grown[2:]
+    assert take_sanitation_retry(agent2, edited) is None, (
+        "a candidate whose original is not a prefix of the transcript must "
+        "still be dropped"
+    )
+    assert not has_sanitation_retry(_Agent(), [{"role": "user", "content": "x"}])

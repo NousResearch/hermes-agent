@@ -464,3 +464,42 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+def test_monitor_source_failure_delivery_reports_the_source_finding(hermes_env, monkeypatch):
+    """A failing monitor source is delivered as the source's OWN finding.
+
+    Regression: run_one_job's failure path summarises ``_mon.error`` — which IS the probe's own
+    output — through provider substring matching, so a lane probe that exited 1 because one lane
+    answered 401 was delivered as "provider authentication error", pointing the operator at our
+    credentials instead of the lane's own status.
+    """
+    import cron.scheduler as scheduler
+    from cron.jobs import create_job
+
+    _write_script(
+        hermes_env,
+        "lanes.sh",
+        'echo "lane-a 200"\necho "lane-b 401"\necho "1/2 lanes reachable"\nexit 1\n',
+    )
+    job = create_job(
+        prompt="React to the change",
+        schedule="every 5m",
+        monitor_script="lanes.sh",
+        deliver="telegram",
+        name="lane-watch",
+    )
+    delivered = []
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    text = delivered[0]
+    assert "lane-b 401" in text
+    assert "1/2 lanes reachable" in text
+    assert "provider" not in text.lower()
+    assert "credentials" not in text.lower()

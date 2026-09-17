@@ -295,8 +295,14 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
-        return None, None, None, (f"Platform '{platform_name}' is not configured. Set up credentials in "
-                                  "~/.hermes/config.yaml or environment variables.")
+        from hermes_constants import display_hermes_home
+        home = display_hermes_home()
+        return None, None, None, (
+            f"Platform '{platform_name}' is not configured for Hermes home {home}. "
+            f"Run `hermes gateway setup` for this profile; credentials belong in {home}/.env "
+            f"or this process's environment, and platform settings in {home}/config.yaml. "
+            "Credentials available only in a running gateway's environment are not inherited "
+            "by a separate CLI process.")
     return platform, pconfig, entry, None
 
 

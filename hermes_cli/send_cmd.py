@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import display_hermes_home
+
 
 _USAGE_EXIT = 2
 _FAILURE_EXIT = 1
@@ -111,7 +113,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        print(f"channel discovery can populate {display_hermes_home()}/channel_directory.json.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
@@ -241,8 +243,9 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
             "Pipe text from any shell script to any messaging platform Hermes "
-            "is already configured for. Reuses the gateway's platform "
-            "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
+            "is already configured for. Uses this profile's platform "
+            f"credentials ({display_hermes_home()}/.env + {display_hermes_home()}/config.yaml) "
+            "and this process's environment, not another gateway process's environment — no LLM, "
             "no agent loop, no running gateway required for bot-token "
             "platforms like Telegram/Discord/Slack/Signal."
         ),

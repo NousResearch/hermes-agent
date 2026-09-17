@@ -494,8 +494,11 @@ class SessionTranscriptMixin:
             session_id = db.get_compression_tip(session_id) or session_id
         try:
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
+            # include_row_ids: the loaded transcript doubles as a sanitation-commit snapshot
+            # source; without durable row ids the commit's represented set is empty and the
+            # whole transcript would be re-cloned byte-exact (secrets stay in SQLite/FTS).
             return self._db_for_session_id(session_id).get_messages_as_conversation(
-                session_id, repair_alternation=True)
+                session_id, repair_alternation=True, include_row_ids=True)
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
             # must fail closed, not start from [].

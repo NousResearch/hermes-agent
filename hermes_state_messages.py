@@ -105,6 +105,83 @@ def _carry_repair_row_ids(messages: List[Dict[str, Any]], pre_repair_row_ids: Li
         message["_merged_row_ids"] = merged_ids
 
 
+def _merge_strip_dropped_row_ids(
+    messages: List[Dict[str, Any]], pre_strip_row_ids: List[Any]
+) -> List[Dict[str, Any]]:
+    """Keep strip-dropped durable rows represented by the surviving snapshot.
+
+    The harness/marker strip runs AFTER the decode loop but BEFORE the repair-time row-id
+    snapshot, so a row it drops never reaches ``_row_id`` provenance — a later sanitation
+    commit would classify that still-active durable row "absent from snapshot" and re-clone
+    it byte-exact (hijackable content resurrected; the exact hazard the strip exists to
+    prevent). The dropped ids ride the NEXT surviving message's ``_merged_row_ids`` (same
+    membership channel the alternation repair uses); when the drop is at the tail, the last
+    survivor absorbs them. Only survivors already carrying ``_row_id`` are stamped — an
+    id-less transcript has no provenance to lose.
+    """
+    if not pre_strip_row_ids:
+        return messages
+    survivors = [m for m in messages if isinstance(m, dict)]
+    if len(survivors) == len(pre_strip_row_ids):
+        return messages  # nothing was dropped
+    kept = [
+        row_id
+        for row_id in (m.get("_row_id") for m in survivors)
+        if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0
+    ]
+    dropped = [
+        row_id
+        for row_id in pre_strip_row_ids
+        if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0
+        and row_id not in kept
+    ]
+    if not dropped or not kept:
+        return messages
+    # Positional walk: align survivors with the pre-strip id list. Ids dropped BEFORE a
+    # survivor's own id (a leading harness prompt) attach to that survivor, like
+    # ``_carry_repair_row_ids``'s dropped-leading handling; every other dropped id is
+    # absorbed by the survivor that follows it (or the last survivor for tail drops).
+    stamps: List[Tuple[Dict[str, Any], List[int]]] = []
+    cursor = 0
+    total = len(pre_strip_row_ids)
+    for index, message in enumerate(survivors):
+        own_id = message.get("_row_id")
+        dropped_before: List[int] = []
+        while cursor < total and pre_strip_row_ids[cursor] != own_id:
+            absorbed = pre_strip_row_ids[cursor]
+            if (
+                isinstance(absorbed, int)
+                and not isinstance(absorbed, bool)
+                and absorbed > 0
+            ):
+                dropped_before.append(absorbed)
+            cursor += 1
+        if cursor >= total:
+            break
+        cursor += 1
+        next_own_id = (
+            survivors[index + 1].get("_row_id") if index + 1 < len(survivors) else None
+        )
+        merged_ids: List[int] = []
+        if own_id is not None:
+            merged_ids.append(own_id)
+        while cursor < total and pre_strip_row_ids[cursor] != next_own_id:
+            absorbed = pre_strip_row_ids[cursor]
+            if (
+                isinstance(absorbed, int)
+                and not isinstance(absorbed, bool)
+                and absorbed > 0
+            ):
+                merged_ids.append(absorbed)
+            cursor += 1
+        merged_ids = dropped_before + merged_ids
+        if len(merged_ids) > 1:
+            stamps.append((message, merged_ids))
+    for message, merged_ids in stamps:
+        message["_merged_row_ids"] = merged_ids
+    return messages
+
+
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
@@ -734,6 +811,22 @@ class SessionMessagesMixin:
             ).fetchall()
             active_ids = {int(row["id"]) for row in active_rows}
             if represented_row_ids is not None:
+                if (
+                    not represented_row_ids
+                    and active_ids
+                    and int(watermark) > 0
+                ):
+                    # Empty-tuple poison (round-8 finding): a caller that loaded the
+                    # transcript WITHOUT row ids produces () here, which is not the
+                    # legacy-None fallback. Committing would classify every active
+                    # durable row as unrepresented and re-clone the whole transcript
+                    # byte-exact (secrets stay in SQLite and FTS). Fail closed.
+                    raise ValueError(
+                        "Invalid sanitation structure: the represented-row snapshot is "
+                        f"empty but session {session_id!r} holds {len(active_ids)} active "
+                        "durable row(s) above watermark 0 — the snapshot source omitted "
+                        "row ids; refusing to publish"
+                    )
                 represented = tuple(
                     row_id
                     for row_id in represented_row_ids
@@ -1257,9 +1350,16 @@ class SessionMessagesMixin:
                 if exact_clone_key is not None:
                     exact_user_clones[exact_clone_key] = msg
             messages.append(msg)
+        # Snapshot row ids BEFORE the strip filter (round-8 finding): the harness strip runs
+        # below and drops rows — a row absent from the post-strip snapshot would later be
+        # classified "unrepresented" by a sanitation commit and re-cloned byte-exact
+        # (resurrected hijackable content). The stripped ids ride the adjacent survivor's
+        # `_merged_row_ids` membership marker instead.
+        _all_row_ids = [m.get("_row_id") for m in messages if isinstance(m, dict)]
         # Defense-in-depth: strip a background-review harness turn (older builds shared the parent's
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        messages = _merge_strip_dropped_row_ids(messages, _all_row_ids)
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
             # Snapshot row ids BEFORE repair: repair_message_sequence merges same-role neighbors,

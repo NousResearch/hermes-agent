@@ -55,28 +55,44 @@ else
   echo "docs/worldview.md already exists, leaving it alone."
 fi
 
-CLAUDE_MD="$TARGET_DIR/CLAUDE.md"
-IMPORT_LINE="@docs/worldview.md"
-if [[ -f "$CLAUDE_MD" ]]; then
-  if ! grep -qF "$IMPORT_LINE" "$CLAUDE_MD"; then
-    printf '\n%s\n' "$IMPORT_LINE" >> "$CLAUDE_MD"
-    echo "Appended $IMPORT_LINE to CLAUDE.md."
-  else
-    echo "CLAUDE.md already imports worldview.md."
-  fi
+echo "== Seeding philosophical-preamble.md (per-project, always seeded if absent) =="
+if [[ ! -f "$DOCS_DIR/philosophical-preamble.md" ]]; then
+  cp "$SKILL_DIR/templates/philosophical-preamble.md" "$DOCS_DIR/philosophical-preamble.md"
+  echo "Copied philosophical-preamble.md skeleton to docs/philosophical-preamble.md -- answer why THIS project exists."
 else
-  printf '%s\n' "$IMPORT_LINE" > "$CLAUDE_MD"
-  echo "Created CLAUDE.md with worldview import."
+  echo "docs/philosophical-preamble.md already exists, leaving it alone."
 fi
+
+CLAUDE_MD="$TARGET_DIR/CLAUDE.md"
+for IMPORT_LINE in "@docs/worldview.md" "@docs/philosophical-preamble.md"; do
+  if [[ -f "$CLAUDE_MD" ]]; then
+    if ! grep -qF "$IMPORT_LINE" "$CLAUDE_MD"; then
+      printf '\n%s\n' "$IMPORT_LINE" >> "$CLAUDE_MD"
+      echo "Appended $IMPORT_LINE to CLAUDE.md."
+    else
+      echo "CLAUDE.md already imports $IMPORT_LINE."
+    fi
+  else
+    printf '%s\n' "$IMPORT_LINE" > "$CLAUDE_MD"
+    echo "Created CLAUDE.md with $IMPORT_LINE."
+  fi
+done
 
 echo "== Copying EARS reference material =="
 mkdir -p "$TARGET_DIR/docs/spec-driven"
 cp "$SKILL_DIR/references/ears-syntax.md" "$TARGET_DIR/docs/spec-driven/ears-syntax.md"
 cp "$SKILL_DIR/references/ears-schema.json" "$TARGET_DIR/docs/spec-driven/ears-schema.json"
 
+cp "$SKILL_DIR/references/contract-testing.md" "$TARGET_DIR/docs/spec-driven/contract-testing.md"
+
 echo ""
 echo "Done. Next steps in Claude Code, one at a time:"
+echo "  0. docs/philosophical-preamble.md -- answer why THIS project exists before ratifying the constitution"
 echo "  1. /speckit-constitution -- refine the pre-seeded principles for this project"
 echo "  2. /speckit-specify -- describe what to build (EARS lines: see docs/spec-driven/ears-syntax.md)"
 echo "  3. /speckit-clarify, /speckit-plan, /speckit-tasks, /speckit-implement, /speckit-converge"
 echo "  Route every open question through scripts/spec_decision_gate.py first -- see this skill's SKILL.md."
+echo "  4. Once requirements are agreed, promote EARS lines to JSON (docs/spec-driven/ears-schema.json)"
+echo "     and run scripts/generate_property_tests.py to scaffold property-based tests."
+echo "  5. If this project has a client/server or multi-consumer boundary, see"
+echo "     docs/spec-driven/contract-testing.md and scripts/generate_mock_server.py."

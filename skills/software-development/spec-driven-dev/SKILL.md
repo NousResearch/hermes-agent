@@ -53,12 +53,14 @@ python3 scripts/spec_decision_gate.py --answers answers.json
 
 | Step | Command | Produces |
 |---|---|---|
-| 1 | `init_project.sh` | `.specify/`, `.claude/skills/speckit-*`, seeded `docs/worldview.md`, seeded constitution, EARS reference docs |
+| 1 | `init_project.sh` | `.specify/`, `.claude/skills/speckit-*`, seeded `docs/worldview.md` + `docs/philosophical-preamble.md`, seeded constitution, EARS/contract-testing reference docs |
 | 2 | `translate_speckit_skills.py` | Hermes-frontmatter copies of the speckit-* skills under `.hermes/skills/` |
 | 3 | `/speckit-constitution` (in Claude Code) | Refined `.specify/memory/constitution.md` |
 | 4 | `/speckit-specify` | `spec.md` with EARS-formatted FR- lines (see `references/ears-syntax.md`) |
 | 5 | `/speckit-clarify`, `/speckit-plan`, `/speckit-tasks` | Resolved ambiguities, `plan.md`, `tasks.md` -- every open question routed via `spec_decision_gate.py` first |
 | 6 | `/speckit-implement`, `/speckit-converge` | Working code, verified against spec/plan/tasks |
+| 7 | `generate_property_tests.py` | Scaffolded property-based tests from agreed EARS-JSON requirements |
+| 8 | `generate_mock_server.py` (if a client/server boundary exists) | Running mock server from a shared contract, for client-first contract testing |
 
 ## Procedure
 
@@ -66,11 +68,12 @@ python3 scripts/spec_decision_gate.py --answers answers.json
    inside an existing one. This installs real Spec Kit into the project
    (verified working: `specify init --integration claude` produces
    `.claude/skills/speckit-*` + `.specify/`), seeds `docs/worldview.md`
-   from `templates/worldview.md` (only if it doesn't already exist --
-   worldview is meant to be filled in gradually via conversation, not
-   overwritten), adds the `@docs/worldview.md` import line to
-   `CLAUDE.md`, and copies pre-seeded constitution defaults over the
-   blank template.
+   (standing, general -- only if it doesn't already exist, since it's
+   meant to be filled in gradually via conversation, not overwritten)
+   and `docs/philosophical-preamble.md` (per-project "why this project
+   exists," always re-seeded if absent), adds both `@docs/...` import
+   lines to `CLAUDE.md`, and copies pre-seeded constitution defaults
+   over the blank template.
 2. **Translate skills.** Run `translate_speckit_skills.py <project_dir>`
    so the installed `speckit-*` skills carry Hermes-shaped frontmatter,
    not just Claude-Code-shaped frontmatter. This is a mechanical
@@ -110,7 +113,22 @@ python3 scripts/spec_decision_gate.py --answers answers.json
    `references/ears-schema.json`. This is the layer that seeds
    property-based test generation later, distinct from and
    complementary to the hand-written tests `/speckit-implement` writes.
-7. **Run the rest of the Spec Kit pipeline as normal**
+7. **Scaffold property-based tests.** Once requirements are agreed and
+   saved as EARS-JSON, run `generate_property_tests.py <requirements_dir>
+   --out <test_file.py>` to produce `hypothesis`-based test scaffolds
+   (requires `pip install hypothesis`). These are scaffolds, not
+   finished tests -- every `@given(st.nothing())` placeholder must be
+   replaced with a real domain strategy before the test means anything;
+   never leave a placeholder in and call the requirement covered.
+8. **Contract testing (only if this project has a client/server or
+   multi-consumer boundary).** See `references/contract-testing.md` for
+   the full two-layer approach (shared schema-first contract +
+   Pact-style consumer-driven tests) and the client-first build
+   ordering. `generate_mock_server.py <contract>` wraps Stoplight Prism
+   to mock the contract directly, before any server implementation
+   exists. Skip this step entirely for single-process tools/scripts
+   with no real consumer boundary.
+9. **Run the rest of the Spec Kit pipeline as normal**
    (`/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`,
    `/speckit-analyze`, `/speckit-implement`, `/speckit-converge`),
    applying step 4's gate to every open question along the way.
@@ -129,6 +147,13 @@ python3 scripts/spec_decision_gate.py --answers answers.json
   `spec_decision_gate.py` and follow its verdict.
 - Don't treat a syntactically valid EARS line as automatically
   sensible -- run the sensibility gate before promoting it to scope.
+- Don't trust a `generate_property_tests.py` scaffold as a real test --
+  every `@given(st.nothing())` placeholder must be replaced with a real
+  strategy first; an unfilled scaffold either fails immediately or
+  generates meaningless data.
+- Don't build the contract-testing layer for a project with no real
+  client/server or multi-consumer boundary -- it's a real added cost
+  with no payoff for a single-process tool.
 
 ## Verification
 
@@ -143,3 +168,9 @@ python3 scripts/spec_decision_gate.py --answers answers.json
 - No EARS line entered `tasks.md` scope without first passing
   `ears-sensibility-gate` (or an equivalent documented check) if that
   skill is present in the project.
+- Any `generate_property_tests.py` scaffold committed to the repo has
+  every placeholder strategy replaced with real domain data generation
+  -- no `st.nothing()` left in a test claimed as passing coverage.
+- If the project has a client/server boundary, contract tests exist per
+  consumer (not just one shared schema check), and provider verification
+  was run against the real server, not only the mock.

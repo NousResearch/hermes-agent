@@ -76,6 +76,41 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn("sibling", warn.lower())
 
 
+    def test_forget_task_clears_last_writer(self):
+        # #114446: a finished task's writer entry must not report as a
+        # concurrent sibling to later tasks.
+        p = self._mk()
+        file_state.record_read("A", p)
+        time.sleep(0.01)  # ensure ts ordering across resolution
+        file_state.note_write("B", p)
+        self.assertIn("sibling", (file_state.check_stale("A", p) or "").lower())
+        file_state.get_registry().forget_task("B")
+        self.assertIsNone(file_state.check_stale("C", p))
+
+    def test_expired_last_writer_entry_is_ignored(self):
+        # #114446: a writer entry older than the TTL is a predecessor, not a
+        # sibling — evicted on read instead of warning.
+        from tools.file_state import _LAST_WRITER_TTL_SECONDS
+
+        p = self._mk()
+        file_state.note_write("B", p)
+        reg = file_state.get_registry()
+        with reg._state_lock:
+            tid, ts = reg._last_writer[p]
+            reg._last_writer[p] = (tid, ts - _LAST_WRITER_TTL_SECONDS - 1)
+        self.assertIsNone(file_state.check_stale("C", p))
+
+    def test_recent_sibling_write_still_warns_after_forget_of_other_task(self):
+        # Forgetting an unrelated task must not silence a live sibling warning.
+        p = self._mk()
+        file_state.record_read("A", p)
+        time.sleep(0.01)
+        file_state.note_write("B", p)
+        file_state.get_registry().forget_task("Z")
+        warn = file_state.check_stale("A", p)
+        self.assertIsNotNone(warn)
+        self.assertIn("B", warn)
+
     def test_lock_path_serializes_same_path(self):
         p = self._mk()
         events: list[tuple[str, int]] = []

@@ -25,6 +25,10 @@ ReadStamp = Tuple[float, float, bool]
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
 _MAX_GLOBAL_WRITERS = 4096
+# A sibling conflict that matters is nearly always recent: writers that finished
+# long ago (e.g. the previous tick of a scheduled job, long since forgotten)
+# must stop reporting as concurrent siblings (#114446).
+_LAST_WRITER_TTL_SECONDS = 3600
 
 
 def _disabled() -> bool:
@@ -132,6 +136,9 @@ class FileStateRegistry:
         with self._state_lock:
             stamp = self._reads.get(task_id, {}).get(resolved)
             last_writer = self._last_writer.get(resolved)
+            if last_writer is not None and time.time() - last_writer[1] > _LAST_WRITER_TTL_SECONDS:
+                del self._last_writer[resolved]
+                last_writer = None
 
         if stamp is None and last_writer is None:  # net-new file / first touch
             return None
@@ -197,9 +204,13 @@ class FileStateRegistry:
             return list(self._reads.get(task_id, {}).keys())
 
     def forget_task(self, task_id: str) -> None:
-        """Release read stamps owned by a task after its lifecycle ends."""
+        """Release read stamps AND last-writer entries owned by a task after
+        its lifecycle ends (#114446)."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            for path in [p for p, (writer_tid, _ts) in self._last_writer.items()
+                         if writer_tid == task_id]:
+                del self._last_writer[path]
 
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""

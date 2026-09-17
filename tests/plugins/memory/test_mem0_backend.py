@@ -382,6 +382,15 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
+    def test_search_forwards_rerank_to_in_process_memory(self):
+        """OSS runs in-process, so ``rerank`` goes straight to ``Memory.search`` — the tool
+        schema advertises it, and the plugin used to drop it outside platform mode."""
+        backend, memory = self._make()
+
+        backend.search("tea", filters={"user_id": "u1"}, top_k=3, rerank=True)
+
+        assert memory.calls[0] == ("search", "tea", {"filters": {"user_id": "u1"}, "top_k": 3, "rerank": True})
+
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
         state, Memory, factory = _install_fake_mem0(monkeypatch)
@@ -667,6 +676,20 @@ class TestSelfHostedBackend:
 
 
     # --- search ----------------------------------------------------------
+
+    def test_search_forwards_rerank_only_when_requested(self):
+        """The self-hosted server's ``/search`` accepts ``rerank``; omitting it silently returns
+        non-reranked results, so the requested flag must ride the payload — and only then."""
+        s = _StubServer()
+        backend = _backend(s)
+
+        assert backend.search("tea", filters={"user_id": "u1"}, top_k=5, rerank=True)[0]["memory"] == "tea"
+        reranked = json.loads(s.requests[-1].content)
+        assert reranked["rerank"] is True
+        assert reranked["query"] == "tea" and reranked["top_k"] == 5
+
+        backend.search("tea", filters={"user_id": "u1"}, top_k=5)
+        assert "rerank" not in json.loads(s.requests[-1].content)
 
 
     # --- add / update / delete ------------------------------------------

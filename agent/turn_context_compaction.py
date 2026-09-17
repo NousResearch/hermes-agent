@@ -515,9 +515,16 @@ def _engine_preflight_maintenance(
         f"{_preflight_tokens:,}", f"{getattr(_compressor, 'threshold_tokens', 0):,}",
     )
     _engine_input = out.messages
-    out.messages, out.active_system_prompt = agent._compress_context(
-        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id
-    )
+    agent._engine_preflight_requested = True
+    try:
+        out.messages, out.active_system_prompt = agent._compress_context(
+            _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id
+        )
+    finally:
+        # The flag is per-attempt: it records only that THIS engine preflight
+        # asked for maintenance, so a failed prepare must not warn on some
+        # later unrelated attempt.
+        agent._engine_preflight_requested = False
     # ``_compress_context`` returns the INPUT list on every skip path and an engine
     # may no-op; re-baseline/re-anchor only after a REAL compaction.
     if out.messages is not _engine_input:

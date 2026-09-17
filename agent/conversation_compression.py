@@ -3711,6 +3711,17 @@ def _run_summary_phase(
                 )
             finally:
                 _restore_messages_snapshot(messages, messages_before_compression)
+        if (
+            retry_candidate is None
+            and prepared_operation is None
+            and getattr(agent, "_engine_preflight_requested", False) is True
+        ):
+            logger.warning(
+                "Engine preflight requested sanitation but no claim validated "
+                "(session=%s, attempt_generation=%s) — compression ran generic",
+                agent.session_id,
+                attempt.generation,
+            )
         pure_sanitation = (
             retry_candidate is not None or prepared_operation is not None
         )
@@ -3997,6 +4008,19 @@ def compress_context(
             )
         finally:
             _restore_messages_snapshot(messages, messages_before_prepare)
+    if (
+        prechecked_prepared_operation is None
+        and getattr(agent, "_engine_preflight_requested", False) is True
+    ):
+        logger.warning(
+            "Engine preflight requested sanitation but no claim validated "
+            "(session=%s, attempt_generation=%s) — compression ran generic",
+            agent.session_id,
+            attempt.generation,
+        )
+        # Consume the signal: the summary-phase site re-checks it, and warning
+        # twice for one preflight request would be noise.
+        agent._engine_preflight_requested = False
 
     # Pure sanitation does not use the auxiliary summary route, including a
     # retained retry that already validated a candidate.
@@ -4141,6 +4165,11 @@ def compress_context(
         finally:
             if _commit_fence_entered:
                 commit_fence.finish_commit()
+            # Per-attempt sanitation-request signal: set by the turn's engine-driven
+            # preflight wire when the engine asked for maintenance. Consumed by the
+            # prepare call sites' observability; clear it here so a failed prepare
+            # never warns on some LATER unrelated attempt.
+            agent._engine_preflight_requested = False
 
 
 def _codex_compaction_cooldown_remaining(agent: Any) -> float:

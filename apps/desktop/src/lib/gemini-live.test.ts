@@ -1,8 +1,21 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-import { GeminiLiveSession } from './gemini-live'
+import { GeminiLiveSession, resolveGeminiLiveApiKey, saveGeminiApiKey } from './gemini-live'
+import { deleteEnvVar, revealEnvVar, setEnvVar } from '@/hermes'
+
+vi.mock('@/hermes', () => ({
+  revealEnvVar: vi.fn(),
+  setEnvVar: vi.fn(),
+  deleteEnvVar: vi.fn()
+}))
 
 describe('GeminiLiveSession', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+
   it('stopAudioStream sends audioStreamEnd without synthetic text commentary', () => {
     const sentMessages: string[] = []
     const mockWs = {
@@ -142,5 +155,51 @@ describe('GeminiLiveSession', () => {
     })
 
     expect(onDelegation).toHaveBeenCalledWith('call_123', 'run test script')
+  })
+
+  it('resolveGeminiLiveApiKey resolves GEMINI_API_KEY from gateway environment', async () => {
+    vi.mocked(revealEnvVar).mockImplementation(async (key: string) => {
+      if (key === 'GEMINI_API_KEY') return { key, value: 'gemini-secret-123' }
+      return { key, value: '' }
+    })
+
+    const key = await resolveGeminiLiveApiKey()
+    expect(key).toBe('gemini-secret-123')
+    expect(revealEnvVar).toHaveBeenCalledWith('GEMINI_API_KEY')
+  })
+
+  it('resolveGeminiLiveApiKey falls back to GOOGLE_API_KEY', async () => {
+    vi.mocked(revealEnvVar).mockImplementation(async (key: string) => {
+      if (key === 'GOOGLE_API_KEY') return { key, value: 'google-secret-456' }
+      throw new Error('Not found')
+    })
+
+    const key = await resolveGeminiLiveApiKey()
+    expect(key).toBe('google-secret-456')
+  })
+
+  it('resolveGeminiLiveApiKey purges legacy plaintext localStorage key', async () => {
+    localStorage.setItem('hermes_gemini_live_api_key', 'insecure-plaintext-key')
+    vi.mocked(revealEnvVar).mockResolvedValue({ key: 'GEMINI_API_KEY', value: 'real-key' })
+
+    const key = await resolveGeminiLiveApiKey()
+    expect(key).toBe('real-key')
+    expect(localStorage.getItem('hermes_gemini_live_api_key')).toBeNull()
+  })
+
+  it('saveGeminiApiKey writes to GEMINI_API_KEY via setEnvVar', async () => {
+    vi.mocked(setEnvVar).mockResolvedValue({ ok: true })
+
+    const res = await saveGeminiApiKey('AIzaSyNewKey')
+    expect(res).toEqual({ ok: true })
+    expect(setEnvVar).toHaveBeenCalledWith('GEMINI_API_KEY', 'AIzaSyNewKey')
+  })
+
+  it('saveGeminiApiKey deletes GEMINI_API_KEY via deleteEnvVar when empty', async () => {
+    vi.mocked(deleteEnvVar).mockResolvedValue({ ok: true })
+
+    const res = await saveGeminiApiKey('   ')
+    expect(res).toEqual({ ok: true })
+    expect(deleteEnvVar).toHaveBeenCalledWith('GEMINI_API_KEY')
   })
 })

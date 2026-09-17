@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import { fetchVoiceLiveStatus, type VoiceLiveStatus } from '@/lib/voice-live'
 import { activeGateway } from '@/store/gateway'
 
+import { resolveGeminiLiveApiKey } from '@/lib/gemini-live'
+
 /**
  * `voice.voice_chat_mode` as the backend resolves it, plus whether GPT-Live can
  * actually start (an OpenAI key resolves on the gateway host). The composer
@@ -10,6 +12,19 @@ import { activeGateway } from '@/store/gateway'
  * the config snapshot so a Settings change applies to the next conversation.
  */
 export const $voiceLiveStatus = atom<null | VoiceLiveStatus>(null)
+export const $geminiLiveKeyConfigured = atom<boolean | null>(null)
+
+export async function refreshGeminiLiveKeyStatus(): Promise<boolean> {
+  try {
+    const key = await resolveGeminiLiveApiKey()
+    const configured = Boolean(key)
+    $geminiLiveKeyConfigured.set(configured)
+    return configured
+  } catch {
+    $geminiLiveKeyConfigured.set(false)
+    return false
+  }
+}
 
 let inflight: null | Promise<null | VoiceLiveStatus> = null
 
@@ -17,6 +32,8 @@ export async function refreshVoiceLiveStatus(): Promise<null | VoiceLiveStatus> 
   if (inflight) {
     return inflight
   }
+
+  void refreshGeminiLiveKeyStatus().catch(() => undefined)
 
   inflight = fetchVoiceLiveStatus()
     .then(status => {

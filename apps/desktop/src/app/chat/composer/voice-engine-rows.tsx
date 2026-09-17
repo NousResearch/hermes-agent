@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import {
   DropdownMenuItem,
@@ -10,11 +11,12 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Settings } from '@/lib/icons'
-import { getStoredGeminiLiveApiKey } from '@/lib/gemini-live'
 import { notifyError } from '@/store/notifications'
 import {
+  $geminiLiveKeyConfigured,
   $voiceLiveStatus,
   openGeminiLiveDialog,
+  refreshGeminiLiveKeyStatus,
   selectedVoiceChatMode,
   setVoiceChatMode
 } from '@/store/voice-live'
@@ -33,10 +35,17 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
   const { t } = useI18n()
   const c = t.composer
   const status = useStore($voiceLiveStatus)
+  const geminiKeyConfigured = useStore($geminiLiveKeyConfigured)
+
+  useEffect(() => {
+    if (geminiKeyConfigured === null) {
+      void refreshGeminiLiveKeyStatus()
+    }
+  }, [geminiKeyConfigured])
 
   const mode = selectedVoiceChatMode(status)
   const liveAvailable = Boolean(status?.available)
-  const geminiKeyConfigured = Boolean(getStoredGeminiLiveApiKey())
+  const isGeminiReady = geminiKeyConfigured ?? false
 
   return (
     <>
@@ -71,7 +80,7 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
               <span>{c.voiceEngineGeminiLive}</span>
               <span className="text-muted-foreground text-[10px] uppercase font-mono tracking-wider">Laptop</span>
             </span>
-            {geminiKeyConfigured ? null : (
+            {isGeminiReady ? null : (
               <span className="text-muted-foreground truncate text-xs">
                 {c.voiceEngineGeminiLiveNeedsKey}
               </span>

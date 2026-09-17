@@ -19,23 +19,24 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { triggerHaptic } from '@/lib/haptics'
-import { Eye, EyeOff, Mic, Zap } from '@/lib/icons'
+import { Eye, EyeOff, KeyRound, Mic, Zap } from '@/lib/icons'
 import {
   DEFAULT_GEMINI_LIVE_MODEL,
   DEFAULT_GEMINI_LIVE_VOICE,
   GEMINI_LIVE_MODELS,
   GEMINI_VOICES,
-  getStoredGeminiLiveApiKey,
   getStoredGeminiLiveModel,
   getStoredGeminiLiveVoice,
-  setStoredGeminiLiveApiKey,
+  resolveGeminiLiveApiKey,
+  saveGeminiApiKey,
   setStoredGeminiLiveModel,
   setStoredGeminiLiveVoice
 } from '@/lib/gemini-live'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $geminiLiveDialogOpen,
   closeGeminiLiveDialog,
+  refreshGeminiLiveKeyStatus,
   setVoiceChatMode
 } from '@/store/voice-live'
 
@@ -45,31 +46,48 @@ export function GeminiLiveDialog() {
   const [voice, setVoice] = React.useState(DEFAULT_GEMINI_LIVE_VOICE)
   const [model, setModel] = React.useState(DEFAULT_GEMINI_LIVE_MODEL)
   const [showKey, setShowKey] = React.useState(false)
+  const [loading, setLoading] = React.useState(false)
+  const [saving, setSaving] = React.useState(false)
 
   React.useEffect(() => {
     if (open) {
-      setApiKey(getStoredGeminiLiveApiKey())
       setVoice(getStoredGeminiLiveVoice())
       setModel(getStoredGeminiLiveModel())
+      setLoading(true)
+      resolveGeminiLiveApiKey()
+        .then(key => {
+          setApiKey(key || '')
+        })
+        .finally(() => {
+          setLoading(false)
+        })
     }
   }, [open])
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     triggerHaptic('submit')
+    setSaving(true)
 
-    setStoredGeminiLiveApiKey(apiKey)
-    setStoredGeminiLiveVoice(voice)
-    setStoredGeminiLiveModel(model)
-    void setVoiceChatMode('gemini-live')
+    try {
+      await saveGeminiApiKey(apiKey)
+      setStoredGeminiLiveVoice(voice)
+      setStoredGeminiLiveModel(model)
+      await setVoiceChatMode('gemini-live')
+      await refreshGeminiLiveKeyStatus()
 
-    notify({
-      id: 'gemini-live-configured',
-      kind: 'success',
-      message: 'Gemini Live voice configured successfully'
-    })
+      notify({
+        id: 'gemini-live-configured',
+        kind: 'success',
+        message: 'Gemini Live voice configured successfully'
+      })
 
-    closeGeminiLiveDialog()
+      closeGeminiLiveDialog()
+    } catch (err: any) {
+      notifyError(err, 'Failed to save Gemini API key to environment credentials')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -86,7 +104,10 @@ export function GeminiLiveDialog() {
         <form className="grid gap-4" onSubmit={handleSave}>
           <div className="grid gap-1.5">
             <label className="text-xs font-medium text-foreground flex items-center justify-between">
-              <span>Google / Gemini API Key</span>
+              <span className="flex items-center gap-1.5">
+                <KeyRound className="size-3.5 text-muted-foreground" />
+                <span>Google / Gemini API Key</span>
+              </span>
               <button
                 type="button"
                 onClick={() => setShowKey(!showKey)}
@@ -99,15 +120,15 @@ export function GeminiLiveDialog() {
             <Input
               autoComplete="off"
               autoCorrect="off"
+              disabled={loading}
               onChange={e => setApiKey(e.target.value)}
-              placeholder="AIzaSy..."
+              placeholder={loading ? 'Loading credentials...' : 'AIzaSy... (or configure in Settings → Keys)'}
               spellCheck={false}
               type={showKey ? 'text' : 'password'}
               value={apiKey}
             />
             <p className="text-[11px] text-muted-foreground">
-              Stored securely in your local Hermes Desktop browser storage. Works without needing
-              changes on your remote VPS gateway.
+              Stored in your Hermes environment credentials (<code className="font-mono text-[10px]">GEMINI_API_KEY</code>). Shared with your Settings &rarr; Keys configuration.
             </p>
           </div>
 
@@ -158,7 +179,9 @@ export function GeminiLiveDialog() {
             <Button onClick={closeGeminiLiveDialog} type="button" variant="ghost">
               Cancel
             </Button>
-            <Button type="submit">Save & Activate</Button>
+            <Button disabled={saving} type="submit">
+              {saving ? 'Saving...' : 'Save & Activate'}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -180,6 +180,22 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     return display
 
 
+def _next_run_row(next_run, *, active: bool = True) -> tuple[str, str]:
+    from datetime import datetime
+    from cron.jobs import _ensure_aware
+    from hermes_time import now
+
+    if active and next_run:
+        try:
+            scheduled = _ensure_aware(datetime.fromisoformat(next_run))
+        except (TypeError, ValueError):
+            pass  # Keep legacy/unparseable values visible without inventing a verdict.
+        else:
+            if scheduled < now():
+                return "Overdue since", next_run
+    return "Next run", next_run
+
+
 def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     """``(label, value)`` detail rows for one job in ``cron list``."""
     # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
@@ -211,7 +227,8 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
-        ("Next run", job.get("next_run_at", "?")),
+        _next_run_row(job.get("next_run_at", "?"), active=job.get("enabled", True)
+                      and job.get("state") not in {"paused", "completed"}),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
 
@@ -462,7 +479,8 @@ def _print_active_jobs_summary(jobs) -> None:
     next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        print(f"  Next run: {min(next_runs)}")
+        label, value = _next_run_row(min(next_runs))
+        print(f"  {label}: {value}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
     late = [j for j in jobs if isinstance(j.get("last_dispatch"), dict)
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]

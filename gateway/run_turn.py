@@ -2333,6 +2333,15 @@ class GatewayTurnMixin:
                     enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
+            video_paths = [
+                path for i, path in enumerate(media_urls)
+                if (media_types[i] if i < len(media_types) else "").startswith("video/")
+            ]
+            if video_paths:
+                try:
+                    enriched_prompt = await self._enrich_message_with_video(enriched_prompt, video_paths)
+                except Exception as e:
+                    logger.warning("Background task video enrichment failed: %s", e)
 
             def run_sync():
                 agent = AIAgent(

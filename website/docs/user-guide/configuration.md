@@ -1715,6 +1715,22 @@ If you use Codex OAuth as your main model provider, vision works automatically �
 **Vision requires a multimodal model.** If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
 :::
 
+### Video Analysis
+
+Video attachments on messaging platforms get the same treatment as images. The `video_analyze` tool sends the clip to a video-capable auxiliary model as a native `video_url` content part and returns a description, timestamps, and answers about motion, on-screen text, and transitions.
+
+```yaml
+auxiliary:
+  video:
+    base_url: "http://localhost:1234/v1"
+    api_key: "local-key"
+    model: "glm-5.3-flash"   # any OpenAI-compatible endpoint that accepts video_url parts
+```
+
+When `auxiliary.video` is configured, videos attached to gateway messages (Telegram, Discord, Slack, …) are **auto-analyzed** and a concise description is prepended to the message — the same flow as `auxiliary.vision`. When it is not configured, the agent instead receives the attachment path and can call `video_analyze` itself when the task needs it. If your main endpoint is video-capable, `provider: "main"` works here too. Note that video auto-chains through the same backends as vision when no explicit endpoint is set, so most video-capable aux setups need no new configuration.
+
+`agent.video_input_mode` controls gateway auto-analysis: `"auto"` (default) auto-analyzes only when `auxiliary.video` is explicitly configured; `"text"` always auto-analyzes; `"off"` never auto-analyzes (path note only — `video_analyze` stays available as a tool). On the WebUI, video attachments are delivered as file paths and the agent chooses when to call `video_analyze`.
+
 ### Environment Variables (legacy)
 
 Auxiliary models can also be configured via environment variables. However, `config.yaml` is the preferred method — it's easier to manage and supports all options including `base_url` and `api_key`.

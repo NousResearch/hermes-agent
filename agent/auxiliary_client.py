@@ -1,8 +1,10 @@
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →
-native Anthropic → direct API-key providers → None. Vision auto chain: main
+native Anthropic → direct API-key providers → None. Vision/video auto chain: main
 provider (if a supported vision backend) → OpenRouter → Nous → Anthropic → custom.
+The multimodal tasks ({"vision", "video"}) share one resolution chain and client
+semantics; ``resolve_vision_provider_client`` parameterizes the task.
 ``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
 in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
@@ -3328,7 +3330,11 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
 # whole ``timeout`` window, so they skip straight to fallback; fast blips still retry.
 # Fast blips (a streaming-close or a 5xx) still retry, since those are cheap. See issue #54465 for the
 # compression case.
-_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision"})
+# Multimodal aux tasks: share the vision resolution chain / client semantics and stay
+# ungated by max_concurrency (their CPU cost is in encode/resize, not the LLM call).
+_MULTIMODAL_AUX_TASKS = frozenset({"vision", "video"})
+
+_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "video"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
@@ -3510,10 +3516,10 @@ def _prepare_same_provider_retry(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
-    if task == "vision":
+    if task in _MULTIMODAL_AUX_TASKS:
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
-            api_key=resolved_api_key, async_mode=async_mode,
+            api_key=resolved_api_key, async_mode=async_mode, task=task,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -5348,16 +5354,17 @@ _ZAI_OPENAI_VISION_URLS = ("https://open.bigmodel.cn/api/paas/v4", "https://api.
 def resolve_vision_provider_client(
     provider: Optional[str] = None, model: Optional[str] = None, *, base_url: Optional[str] = None,
     api_key: Optional[str] = None, async_mode: bool = False,
-    main_runtime: Optional[Dict[str, Any]] = None,
+    main_runtime: Optional[Dict[str, Any]] = None, task: str = "vision",
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
-    """Resolve the client actually used for vision tasks.
+    """Resolve the client actually used for a multimodal aux task (``vision``/``video``).
 
     Direct endpoint overrides beat provider selection; explicit providers may force
-    experimental backends; auto mode only tries backends known to work.
+    experimental backends; auto mode only tries backends known to work. ``task`` selects
+    which ``auxiliary.<task>`` config block feeds resolution; the chain itself is shared.
     """
     runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        task, provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
     if resolved_base_url:
@@ -6013,9 +6020,9 @@ _aux_sem_lock = threading.Lock()
 
 
 def _get_task_max_concurrency(task: Optional[str]) -> Optional[int]:
-    """``auxiliary.<task>.max_concurrency`` as a positive int, or None. Vision uses this key for
-    its encode/resize CPU pool; its LLM calls stay concurrent."""
-    if not task or task == "vision":
+    """``auxiliary.<task>.max_concurrency`` as a positive int, or None. Multimodal tasks
+    (vision/video) are excluded: their cost centers are encode/resize; LLM calls stay concurrent."""
+    if not task or task in _MULTIMODAL_AUX_TASKS:
         return None
     try:
         value = int(_get_auxiliary_task_config(task).get("max_concurrency"))
@@ -6852,11 +6859,12 @@ def _resolve_call_client(
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
     effective_provider = resolved_provider
-    if task == "vision":
+    if task in _MULTIMODAL_AUX_TASKS:
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
+            task=task,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
@@ -6887,7 +6895,7 @@ def _resolve_call_client(
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision"))
+                        fb_client, fb_model or "", is_vision=(task in _MULTIMODAL_AUX_TASKS))
                 resolved_provider = fb_label or resolved_provider
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
@@ -7091,7 +7099,7 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: Dict[str, Any], message: s
         lookup_model=route.resolved_model, lookup_task=route.task, async_mode=route.async_mode,
         base_url=route.resolved_base_url, api_key=route.resolved_api_key,
         api_mode=route.resolved_api_mode, main_runtime=route.main_runtime,
-        is_vision=(route.task == "vision"),
+        is_vision=(route.task in _MULTIMODAL_AUX_TASKS),
     )
     if refreshed_client is None:
         return None
@@ -7111,7 +7119,7 @@ def _ladder_nous_rungs(
     # 404s); force a fresh Portal fetch and retry once.
     if _is_model_not_found_error(first_err) and client_is_nous:
         healed_model = _refresh_nous_recommended_model(
-            vision=(task == "vision"), stale_model=kwargs.get("model"))
+            vision=(task in _MULTIMODAL_AUX_TASKS), stale_model=kwargs.get("model"))
         if healed_model and healed_model != kwargs.get("model"):
             logger.warning("Auxiliary %s%s: model %r no longer in Nous catalog; "
                            "retrying with refreshed recommendation %r",
@@ -7760,7 +7768,7 @@ async def _async_call_llm_impl(
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args
-            fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+            fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task in _MULTIMODAL_AUX_TASKS))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),

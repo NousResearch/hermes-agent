@@ -232,12 +232,20 @@ DEFAULT_CONFIG = {
         # wedged local server eventually trips the detector instead of hanging forever. Env
         # HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
         "local_stream_stale_timeout": 900,
-        # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
-        # when the model reports supports_vision=True AND auxiliary.vision.provider is not
-        # explicitly set, else text; "native" = always attach (non-vision models error at the
-        # provider or get a last-chance text fallback); "text" = always pre-analyze with
-        # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
+        # image_input_mode: how user-attached images reach the main model (gateway, TUI, CLI
+        # /attach). "auto" = native when the model reports supports_vision=True AND
+        # auxiliary.vision.provider is not explicitly set, else text; "native" = always attach
+        # (non-vision models error at the provider or get a last-chance text fallback); "text" =
+        # always pre-analyze with vision_analyze and prepend the description. vision_analyze stays
+        # a tool regardless.
         "image_input_mode": "auto",
+        # How user-attached VIDEOS are handled on gateway platforms (WebUI attachments follow the
+        # text path-note flow). "auto" = auto-analyze with video_analyze and prepend a description
+        # when auxiliary.video is explicitly configured; otherwise fall back to a path note the
+        # agent can act on with the video_analyze tool. "text" = always auto-analyze (the aux
+        # auto-chain may pick the backend). "off" = never auto-analyze; only the path note is
+        # prepended (agent-initiated video_analyze still works).
+        "video_input_mode": "auto",
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).

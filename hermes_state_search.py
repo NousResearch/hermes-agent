@@ -1214,19 +1214,10 @@ class SessionSearchMixin:
         needle = (query or "").strip().lower()
         if not needle or limit <= 0:
             return []
-        # list_sessions_rich pushes the id LIKE filter (own id + forward compression
-        # chain) into SQL; over-fetch so the in-Python ranking has candidates.
-        candidates = self.list_sessions_rich(
-            source=source, sources=sources, exclude_sources=exclude_sources, limit=max(limit * 4, limit),
-            offset=0, include_archived=include_archived, order_by_last_active=True, id_query=needle)
-
-        def score(row: Dict[str, Any]) -> int:
-            normalized = [v.lower() for v in (str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")) if v]
-            if any(value == needle for value in normalized):
-                return 0
-            return 1 if any(value.startswith(needle) for value in normalized) else 2
-        ranked = sorted(enumerate(candidates), key=lambda item: (score(item[1]), item[0]))
-        return [row for _, row in ranked[:limit]]
+        return self.list_sessions_rich(
+            source=source, sources=sources, exclude_sources=exclude_sources, limit=limit,
+            offset=0, include_archived=include_archived, order_by_last_active=True,
+            id_query=needle, order_by_id_match=True)
 
     # ── FTS maintenance commands ───────────────────────────────────────────
 

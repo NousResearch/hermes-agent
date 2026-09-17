@@ -174,6 +174,27 @@ _DESKTOP_STAGING_PREFIX = ".staging-"
 
 _DESKTOP_PREVIOUS_SUFFIX = ".previous"
 
+# A real-time file scanner (AV/EDR) holds a short exclusive handle on a freshly packed
+# release/win-unpacked tree; the promotion rename then fails with a sharing violation
+# (WinError 32 / 5 -> PermissionError) and succeeds a moment later on identical input (#112544).
+# Only PermissionError is retried: EXDEV/ENOENT-class failures are permanent.
+_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 1.0, 1.0)
+
+
+def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
+    """``os.rename`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
+    for attempt, delay in enumerate(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S, start=1):
+        try:
+            os.rename(src, dst)
+            return
+        except PermissionError as exc:
+            logger.warning(
+                "desktop promotion rename %s -> %s hit a file lock (attempt %d/%d), retrying in %.1fs: %s",
+                src.name, dst.name, attempt, len(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S) + 1, delay, exc,
+            )
+            _time_mod.sleep(delay)
+    os.rename(src, dst)
+
 
 def _desktop_staging_dir(desktop_dir: Path) -> Path:
     """Fresh staging dir ``apps/desktop/.staging-<pid>-<ts>``: a sibling of ``release/`` (same fs → the
@@ -213,12 +234,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            os.rename(live_root, previous)
+            _rename_riding_out_file_lock(live_root, previous)
         try:
-            os.rename(staged_root, live_root)
+            _rename_riding_out_file_lock(staged_root, live_root)
         except OSError:
             if moved_aside:
-                os.rename(previous, live_root)  # restore; live app back as it was
+                _rename_riding_out_file_lock(previous, live_root)  # restore; live app back as it was
             raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)

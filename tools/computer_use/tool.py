@@ -26,6 +26,7 @@ from tools.computer_use.execution_revision import (
     CAPTURE_DEPS, INPUT_DEPS, ExecutionRevision, ExecutionState, target_mismatch,
 )
 from tools.computer_use.phase_spans import note_invalidation, phase, record_call, set_dimension
+from tools.computer_use.sequence import run_sequence  # no cycle: sequence.py only imports tool lazily
 from tools.computer_use.token_estimates import (
     METHOD as TOKEN_ESTIMATE_METHOD,
     estimate_image_tokens,
@@ -576,6 +577,10 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
+    # Sequence is orchestration, not an authorization bypass: run_sequence re-runs the hard blocks, per-step
+    # approval scopes, and the same backend handlers for every step (see tools/computer_use/sequence.py).
+    "sequence": _ActionSpec(lambda backend, action, args, **delivery: run_sequence(
+        backend, args, session_id=delivery.get("session_id"))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
     "decide": _ActionSpec(_do_decide),

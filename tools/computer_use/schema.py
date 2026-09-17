@@ -33,14 +33,18 @@ _PROPERTIES: Dict[str, Any] = {
             "list_windows",
             "focus_app",
             "decide",
+            "run_goal",
+            "sequence",
         ],
         "description": (
-            "Which action to perform. `capture` and `decide` are free (no side effects). All other "
-            "actions require approval unless auto-approved. `decide` runs the typed decision lane "
-            "(rules → reranker → Jev when TYPESAFE_API_KEY is set) over the accessibility tree and "
-            "returns a suggested next step without mutating the desktop — fail-open to normal planning "
-            "when confidence is low. Use `set_value` for select/popup elements and sliders — it selects "
-            "the matching option directly without opening the native menu (no focus steal)."
+            "Which action to perform. `capture`, `decide`, and `run_goal` are free (no side effects). "
+            "All other actions require approval unless auto-approved. `decide` runs the typed decision "
+            "lane (rules → reranker → aux → Jev when configured) over the accessibility tree and returns "
+            "a suggested next step without mutating the desktop — fail-open to normal planning when "
+            "confidence is low. `run_goal` runs the bounded decide→act→capture loop until done, stuck, "
+            "or max_steps (System-One lane; no main-planner round trips inside the loop). Use `set_value` "
+            "for select/popup elements and sliders — it selects the matching option directly without "
+            "opening the native menu (no focus steal)."
         ),
     },
     "goal": {
@@ -204,6 +208,31 @@ _PROPERTIES: Dict[str, Any] = {
             "Saves a round-trip when you need to verify an action's effect."
         ),
     },
+    "steps": {
+        "type": "array",
+        "items": {"type": "object"},
+        "description": (
+            "Only for action='sequence': the ordered action slice to run from this one decision. Each "
+            "step is an object with `action` (click|double_click|right_click|middle_click|drag|scroll|"
+            "type|key|set_value|wait|focus_app) plus that action's usual parameters. V1 rules: at most "
+            "ONE step may be grounded on an element index/coordinate from the last capture — later "
+            "steps must be focus/keyboard/text/wait operations that need no new visual grounding. The "
+            "slice stops at the first failure, suspected no-op, approval denial, lost target, or "
+            "timeout; per-step `capture_after` is not allowed — the slice does one final capture. Every "
+            "step re-runs the normal safety and approval path; sequence is orchestration, not an "
+            "authorization bypass."
+        ),
+    },
+    "verify_mode": {
+        "type": "string",
+        "enum": ["ax_first", "som", "vision"],
+        "description": (
+            "Only for action='sequence' with capture_after=true: how the one final verification "
+            "capture is taken. `ax_first` (default) reads the accessibility tree and falls back to a "
+            "screenshot only when the tree is empty. `som`/`vision` force that mode. Does not change "
+            "the global capture_after_mode."
+        ),
+    },
 }
 
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
@@ -228,3 +257,20 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
+
+⚠ 1 unresolved conflict detected
+- ours = HEAD
+- theirs = fork/feat/cu-sequence-primitive-112639
+- base = 61154b6f68e83
+NOTICE: Inspect a block by reading `conflict://<N>` (add `/ours` / `/theirs` / `/base` to render a single side). Resolve with `write({ path: "conflict://<N>", content })`, or bulk-resolve every registered conflict with `write({ path: "conflict://*", content })`. Writes replace ONLY the marker block (markers + all sides) — never repeat the lines before/after it; they stay in place.
+`content` shorthand: a line that is exactly `@ours` / `@theirs` / `@base` / `@both` expands to that recorded section. `@both` is ours-then-theirs with no separator — only for additive conflicts where each side adds something different; NEVER for competing edits of the same lines (pick a side or write the combined text). Lines that are not a token pass through verbatim, so `"// keep both\n@ours\n@theirs"` literally writes the comment, then ours, then theirs.
+Per-id bulk: `write({ path: "conflict://*", content: "1: @ours\n2: @theirs\n…" })` resolves each listed id with that side in ONE call — the cheapest way through many pick-one conflicts; unlisted ids stay registered.
+Resolve each block faithfully: keep one side (`@ours`/`@theirs`), or combine them when both intents apply — never invent content beyond the recorded sides, and never stack both sides of competing edits. Resolve several conflicts in a single turn by issuing multiple `write` calls at once; ids stay valid as earlier blocks are resolved.
+
+──── #1  L35-40 ────
+<<< ours
+            "decide",
+=== base
+(empty)
+>>> theirs
+            "sequence",

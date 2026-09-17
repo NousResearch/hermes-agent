@@ -981,7 +981,19 @@ class ClientLifecycleMixin:
             logger.debug("custom-provider TLS resolution skipped on credential rotation", exc_info=True)
         self._apply_client_headers_for_base_url(self.base_url, apply_user_headers=not route_changed)
 
+    def _with_session_continuity_header(self, api_kwargs: dict) -> dict:
+        """Return request kwargs with the current Hermes session identity attached."""
+        session_id = str(getattr(self, "session_id", "") or "").strip()
+        if not session_id:
+            return api_kwargs
+        merged = dict(api_kwargs)
+        headers = dict(merged.get("extra_headers") or {})
+        headers["X-Hermes-Session-Id"] = session_id
+        merged["extra_headers"] = headers
+        return merged
+
     def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
+        api_kwargs = self._with_session_continuity_header(api_kwargs)
         # A supplied request-local client was already refreshed in _create_request_anthropic_client.
         if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()

@@ -3778,6 +3778,8 @@ class TestRunConversation:
         assert "X-OpenRouter-Cache" not in request_kwargs[0].get(
             "extra_headers", {}
         )
+        assert request_kwargs[0]["extra_headers"]["X-Hermes-Session-Id"] == agent.session_id
+        assert request_kwargs[1]["extra_headers"]["X-Hermes-Session-Id"] == agent.session_id
         assert request_kwargs[1]["extra_headers"]["X-Custom-Header"] == "preserved"
         assert request_kwargs[1]["extra_headers"]["X-OpenRouter-Cache"] == "false"
 
@@ -6158,7 +6160,10 @@ class TestAnthropicCredentialRefresh:
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
         refresh.assert_called_once_with()
-        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.stream.assert_called_once_with(
+            model="claude-sonnet-4-20250514",
+            extra_headers={"X-Hermes-Session-Id": agent.session_id},
+        )
         agent._anthropic_client.messages.create.assert_not_called()
         assert result is response
 
@@ -6187,8 +6192,13 @@ class TestAnthropicCredentialRefresh:
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
-        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        expected_headers = {"X-Hermes-Session-Id": agent.session_id}
+        agent._anthropic_client.messages.stream.assert_called_once_with(
+            model="claude-sonnet-4-20250514", extra_headers=expected_headers
+        )
+        agent._anthropic_client.messages.create.assert_called_once_with(
+            model="claude-sonnet-4-20250514", extra_headers=expected_headers
+        )
         assert result is response
 
 
@@ -6258,9 +6268,51 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content == "Hello World"
         assert resp.choices[0].finish_reason == "stop"
         assert callback.call_count == 3
+        sent = agent.client.chat.completions.create.call_args.kwargs
+        assert sent["extra_headers"]["X-Hermes-Session-Id"] == agent.session_id
         callback.assert_any_call("Hel")
         callback.assert_any_call("lo ")
         callback.assert_any_call("World")
+
+    def test_anthropic_streaming_request_carries_session_header(self, agent):
+        from agent.chat_completion_helpers import _StreamingCall
+
+        agent.api_mode = "anthropic_messages"
+        request_client = MagicMock()
+        manager = MagicMock()
+        raw_stream = MagicMock()
+        final = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            stop_reason="end_turn",
+        )
+        raw_stream.get_final_message.return_value = final
+        manager.__enter__.return_value = raw_stream
+        request_client.messages.stream.return_value = manager
+
+        class FakeRelayStream:
+            output_modified = False
+            def __iter__(self):
+                return iter(())
+            def close(self):
+                return None
+
+        def fake_stream(api_kwargs, opener, *, on_stream_created, **kwargs):
+            opened = opener(api_kwargs)
+            on_stream_created(opened)
+            return FakeRelayStream()
+
+        with patch("agent.relay_llm.stream", side_effect=fake_stream):
+            call = _StreamingCall(
+                agent,
+                {"model": "claude-test", "messages": [], "extra_headers": {"X-Custom": "kept"}},
+                None,
+            )
+            result = call._call_anthropic(request_client)
+
+        sent = request_client.messages.stream.call_args.kwargs
+        assert sent["extra_headers"]["X-Hermes-Session-Id"] == agent.session_id
+        assert sent["extra_headers"]["X-Custom"] == "kept"
+        assert result is final
 
     def test_error_finish_http_status_429_stream_raises_rate_limit(self, agent):
         error_text = _provider_sse_429_text()

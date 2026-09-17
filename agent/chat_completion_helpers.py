@@ -739,6 +739,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
+    api_kwargs = agent._with_session_continuity_header(api_kwargs)
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
     return request_client.chat.completions.create(**api_kwargs)
 
@@ -2798,6 +2799,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._touch_activity("waiting for provider response (streaming)")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
+        stream_kwargs = self.agent._with_session_continuity_header(stream_kwargs)
         stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
         return request_client.chat.completions.create(**stream_kwargs)
 
@@ -3119,7 +3121,7 @@ class _StreamingCall(StreamingWaitMonitor):
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
-            final_kwargs = dict(next_api_kwargs)
+            final_kwargs = self.agent._with_session_continuity_header(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager

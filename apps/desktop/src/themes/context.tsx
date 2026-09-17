@@ -210,7 +210,12 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get(), transient = false) {
+function applyTheme(
+  theme: DesktopTheme,
+  mode: 'light' | 'dark',
+  chatFontFamily = $chatFontFamily.get(),
+  transient = false
+) {
   if (typeof document === 'undefined') {
     return
   }
@@ -550,7 +555,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [paintedTheme, wallpaperBaseTheme, paintedMode])
-
 
   // The chat face rides on the theme paint: the config-backed family is layered
   // in front of the theme's own stack, so an empty value is exactly the theme.

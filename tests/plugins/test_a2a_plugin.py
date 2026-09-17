@@ -1406,6 +1406,40 @@ class TestMultiAgentRouting:
         assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
 
 
+class TestOutboundVerbSelection:
+    """Outbound JSON-RPC verb must match the peer card: v0.3/pre-1.0 gateways
+    (no supportedInterfaces) require ``message/send``; v1.0 cards use ``SendMessage``."""
+
+    def _send_with_card(self, monkeypatch, card):
+        posted = {}
+
+        def fake_get(url, headers, timeout):
+            return card
+
+        def fake_post(url, body, headers, timeout):
+            posted["body"] = body
+            return {"jsonrpc": "2.0", "id": body["id"], "result": protocol.build_task(
+                "task-1", "ctx-1", protocol.STATE_COMPLETED, "ok"
+            )}
+
+        monkeypatch.setattr(tools, "_http_get_json", fake_get)
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        reply, _ctx, _state = tools._send_task(
+            "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", ""
+        )
+        assert reply == "ok"
+        return posted["body"]["method"]
+
+    def test_pre10_card_without_supported_interfaces_uses_message_send(self, monkeypatch):
+        card = {"name": "legacy", "protocolVersion": "0.3.0", "url": "http://peer.example/"}
+        assert self._send_with_card(monkeypatch, card) == "message/send"
+
+    def test_v10_card_with_supported_interfaces_uses_send_message(self, monkeypatch):
+        card = protocol.build_agent_card(name="dev", url="http://peer.example/", description="dev")
+        assert card.get("supportedInterfaces")
+        assert self._send_with_card(monkeypatch, card) == "SendMessage"
+
+
 class TestClientTenantAndDiscovery:
     def test_rpc_body_echoes_tenant_from_agent_card(self, monkeypatch):
         posted = {}

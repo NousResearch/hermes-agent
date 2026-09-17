@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 
@@ -12,8 +12,7 @@ import {
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
-  setPetActivity,
-  STEADY_ACTIVITY_TTL_MS
+  setPetActivity
 } from './pet'
 import { $activeSessionId, $busy } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
@@ -150,69 +149,34 @@ describe('flashPetActivity', () => {
   })
 })
 
-describe('deriveLivePetState recency guard (#84434 / #84438)', () => {
-  const now = Date.now()
+describe('$petState reads the active runtime slice, not the $busy mirror (#84434 / #84438)', () => {
+  const runtimeId = 'runtime-live'
+  const slice = (busy: boolean) => ({ ...createClientSessionState(null), busy, storedSessionId: 'stored-live' })
 
   afterEach(() => {
-    vi.useRealTimers()
     clearAllSessionStates()
     $activeSessionId.set(null)
     $busy.set(false)
     $petActivity.set({})
   })
 
-  it('animates a recent toolRunning flag even when $busy reads false', () => {
-    $petActivity.set({ toolRunning: true, toolRunningAt: now - 5_000 })
-    expect($petState.get()).toBe('run')
-  })
-
-  it('animates a recent reasoning flag even when $busy reads false', () => {
-    $petActivity.set({ reasoning: true, reasoningAt: now - 5_000 })
-    expect($petState.get()).toBe('review')
-  })
-
-  it('decays a stale flag back to idle (interrupted-turn guard preserved)', () => {
-    $petActivity.set({ toolRunning: true, toolRunningAt: now - STEADY_ACTIVITY_TTL_MS - 1 })
-    expect($petState.get()).toBe('idle')
-  })
-
-  it('setPetActivity stamps the timestamp on set', () => {
-    const before = Date.now()
-    setPetActivity({ toolRunning: true })
-    const activity = $petActivity.get()
-    expect(activity.toolRunningAt).toBeGreaterThanOrEqual(before)
-    expect(activity.toolRunningAt).toBeLessThanOrEqual(Date.now())
-  })
-
-  it('keeps a silent long-running tool active while its runtime is busy', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(now + STEADY_ACTIVITY_TTL_MS * 4)
-    $activeSessionId.set('runtime-long-tool')
-    $busy.set(false)
-    publishSessionState('runtime-long-tool', {
-      ...createClientSessionState(null),
-      busy: true,
-      storedSessionId: 'stored-long-tool'
-    })
-    $petActivity.set({ toolRunning: true, toolRunningAt: now })
+  it('animates a running tool while the active slice is busy even though $busy reads false', () => {
+    $activeSessionId.set(runtimeId)
+    publishSessionState(runtimeId, slice(true))
+    $petActivity.set({ toolRunning: true })
 
     expect($petState.get()).toBe('run')
-
-    publishSessionState('runtime-long-tool', {
-      ...createClientSessionState(null),
-      busy: false,
-      storedSessionId: 'stored-long-tool'
-    })
-    expect($petState.get()).toBe('idle')
+    expect($petAtRest.get()).toBe(false)
   })
 
-  it('clears the matching recency stamp when a steady flag clears', () => {
-    setPetActivity({ toolRunning: true, reasoning: true })
-    expect($petActivity.get().toolRunningAt).toBeTypeOf('number')
-    expect($petActivity.get().reasoningAt).toBeTypeOf('number')
+  it('drops to idle the moment the slice settles, even if no event cleared the steady flag', () => {
+    $activeSessionId.set(runtimeId)
+    publishSessionState(runtimeId, slice(true))
+    $petActivity.set({ toolRunning: true })
+    expect($petState.get()).toBe('run')
 
-    setPetActivity({ toolRunning: false, reasoning: false })
-    expect($petActivity.get().toolRunningAt).toBeUndefined()
-    expect($petActivity.get().reasoningAt).toBeUndefined()
+    // An interrupted turn flips busy→false without a tool.complete / message.complete.
+    publishSessionState(runtimeId, slice(false))
+    expect($petState.get()).toBe('idle')
   })
 })

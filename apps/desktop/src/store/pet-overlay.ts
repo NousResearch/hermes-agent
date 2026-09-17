@@ -1,8 +1,16 @@
 import { atom } from 'nanostores'
 
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
-import { $awaitingResponse, $busy } from '@/store/session'
+import {
+  $petActivity,
+  $petBusy,
+  $petInfo,
+  $petUnread,
+  clearPetUnread,
+  type PetActivity,
+  type PetInfo
+} from '@/store/pet'
+import { $awaitingResponse } from '@/store/session'
 
 /**
  * Controller for the pop-out pet overlay (main-renderer side).
@@ -144,7 +152,7 @@ function currentPayload(): PetOverlayStatePayload {
   return {
     info: $petInfo.get(),
     activity: $petActivity.get(),
-    busy: $busy.get(),
+    busy: $petBusy.get(),
     awaiting: $awaitingResponse.get(),
     unread: $petUnread.get(),
     reaction: $petReaction.get()
@@ -181,7 +189,7 @@ function openOverlay(request: PetOverlayOpenRequest): void {
   stateUnsubs = [
     $petInfo.subscribe(pushNow),
     $petActivity.subscribe(pushNow),
-    $busy.subscribe(pushNow),
+    $petBusy.subscribe(pushNow),
     $awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
     $petReaction.subscribe(pushNow)

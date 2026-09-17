@@ -690,12 +690,14 @@ class GatewayInboundMixin:
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
-            return (
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-            )
+                queued = bool(self._queue_or_replace_pending_event(_quick_key, event))
+                if queued:
+                    return f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                return (
+                    f"⚠️ Gateway {self._status_action_gerund()} — could not queue your message"
+                    f" (queue full or unavailable). Please send it again after it comes back."
+                )
+            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
             self._queue_or_replace_pending_event(_quick_key, event)

@@ -36,8 +36,22 @@ def _has_extension_in(path: str, extensions: frozenset) -> bool:
     return dot != -1 and path[dot:].lower() in extensions
 
 
+# SQLite journals and sidecars extend the database name instead of adding an
+# extension ("state.db-wal" -> ".db-wal"), which no dot-suffix lookup recognises:
+# the main file was refused while its -wal/-shm/-journal siblings passed every
+# binary check, so read_file handed the model lossy bytes that write_file then
+# wrote back over a live WAL generation.
+_JOURNAL_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
 def has_binary_extension(path: str) -> bool:
-    return _has_extension_in(path, BINARY_EXTENSIONS)
+    if _has_extension_in(path, BINARY_EXTENSIONS):
+        return True
+    lowered = path.lower()
+    for suffix in _JOURNAL_SUFFIXES:
+        if lowered.endswith(suffix) and _has_extension_in(lowered[: -len(suffix)], BINARY_EXTENSIONS):
+            return True
+    return False
 
 
 def has_opaque_document_extension(path: str) -> bool:

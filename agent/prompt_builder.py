@@ -1368,6 +1368,7 @@ def _render_skills_index(
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
+        "You can also search the catalog with skills_list(query=...) to find skills by task, domain, toolchain, or tags.\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"

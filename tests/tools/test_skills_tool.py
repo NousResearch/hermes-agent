@@ -320,6 +320,92 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_query_search_finds_hyphenated_skill_name(self, tmp_path):
+        """Queries normalize punctuation in skill names."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "system-prompt-skill-governance",
+                category="autonomous-ai-agents",
+                body="Govern system prompts and skill placement.",
+            )
+            _make_skill(tmp_path, "unrelated", category="creative")
+            result = json.loads(skills_list(query="system prompt governance"))
+
+        assert result["success"] is True
+        assert result["query"] == "system prompt governance"
+        assert result["skills"][0]["name"] == "system-prompt-skill-governance"
+
+    def test_query_search_matches_tags_and_limit(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "llm-training-ops",
+                frontmatter_extra="tags: [fine-tuning, llm]\n",
+                category="mlops",
+            )
+            _make_skill(tmp_path, "fine-tuning-with-trl", category="mlops")
+            result = json.loads(skills_list(query="fine tuning", limit=1))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["total_before_query"] == 2
+
+    def test_query_search_matches_metadata_hermes_tags(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "polymarket-research",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [prediction-market, forecasting]\n"
+                ),
+                category="research",
+            )
+            _make_skill(tmp_path, "unrelated-skill", category="tools")
+            result = json.loads(skills_list(query="prediction market"))
+
+        assert result["success"] is True
+        assert result["skills"][0]["name"] == "polymarket-research"
+
+    def test_query_search_returns_zero_for_no_match(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="tools")
+            result = json.loads(skills_list(query="xyzzy-nothing-matches"))
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["total_before_query"] == 1
+
+    def test_no_query_preserves_public_shape(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="tools")
+            _make_skill(tmp_path, "beta", category="tools")
+            result = json.loads(skills_list())
+
+        assert result["total_before_query"] is None
+        assert result["query"] is None
+        assert all(set(skill) == {"name", "description", "category"} for skill in result["skills"])
+
+    def test_search_metadata_does_not_leak_through_cache(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills_tool_module._SKILLS_CACHE.clear()
+            _make_skill(
+                tmp_path,
+                "tagged-skill",
+                frontmatter_extra="tags: [stable-search]\n",
+            )
+            try:
+                first = skills_tool_module._find_all_skills()
+                assert isinstance(first[0]["_search_tags"], tuple)
+                first[0]["_search_tags"] += ("poison",)
+
+                second = skills_tool_module._find_all_skills()
+                assert "poison" not in second[0]["_search_tags"]
+            finally:
+                skills_tool_module._SKILLS_CACHE.clear()
+
 
 # ---------------------------------------------------------------------------
 # skill_view

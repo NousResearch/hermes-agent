@@ -1047,7 +1047,7 @@ class TestSkillsEndpoint:
                 names = sorted(s["name"] for s in data["data"])
                 assert names == ["ascii-art", "github"]
                 for entry in data["data"]:
-                    assert set(entry.keys()) >= {"name", "description", "category"}
+                    assert set(entry.keys()) == {"name", "description", "category"}
 
 
 class TestToolsetsEndpoint:

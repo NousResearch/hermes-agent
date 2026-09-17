@@ -719,7 +719,6 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
-    job.pop("_notification_all_targets_suppressed", None)
     message = (
         f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
         f"Review it, act on anything that needs action, and summarize "
@@ -734,7 +733,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         from gateway.warning_notifications import warning_notifications_enabled
         from hermes_cli.config_effective import load_user_config_effective
         suppress_notification = for_failure and not warning_notifications_enabled(
-            "tui", load_user_config_effective(home / "config.yaml"))
+            BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
@@ -891,6 +890,8 @@ _ROUTING_TOKENS = frozenset({"all"})
 # Pseudo-platform: deliver output as a real inbound turn into a profile's "Bot Chat" (not a mirror).
 # ``bot-chat`` = own profile; ``bot-chat:<name>`` = named profile on THIS machine.
 BOT_CHAT_PLATFORM = "bot-chat"
+# Bot Chat is the TUI/Desktop transcript, so its warning policy is display.platforms.tui.
+BOT_CHAT_POLICY_PLATFORM = "tui"
 
 
 def parse_bot_chat_deliver_token(part: str) -> Optional[str]:

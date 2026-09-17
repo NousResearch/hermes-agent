@@ -328,9 +328,10 @@ function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
 // `R$ 361,67` — the Brazilian real. The sign is glued to a currency code and
 // the amount usually sits after a space, so neither the digit-after-dollar
 // rule nor remark-math's own heuristics recognize it; the `$` opens a span
-// that swallows the prose up to the next price. A `$` that closes an `R`
-// variable (`$R$`) is never followed by an amount, so requiring the `R` to
-// start a word and an amount to follow keeps math untouched.
+// that swallows the prose up to the next price. Requiring the `R` to start a
+// word and an amount to follow keeps ordinary math out; a span that really
+// ends in a standalone `R` before a number (`$R$ 5`, `$\Delta R$ 5`) never
+// gets here, because closesUnambiguousInlineMath consumes it from its opener.
 function isCurrencyCodeDollar(text: string, cursor: number): boolean {
   if (text[cursor - 1] !== 'R' || /[\p{L}\p{N}_]/u.test(text[cursor - 2] || '')) {
     return false
@@ -358,6 +359,29 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
     .join('')
 }
 
+/**
+ * Index of the `$` closing an inline span that opens at `openingIndex` and is
+ * math beyond doubt: a single token (`$R$`) or a body carrying TeX syntax
+ * (`$\Delta R$`). Prose caught between a stray dollar and a later price
+ * (`$x e R$ 5`) has whitespace and no TeX signal, so it stays prose and the
+ * price still gets escaped. Returns -1 when the span is absent or ambiguous.
+ */
+function closesUnambiguousInlineMath(text: string, openingIndex: number): number {
+  const closingIndex = findClosingSingleDollar(text, openingIndex)
+
+  if (closingIndex === -1) {
+    return -1
+  }
+
+  const body = text.slice(openingIndex + 1, closingIndex)
+
+  if (!/^[\p{L}\\{([|+\-=_^]/u.test(body)) {
+    return -1
+  }
+
+  return !/\s/u.test(body) || /\\[A-Za-z]+|[+*/=<>^_{}]/u.test(body) ? closingIndex : -1
+}
+
 function escapeCurrencyDollarsInProse(text: string): string {
   let out = ''
   let copiedThrough = 0
@@ -367,14 +391,23 @@ function escapeCurrencyDollarsInProse(text: string): string {
       continue
     }
 
-    if (isCurrencyCodeDollar(text, cursor)) {
-      out += `${text.slice(copiedThrough, cursor)}\\$`
-      copiedThrough = cursor + 1
+    // Step over a span that is certainly math before judging its closing `$`:
+    // `$R$ 5` ends in a standalone `R` followed by an amount, which is exactly
+    // what a price looks like from the closing dollar's side.
+    if (!isCurrencyCodeDollar(text, cursor) && !/\d/u.test(text[cursor + 1] || '')) {
+      const mathClosingIndex = closesUnambiguousInlineMath(text, cursor)
+
+      if (mathClosingIndex !== -1) {
+        cursor = mathClosingIndex
+      }
 
       continue
     }
 
-    if (!/\d/u.test(text[cursor + 1] || '')) {
+    if (isCurrencyCodeDollar(text, cursor)) {
+      out += `${text.slice(copiedThrough, cursor)}\\$`
+      copiedThrough = cursor + 1
+
       continue
     }
 

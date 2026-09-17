@@ -400,6 +400,11 @@ describe('preprocessMarkdown', () => {
     ['R\\$ 361,67 e R\\$3.497', 'R\\$ 361,67 e R\\$3.497'],
     ['R$ 361,67 e $x^2 + y^2$ e R$ 3.497', 'R\\$ 361,67 e $x^2 + y^2$ e R\\$ 3.497'],
     ['R$ 5 e $$a^2$$', 'R\\$ 5 e $$a^2$$'],
+    // A span that ends in a standalone `R` before a number is math, not a price…
+    ['resistência $R$ 5 vezes maior e $x$', 'resistência $R$ 5 vezes maior e $x$'],
+    ['variação $\\Delta R$ 5 vezes maior e $x$', 'variação $\\Delta R$ 5 vezes maior e $x$'],
+    // …but prose between a stray dollar and a price is not a span.
+    ['custa $x e R$ 5', 'custa $x e R\\$ 5'],
     ['R$ 5\n\n$$\na^2\n$$', 'R\\$ 5\n\n$$\na^2\n$$'],
     ['valor `R$ 361,67` e `R$3.497`', 'valor `R$ 361,67` e `R$3.497`'],
     ['```\nR$ 361,67\n```', '```\nR$ 361,67\n```']

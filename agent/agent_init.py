@@ -1157,10 +1157,14 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
     agent._parent_session_id = parent_session_id
+    # Composition-only is set by the API adapter immediately after construction; normal
+    # agents still get an explicit False so every newly persisted prompt is mode-tagged.
+    agent._composition_only = getattr(agent, "_composition_only", False) is True
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "composition_only": agent._composition_only,
     }
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.

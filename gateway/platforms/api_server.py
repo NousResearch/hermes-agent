@@ -2208,6 +2208,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "composition_only is not supported with api_mode='codex_app_server'"
                 )
             setattr(agent, "_composition_only", True)
+            # AIAgent initialization happens before the API adapter can mark this run. Do not
+            # let initialization-time Kanban guidance survive the tool scrub or the mode change.
+            setattr(agent, "_kanban_worker_guidance", "")
+            if isinstance(getattr(agent, "_session_init_model_config", None), dict):
+                agent._session_init_model_config["composition_only"] = True
             setattr(agent, "tools", [])
             for _attr in ("valid_tool_names", "_context_engine_tool_names"):
                 _names = getattr(agent, _attr, None)

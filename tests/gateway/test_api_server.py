@@ -304,6 +304,7 @@ class TestAdapterInit:
                 self.tools = [{"function": {"name": "kanban_show"}}]
                 self.valid_tool_names = {"kanban_show"}
                 self._context_engine_tool_names = {"lcm_grep"}
+                self._kanban_worker_guidance = "stale worker guidance"
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 37)
@@ -324,6 +325,7 @@ class TestAdapterInit:
         assert agent.tools == []
         assert agent.valid_tool_names == set()
         assert agent._context_engine_tool_names == set()
+        assert agent._kanban_worker_guidance == ""
 
     def test_create_agent_composition_only_rejects_codex_app_server(self, monkeypatch):
         closed = []

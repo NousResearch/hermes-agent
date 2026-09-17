@@ -15,6 +15,7 @@ instead of rebuilding).  Covers:
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import MagicMock
 
@@ -281,6 +282,44 @@ class TestStoredPromptReuse:
             agent.session_id, agent._cached_system_prompt
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        ("stored_mode", "current_mode", "stored_prompt", "rebuilt_prompt"),
+        [
+            (False, True, "NORMAL_PROMPT", "COMPOSITION_PROMPT"),
+            (True, False, "COMPOSITION_PROMPT", "NORMAL_PROMPT"),
+        ],
+        ids=["normal-to-composition", "composition-to-normal"],
+    )
+    def test_existing_session_prompt_mode_isolated_and_retagged(
+        self, tmp_path, stored_mode, current_mode, stored_prompt, rebuilt_prompt,
+    ):
+        """A mode switch on an existing row must rebuild, then tag the replacement bytes."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            "test-session-id",
+            source="api_server",
+            model="test-model",
+            model_config={"composition_only": stored_mode},
+            system_prompt=stored_prompt,
+        )
+        agent = _make_agent(session_db=db, prebuilt_prompt=rebuilt_prompt)
+        agent._composition_only = current_mode
+        try:
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+            assert agent._cached_system_prompt == rebuilt_prompt
+            agent._build_system_prompt.assert_called_once_with(None)
+            row = db.get_session(agent.session_id)
+            assert row is not None
+            assert row["system_prompt"] == rebuilt_prompt
+            assert json.loads(row["model_config"])["composition_only"] is current_mode
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

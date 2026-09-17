@@ -68,6 +68,47 @@ _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 # Shared by _apply_active_turn_redirect and the api_messages ghost-row filter so both sites cannot drift.
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
+_COMPOSITION_ONLY_MODEL_CONFIG_KEY = "composition_only"
+_MISSING_PROMPT_MODE = object()
+
+
+def _composition_only_mode(agent: Any) -> bool:
+    """Return the explicit composition-only mode without trusting truthy test doubles."""
+    return getattr(agent, "_composition_only", False) is True
+
+
+def _stored_prompt_matches_composition_mode(agent: Any, session_row: Dict[str, Any]) -> bool:
+    """Reject a persisted prompt tagged for the other API run mode.
+
+    Rows written before composition-only runs carried no mode marker and are treated as
+    normal prompts for backwards-compatible normal resumes. Composition-only restores fail
+    closed for those legacy rows because an untagged prompt could have been built with tools.
+    """
+    current_mode = _composition_only_mode(agent)
+    raw_config = session_row.get("model_config") if session_row else None
+    if isinstance(raw_config, str):
+        if not raw_config.strip():
+            stored_mode = _MISSING_PROMPT_MODE
+        else:
+            try:
+                raw_config = json.loads(raw_config)
+            except (TypeError, json.JSONDecodeError):
+                return False
+            stored_mode = raw_config.get(_COMPOSITION_ONLY_MODEL_CONFIG_KEY, _MISSING_PROMPT_MODE) \
+                if isinstance(raw_config, dict) else _MISSING_PROMPT_MODE
+    elif isinstance(raw_config, dict):
+        stored_mode = raw_config.get(_COMPOSITION_ONLY_MODEL_CONFIG_KEY, _MISSING_PROMPT_MODE)
+    elif raw_config is None:
+        stored_mode = _MISSING_PROMPT_MODE
+    else:
+        return False
+
+    if stored_mode is _MISSING_PROMPT_MODE:
+        return not current_mode
+    if not isinstance(stored_mode, bool):
+        return False
+    return stored_mode is current_mode
+
 
 # One-time wrap-up notice appended when a wall-clock run budget (--run-budget) crosses 80%.
 RUN_BUDGET_WRAPUP_NOTICE = (
@@ -644,11 +685,21 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
 def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool = False) -> None:
     """Persist ``agent._cached_system_prompt`` to the session row; failures log at WARNING
     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
-    this row every turn, so a silent failure breaks prefix-cache reuse."""
+    this row every turn, so a silent failure breaks prefix-cache reuse. The composition-only
+    mode marker is written with the prompt so a normal and composition-only run can never
+    reuse one another's cached bytes."""
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        mode = getattr(agent, "_composition_only", None)
+        if isinstance(mode, bool):
+            agent._session_db.update_system_prompt(
+                agent.session_id, agent._cached_system_prompt, composition_only=mode,
+            )
+        else:
+            # Keep lightweight legacy/test session stores compatible; real SessionDB agents
+            # always receive the explicit bool from agent initialization.
+            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
@@ -679,7 +730,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
-    if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+    runtime_matches = bool(stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt))
+    mode_matches = bool(stored_prompt and _stored_prompt_matches_composition_mode(agent, session_row or {}))
+    if stored_prompt and runtime_matches and mode_matches:
         if _bot_chat_prompt_stale(agent, stored_prompt):
             logger.info(
                 "Bot Chat capability epoch changed for session %s; rebuilding system prompt to "
@@ -740,11 +793,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         reconstruct_static_prefix(agent, system_message=system_message)
         return
     if stored_prompt:
-        stored_state = "stale_runtime"
+        stored_state = "stale_runtime" if not runtime_matches else "stale_composition_mode"
         logger.info(
-            "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id, getattr(agent, "model", "") or "", getattr(agent, "provider", "") or "",
+            "Stored system prompt for session %s has stale %s; rebuilding for model=%s provider=%s.",
+            agent.session_id,
+            "runtime identity" if not runtime_matches else "composition-only mode",
+            getattr(agent, "model", "") or "", getattr(agent, "provider", "") or "",
         )
 
     if conversation_history and stored_state in ("null", "empty"):

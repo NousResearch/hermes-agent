@@ -106,6 +106,23 @@ def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_i
         assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
 
 
+def test_kanban_guidance_is_gated_for_composition_only_agents(monkeypatch):
+    """Composition-only runs must not regain worker guidance through the fallback path."""
+    from agent.delegation_context import owned_kanban_task
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.system_prompt import _tool_guidance_block
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    agent = _make_agent(
+        valid_tool_names={"kanban_show"},
+        _kanban_worker_guidance=KANBAN_GUIDANCE,
+        _composition_only=True,
+    )
+
+    assert owned_kanban_task() == "t_worker"
+    assert _tool_guidance_block(agent) is None
+
+
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
 @pytest.mark.parametrize("names", [
     set(), {"memory"}, {"memory", "skill_view", "skills_list"},

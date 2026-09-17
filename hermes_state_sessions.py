@@ -633,8 +633,27 @@ class SessionSessionsMixin:
             (model_config_json, model, session_id),
         )
 
-    def update_system_prompt(self, session_id: str, system_prompt: Optional[str]) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(
+        self, session_id: str, system_prompt: Optional[str], *, composition_only: Optional[bool] = None,
+    ) -> None:
+        """Store the full assembled system prompt snapshot and, when supplied, its API run mode."""
+        if composition_only is not None:
+            def _do_mode_tagged(conn):
+                merged = self._merge_model_config_json(
+                    conn, session_id, {"composition_only": bool(composition_only)},
+                )
+                if merged is _MODEL_CONFIG_ROW_MISSING:
+                    return
+                conn.execute(
+                    "UPDATE sessions SET model_config = ?, system_prompt_hash = ?, system_prompt = NULL "
+                    "WHERE id = ?",
+                    (merged, self._store_system_prompt(conn, system_prompt), session_id),
+                )
+                self._delete_unreferenced_system_prompts(conn)
+
+            self._execute_write(_do_mode_tagged)
+            return
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",

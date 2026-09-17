@@ -322,11 +322,13 @@ class AIAgent(
         The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
         /yolo toggle for ``hermes --resume``.
         """
-        model_config = self._session_init_model_config
+        model_config = dict(self._session_init_model_config or {})
+        # This mode is assigned by the API adapter after AIAgent construction, so derive it
+        # at row-creation time rather than trusting the construction snapshot.
+        model_config["composition_only"] = getattr(self, "_composition_only", False) is True
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):
-                model_config = dict(model_config or {})
                 model_config["yolo_mode"] = True
         except Exception:
             pass

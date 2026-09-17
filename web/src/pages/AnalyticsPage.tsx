@@ -417,25 +417,36 @@ export default function AnalyticsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
-  useEffect(() => {
-    api
-      .getConfig()
-      .then((cfg) => {
+  const load = useCallback(async () => {
+    // Await-first loader: everything after the leading await is a promise
+    // continuation, so no setState ever runs synchronously in the effect
+    // body below (react-hooks/set-state-in-effect). The spinner shows on
+    // mount (loading boots `true`) and during manual refresh via the
+    // disabled button until the `finally` clears it.
+    await Promise.resolve();
+    // Resolve the dashboard.show_token_analytics gate once. Config failure
+    // hides the tokens section (pre-existing behavior) instead of surfacing
+    // a spurious analytics error.
+    if (showTokens === null) {
+      try {
+        const cfg = await api.getConfig();
         const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
         setShowTokens(dash.show_token_analytics === true);
-      })
-      .catch(() => setShowTokens(false));
-  }, []);
-
-  const load = useCallback(() => {
-    if (!showTokens) return;
-    setLoading(true);
+      } catch {
+        setShowTokens(false);
+        setLoading(false);
+        return;
+      }
+    }
+    if (showTokens === false) return;
     setError(null);
-    api
-      .getAnalytics(days)
-      .then(setData)
-      .catch((err) => setError(errorMessage(err)))
-      .finally(() => setLoading(false));
+    try {
+      setData(await api.getAnalytics(days));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
   }, [days, showTokens]);
 
   useLayoutEffect(() => {
@@ -479,7 +490,13 @@ export default function AnalyticsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
 
   useEffect(() => {
-    load();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await load();
+    })();
   }, [load]);
 
   return (

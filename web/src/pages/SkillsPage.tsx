@@ -1179,9 +1179,11 @@ function HubBrowser({
         </>
       )}
 
-      {/* ── Detail dialog: preview + scan ── */}
+      {/* ── Detail dialog: preview + scan. The key remounts the dialog per
+          skill, so its preview state resets without a setState-in-effect. ── */}
       {detail && (
         <SkillDetailDialog
+          key={detail.identifier}
           result={detail}
           installed={isInstalled(detail.identifier)}
           onClose={() => setDetail(null)}
@@ -1383,21 +1385,26 @@ function SkillDetailDialog({
 }) {
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(true);
+  // `null` preview = the fetch still owns the region (spinner); a settled
+  // fetch hands ownership to the render (data or the failure note).
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
   const trust = trustVisual(result.trust_level);
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
-      .then((p) => !cancelled && setPreview(p))
-      .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${errorMessage(e)}`, "error");
+      .then((p) => {
+        if (cancelled) return;
+        setPreview(p);
       })
-      .finally(() => !cancelled && setPreviewLoading(false));
+      .catch((e) => {
+        if (cancelled) return;
+        setPreviewFailed(true);
+        showToast(`Preview failed: ${errorMessage(e)}`, "error");
+      });
     return () => {
       cancelled = true;
     };
@@ -1504,7 +1511,7 @@ function SkillDetailDialog({
         {/* Body */}
         <div className="mt-3 max-h-[55vh] overflow-auto">
           {tab === "readme" ? (
-            previewLoading ? (
+            preview === null && !previewFailed ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="text-xl text-primary" />
               </div>
@@ -1536,7 +1543,9 @@ function SkillDetailDialog({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
+                {previewFailed
+                  ? "Couldn't load the skill source."
+                  : "No preview available."}
               </p>
             )
           ) : (

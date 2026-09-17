@@ -682,11 +682,12 @@ function WhatsAppOnboardingPanel({
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
-  useEffect(() => {
-    if (!setup && phase === "idle" && configuredMode) {
-      setMode(configuredMode);
-    }
-  }, [configuredMode, phase, setup]);
+  // Keep the picker aligned with the saved server config while no onboarding
+  // flow is in flight (render-phase state adjustment per the React docs —
+  // the guarded compare settles immediately, no loop, no setState-in-effect).
+  if (!setup && phase === "idle" && configuredMode && mode !== configuredMode) {
+    setMode(configuredMode);
+  }
 
   const updateQr = useCallback(async (payload?: string | null) => {
     if (!payload) return;

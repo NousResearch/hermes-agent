@@ -69,6 +69,37 @@ def _resolve_target(path: str) -> Optional[Path]:
     return None
 
 
+def _real_home() -> str:
+    """The OS user's real HOME, independent of the process HOME.
+
+    When the process HOME is pinned to a profile home (``TERMINAL_HOME_MODE=profile``,
+    containers, or spawned workers), ``os.path.expanduser("~")`` resolves to the
+    profile home — leaving the real user's credential files (``~/.aws/credentials``,
+    ``~/.ssh/id_*``, etc.) unguarded.  ``hermes_constants.get_real_home()`` resolves
+    the actual OS-user home via ``HERMES_REAL_HOME``, ``pwd.getpwuid``, etc.
+    """
+    try:
+        import hermes_constants
+        return os.path.realpath(hermes_constants.get_real_home())
+    except Exception:
+        return os.path.realpath(os.path.expanduser("~"))
+
+
+def _all_guard_homes() -> list[str]:
+    """Deduplicated list of homes to guard credential writes against.
+
+    Always includes the process ``~`` (the old anchor); when it differs from the
+    OS-user real home, the real home is appended so credential files under it are
+    covered by the deny/approval lists.
+    """
+    process_home = os.path.realpath(os.path.expanduser("~"))
+    real = _real_home()
+    homes = [process_home]
+    if real != process_home:
+        homes.append(real)
+    return homes
+
+
 def _home_and_resolved(path: str) -> tuple[str, str]:
     """``(realpath(~), realpath(expanduser(path)))`` — the write-guard coordinate pair."""
     return tuple(os.path.realpath(os.path.expanduser(p)) for p in ("~", str(path)))
@@ -232,11 +263,15 @@ def _classify_write_denial(path: str) -> Optional[str]:
 
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if resolved in build_write_approval_paths(home):
+    # Check ALL guard homes (process ~ + real home) so credential files under
+    # the real home are covered when the process HOME is pinned to a profile home.
+    if any(resolved in build_write_approval_paths(h) for h in _all_guard_homes()):
         return None
 
-    if resolved in build_write_denied_paths(home) or any(
-        resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home)
+    if any(
+        resolved in build_write_denied_paths(h)
+        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(h))
+        for h in _all_guard_homes()
     ):
         return "credential"
 
@@ -276,7 +311,7 @@ def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
     home, resolved = _home_and_resolved(path)
-    return resolved in build_write_approval_paths(home)
+    return any(resolved in build_write_approval_paths(h) for h in _all_guard_homes())
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

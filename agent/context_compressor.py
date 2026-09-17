@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
@@ -1285,18 +1285,19 @@ def _image_block_count(msg: Dict[str, Any]) -> int:
     return sum(1 for p in inner if _is_image_part(p)) if isinstance(inner, list) else 0
 
 
-def _reserved_image_blocks(api_messages: List[Dict[str, Any]]) -> int:
-    """Image blocks the send path must count but must never rewrite (user uploads).
+def _reserved_image_blocks(api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
+    """``(blocks, bytes)`` of image payload the send path counts but must never rewrite.
 
-    They occupy the provider's per-request budget exactly like tool screenshots, so
-    ignoring them lets a mixed session sail past the limit; rewriting them would
-    silently discard something the user attached by hand.
+    User uploads occupy the provider's per-request block and size budgets exactly like
+    tool screenshots, so ignoring them lets a mixed session breach either ceiling;
+    rewriting them would silently discard something the user attached by hand.
     """
-    return sum(
-        _image_block_count(m)
-        for m in api_messages
-        if isinstance(m, dict) and m.get("role") != "tool"
-    )
+    blocks = payload = 0
+    for m in api_messages:
+        if isinstance(m, dict) and m.get("role") != "tool":
+            blocks += _image_block_count(m)
+            payload += _image_payload_bytes(m)
+    return blocks, payload
 
 
 def _outbound_image_retire_count(
@@ -1304,6 +1305,7 @@ def _outbound_image_retire_count(
     sizes_newest_first: List[int],
     *,
     reserved_blocks: int,
+    reserved_bytes: int,
     limit: int,
     budget: int,
     batch: int,
@@ -1319,22 +1321,44 @@ def _outbound_image_retire_count(
     batches keeps the request within ``limit``/``budget`` and moves the frontier once per
     batch.
 
-    ``keep_newest`` is a FLOOR, not a trigger. When reserved user uploads alone fill the
-    ceiling, retiring every tool screenshot would leave the model blind on the very frames
-    it was asked about, which is worse than the stricter dimension cap the limit avoids.
+    Reserved user uploads count toward BOTH ceilings; they are never rewritten, but
+    ignoring their bytes lets a handful of large uploads carry the request past the
+    provider's hard request-size limit unnoticed.
+
+    ``keep_newest`` is a SATISFIABILITY floor, not an unconditional one. It exists for the
+    case where reserved uploads alone breach the ceiling: retiring every tool screenshot
+    then cannot fix the request and would only blind the model on the frames it was just
+    asked about, which is worse than the stricter dimension cap the block limit avoids.
+    Whenever retiring tool content CAN bring the request inside the ceiling, it does so,
+    even past the floor — and byte pressure never yields to the floor at all, because the
+    request-size limit is hard and the provider answers 413.
     """
     total = len(block_counts_newest_first)
-    if (reserved_blocks + sum(block_counts_newest_first) <= limit
-            and sum(sizes_newest_first) <= budget):
+
+    def _blocks_fit(kept: int) -> bool:
+        return reserved_blocks + sum(block_counts_newest_first[:kept]) <= limit
+
+    def _bytes_fit(kept: int) -> bool:
+        return reserved_bytes + sum(sizes_newest_first[:kept]) <= budget
+
+    def _fits(kept: int) -> bool:
+        return _blocks_fit(kept) and _bytes_fit(kept)
+
+    if _fits(total):
         return 0
 
-    max_retire = max(total - max(keep_newest, 0), 0)
+    # The floor may only shelter a violation that retiring tool content cannot fix.
+    floor = max(keep_newest, 0)
+    if _fits(0) or not _bytes_fit(floor):
+        # Eviction can clear the ceiling, or bytes breach it even at the floor: no shelter.
+        max_retire = total
+    else:
+        max_retire = max(total - floor, 0)
+
     retire = 0
     while retire < max_retire:
         retire = min(retire + batch, max_retire)
-        kept = total - retire
-        if (reserved_blocks + sum(block_counts_newest_first[:kept]) <= limit
-                and sum(sizes_newest_first[:kept]) <= budget):
+        if _fits(total - retire):
             break
     return retire
 
@@ -1377,10 +1401,12 @@ def evict_stale_outbound_tool_images(
         and api_messages[i].get("role") == "tool"
         and (size := _image_payload_bytes(api_messages[i])) > 0
     ]
+    reserved_blocks, reserved_bytes = _reserved_image_blocks(api_messages)
     retire = _outbound_image_retire_count(
         [blocks for _, blocks, _ in images],
         [s for _, _, s in images],
-        reserved_blocks=_reserved_image_blocks(api_messages),
+        reserved_blocks=reserved_blocks,
+        reserved_bytes=reserved_bytes,
         limit=_OUTBOUND_IMAGE_LIMIT,
         budget=_OUTBOUND_IMAGE_BUDGET_BYTES,
         batch=_IMAGE_EVICTION_BATCH,

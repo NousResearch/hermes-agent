@@ -8,6 +8,8 @@ unconditional per-call chokepoint.
 
 from __future__ import annotations
 
+import json
+
 from agent.agent_runtime_helpers import sanitize_api_messages
 from agent.context_compressor import (
     _IMAGE_EVICTION_BATCH,
@@ -263,6 +265,119 @@ class TestOutboundStaleVisionEviction:
         outbound = sanitize_api_messages(history)
         evict_stale_outbound_tool_images(outbound)
         assert len(_image_bearing_tool_ids(outbound)) == _MAX_KEEP_TOOL_IMAGES
+
+    def test_byte_pressure_overrides_the_keep_newest_floor(self):
+        """A hard request-size breach must not be preserved by the floor.
+
+        Five 5 MB uploads plus three 3 MB tool images serialize to ~34 MB against
+        Anthropic's 32 MB Messages limit
+        (https://platform.claude.com/docs/en/api/overview#request-size-limits).
+        Uploads are never rewritten, so the only way under the ceiling is to retire
+        every removable tool image — the floor may cost a frame, never a 413.
+        """
+        mb = 1024 * 1024
+        hard_limit = 32 * mb
+
+        def blob(size_mb: float) -> str:
+            return "data:image/jpeg;base64," + "Q" * int(size_mb * mb)
+
+        history: list[dict] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    *[
+                        {"type": "image_url", "image_url": {"url": blob(5.0)}}
+                        for _ in range(5)
+                    ],
+                ],
+            }
+        ]
+        for i in range(3):
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{i}",
+                            "type": "function",
+                            "function": {"name": "vision_analyze", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": [
+                        {"type": "text", "text": f"shot {i}"},
+                        {"type": "image_url", "image_url": {"url": blob(3.0)}},
+                    ],
+                }
+            )
+
+        outbound = sanitize_api_messages(history)
+        assert len(json.dumps(outbound, ensure_ascii=False)) > hard_limit, (
+            "fixture must start over the hard limit or it proves nothing"
+        )
+
+        evict_stale_outbound_tool_images(outbound)
+
+        assert len(json.dumps(outbound, ensure_ascii=False)) < hard_limit, (
+            "the floor kept tool images that push the request past the 32 MB limit"
+        )
+        assert _image_bearing_tool_ids(outbound) == []
+        user = next(m for m in outbound if m.get("role") == "user")
+        assert sum(
+            1 for p in user["content"]
+            if isinstance(p, dict) and p.get("type") == "image_url"
+        ) == 5, "user uploads must survive byte-driven eviction untouched"
+
+    def test_floor_yields_when_eviction_can_fix_the_breach(self):
+        """The floor shelters only violations that retiring tool content cannot fix.
+
+        A single `tool_result` carrying 25 image blocks breaches the 20-block ceiling on
+        its own. There are fewer carriers than the floor, so a floor applied
+        unconditionally leaves the request over the limit while evicting nothing.
+        """
+        history: list[dict] = [{"role": "user", "content": "start"}]
+        history.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "vision_analyze", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        history.append(
+            {
+                "role": "tool",
+                "tool_call_id": "call_0",
+                "content": [
+                    {"type": "text", "text": "batch"},
+                    *[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,A{k}"},
+                        }
+                        for k in range(_OUTBOUND_IMAGE_LIMIT + 5)
+                    ],
+                ],
+            }
+        )
+        outbound = sanitize_api_messages(history)
+        assert _outbound_image_blocks(outbound) > _OUTBOUND_IMAGE_LIMIT
+        evict_stale_outbound_tool_images(outbound)
+        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT, (
+            "the floor sheltered a breach that retiring tool content could fix"
+        )
 
     def test_does_not_rewrite_persisted_history(self):
         from agent.conversation_loop import _clone_message_for_send

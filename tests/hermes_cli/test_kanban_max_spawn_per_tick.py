@@ -148,7 +148,15 @@ def home_with_protected_config(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     for prof in ["kensei", "denji", "orchestrator", "misa-misa", "worker-ok", "default"]:
-        (home / "profiles" / prof).mkdir(parents=True, exist_ok=True)
+        prof_dir = home / "profiles" / prof
+        prof_dir.mkdir(parents=True, exist_ok=True)
+        # ``profile_exists`` requires an identity marker (see
+        # ``hermes_constants._PROFILE_IDENTITY_MARKERS``): a bare directory is
+        # a ghost shell and resolves as a non-profile. Give each synthetic
+        # profile one so the spawnability gate is exercised for the right
+        # reason — the ``nonspawnable_profiles`` list — rather than tripping
+        # the marker check and blocking every assignee indiscriminately.
+        (prof_dir / "config.yaml").write_text("tier: 1\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for mod in list(sys.modules.keys()):
@@ -249,8 +257,16 @@ def test_cli_dispatch_passes_max_spawn_per_tick_from_config(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
 
     captured = {}
+
+    # Patch the REAL dispatch entry point. ``kanban_db.dispatch_once`` is a
+    # deprecated compat shim (removal 2026-09-14) that only re-exports the
+    # symbol for external plugins; ``_cmd_dispatch`` resolves it through
+    # ``kanban_db_dispatch`` at call time, so patching the old alias leaves
+    # the real call unpatched and this test asserts against an empty dict.
+    from hermes_cli import kanban_db_dispatch
+
     monkeypatch.setattr(
-        kanban_db, "dispatch_once",
+        kanban_db_dispatch, "dispatch_once",
         lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
     )
     args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)

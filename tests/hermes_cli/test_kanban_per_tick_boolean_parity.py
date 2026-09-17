@@ -58,13 +58,18 @@ def test_cli_config_rejects_bool_max_spawn_per_tick(monkeypatch, bad):
 
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch
 
     fake_config = {"kanban": {"max_in_progress": 5, "max_spawn_per_tick": bad}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
 
     captured = {}
+    # Patch the REAL entry point: ``kanban_db.dispatch_once`` is a deprecated
+    # compat shim re-exported only for external plugins, and ``_cmd_dispatch``
+    # resolves the symbol through ``kanban_db_dispatch`` at call time — so
+    # patching the old alias leaves the real call unpatched.
     monkeypatch.setattr(
-        kanban_db, "dispatch_once",
+        kanban_db_dispatch, "dispatch_once",
         lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
     )
     args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
@@ -82,9 +87,11 @@ async def _drive_watcher(runner, *, target_ticks: int):
     """Run ``_kanban_dispatcher_watcher`` until ``target_ticks`` ticks occur."""
     import gateway.kanban_watchers as kw
 
+    from hermes_cli import kanban_db_dispatch as _kbd_mod
+
     _orig_sleep = asyncio.sleep
     state = {"ticks": 0}
-    _real_reap = kb.reap_worker_zombies
+    _real_reap = _kbd_mod.reap_worker_zombies
 
     def _counting_reap():
         state["ticks"] += 1
@@ -95,7 +102,7 @@ async def _drive_watcher(runner, *, target_ticks: int):
     async def _fast_sleep(_d):
         await _orig_sleep(0)
 
-    with patch.object(kb, "reap_worker_zombies", _counting_reap), \
+    with patch.object(_kbd_mod, "reap_worker_zombies", _counting_reap), \
          patch.object(kw.asyncio, "sleep", side_effect=_fast_sleep):
         await asyncio.wait_for(
             runner._kanban_dispatcher_watcher(),
@@ -119,9 +126,14 @@ async def test_gateway_config_rejects_bool_max_spawn_per_tick(kanban_home, monke
         captured.update(kw)
         return kb.DispatchResult()
 
-    monkeypatch.setattr(kb, "dispatch_once", _spy_dispatch_once)
-    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
-    monkeypatch.setattr(kb, "has_spawnable_review", lambda conn: False)
+    # The watcher resolves these through ``kanban_db_dispatch`` at call time;
+    # ``kb`` is a deprecated compat shim (removal 2026-09-14) and patching it
+    # alone is a silent no-op.
+    from hermes_cli import kanban_db_dispatch as _kbd_mod
+
+    monkeypatch.setattr(_kbd_mod, "dispatch_once", _spy_dispatch_once)
+    monkeypatch.setattr(_kbd_mod, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(_kbd_mod, "has_spawnable_review", lambda conn: False)
 
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
@@ -151,13 +163,15 @@ def test_cli_config_accepts_positive_int_max_spawn_per_tick(monkeypatch, good):
 
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch
 
     fake_config = {"kanban": {"max_in_progress": 5, "max_spawn_per_tick": good}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
 
     captured = {}
+    # Same compat-shim hazard as the bool test above.
     monkeypatch.setattr(
-        kanban_db, "dispatch_once",
+        kanban_db_dispatch, "dispatch_once",
         lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
     )
     args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
@@ -180,9 +194,14 @@ async def test_gateway_config_accepts_positive_int_max_spawn_per_tick(kanban_hom
         captured.update(kw)
         return kb.DispatchResult()
 
-    monkeypatch.setattr(kb, "dispatch_once", _spy_dispatch_once)
-    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
-    monkeypatch.setattr(kb, "has_spawnable_review", lambda conn: False)
+    # The watcher resolves these through ``kanban_db_dispatch`` at call time;
+    # ``kb`` is a deprecated compat shim (removal 2026-09-14) and patching it
+    # alone is a silent no-op.
+    from hermes_cli import kanban_db_dispatch as _kbd_mod
+
+    monkeypatch.setattr(_kbd_mod, "dispatch_once", _spy_dispatch_once)
+    monkeypatch.setattr(_kbd_mod, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(_kbd_mod, "has_spawnable_review", lambda conn: False)
 
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)

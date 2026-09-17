@@ -1288,6 +1288,11 @@ def _run_desktop_pack_with_recovery(
     A MISSING exe is the signature of the corrupt-download class; a late failure
     (e.g. macOS signing) leaves it in place and a redownload retry would only
     repeat the same slow failure.
+
+    Both rungs additionally require the Electron distributable to be MISSING.
+    "No staged exe" is also true of every failure before electron-builder ever
+    runs (compile, bundler, native link), and switching mirrors cannot repair
+    those — it just re-runs the whole pack behind a message blaming GitHub.
     """
     from hermes_cli.main import PROJECT_ROOT
     def _staged_exe() -> Optional[Path]:
@@ -1321,13 +1326,13 @@ def _run_desktop_pack_with_recovery(
         build_result.returncode != 0
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
-        and _staged_exe() is None):
+        and _staged_exe() is None
+        and not _electron_dist_ok(PROJECT_ROOT)):
         print("  ⚠ Desktop build still failing; the Electron download from "
               "GitHub looks blocked. Re-downloading via a public mirror "
               "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
         mirror_env = {**npm_build_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
-        if not _electron_dist_ok(PROJECT_ROOT):
-            _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
+        _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
         _stop_desktop_processes_locking_build(desktop_dir)
         build_result = _pack(mirror_env)
     return build_result

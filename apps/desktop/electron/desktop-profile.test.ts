@@ -146,3 +146,30 @@ test('an explicit default survives last-used profile writes and app restarts, is
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('successful local profile changes retarget the saved startup profile', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-change-'))
+  const target = path.join(root, 'active-profile.json')
+  const preferences = createDesktopProfilePreferences(target)
+
+  try {
+    preferences.remember('local-old')
+    preferences.afterProfileRequest(null, { method: 'DELETE', path: '/api/profiles/local-old' }, { ok: false })
+    assert.equal(preferences.readActive(), 'local-old')
+
+    preferences.afterProfileRequest('remote-work', { method: 'DELETE', path: '/api/profiles/local-old' }, { ok: true })
+    assert.equal(preferences.readActive(), 'local-old')
+
+    preferences.afterProfileRequest(
+      null,
+      { method: 'PATCH', path: '/api/profiles/local-old', body: { new_name: 'local-new' } },
+      { ok: true }
+    )
+    assert.equal(preferences.readActive(), 'local-new')
+
+    preferences.afterProfileRequest(null, { method: 'DELETE', path: '/api/profiles/local-new' }, { ok: true })
+    assert.equal(preferences.readActive(), 'default')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

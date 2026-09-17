@@ -140,6 +140,10 @@ export function createDesktopProfilePreferences(
   }
 
   function profileChanged(connectionId: null | string, oldName: string, newName: null | string) {
+    if (connectionId === null && readActive() === oldName) {
+      remember(newName || 'default')
+    }
+
     const route = getDefault()
 
     if (route?.connectionId !== connectionId || route?.profile !== oldName) {

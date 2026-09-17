@@ -187,7 +187,10 @@ def validate_env_var_name_for_write(key: str) -> None:
 # Serializes all config read/write paths and guards the module-level caches below. libyaml's
 # C extension is not thread-safe for concurrent safe_load() on one file, and tool threads
 # (approval, browser, setup flows) load/save config concurrently during long agent runs.
-# RLock because save_config internally calls read_raw_config.
+# RLock because callers hold it across a read-modify-write and then call save_config(), which
+# acquires it again (hermes_cli/plugins.py: `with ..., config_mod._CONFIG_LOCK:` then
+# read_user_config_raw() + save_config()). save_config itself no longer re-enters via
+# read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).

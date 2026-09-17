@@ -537,12 +537,15 @@ class TestStopProfileGateway:
         pid = 12345
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
         monkeypatch.setattr(gateway, "is_windows", lambda: True)
         monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
         monkeypatch.setattr(
             gateway_windows,
             "_drain_gateway_pid",
-            lambda target, timeout: calls.append(("drain", target, timeout)) or True,
+            lambda target, timeout, identity: calls.append(
+                ("drain", target, timeout, identity)
+            ) or True,
         )
         monkeypatch.setattr(
             gateway_windows,
@@ -555,7 +558,7 @@ class TestStopProfileGateway:
         monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
 
         assert gateway.stop_profile_gateway() is True
-        assert calls == [("drain", pid, 7.0)]
+        assert calls == [("drain", pid, 7.0, 100)]
 
     def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
         """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
@@ -570,7 +573,9 @@ class TestStopProfileGateway:
         monkeypatch.setattr(
             gateway_windows,
             "_drain_gateway_pid",
-            lambda target, timeout: calls.append(("drain", target, timeout)) or False,
+            lambda target, timeout, identity: calls.append(
+                ("drain", target, timeout, identity)
+            ) or False,
         )
         monkeypatch.setattr(
             gateway_windows,
@@ -583,7 +588,7 @@ class TestStopProfileGateway:
         monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
 
         assert gateway.stop_profile_gateway() is True
-        assert calls == [("drain", pid, 7.0), ("force", {pid: 100})]
+        assert calls == [("drain", pid, 7.0, 100), ("force", {pid: 100})]
 
     def test_windows_stop_force_kill_carries_pre_drain_identity(self, monkeypatch):
         """The post-drain taskkill must be guarded by the start time captured BEFORE the <=30 s drain:

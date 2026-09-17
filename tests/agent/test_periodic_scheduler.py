@@ -19,18 +19,32 @@ def _wait_until(pred, timeout=3.0):
 def test_two_intervals_fire_proportionally_and_cancel_stops_one():
     sched = PeriodicScheduler()
     fast, slow = [], []
-    h_fast = sched.schedule(lambda: fast.append(time.monotonic()), 0.01)
-    h_slow = sched.schedule(lambda: slow.append(time.monotonic()), 0.05)
+    # Each tick dispatches its callback on a fresh OS thread (see _dispatch):
+    # thread-creation latency is a fixed per-tick overhead that does not scale
+    # with the interval. At 0.01s/0.05s that overhead can rival the fast
+    # interval itself under host contention (measured: dispatch latency
+    # exceeding 10ms under load), collapsing the "fires more often" signal
+    # into a tie. 0.05s/0.25s keeps the same 5x ratio but gives the interval
+    # enough headroom over that fixed overhead that the proportionality is
+    # the dominant effect again, not the OS scheduler.
+    h_fast = sched.schedule(lambda: fast.append(time.monotonic()), 0.05)
+    h_slow = sched.schedule(lambda: slow.append(time.monotonic()), 0.25)
 
-    assert _wait_until(lambda: len(slow) >= 3)
+    assert _wait_until(lambda: len(slow) >= 3, timeout=10.0)
     assert len(fast) > len(slow)  # 5x interval ratio -> clearly more fast ticks
     assert sched._thread is not None and sched._thread.is_alive()
 
     h_fast.cancel(wait=1.0)
     n_fast = len(fast)
-    time.sleep(0.1)
+    time.sleep(0.3)
     assert len(fast) == n_fast, "cancelled callback kept firing"
-    assert len(slow) > 3, "sibling callback stopped when another was cancelled"
+    # Don't assert a fixed sleep produced >3 slow ticks (that pins a wall-clock
+    # rate under host jitter); assert the *sibling keeps ticking at all* after
+    # its neighbor was cancelled, which is what this test is really checking.
+    n_slow = len(slow)
+    assert _wait_until(lambda: len(slow) > n_slow, timeout=5.0), (
+        "sibling callback stopped when another was cancelled"
+    )
     h_slow.cancel(wait=1.0)
     # With every handle quiesced, scheduling + cancelling adds no persistent thread.
     before = threading.active_count()

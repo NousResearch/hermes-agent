@@ -54,7 +54,14 @@ An **Advanced** disclosure opens the full capabilities surface:
 - **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile.
 - **Custom SOUL.md** — the Bot's persona and standing instructions.
 - **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
-- **Shared keys** — by default the new Bot shares one OAuth/token pool with the main profile, so credential refreshes cannot invalidate each other. (Older gateways copy credentials instead — still functional, just forked.)
+- **Credentials stay with the Bot** — a Bot never shares an OAuth/token pool with the main profile. Creating or cloning a Bot can copy static API keys, but single-use OAuth logins (including OpenAI Codex, Anthropic, and xAI) are not copied because either profile refreshing a copied token would invalidate the other. Sign the Bot into an OAuth provider itself before using it:
+
+  ```bash
+  hermes -p <bot-name> auth add <provider>
+  hermes -p <bot-name> auth status <provider>
+  ```
+
+  You can also choose the provider through `hermes -p <bot-name> model`. See [Every profile owns its credentials](./profiles.md#every-profile-owns-its-credentials) for the full isolation and cloning rules.
 
 ### Choosing which machine it lives on ("Create on")
 

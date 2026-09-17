@@ -23,8 +23,8 @@ import types
 
 import pytest
 
-_GROUP = "-1004294267446"
-_DM = "8622947177"
+_GROUP = "-1001234567890"
+_DM = "1234567890"
 
 
 def _cfg_with_chat_override():

@@ -37,17 +37,17 @@ class TestResolveDisplaySetting:
                 "platforms": {
                     "telegram": {
                         "tool_progress": "verbose",
-                        "chats": {"-1004294267446": {"tool_progress": "off"}},
+                        "chats": {"-1001234567890": {"tool_progress": "off"}},
                     },
                 },
             }
         }
         assert resolve_display_setting(
-            config, "telegram", "tool_progress", chat_id="-1004294267446"
+            config, "telegram", "tool_progress", chat_id="-1001234567890"
         ) == "off"
         # Other chats on the same platform keep the platform-wide value.
         assert resolve_display_setting(
-            config, "telegram", "tool_progress", chat_id="8622947177"
+            config, "telegram", "tool_progress", chat_id="1234567890"
         ) == "verbose"
 
     def test_chat_scoped_override_without_platform_block(self):
@@ -77,13 +77,13 @@ class TestResolveDisplaySetting:
                 "platforms": {
                     "telegram": {
                         "tool_progress": "new",
-                        "chats": {"-1004294267446": {"tool_progress": None}},
+                        "chats": {"-1001234567890": {"tool_progress": None}},
                     },
                 },
             }
         }
         assert resolve_display_setting(
-            config, "telegram", "tool_progress", chat_id="-1004294267446"
+            config, "telegram", "tool_progress", chat_id="-1001234567890"
         ) == "new"
 
     def test_explicit_platform_override_wins(self):

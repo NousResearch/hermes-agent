@@ -338,6 +338,8 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -366,7 +368,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                             if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

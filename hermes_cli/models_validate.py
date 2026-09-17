@@ -16,6 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
+from hermes_constants import openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -59,15 +60,9 @@ class _Match:
     corrected: Optional[str] = None
     suggestion_text: str = ""
 
-    def verdict(self, req: "_Request", *, keep_suffix: bool = False) -> Optional[dict[str, Any]]:
-        """Accept on exact, auto-correct on a near-typo (re-attaching a preserved ``@preset/``
-        suffix when *keep_suffix*), else None so the branch composes its own message."""
-        if self.exact:
-            return _accept()
-        if self.corrected:
-            corrected = req.with_preset_suffix(self.corrected) if keep_suffix else self.corrected
-            return _corrected(req.requested, corrected)
-        return None
+    def verdict(self, req: "_Request") -> Optional[dict[str, Any]]:
+        """Accept on exact membership, else None so the branch composes its own message."""
+        return _accept() if self.exact else None
 
 
 def _match_in_catalog(
@@ -98,9 +93,6 @@ def _match_in_catalog(
 
     if query in set(pool):
         return _Match(exact=True)
-    auto = get_close_matches(query, pool, n=1, cutoff=0.9) if auto_correct else []
-    if auto:
-        return _Match(corrected=_show(auto[0]))
     suggestions = get_close_matches(suggest_query, pool, n=3, cutoff=suggest_cutoff)
     if not suggestions:
         return _Match()
@@ -268,17 +260,19 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
                         "Consider saving that as your base URL.")
         return _soft_accept(message)
 
-    message = (
-        f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
-        f"Hermes will still save `{req.requested}`, but the endpoint should expose `/models` for verification."
-    )
-    if anthropic_style:
-        message += ("\n  Many Anthropic-compatible proxies do not implement the Models API (GET /v1/models).  "
-                    "The model name has been accepted without verification.")
+    # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
+    # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
+    # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
+    if accepted:
+        message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "
+                    "serve it, inference will fail; check the provider's model catalog or the model name.")
+    else:
+        message += f"`{req.requested}` was not saved; the endpoint should expose `/models` for verification."
     if probe.get("suggested_base_url"):
         message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
-    # Anthropic-style proxies routinely lack /v1/models, so only they are accepted unverified.
-    return _verdict(anthropic_style, True, False, message)
+    return _verdict(accepted, True, False, message)
 
 
 def _static_catalog(normalized: str) -> list[str]:
@@ -385,16 +379,25 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
-    """Anthropic Messages transport: many proxies don't implement /v1/models — probe, and accept
-    with a warning when the probe fails or the model isn't listed."""
+    """Anthropic Messages transport: probe /v1/models and soft-accept either way, but say which
+    happened — a proxy that never implemented the listing is a different situation from a reachable
+    listing that simply doesn't name the slug (vendors alias ids: ``kimi-k3`` is served as ``k3``)."""
     from hermes_cli import models as _m
 
     models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
-    verdict = _match_in_catalog(req.lookup, models).verdict(req) if models is not None else None
-    return verdict or _soft_accept(
-        f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
-        "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
-        "without verification."
+    if models is None:
+        return _soft_accept(
+            f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
+            "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
+            "without verification."
+        )
+    # Vendor alias pairs sit below the default 0.5 similarity cutoff (kimi-k3 vs k3 ≈ 0.44).
+    match = _match_in_catalog(req.lookup, models, case_insensitive=True, suggest_query=req.requested,
+                              suggest_cutoff=0.4)
+    return match.verdict(req) or _soft_accept(
+        f"Note: `{req.requested}` is not named in this endpoint's model listing (it may still serve it "
+        f"under an alias).{match.suggestion_text}"
+        "\n  The model name has been accepted without verification."
     )
 
 
@@ -433,12 +436,12 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     # catalog entries — validate the BASE but keep the suffixed id. Must run BEFORE fuzzy
     # auto-correction, which would otherwise "correct" `model:nitro` → `model` and silently
     # strip the routing opt-in.
-    variant_base = _m._openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
+    variant_base = openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
     if variant_base is not None and variant_base in set(api_models):
         return _accept()
     # Listed but not found: the account may reach models absent from the public listing
     # (e.g. Z.AI Pro/Max plans use glm-5 on coding endpoints) — warn but allow where plausible.
-    verdict = match.verdict(req, keep_suffix=True)
+    verdict = match.verdict(req)
     if verdict is not None:
         return verdict
     # Curated-catalog soft-accept: providers omit valid models from live listings (stale cache,
@@ -501,9 +504,16 @@ def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
     if match.exact:
         return _accept()
-    return match.verdict(req, keep_suffix=True) or _soft_accept(
-        f"Note: `{req.requested}` is not declared by {profile.display_name or profile.name}."
-        f"{match.suggestion_text}\n  The model may still work if the local client accepts it.")
+    from providers.base import ProviderProfile as _PP
+
+    if type(profile).discover_models is not _PP.discover_models:
+        # CLI-probed provider (DirectSDK): no HTTP listing exists, so an undeclared id gets the
+        # catalog verdict without any inference request or misleading "unreachable" note.
+        return _soft_accept(
+            f"Note: `{req.requested}` is not declared by {profile.display_name or profile.name}."
+            f"{match.suggestion_text}\n  The model may still work if the local client accepts it.")
+    # Generic process provider: fall through so provider_model_ids (memoized CLI probe) decides.
+    return None
 
 
 def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
@@ -522,10 +532,10 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
         return _accept()
     # Same OpenRouter routing-variant rule as the live-listing path.
     if req.normalized == "openrouter":
-        variant_base = _m._openrouter_variant_base(req.lookup)
+        variant_base = openrouter_variant_base(req.lookup)
         if variant_base is not None and variant_base.lower() in {m.lower() for m in catalog}:
             return _accept()
-    return match.verdict(req, keep_suffix=True) or _soft_accept(
+    return match.verdict(req) or _soft_accept(
         f"Note: `{req.requested}` was not found in the {label} curated catalog "
         f"and the /models endpoint was unreachable.{match.suggestion_text}"
         f"\n  The model may still work if it exists on the provider."

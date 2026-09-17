@@ -5,7 +5,6 @@ import pytest
 from hermes_state import SessionDB
 from hermes_state_common import (
     FTS_TOOL_CONTENT_PREFIX_CHARS,
-    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     LEGACY_FTS_SQL,
     _FTS_TRIGGERS,
 )
@@ -55,70 +54,65 @@ def test_new_tool_rows_bound_fts_content_but_explicit_tool_search_is_complete(db
     ]
 
 
-def test_trigger_migration_preserves_historical_tool_tokens_without_rebuild(tmp_path):
+def test_reopen_keeps_bounded_rows_consistent_without_a_marker(tmp_path):
+    """The bounded projection is a fixed per-row function: reopening a store does
+    not need a marker, and the redaction/delete paths that used to re-evaluate
+    one keep the index consistent for both historical and new tool rows."""
     path = tmp_path / "state.db"
     first = SessionDB(db_path=path)
     if not first._fts_enabled:
         first.close()
         pytest.skip("SQLite FTS5 unavailable")
     first.create_session("session", source="cli")
-
-    # Model the pre-migration trigger contract: every id through this artificial
-    # boundary receives full-content indexing.
-    first.set_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(2**62))
-    old_id = first.append_message(
+    historical_id = first.append_message(
         "session",
         role="tool",
-        content=_long_message("old-prefix-token", "old-tail-token"),
+        content=_long_message("historical-prefix-token", "historical-tail-token"),
     )
-    assert [row["id"] for row in first.search_messages("old-tail-token")] == [old_id]
-    first._conn.execute(
-        "DELETE FROM state_meta WHERE key = ?",
-        (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
-    )
+    assert first.search_messages("historical-tail-token") == []
     first.close()
 
-    migrated = SessionDB(db_path=path)
+    reopened = SessionDB(db_path=path)
     try:
-        assert int(migrated.get_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY)) == old_id
-        assert [
-            row["id"] for row in migrated.search_messages("old-tail-token")
-        ] == [old_id]
-
-        new_id = migrated.append_message(
+        assert reopened.get_meta("fts_storage_version") is not None
+        new_id = reopened.append_message(
             "session",
             role="tool",
             content=_long_message("new-prefix-token", "new-tail-token"),
         )
-        assert migrated.search_messages("new-tail-token") == []
+        assert reopened.search_messages("new-tail-token") == []
         assert [
             row["id"]
-            for row in migrated.search_messages(
+            for row in reopened.search_messages(
                 "new-tail-token", role_filter=["tool"]
             )
         ] == [new_id]
 
-        # Historical rows still use their full old token stream for the FTS5
-        # external-content delete command; redaction must remove the tail token.
-        migrated._execute_write(
+        # Redaction must remove the tail token from the index as well.
+        reopened._execute_write(
             lambda conn: conn.execute(
-                "UPDATE messages SET content = '' WHERE id = ?", (old_id,)
+                "UPDATE messages SET content = '' WHERE id = ?", (historical_id,)
             )
         )
-        assert migrated.search_messages("old-tail-token") == []
+        assert reopened.search_messages("historical-tail-token") == []
 
-        # New bounded rows use the same prefix for delete as insert. A mismatch
+        # Bounded rows use the same projection for insert and delete; a mismatch
         # corrupts external-content FTS and makes this delete or later write fail.
-        migrated._execute_write(
+        reopened._execute_write(
             lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (new_id,))
         )
-        migrated.append_message("session", role="assistant", content="fts-still-healthy")
-        assert migrated.search_messages("fts-still-healthy")
+        reopened.append_message("session", role="assistant", content="fts-still-healthy")
+        assert reopened.search_messages("fts-still-healthy")
+        reopened._conn.execute(
+            "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+        )
     finally:
-        migrated.close()
+        reopened.close()
 
 
-def test_full_rebuild_moves_boundary_before_future_tool_writes(db):
+def test_full_rebuild_keeps_every_tool_row_bounded(db):
+    """A rebuild fills the index from the same stable projection as the triggers,
+    so it cannot introduce full-content tokens for tool rows again."""
     before_id = db.append_message(
         "session",
         role="tool",
@@ -127,10 +121,7 @@ def test_full_rebuild_moves_boundary_before_future_tool_writes(db):
     assert db.search_messages("before-tail-token") == []
 
     assert db.rebuild_fts() >= 1
-    assert int(db.get_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY)) == before_id
-    assert [row["id"] for row in db.search_messages("before-tail-token")] == [
-        before_id
-    ]
+    assert db.search_messages("before-tail-token") == []
 
     after_id = db.append_message(
         "session",
@@ -142,6 +133,10 @@ def test_full_rebuild_moves_boundary_before_future_tool_writes(db):
         row["id"]
         for row in db.search_messages("after-tail-token", role_filter=["tool"])
     ] == [after_id]
+
+    db._conn.execute(
+        "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+    )
 
 
 def test_role_changes_switch_between_bounded_and_full_indexing(db):
@@ -181,7 +176,7 @@ def test_legacy_inline_fts_also_bounds_new_tool_rows(tmp_path):
     initial._conn.executescript(LEGACY_FTS_SQL)
     initial._conn.execute(
         "DELETE FROM state_meta WHERE key IN (?, 'fts_storage_version')",
-        (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
+        ("fts_tool_full_content_high_water",),
     )
     initial.close()
 

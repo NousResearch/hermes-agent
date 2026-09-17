@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 
 class RecordingMemoryProvider:
     name = "recording"
@@ -23,6 +25,22 @@ class RecordingMemoryProvider:
 
     def shutdown(self):
         pass
+
+
+class FalseyRecordingMemoryProvider(RecordingMemoryProvider):
+    """Available provider that must not be discarded because it is falsey."""
+
+    def __bool__(self):
+        """Report false despite being a valid provider instance."""
+        return False
+
+
+class LenFalseyRecordingMemoryProvider(RecordingMemoryProvider):
+    """Available provider whose zero length makes it falsey."""
+
+    def __len__(self):
+        """Report zero despite being a valid provider instance."""
+        return 0
 
 
 def test_shutdown_memory_provider_is_idempotent():
@@ -126,6 +144,39 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
+
+
+@pytest.mark.parametrize(
+    "provider_type",
+    [FalseyRecordingMemoryProvider, LenFalseyRecordingMemoryProvider],
+    ids=["bool", "len"],
+)
+def test_aiagent_activates_available_falsey_memory_provider(provider_type):
+    """A valid provider must reach the runtime manager even when falsey."""
+    provider = provider_type()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="falsey-provider-session",
+        )
+
+    assert provider.init_session_id == "falsey-provider-session"
 
 
 class CoreShadowProvider:

@@ -1,10 +1,16 @@
-"""Tests for Gemini legacy Standard-key 401 guidance.
+"""Tests for Gemini legacy Standard-key auth guidance.
 
 Google began rejecting unrestricted legacy "Standard" Google Cloud API keys
 on the Gemini API on June 19, 2026 (all Standard keys stop working in
-September 2026). The rejection is a 401 whose message misleadingly tells the
-user to supply an OAuth 2 access token. ``gemini_http_error`` must append
-actionable key-migration guidance on that shape — and ONLY that shape.
+September 2026). Two wire shapes exist:
+
+- Original: 401 + ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` / "expected OAuth 2 access
+  token". ``gemini_http_error`` must append key-migration guidance.
+- After the September cutoff: 400 ``API_KEY_INVALID`` ("API key not valid")
+  for leftover AIza Standard keys. That shape must get the same guidance
+  when the presented key is still AIza-shaped — otherwise vision/chat just
+  says the key is invalid and hides the real fix. A mistyped Auth (``AQ.``)
+  key must keep the raw invalid-key message.
 
 Port of Kilo-Org/kilocode#12162, adapted to Hermes' GeminiAPIError surface.
 """
@@ -26,6 +32,11 @@ GOOGLE_AUTH_MESSAGE = (
 )
 
 GUIDANCE_MARKER = "rejected this API key's type"
+
+API_KEY_INVALID_MESSAGE = "API key not valid. Please pass a valid API key."
+# Concatenated so the file never contains a contiguous AIzaSy… token.
+_AIZA_STANDARD_KEY = "AIza" + "Sy_TEST_" + "x" * 24
+_AQ_AUTH_KEY = "AQ." + "B" * 48
 
 
 def _mock_response(status: int, body: str, headers: dict | None = None) -> MagicMock:
@@ -68,6 +79,24 @@ class TestIsStandardKeyAuthError:
         assert not is_standard_key_auth_error(401, None)  # type: ignore[arg-type]
 
 
+    def test_400_api_key_invalid_with_aiza_key_is_standard_key(self):
+        assert is_standard_key_auth_error(
+            400, API_KEY_INVALID_MESSAGE, "API_KEY_INVALID", api_key=_AIZA_STANDARD_KEY
+        )
+        assert is_standard_key_auth_error(
+            400, API_KEY_INVALID_MESSAGE, api_key=_AIZA_STANDARD_KEY
+        )
+
+
+    def test_400_api_key_invalid_without_aiza_key_is_not_standard_key(self):
+        assert not is_standard_key_auth_error(
+            400, API_KEY_INVALID_MESSAGE, "API_KEY_INVALID"
+        )
+        assert not is_standard_key_auth_error(
+            400, API_KEY_INVALID_MESSAGE, "API_KEY_INVALID", api_key=_AQ_AUTH_KEY
+        )
+
+
 class TestGeminiHttpErrorGuidance:
     def test_guidance_appended_on_oauth_401_with_reason(self):
         body = _google_error_body(
@@ -81,6 +110,25 @@ class TestGeminiHttpErrorGuidance:
         assert err.code == "gemini_unauthorized"
 
 
+    def test_guidance_appended_on_400_api_key_invalid_for_aiza_key(self):
+        body = _google_error_body(
+            400, API_KEY_INVALID_MESSAGE, status="INVALID_ARGUMENT",
+            reason="API_KEY_INVALID",
+        )
+        err = gemini_http_error(_mock_response(400, body), api_key=_AIZA_STANDARD_KEY)
+        text = str(err)
+        assert GUIDANCE_MARKER in text
+        assert "aistudio.google.com/api-keys" in text
+        assert err.code == "gemini_http_400"
+
+
+    def test_400_api_key_invalid_for_auth_key_keeps_raw_message(self):
+        body = _google_error_body(
+            400, API_KEY_INVALID_MESSAGE, status="INVALID_ARGUMENT",
+            reason="API_KEY_INVALID",
+        )
+        err = gemini_http_error(_mock_response(400, body), api_key=_AQ_AUTH_KEY)
+        assert GUIDANCE_MARKER not in str(err)
 
 
     def test_403_with_oauth_message_gets_no_guidance(self):
@@ -126,6 +174,17 @@ class TestSummarizerPreservesGuidance:
         summary = AIAgent._summarize_api_error(err)
         assert GUIDANCE_MARKER in summary
         assert "aistudio.google.com/api-keys" in summary
+
+    def test_400_standard_key_guidance_survives_summarizer(self):
+        from run_agent import AIAgent
+
+        body = _google_error_body(
+            400, API_KEY_INVALID_MESSAGE, status="INVALID_ARGUMENT",
+            reason="API_KEY_INVALID",
+        )
+        err = gemini_http_error(_mock_response(400, body), api_key=_AIZA_STANDARD_KEY)
+        summary = AIAgent._summarize_api_error(err)
+        assert GUIDANCE_MARKER in summary
 
     def test_free_tier_guidance_survives_summarizer(self):
         from run_agent import AIAgent

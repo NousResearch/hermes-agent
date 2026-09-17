@@ -64,14 +64,11 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_explicit_aux_backend_is_the_defacto_route(self):
-        """Maintainer decision (2026-08-28, reverses #29135): a user who
-        NAMED a dedicated vision backend wants it used — even when the
-        main model has native vision. Config that only takes effect when
-        the main model gets worse is a trap, not a setting."""
+    def test_auto_capable_main_bypasses_explicit_aux_backend(self):
+        """Configured auxiliary vision is fallback-only when the main model is capable."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
     def test_auto_unset_aux_backend_native_remains_default(self):
         """No configured aux backend -> native for vision-capable mains

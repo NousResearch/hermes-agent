@@ -147,3 +147,32 @@ def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, o
     aux.call_llm(task="title_generation", main_runtime=_main_runtime_from_agent(agent), messages=_MSGS)
 
     assert captured["extra_headers"]["x-opencode-session"] == "sess-desktop-1"
+
+def test_auxiliary_header_prefers_scope_and_filters_sensitive_caller_headers():
+    token = aux.set_runtime_main(
+        "opencode-go", "glm-5", base_url="https://opencode.ai/zen/go/v1",
+        session_id="opaque-physical-1", cache_scope="gwk_0123456789abcdef01234567",
+    )
+    try:
+        kwargs = aux._build_call_kwargs(
+            "opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1",
+            extra_headers={
+                "X-OPENCODE-SESSION": "raw-gateway-key",
+                "Authorization": "Bearer caller-secret",
+                "X-Request-Id": "request-1",
+            },
+        )
+        headers = kwargs["extra_headers"]
+        assert headers["x-opencode-session"] == "gwk_0123456789abcdef01234567"
+        assert "x-opencode-session" not in {key.lower() for key in headers if key != "x-opencode-session"}
+        assert "authorization" not in {key.lower() for key in headers}
+        assert headers["X-Request-Id"] == "request-1"
+    finally:
+        aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_empty_scoped_runtime_does_not_reuse_compatibility_mirrors(monkeypatch):
+    monkeypatch.setattr(aux, "_RUNTIME_MAIN_PROVIDER", "leaked-provider")
+    monkeypatch.setattr(aux, "_RUNTIME_MAIN_COMPAT_SNAPSHOT", ("", "", "", "", "", ""))
+    with aux.scoped_runtime_main({}):
+        assert aux._runtime_main_value("provider") == ""

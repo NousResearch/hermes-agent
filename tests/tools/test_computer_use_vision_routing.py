@@ -72,9 +72,8 @@ class TestRouteDecision:
     def test_explicit_override_routes_to_aux_even_for_vision_main(self):
         """Issue #24015 core repro: explicit aux config must win.
 
-        Even if the main model fully supports vision (Anthropic / Claude),
-        an explicit ``auxiliary.vision`` block means the user wants their
-        configured backend used. Don't silently bypass it.
+        ``auxiliary.vision`` is fallback-only in auto, so an explicit config
+        now selects auxiliary only when capability or tool-result support fails.
         """
         from tools.computer_use import vision_routing
 
@@ -92,7 +91,7 @@ class TestRouteDecision:
                           return_value=True):
             assert vision_routing.should_route_capture_to_aux_vision(
                 "anthropic", "claude-opus-4-5", cfg
-            ) is True
+            ) is False
 
     def test_non_vision_main_model_routes_to_aux(self):
         """The reported #24015 scenario: tencent/hy3-preview has no vision."""

@@ -1,11 +1,19 @@
 """Behavior contracts for general masked secret capture."""
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
+from agent.tool_dispatch_helpers import _NEVER_PARALLEL_TOOLS
+from tools import skills_tool
 from tools.registry import registry
-from tools.secret_capture_tool import _set_thread_secret_capture_callback
+from tools.secret_capture_tool import _set_context_secret_capture_callback
+from tools.thread_context import propagate_context_to_thread
 
 
 def test_registry_capture_never_returns_value_and_replaces_existing_secret():
@@ -15,7 +23,7 @@ def test_registry_capture_never_returns_value_and_replaces_existing_secret():
         captured.append((name, prompt, metadata))
         return {"success": True, "stored_as": name, "validated": False, "secret": "do-not-return"}
 
-    _set_thread_secret_capture_callback(callback)
+    _set_context_secret_capture_callback(callback)
     try:
         result = json.loads(registry.dispatch("secret_capture", {
             "var_name": "OPENROUTER_API_KEY",
@@ -23,7 +31,7 @@ def test_registry_capture_never_returns_value_and_replaces_existing_secret():
             "destination": "profile_env",
         }))
     finally:
-        _set_thread_secret_capture_callback(None)
+        _set_context_secret_capture_callback(None)
 
     assert captured == [(
         "OPENROUTER_API_KEY",
@@ -36,6 +44,49 @@ def test_registry_capture_never_returns_value_and_replaces_existing_secret():
         "destination": "profile_env",
     }
     assert "do-not-return" not in json.dumps(result)
+
+
+def test_capture_callback_stays_bound_to_originating_session_context():
+    calls = []
+
+    def callback(session):
+        def capture(name, prompt, metadata):
+            calls.append((session, threading.get_ident()))
+            return {"success": True, "stored_as": name}
+
+        return capture
+
+    skills_tool.set_secret_capture_callback(callback("session-A"))
+    session_a = copy_context()
+    skills_tool.set_secret_capture_callback(callback("session-B"))
+    worker = session_a.run(lambda: propagate_context_to_thread(
+        lambda: json.loads(registry.dispatch("secret_capture", {
+            "var_name": "SESSION_SECRET",
+            "prompt": "Session-scoped secret",
+        }))
+    ))
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(worker).result(timeout=5)
+    finally:
+        skills_tool.set_secret_capture_callback(None)
+
+    assert result["success"] is True
+    assert [session for session, _thread_id in calls] == ["session-A"]
+    assert "secret_capture" in _NEVER_PARALLEL_TOOLS
+
+
+@pytest.mark.parametrize(("server_url", "expected"), [
+    ("", ("https://api.bitwarden.com", "https://identity.bitwarden.com")),
+    ("https://bitwarden.com", ("https://api.bitwarden.com", "https://identity.bitwarden.com")),
+    ("https://vault.bitwarden.com", ("https://api.bitwarden.com", "https://identity.bitwarden.com")),
+    ("https://vault.bitwarden.eu", ("https://api.bitwarden.eu", "https://identity.bitwarden.eu")),
+    ("https://vault.example.test", ("https://vault.example.test/api", "https://vault.example.test/identity")),
+])
+def test_bitwarden_sdk_urls_normalize_hosted_and_self_hosted_servers(server_url, expected):
+    from agent.secret_sources.bitwarden_write import _sdk_urls
+
+    assert _sdk_urls(server_url) == expected
 
 
 def test_bitwarden_write_updates_in_process_without_putting_value_on_argv(monkeypatch, tmp_path):

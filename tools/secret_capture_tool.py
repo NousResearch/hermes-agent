@@ -8,33 +8,29 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from hermes_constants import display_hermes_home
 from tools.registry import registry
 
 SecretCaptureCallback = Callable[[str, str, Optional[dict]], dict]
-_callback_tls = threading.local()
+_callback_context: ContextVar[Optional[SecretCaptureCallback]] = ContextVar(
+    "secret_capture_callback",
+    default=None,
+)
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DESTINATIONS = {"profile_env", "bitwarden_sm"}
 
 
-def _set_thread_secret_capture_callback(callback: Optional[SecretCaptureCallback]) -> None:
-    _callback_tls.callback = callback
+def _set_context_secret_capture_callback(callback: Optional[SecretCaptureCallback]) -> None:
+    _callback_context.set(callback)
 
 
 def get_secret_capture_callback() -> Optional[SecretCaptureCallback]:
-    """Return the callback for this turn thread, then the legacy process slot."""
-    callback = getattr(_callback_tls, "callback", None)
-    if callback is not None:
-        return callback
-    # ``tools.skills_tool`` owns the public setter for compatibility with existing
-    # surfaces and plugins. Import lazily to avoid the discovery-time cycle.
-    from tools import skills_tool
-
-    return skills_tool._secret_capture_callback
+    """Return the callback bound to the current turn context."""
+    return _callback_context.get()
 
 
 def secret_capture(

@@ -20,6 +20,8 @@ def _sdk_urls(server_url: str) -> tuple[str, str]:
     if not base:
         return "https://api.bitwarden.com", "https://identity.bitwarden.com"
     parsed = urlparse(base)
+    if parsed.hostname in {"bitwarden.com", "vault.bitwarden.com"}:
+        return "https://api.bitwarden.com", "https://identity.bitwarden.com"
     if parsed.hostname in {"bitwarden.eu", "vault.bitwarden.eu"}:
         return "https://api.bitwarden.eu", "https://identity.bitwarden.eu"
     return f"{base}/api", f"{base}/identity"

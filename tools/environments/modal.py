@@ -234,7 +234,9 @@ class ModalEnvironment(BaseEnvironment):
 
     def _modal_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""
-        data = self._exec("tar cf - -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
+        # --exclude: live sockets cannot be archived ("socket ignored"), and a tar build that
+        # makes the skipped socket fatal would fail the download (#114437).
+        data = self._exec("tar cf - --exclude='*.sock' -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
         dest.write_bytes(data.encode() if isinstance(data, str) else data)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:

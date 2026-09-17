@@ -47,24 +47,59 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
-# 2 GiB by default — refuse to extract larger tars. Overridable for hosts whose synced tree
-# legitimately exceeds the cap (a skip means sync-back silently does nothing at full cost).
-_SYNC_BACK_MAX_BYTES = int(os.environ.get("HERMES_SYNC_BACK_MAX_BYTES", 2 * 1024 * 1024 * 1024))
+_SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
-# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs), so anything older than
-# this is safe to reclaim. The download itself is bounded by a 120 s subprocess timeout, so a
-# live transfer is minutes old at most; the cutoff only has to sit above that. The old 6 h
-# window let a crash loop accumulate tens of GB before anything was reclaimed (#114437).
+# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entries embed the owning
+# PID and an entry whose owner is dead is reclaimed immediately, whatever its age, so this
+# cutoff only governs names without an embedded PID (leftovers from before the ownership
+# scheme — no live process still creates them, so a short window suffices) and Windows hosts,
+# where an arbitrary PID cannot be probed. The old 6 h window let a crash loop accumulate
+# tens of GB before anything was reclaimed (#114437).
 _SYNC_BACK_STALE_SECONDS = 30 * 60
+
+
+def _sync_back_temp_prefix() -> str:
+    """Temp prefix embedding the owning PID, mirroring daytona's PID-suffixed remote temp.
+
+    Ownership lets the stale sweep reclaim an entry the moment its owner process is gone
+    (age-independent, and safe between concurrent gateway processes, which hold distinct
+    PIDs) instead of guessing liveness from mtime — a staging dir's mtime does not move
+    while content streams into its subdirectories.
+    """
+    return f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-"
+
+
+def _temp_entry_owner_pid(name: str) -> int | None:
+    """Return the PID embedded in a sync-back temp entry name, or None for legacy names."""
+    if not name.startswith(_SYNC_BACK_TEMP_PREFIX):
+        return None
+    pid_part = name[len(_SYNC_BACK_TEMP_PREFIX):].split("-", 1)[0]
+    return int(pid_part) if pid_part.isdigit() else None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether *pid* names a live process (POSIX signal-0 probe; callers guard for Windows)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # exists but is owned by another user
+        return True
+    except OSError:
+        return True
+    return True
 
 
 def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
     """Remove sync-back tars and staging dirs left behind by a hard-killed process.
 
-    Only entries carrying this module's prefix and older than ``_SYNC_BACK_STALE_SECONDS``
-    are touched. Returns the number of entries removed; a permission error or a race with
-    another sync-back must not prevent the current one.
+    An entry whose embedded owner PID is no longer alive is reclaimed immediately —
+    age-independent, and never touching another live process's transfer even though the
+    file lock is per ``HERMES_HOME`` while the temp directory is shared. Entries without
+    an embedded PID (pre-ownership leftovers) and Windows hosts fall back to the
+    ``_SYNC_BACK_STALE_SECONDS`` cutoff. Returns the number of entries removed; a
+    permission error or a race with another sync-back must not prevent the current one.
     """
     directory = temp_dir or Path(tempfile.gettempdir())
     cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
@@ -76,7 +111,13 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
         return 0
     for candidate in candidates:
         try:
-            if candidate.is_symlink() or candidate.lstat().st_mtime >= cutoff:
+            owner = _temp_entry_owner_pid(candidate.name)
+            if owner is not None and os.name != "nt":
+                if _pid_alive(owner):
+                    continue  # a live process owns this entry — leave it alone
+            elif candidate.is_symlink() or candidate.lstat().st_mtime >= cutoff:
+                continue
+            if candidate.is_symlink():
                 continue
             if candidate.is_dir():
                 shutil.rmtree(candidate)
@@ -356,7 +397,7 @@ class FileSyncManager:
 
         # mkstemp + close: NamedTemporaryFile keeps an exclusive handle on Windows, so the
         # backend's open(dest, "wb") / write_bytes on the same path raised PermissionError.
-        fd, tar_path = tempfile.mkstemp(prefix=_SYNC_BACK_TEMP_PREFIX, suffix=".tar")
+        fd, tar_path = tempfile.mkstemp(prefix=_sync_back_temp_prefix(), suffix=".tar")
         os.close(fd)
         try:
             self._bulk_download_fn(Path(tar_path))
@@ -372,7 +413,7 @@ class FileSyncManager:
                     tar_size, _SYNC_BACK_MAX_BYTES)
                 return
 
-            with tempfile.TemporaryDirectory(prefix=_SYNC_BACK_TEMP_PREFIX) as staging:
+            with tempfile.TemporaryDirectory(prefix=_sync_back_temp_prefix()) as staging:
                 with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 

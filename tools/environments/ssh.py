@@ -255,10 +255,12 @@ class SSHEnvironment(BaseEnvironment):
             stderr = result.stderr.decode(errors="replace").strip()
             # tar exits 2 for non-fatal conditions; a socket that slipped past the exclude
             # pattern (or a tar without --exclude support) is the only one we knowingly accept,
-            # and only when nothing else was reported. Every other non-zero status still fails
-            # the transfer.
-            tolerated = result.returncode == 2 and bool(stderr) and all(
-                "socket ignored" in line for line in stderr.splitlines() if line.strip())
+            # and only when nothing else was reported — anchored to the diagnostic suffix so a
+            # filename merely containing "socket ignored" cannot sneak through. Every other
+            # non-zero status still fails the transfer.
+            diagnostic_lines = [line for line in stderr.splitlines() if line.strip()]
+            tolerated = result.returncode == 2 and bool(diagnostic_lines) and all(
+                line.endswith(": socket ignored") for line in diagnostic_lines)
             if not tolerated:
                 raise _sync_error(f"SSH bulk download failed: {stderr}",
                                   f"File sync from {self.host}")

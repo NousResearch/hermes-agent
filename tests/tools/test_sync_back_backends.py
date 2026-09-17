@@ -173,11 +173,23 @@ class TestSSHBulkDownload:
         failures = (
             subprocess.CompletedProcess([], 1, stderr=b"ssh: connect to host refused"),
             subprocess.CompletedProcess([], 2, stderr=b""),
+            subprocess.CompletedProcess([], 2, stderr=b"\n"),  # whitespace-only is bare too
         )
         for completed in failures:
             with patch.object(subprocess, "run", return_value=completed):
                 with pytest.raises(EnvironmentConnectionError):
                     ssh_mock_env._ssh_bulk_download(dest)
+
+    def test_ssh_bulk_download_anchor_rejects_midline_marker(self, ssh_mock_env, tmp_path):
+        """A diagnostic merely containing 'socket ignored' mid-line is not tolerated."""
+        from tools.environments.base import EnvironmentConnectionError
+        dest = tmp_path / "backup.tar"
+        stderr = b"tar: socket ignored dir/state.db: Cannot open: Permission denied\n"
+        completed = subprocess.CompletedProcess([], 2, stderr=stderr)
+
+        with patch.object(subprocess, "run", return_value=completed):
+            with pytest.raises(EnvironmentConnectionError):
+                ssh_mock_env._ssh_bulk_download(dest)
 
 
 class TestSSHCleanup:
@@ -276,6 +288,8 @@ class TestModalBulkDownload:
         assert args[1] == "-c"
         assert "tar cf -" in args[2]
         assert "-C / root/.hermes" in args[2]
+        # Live sockets cannot be archived; exclude them like the SSH backend (#114437).
+        assert "--exclude='*.sock'" in args[2]
 
 
     def test_modal_bulk_download_uses_120s_timeout(self, tmp_path):
@@ -347,6 +361,8 @@ class TestDaytonaBulkDownload:
         assert env._sandbox.process.exec.call_count == 2
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "tar cf" in tar_cmd
+        # Live sockets cannot be archived; exclude them like the SSH backend (#114437).
+        assert "--exclude='*.sock'" in tar_cmd
         # PID-suffixed temp path avoids collisions on sync_back retry
         assert "/tmp/.hermes_sync." in tar_cmd
         assert ".tar" in tar_cmd

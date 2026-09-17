@@ -131,6 +131,27 @@ def canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
+def _is_absolute_argv_token(token: str) -> bool:
+    """Whether an argv token is an absolute path on any supported host.
+
+    ``os.path.isabs`` only recognises the *current* host's form, so a
+    Windows absolute (``C:\\...``, ``C:/...``, ``\\\\host\\...``) is missed
+    when this scan runs on POSIX and vice versa.  The holder scan must stay
+    fail-closed on ambiguous input, but a token that is unambiguously
+    absolute on *either* family carries a home segment worth inspecting.
+    """
+    if os.path.isabs(token):
+        return True
+    if token.startswith("/"):
+        # POSIX absolute on any host (on Windows ``/x`` is drive-relative
+        # per ntpath, but holder argv spelling a POSIX home is still proof
+        # of an absolute location worth inspecting, never ambiguity).
+        return True
+    if len(token) >= 3 and token[0].isalpha() and token[1] == ":" and token[2] in ("\\", "/"):
+        return True
+    return token.startswith("\\\\") or token.startswith("//")
+
+
 def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     """Return whether argv proves the process belongs to a DIFFERENT instance.
 
@@ -160,20 +181,24 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     for token in argv:
         if not isinstance(token, str):
             continue
-        if token.startswith("/"):
-            path_token = token
+        if _is_absolute_argv_token(token):
+            path_token: str | None = token
         elif token.startswith("-") and "=" in token:
             # ``--db=/abs/path``-style options carry a path value; anchor on
             # the text after '=' so normpath does not prepend the option.
             value = token.split("=", 1)[1]
-            path_token = value if value.startswith("/") else None
+            path_token = value if _is_absolute_argv_token(value) else None
         else:
             path_token = None
         if path_token is not None:
             normalized = os.path.normcase(os.path.normpath(path_token))
             if normalized in ours or normalized.startswith(this_home + os.sep):
                 return False
-            if "/.hermes" in normalized or normalized.endswith("/.hermes"):
+            if (
+                "/.hermes" in normalized
+                or "\\.hermes" in normalized
+                or normalized.endswith(("/.hermes", "\\.hermes"))
+            ):
                 other_home_seen = True
             elif os.path.basename(normalized) in (
                 "state.db",

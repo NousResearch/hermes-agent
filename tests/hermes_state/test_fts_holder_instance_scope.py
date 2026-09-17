@@ -137,3 +137,74 @@ class TestUninspectableHolderInstanceScope:
             holders = hermes_state_holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == [222], argv
             assert holders[0][1].startswith("uninspectable holder:"), argv
+
+
+class TestIsAbsoluteArgvToken:
+    """Contract for the cross-host absolute-path detector.
+
+    ``os.path.isabs`` only recognises the current host's form; the helper
+    additionally accepts Windows absolutes everywhere so holder argv can be
+    inspected for a home segment regardless of where the scan runs.
+    """
+
+    def test_posix_absolute(self):
+        assert hermes_state_holders._is_absolute_argv_token("/home/demo/.hermes/state.db")
+
+    def test_windows_drive_absolute_backslash(self):
+        assert hermes_state_holders._is_absolute_argv_token("C:\\Users\\a\\.hermes\\state.db")
+
+    def test_windows_drive_absolute_forward_slash(self):
+        assert hermes_state_holders._is_absolute_argv_token("C:/Users/a/.hermes/state.db")
+
+    def test_windows_unc_absolute(self):
+        assert hermes_state_holders._is_absolute_argv_token("\\\\wsl$\\Ubuntu\\home\\a\\.hermes")
+
+    def test_relative_tokens_rejected(self):
+        assert not hermes_state_holders._is_absolute_argv_token("hermes")
+        assert not hermes_state_holders._is_absolute_argv_token("gateway")
+        assert not hermes_state_holders._is_absolute_argv_token(".hermes/state.db")
+        assert not hermes_state_holders._is_absolute_argv_token("--db=state.db")
+
+
+@pytest.mark.linux_only
+class TestArgvScopePosixPaths:
+    """POSIX regression arm: other-home argv scopes away, ours stays flagged."""
+
+    def test_other_posix_home_scopes_to_other(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        argv = ["/home/demo/.hermes/hermes-agent/hermes", "gateway", "run"]
+        assert hermes_state_holders._argv_scoped_to_other_home(argv, db_path)
+
+    def test_option_value_other_home_scopes_to_other(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        argv = ["hermes", "--db=/home/demo/.hermes/state.db", "gateway"]
+        assert hermes_state_holders._argv_scoped_to_other_home(argv, db_path)
+
+    def test_our_db_reference_is_not_other(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        argv = ["hermes", f"--db={db_path}", "gateway"]
+        assert not hermes_state_holders._argv_scoped_to_other_home(argv, db_path)
+
+    def test_ambiguous_argv_stays_fail_closed(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        assert not hermes_state_holders._argv_scoped_to_other_home(AMBIGUOUS_ARGV, db_path)
+
+
+@pytest.mark.windows_only
+class TestArgvScopeWindowsPaths:
+    """Windows arm: drive-letter / UNC argv must scope to the other home.
+
+    On Windows the previous ``startswith("/")`` gate never matched, so a
+    second instance under a different ``HERMES_HOME`` stayed fail-closed
+    suspected and deferred this instance's stale-FTS rebuild forever.
+    """
+
+    def test_other_windows_home_scopes_to_other(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        argv = ["C:\\Users\\a\\.hermes\\hermes-agent\\hermes.exe", "gateway", "run"]
+        assert hermes_state_holders._argv_scoped_to_other_home(argv, db_path)
+
+    def test_option_value_windows_home_scopes_to_other(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        argv = ["hermes.exe", "--db=C:\\Users\\a\\.hermes\\state.db", "gateway"]
+        assert hermes_state_holders._argv_scoped_to_other_home(argv, db_path)

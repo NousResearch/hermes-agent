@@ -123,6 +123,16 @@ def test_external_transaction_cannot_be_replaced_by_script_preparation(incident)
         compiler.execute(req, task_id="task", session_id="owner", dispatch=lambda *a: pytest.fail("preparation canary"))
 
 
+def test_opaque_preparation_cannot_omit_intended_target(incident):
+    compiler, _, req, *_ = incident
+    req.pop("mutation_target")
+    req.pop("setup_steps")
+    req["steps"] = [{"id": "script", "tool": "terminal", "args": {"command": "generate scripts"}, "expect": {"exit_code": 0}},
+                    {"id": "verify", "tool": "read_file", "args": {"path": "scratch.js"}, "verifies": ["script"], "expect": {"content": "OK"}}]
+    with pytest.raises(ValueError, match="preflight_required"):
+        compiler.execute(req, task_id="task", session_id="owner", dispatch=lambda *a: pytest.fail("ambiguous canary"))
+
+
 def test_recipe_keeps_intended_external_target(incident):
     compiler, dispatch, req, *_ = incident
     req["recipe_key"] = "incident.descriptions.v1"

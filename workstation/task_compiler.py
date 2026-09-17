@@ -342,6 +342,8 @@ class TaskCompiler:
             self.recipes.invalidate(recipe_key)
             raise ValueError("recipe_fingerprint_mismatch: recipe marked STALE; provide corrected graph")
         mutable_batch = len(request["items"]) > 1 and any(tool_effect(s["tool"]) in WRITE_EFFECTS for s in steps)
+        if mutable_batch and not intended_target and any(s["tool"] in {"terminal", "browser_console", "browser_exec", "execute_code"} for s in steps):
+            raise ValueError("preflight_required: opaque mutation batch requires intended mutation_target before compilation")
         if mutable_batch:
             mutations = {s["id"] for s in canonical_graph["fan_out"] if tool_effect(s["tool"]) in WRITE_EFFECTS}
             proved = {target for s in canonical_graph["fan_out"] for target in s.get("verifies", [])}

@@ -27,10 +27,10 @@ CONTRACT = {
 
 def correction(error):
     text = str(error)
-    if "decided operation" in text:
+    if "decided operation" in text or "preflight_required" in text:
         from workstation.task_compiler import discovery_guidance
         return {"error": text[:400], "code": "PREFLIGHT_REQUIRED", **discovery_guidance(),
-                "fix": {"discover_before_compile": True}}
+                "fix": {"discover_before_compile": True, "declare_intended_mutation_target": True}}
     if "recipe_fingerprint" in text:
         code, fix = "recipe_fingerprint_mismatch", {"provide_corrected_graph": True, "run_new_canary": True}
     elif "recipe_stale" in text:

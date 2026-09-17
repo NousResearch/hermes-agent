@@ -48,7 +48,9 @@ rejected before any dispatch. Transport-only `ok/success/status_code/exit_code`
 checks do not admit a verifier. Preparation alone cannot admit fan-out.
 Declare the intended `mutation_target` (`scope`, `provider`, `kind`, `field`) for
 external transactions. The compiler rejects preparation-only graphs and local
-file verifiers for those targets. When the provider serializes the resource field
+file verifiers for those targets. Opaque shell/JS batches must declare an intended
+target; omission returns PREFLIGHT_REQUIRED rather than admitting preparation.
+When the provider serializes the resource field
 under another name, use verifier `readback={field, path}` and compare that exact
 path in `expect`. Recipes pin this intended target in their body/fingerprint;
 changing it requires a corrected graph and fresh canary.

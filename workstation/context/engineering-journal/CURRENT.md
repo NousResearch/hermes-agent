@@ -3258,3 +3258,8 @@ Ubuntu locked CI extras and canonical per-file runner resolve that environment.
 Full core suite remains in progress; no aggregate-green claim yet. No config
 switch/threshold edits and no live provider actions. Git worktree pointer is
 relative for Windows/Ubuntu interoperability; original dirty checkout preserved.
+
+Core timing experiment: full Ubuntu runner observed one unchanged sequential
+interrupt test at 12.79s against its 10s bound under 16-worker load. Neither that
+test nor its middleware was modified. Hypothesis: scheduler/filesystem contention;
+rerun the same file in isolation without changing its bound or runtime behavior.

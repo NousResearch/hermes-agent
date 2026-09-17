@@ -1954,6 +1954,9 @@ class GatewayTurnMixin(
             )
             try:
                 _notify_res = None
+                if turn_ctx.matrix_activity_pane is not None:
+                    await turn_ctx.matrix_activity_pane.set_footer(_heartbeat_text)
+                    continue
                 if _heartbeat_msg_id:
                     try:
                         _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
@@ -2075,6 +2078,8 @@ class GatewayTurnMixin(
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 await settle_turn_senders(progress_task, _notify_task)  # their bubble ids join this turn's cleanup
+                if turn_ctx.matrix_activity_pane is not None:
+                    await turn_ctx.matrix_activity_pane.close()
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )

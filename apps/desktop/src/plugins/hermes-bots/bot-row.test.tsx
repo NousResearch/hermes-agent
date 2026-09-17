@@ -229,7 +229,7 @@ describe('the bot row context menu speaks the active language', () => {
 
 describe('a group row', () => {
   const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
-  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onOpen={noop} />
+  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onNewSection={noop} onOpen={noop} />
 
   beforeEach(() => {
     locale.current = 'en'

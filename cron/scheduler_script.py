@@ -320,9 +320,44 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
+def _onepassword_service_token_env() -> dict[str, str]:
+    """Return the owning profile's 1Password bootstrap token for a script-only job.
+
+    Cron scripts are user-authored workloads running for the profile that owns the job, so they may
+    use that profile's configured ``op`` service account.  Resolve exactly that bootstrap credential;
+    never widen the child environment to the profile's provider credentials.
+    """
+    from agent.secret_scope import build_profile_secret_scope, load_env_file
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import get_process_hermes_home
+
+    home = _sched._get_hermes_home().resolve()
+    hydrate_profile_secret_sources(home)
+
+    config = _sched.load_config() or {}
+    secrets = config.get("secrets") if isinstance(config, dict) else None
+    onepassword = secrets.get("onepassword") if isinstance(secrets, dict) else None
+    token_env = (
+        str(onepassword.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN").strip()
+        if isinstance(onepassword, dict)
+        else "OP_SERVICE_ACCOUNT_TOKEN"
+    )
+    token_env = token_env or "OP_SERVICE_ACCOUNT_TOKEN"
+
+    token = build_profile_secret_scope(home).get(token_env, "")
+    if not token:
+        token = load_env_file(home / ".op.env").get(token_env, "")
+    if not token and home == get_process_hermes_home().resolve():
+        # A supervisor may provide the launch profile's bootstrap token directly.  Routed profiles
+        # must never fall back to that process-global value.
+        token = os.environ.get(token_env, "")
+    return {"OP_SERVICE_ACCOUNT_TOKEN": token} if token else {}
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    *, include_onepassword_service_token: bool = False,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -356,6 +391,8 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         env = build_subprocess_env()
+        if include_onepassword_service_token:
+            env.update(_onepassword_service_token_env())
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
@@ -438,8 +475,13 @@ def _run_job_script_with_claim_heartbeat(
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    script_kwargs = {
+        "workdir": workdir,
+        "cancel_event": cancel_event,
+        "include_onepassword_service_token": bool(job.get("no_agent")),
+    }
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, **script_kwargs)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -457,10 +499,10 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, **script_kwargs)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(script_path, **script_kwargs)
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

@@ -137,6 +137,69 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     assert str(loaded_homes[0]) == str(hermes_env)
 
 
+def test_no_agent_script_gets_only_configured_onepassword_bootstrap(hermes_env):
+    """A script-only job may use its owning profile's configured ``op`` token, but the
+    sanitized child boundary must not reopen access to unrelated provider credentials."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    (hermes_env / ".env").write_text(
+        "CRON_OP_BOOTSTRAP=profile-token\nOPENAI_API_KEY=provider-key\n",
+        encoding="utf-8",
+    )
+    (hermes_env / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    service_account_token_env: CRON_OP_BOOTSTRAP\n",
+        encoding="utf-8",
+    )
+    script_path = hermes_env / "scripts" / "op_probe.py"
+    script_path.write_text(
+        "import json, os\n"
+        "print(json.dumps({\n"
+        "    'op': bool(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN')),\n"
+        "    'provider': bool(os.environ.get('OPENAI_API_KEY')),\n"
+        "    'source_name': bool(os.environ.get('CRON_OP_BOOTSTRAP')),\n"
+        "}))\n",
+        encoding="utf-8",
+    )
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="op_probe.py", no_agent=True, deliver="local"
+    )
+    success, _doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert json.loads(final_response) == {
+        "op": True,
+        "provider": False,
+        "source_name": False,
+    }
+
+
+def test_agent_prerun_script_does_not_get_onepassword_bootstrap(hermes_env):
+    """The credential exception belongs only to script-only jobs, not agent pre-run scripts."""
+    from cron.scheduler_script import _run_job_script_with_claim_heartbeat
+
+    (hermes_env / ".env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=profile-token\n",
+        encoding="utf-8",
+    )
+    script_path = hermes_env / "scripts" / "op_probe.py"
+    script_path.write_text(
+        "import os\nprint(bool(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN')))\n",
+        encoding="utf-8",
+    )
+
+    ok, output = _run_job_script_with_claim_heartbeat(
+        {"id": "agent-prerun", "no_agent": False}, "op_probe.py"
+    )
+
+    assert ok is True
+    assert output == "False"
+
+
 def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
     hermes_env, monkeypatch,
 ):

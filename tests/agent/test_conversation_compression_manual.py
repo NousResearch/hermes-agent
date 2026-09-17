@@ -10,6 +10,14 @@ import pytest
 
 from agent.conversation_compression_manual import compress_now, parse_compress_args
 
+# The ACP surface is imported lazily below, but ``acp_adapter.commands`` imports
+# ``acp.schema`` at module scope, so the case needs the optional `acp` extra
+# (agent-client-protocol, pyproject.toml extras). CI syncs it
+# (.github/workflows/tests.yml: `uv sync --extra all`), and the hermetic suite
+# forbids the mid-run lazy install that would otherwise fetch it, so name the
+# extra in the skip instead of failing with a bare ModuleNotFoundError.
+_ACP_EXTRA = "requires the optional `acp` extra (uv sync --extra acp)"
+
 
 def _history():
     return [
@@ -77,6 +85,7 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
         assert _compress_session_history(session, "--preview")[0] == 0
         assert session["history"] == frozen and session["history_version"] == 3
     else:
+        pytest.importorskip("acp", reason=_ACP_EXTRA)
         from acp_adapter.commands import SlashCommandsMixin
         acp = SlashCommandsMixin.__new__(SlashCommandsMixin)
         acp.session_manager = MagicMock()

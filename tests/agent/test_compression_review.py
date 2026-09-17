@@ -31,6 +31,12 @@ from agent.conversation_compression import (
     CompressionCommitFence,
     run_compress_context_with_progress_timeout,
 )
+from tests.agent._liveness import (
+    PEER_THREAD_LIVENESS_S,
+    await_state,
+    join_thread,
+    wait_event,
+)
 
 
 def _drain_admission_slots():
@@ -65,8 +71,11 @@ class TestF1CommitOverrunWhileHung:
             entered.set()
             try:
                 # Hung commit: blocked until the TEST releases it, which
-                # happens only after asserting the overrun surfaced.
-                assert release.wait(timeout=10)
+                # happens only after asserting the overrun surfaced. Failsafe,
+                # not a budget — a wall-clock bound here is a claim about how
+                # fast the host schedules the test thread (see
+                # tests/agent/_liveness.py).
+                assert release.wait(timeout=PEER_THREAD_LIVENESS_S)
                 return (compressed, "committed-late")
             finally:
                 fence.finish_commit()
@@ -100,22 +109,25 @@ class TestF1CommitOverrunWhileHung:
             t = threading.Thread(target=run, name="f1-hung-commit-host")
             t.start()
             try:
-                assert entered.wait(timeout=2)
+                # Liveness, not a budget: how long the host takes to schedule
+                # the worker says nothing about the overrun it is meant to
+                # observe (a 2s bound here flaked at load 230). See
+                # tests/agent/_liveness.py.
+                wait_event(entered, "the compression host never reached its worker")
                 # ── Assert WHILE the commit worker is still blocked ──────
-                assert overrun_fired.wait(timeout=5), (
-                    "on_commit_overrun must fire while the commit is hung"
+                wait_event(
+                    overrun_fired, "on_commit_overrun must fire while the commit is hung"
                 )
                 assert not release.is_set()  # worker provably still blocked
                 assert t.is_alive()
-                deadline = time.time() + 5
-                while time.time() < deadline:
-                    if any(
+                await_state(
+                    lambda: any(
                         r.levelno >= logging.WARNING
                         and "past the total ceiling" in r.getMessage()
                         for r in list(records)
-                    ):
-                        break
-                    time.sleep(0.01)
+                    ),
+                    "the overrun WARNING never reached the log while the commit was blocked",
+                )
                 overrun_logs = [
                     r
                     for r in list(records)
@@ -129,8 +141,7 @@ class TestF1CommitOverrunWhileHung:
                 assert overruns and overruns[0][1] == pytest.approx(1.0)
             finally:
                 release.set()
-            t.join(timeout=5)
-            assert not t.is_alive()
+            join_thread(t, "the compression host never unwound after the release")
         finally:
             comp_logger.removeHandler(handler)
             executor.shutdown(wait=True)

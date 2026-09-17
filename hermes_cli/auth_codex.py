@@ -455,8 +455,12 @@ def resolve_codex_runtime_credentials(
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
         pool_token = _pool_codex_access_token()
-        if pool_token and force_refresh:
-            # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
+        if pool_token and (force_refresh or (
+            refresh_if_expiring and _codex_access_token_is_expiring(pool_token, refresh_skew_seconds)
+        )):
+            # Pool-only setup: rotate the selected entry before it expires, and always after a
+            # forced refresh.  Independent manual:device_code entries own their token pairs, so
+            # refresh through the matching pool row instead of adopting singleton credentials.
             from agent.credential_pool import load_pool
             refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
             pool_token = refreshed.runtime_api_key if refreshed is not None else ""

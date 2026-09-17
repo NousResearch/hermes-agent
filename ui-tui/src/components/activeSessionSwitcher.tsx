@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -64,16 +65,79 @@ export const sessionRowKindAt = (index: number, liveCount: number): SessionRowKi
   return index - 1 < liveCount ? 'live' : 'history'
 }
 
+/**
+ * Display-only section divider before a row: 'live' ahead of the first live
+ * row, 'resumable' ahead of the first history row — but only when both
+ * sections are non-empty (otherwise the counts line already orients).
+ * Returns null for all other rows. Never affects selection indices.
+ */
+export const sectionDividerAt = (
+  index: number,
+  liveCount: number,
+  historyCount: number,
+): 'live' | 'resumable' | null => {
+  if (liveCount === 0 || historyCount === 0) {
+    return null
+  }
+
+  if (index === 1) {
+    return 'live'
+  }
+
+  if (index === 1 + liveCount) {
+    return 'resumable'
+  }
+
+  return null
+}
+
+/**
+ * Resolve one typed digit against the in-progress jump buffer into a row
+ * index. Digits typed close together accumulate (`1` then `2` → row 12) so
+ * rows past 9 stay reachable; when nothing valid resolves (e.g. `9` on a
+ * 5-row list) the buffer clears and the selection holds. Returns null then.
+ * Pure so the accumulation contract is unit-tested; the caller owns timing.
+ */
+export const resolveJumpIndex = (
+  buffer: string,
+  digit: string,
+  maxIndex: number,
+): { buffer: string; index: number } | null => {
+  const direct = Number.parseInt(`${buffer}${digit}`, 10)
+
+  if (Number.isInteger(direct) && direct >= 1 && direct <= maxIndex) {
+    return { buffer: `${buffer}${digit}`, index: direct }
+  }
+
+  const restart = Number.parseInt(digit, 10)
+
+  if (Number.isInteger(restart) && restart >= 1 && restart <= maxIndex) {
+    return { buffer: digit, index: restart }
+  }
+
+  return null
+}
+
 export const relativeSessionAge = (ts?: number) => {
   if (!ts) {
     return ''
   }
 
-  const days = (Date.now() / 1000 - ts) / 86400
+  const deltaSec = Date.now() / 1000 - ts
 
-  if (days < 1) {
-    return 'today'
+  if (deltaSec < 60) {
+    return 'just now'
   }
+
+  if (deltaSec < 3600) {
+    return `${Math.floor(deltaSec / 60)}m ago`
+  }
+
+  if (deltaSec < 86400) {
+    return `${Math.floor(deltaSec / 3600)}h ago`
+  }
+
+  const days = deltaSec / 86400
 
   if (days < 2) {
     return 'yesterday'
@@ -95,7 +159,9 @@ export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'hotkey', text: 'Enter' },
   { role: 'text', text: ' resume · ' },
   { role: 'hotkey', text: 'd' },
-  { role: 'text', text: ' delete' }
+  { role: 'text', text: ' delete · ' },
+  { role: 'hotkey', text: '0-9' },
+  { role: 'text', text: ' jump' }
 ]
 
 export type OrchestratorHintRole = 'hotkey' | 'label' | 'text'
@@ -311,6 +377,10 @@ export function ActiveSessionSwitcher({
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
+  // Type-to-jump digit buffer: digits typed ≤900ms apart accumulate so rows
+  // past 9 stay reachable (see resolveJumpIndex). Timer cleared on each digit.
+  const jumpBufRef = useRef('')
+  const jumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
   // re-derives the resumable list from this against the latest live set, so a
   // session that was hidden while live reappears in history once it closes —
@@ -622,6 +692,28 @@ export function ActiveSessionSwitcher({
       return
     }
 
+    // Digit jump: move the highlight to row N (Enter still confirms — never
+    // an instant switch). Digits typed ≤900ms apart accumulate for rows ≥ 10.
+    // Skipped on the New row so digits keep typing into the prompt draft.
+    if (!newSelected && /^[0-9]$/.test(lower) && !key.ctrl && !key.meta) {
+      if (jumpTimerRef.current) {
+        clearTimeout(jumpTimerRef.current)
+      }
+
+      const resolved = resolveJumpIndex(jumpBufRef.current, lower, total - 1)
+      jumpBufRef.current = resolved ? resolved.buffer : ''
+
+      if (resolved) {
+        setSel(resolved.index)
+      }
+
+      jumpTimerRef.current = setTimeout(() => {
+        jumpBufRef.current = ''
+      }, 900)
+
+      return
+    }
+
     if (newSelected && draftHasText) {
       return
     }
@@ -739,6 +831,16 @@ export function ActiveSessionSwitcher({
         const selectedStyle = selected ? selectedSessionRowStyle(t) : null
         const rowTextColor = selectedStyle?.color
         const kind = rowKind(i)
+        const divider = sectionDividerAt(i, items.length, history.length)
+        const withDivider = (row: ReactNode) =>
+          divider
+            ? [
+                <Text key={`div-${i}`} color={t.color.muted}>
+                  {'  ── '}{divider}{' ──'}
+                </Text>,
+                row,
+              ]
+            : row
 
         if (kind === 'history') {
           const h = history[i - 1 - items.length]!
@@ -750,7 +852,7 @@ export function ActiveSessionSwitcher({
               ? 'deleting…'
               : h.title || h.preview || '(untitled)'
 
-          return (
+          return withDivider((
             <Box
               backgroundColor={selectedStyle?.backgroundColor}
               flexDirection="row"
@@ -768,19 +870,13 @@ export function ActiveSessionSwitcher({
                 </Text>
               </Box>
 
-              <Box {...fixedSessionColumnStyle()} width={11}>
-                <Text bold={selected} color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {h.id}
-                </Text>
-              </Box>
-
-              <Box {...fixedSessionColumnStyle()} width={11}>
+              <Box {...fixedSessionColumnStyle()} width={12}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                   {relativeSessionAge(h.started_at)}
                 </Text>
               </Box>
 
-              <Box {...fixedSessionColumnStyle()} width={18}>
+              <Box {...fixedSessionColumnStyle()} width={10}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                   {h.message_count} msgs
                 </Text>
@@ -796,7 +892,7 @@ export function ActiveSessionSwitcher({
                 </Text>
               </Box>
             </Box>
-          )
+          ))
         }
 
         const s = items[i - 1]!
@@ -804,7 +900,7 @@ export function ActiveSessionSwitcher({
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'
 
-        return (
+        return withDivider((
           <Box
             backgroundColor={selectedStyle?.backgroundColor}
             flexDirection="row"
@@ -856,7 +952,7 @@ export function ActiveSessionSwitcher({
               </Text>
             </Box>
           </Box>
-        )
+        ))
       })}
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}> ↓ {listLen - offset - VISIBLE} more</Text>}

@@ -105,22 +105,55 @@ const baseProps = {
 }
 
 describe('StatusRule session title', () => {
-  it('marks only estimated context occupancy at every visible width', () => {
+  it('shows the bar on wide terminals and bare numbers only when narrow', () => {
     for (const cols of [80, 120, 200]) {
       for (const estimated of [true, false]) {
         const text = textContent(
           StatusRule({
             ...baseProps,
             cols,
-            statusBarFields: new Set(['context_detail']),
             usage: { ...baseProps.usage, context_estimated: estimated }
           })
         )
 
-        const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
+        // Wide, default fields: the bar + % carries context …
+        if (estimated) {
+          expect(text).toContain('~25%')
+        } else {
+          expect(text).toContain('25%')
+          expect(text).not.toContain('~25%')
+        }
 
-        expect(context, `context must render at ${cols} columns`).toBeTruthy()
-        expect(context?.startsWith('~')).toBe(estimated)
+        // … and the numeric label stays out so the two never duplicate.
+        expect(text).not.toMatch(/50k\/200k/)
+      }
+    }
+
+    // An explicit fields filter without context_pct keeps the numbers even
+    // on wide screens — the user's choice wins over dedup.
+    const filtered = textContent(
+      StatusRule({
+        ...baseProps,
+        cols: 120,
+        statusBarFields: new Set(['context_detail']),
+        usage: baseProps.usage
+      })
+    )
+    expect(filtered).toMatch(/50k\/200k/)
+    expect(filtered).not.toContain('25%')
+
+    for (const cols of [60, 70]) {
+      for (const estimated of [true, false]) {
+        const text = textContent(
+          StatusRule({
+            ...baseProps,
+            cols,
+            usage: { ...baseProps.usage, context_estimated: estimated }
+          })
+        )
+
+        // Narrow: no bar fits, so the bare token count stands in.
+        expect(text).toMatch(estimated ? /~50k tok/ : /50k tok/)
       }
     }
   })
@@ -299,9 +332,10 @@ describe('StatusRule credits notice render priority', () => {
     // Notice replaces the status verb slot …
     expect(rendered).toContain('✕ credits exhausted')
     expect(rendered).not.toContain('ready')
-    // … but model + context stay visible.
+    // … but model + context stay visible (context as bar + %, not numbers).
     expect(rendered).toContain('opus 4.8')
-    expect(rendered).toContain('50k')
+    expect(rendered).toContain('25%')
+    expect(rendered).not.toMatch(/50k\/200k/)
   })
 
   it('busy wins: the FaceTicker shows, the notice is hidden mid-turn', () => {

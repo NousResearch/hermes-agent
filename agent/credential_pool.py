@@ -1484,7 +1484,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # 0"). The caller's retry re-syncs once the winner persisted.
                 logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
                 return entry
-            if auth_mod._is_terminal_nous_refresh_error(exc):
+            # relogin_required means retrying the same token cannot succeed even when the
+            # provider supplied no dead code — benching it hides a lost login (#113718).
+            if (auth_mod._is_terminal_nous_refresh_error(exc)
+                    or getattr(exc, "relogin_required", False)):
                 logger.warning(
                     "Nous refresh token is terminally invalid (%s); clearing local token state. "
                     "Re-run 'hermes auth add nous' to sign in again.", exc)

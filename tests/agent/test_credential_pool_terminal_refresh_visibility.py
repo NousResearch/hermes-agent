@@ -116,3 +116,43 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
 
     assert [e.id for e in pool._entries] == ["e1"]  # manual rows are never dropped by the quarantine
     assert pool._entries[0].last_status == STATUS_DEAD
+
+def test_nous_relogin_required_without_code_clears_state(monkeypatch, caplog):
+    """A Nous refresh failure demanding relogin is terminal even when the provider
+    supplied no dead code: benching it for an hour hides a lost login (#113718)."""
+    from hermes_cli.auth_constants import AuthError
+
+    pool = _pool("nous")
+    entry = _entry("nous")
+    pool._entries = [entry]
+    cleared: list = []
+    monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
+    monkeypatch.setattr(pool, "_clear_terminal_nous_state", lambda e, exc: cleared.append(e.id))
+    monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources: None)
+
+    exc = AuthError("session expired", provider="nous", code=None, relogin_required=True)
+    with caplog.at_level(logging.INFO, logger=cp.logger.name):
+        result = pool._recover_failed_refresh(entry, exc)
+
+    assert result is None and cleared == ["e1"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "terminally invalid" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "hermes auth add nous" in warnings[0].getMessage()
+
+
+def test_nous_transient_error_still_benched(monkeypatch, caplog):
+    """Without relogin_required the failure stays transient: benched, not cleared."""
+    pool = _pool("nous")
+    entry = _entry("nous")
+    pool._entries = [entry]
+    cleared: list = []
+    benched: list = []
+    monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
+    monkeypatch.setattr(pool, "_clear_terminal_nous_state", lambda e, exc: cleared.append(e.id))
+    monkeypatch.setattr(pool, "_mark_exhausted", lambda e, *a, **k: benched.append(e.id))
+
+    with caplog.at_level(logging.INFO, logger=cp.logger.name):
+        result = pool._recover_failed_refresh(entry, RuntimeError("boom"))
+
+    assert result is None and cleared == [] and benched == ["e1"]
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING and "terminally invalid" in r.getMessage()]

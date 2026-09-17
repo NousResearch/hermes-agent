@@ -17,7 +17,14 @@
 import { getApiRequestConnection } from '@/api/client'
 import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { classifyProbe, freshProbe, type McpOwnerScope, probeCache, probeKey, resolveMcpOwner } from '@/lib/mcp-probe-cache'
+import {
+  classifyProbe,
+  freshProbe,
+  type McpOwnerScope,
+  probeCache,
+  probeKey,
+  resolveMcpOwner
+} from '@/lib/mcp-probe-cache'
 import { getServers } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
 import { notify, notifyError } from '@/store/notifications'

@@ -11,6 +11,7 @@ state_lost/state_reset reporting, fail-open, and owner isolation.
 import json
 import os
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -287,6 +288,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
                 with _REGISTRY.lock:
                     if any(k.attached for k in _REMOTE_KERNELS.values()):
                         break
+                time.sleep(0.005)
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")
             owners = {key[0] for key in _REMOTE_KERNELS}

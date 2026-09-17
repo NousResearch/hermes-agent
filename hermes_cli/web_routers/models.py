@@ -13,11 +13,12 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -234,7 +235,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        with _profile_scope(body.profile or profile):
+        # load→mutate→save runs on a worker thread (sync-def endpoint); the
+        # desktop's debounced PUT /api/config autosave races it, so the whole
+        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
+        with config_write_scope(body.profile or profile):
             cfg = load_config()
             if body.presets:
                 raw = {
@@ -255,9 +259,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 
@@ -292,8 +300,16 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
 
         def _apply_assignment():
+            # Same RMW span as PUT /api/config: applyMainModel fires this while the
+            # settings-page autosave is in flight — hold the mutation lock. switch_model's
+            # catalog fetches / endpoint probes are network I/O, so they run BEFORE the lock;
+            # only load→apply→save holds it.
             with _profile_scope(body.profile or profile):
-                return _apply_model_assignment_sync(
-                    scope, provider, model, task, base_url, api_key, reasoning_effort=reasoning_effort)
+                prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
+                            if scope == "main" else None)
+                with _CONFIG_MUTATION_LOCK:
+                    return _apply_model_assignment_sync(
+                        scope, provider, model, task, base_url, api_key,
+                        reasoning_effort=reasoning_effort, prepared=prepared)
 
         return await asyncio.to_thread(_apply_assignment)

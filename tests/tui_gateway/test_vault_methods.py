@@ -102,6 +102,45 @@ def test_add_validation_errors_are_clean(home):
     assert "s3cret-pw-9000" not in json.dumps(err)
 
 
+def _sources_rows(home):
+    out = _result(srv._methods["vault.sources"](90, {}))
+    return {row["name"]: row for row in out["sources"]}
+
+
+def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
+    """The Settings toggle and `hermes vault sources --enable` both clear the opt-out override;
+    the shipped default must then agree with `is_enabled()`'s zero-config contract — an installed
+    manager becomes a login source instead of silently staying off (#109546)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    _result(
+        srv._methods["vault.source.set"](80, {"name": "bitwarden", "enabled": True})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is True
+    assert rows["bitwarden"]["enabled"] is True
+
+
+def test_disabling_a_manager_persists_the_opt_out(home, monkeypatch):
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    _result(
+        srv._methods["vault.source.set"](81, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is True
+    assert rows["bitwarden"]["enabled"] is False
+
+
+def test_undetected_manager_stays_off(home, monkeypatch):
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
+    rows = _sources_rows(home)
+    assert rows["bitwarden"]["installed"] is False
+    assert rows["bitwarden"]["enabled"] is False
+
+
 def test_remove_is_idempotent(home):
     item_id = _result(srv._methods["vault.add"](1, dict(_LOGIN_PARAMS)))["id"]
     assert _result(srv._methods["vault.remove"](2, {"id": item_id}))["removed"] is True

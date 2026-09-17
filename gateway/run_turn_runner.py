@@ -34,6 +34,14 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Exact refusals retained for older adapters/connectors without destination preflight.
+# Substring matching would also silence transient thread-resolution errors.
+_CARD_DESTINATION_REFUSALS = {
+    "No Slack thread target",
+    "slack task_card requires a thread anchor",
+    "slack task_card requires a thread anchor (Slack streams are thread replies)",
+}
+
 
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
@@ -43,6 +51,11 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
         return bool(probe())
     return getattr(adapter_cls, "send_exec_approval", None) is not None
+
+
+# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+# Slack click handler shows on a dead entry).
+_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -168,7 +181,7 @@ class TurnRunner:
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
-                    duration_seconds=kwargs.get("duration_seconds"),
+                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
                 self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
         except Exception:
@@ -308,11 +321,13 @@ class TurnRunner:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
-        # TERMINAL authorization refusal, distinct from native_failed: the
-        # connector refused this destination, so no later publication in this
-        # turn may re-deliver the task text through the text fallback. Declared
-        # rather than set dynamically so the state is visible where it lives.
-        egress_declined: bool = False
+        # TERMINAL for the turn, distinct from native_failed: no later publication
+        # in this turn may deliver task text through the native lane OR the text
+        # fallback. Two causes, both properties of the destination rather than of
+        # one attempt: the connector's egress guard refused the chat, or the chat
+        # cannot host a card (no thread anchor). Declared rather than set
+        # dynamically so the state is visible where it lives.
+        publication_suppressed: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -358,7 +373,7 @@ class TurnRunner:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if getattr(st, "egress_declined", False):
+        if st.publication_suppressed:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
@@ -376,7 +391,7 @@ class TurnRunner:
                     "guard; suppressing progress delivery for the rest of this "
                     "turn (the destination is not approved)"
                 )
-                st.egress_declined = True
+                st.publication_suppressed = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -386,10 +401,21 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if getattr(st, "egress_declined", False):
-            # The connector refused this destination earlier in the turn; every
-            # later publication would re-deliver the same task text there.
+        if st.publication_suppressed:
+            # Publication was suppressed earlier in the turn (egress refusal or a chat
+            # that cannot host a card); every later publication would re-deliver the
+            # same task text there.
             return
+        # Resolve eligibility in the owning adapter BEFORE transport I/O: a first
+        # timeout/disconnect must not turn an un-cardable chat into text fallback.
+        # Optional for older adapters; only an explicit False refuses publication.
+        destination_supported = getattr(st.adapter, "native_task_card_destination_supported", None)
+        if callable(destination_supported) and destination_supported(
+            ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+        ) is False:
+            self._task_card_uncardable_destination(st)
+            if st.publication_suppressed:
+                return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
@@ -409,7 +435,7 @@ class TurnRunner:
                 # event skipped this branch (the lane is already "failed") and
                 # went straight to the text fallback. A refusal does not expire
                 # after one tick.
-                st.egress_declined = True
+                st.publication_suppressed = True
                 st.native_failed = True
                 logger.warning(
                     "Slack native task-card progress DECLINED by the connector's "
@@ -418,12 +444,36 @@ class TurnRunner:
                 )
                 return
             st.native_failed = True
-            logger.warning(
-                "Slack native task-card progress failed; falling back "
-                "to an editable text update: %s", getattr(result, "error", "unknown error"),
-            )
+            if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
+                self._task_card_uncardable_destination(st, getattr(result, "error", "unknown error"))
+                if st.publication_suppressed:
+                    return
+            else:
+                logger.warning(
+                    "Slack native task-card progress failed; falling back "
+                    "to an editable text update: %s", getattr(result, "error", "unknown error"),
+                )
         # Once the native rail fails, every later lifecycle event edits the same fallback message.
         await self._task_card_send_or_edit_fallback(st)
+
+    def _task_card_uncardable_destination(self, st, reason: str = "no thread anchor") -> None:
+        """The chat cannot host a card (flat DM: no thread anchor) — a property of the destination,
+        not a transient outage. The text fallback exists to keep a WORKING card lane live through a
+        transient failure, not to invent text bubbles the operator never asked for: with Slack's tier
+        default (``tool_progress: off``) the lane goes silent for the turn. An operator who WROTE
+        ``new``/``all`` asked for text progress, so the editable fallback carries it instead."""
+        if self._ctx.tool_progress_enabled:
+            st.native_failed = True
+            logger.info(
+                "Slack native task cards are unsupported for this destination (%s); "
+                "tool progress continues as an editable text update", reason,
+            )
+            return
+        st.publication_suppressed = True
+        logger.info(
+            "Slack native task cards are unsupported for this destination (%s); "
+            "tool progress stays off for this turn", reason,
+        )
 
     def _task_card_drain(self, st) -> bool:
         changed = False
@@ -437,8 +487,8 @@ class TurnRunner:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain the progress queue into Slack-native plan/task cards; on any native failure, fall
-        back to an editable in-thread message so progress stays live.
+        """Drain progress into native cards; supported destinations retain editable fallback.
+        Unsupported destinations and egress refusals suppress publication, never finalization.
 
         See #29483.
         """
@@ -858,10 +908,10 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = (
+        want_stream_deltas = not ctx.scheduled_heartbeat and (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = ctx.interim_assistant_messages_enabled
+        want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -880,6 +930,10 @@ class TurnRunner:
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
+                    # #105341: a consumer created only for interim commentary (text streaming off)
+                    # is never fed the final reply's deltas — mark it so the duplicate-risk
+                    # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
+                    stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
@@ -1240,16 +1294,52 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
+    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
+                               questions=None) -> str:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
-        timeout. Returns the response string, or a sentinel when none arrived."""
+        timeout. Returns the response string, or a sentinel when none arrived.
+
+        ``questions`` (clarify_tool's batch form) is answered here, one card per question, because
+        this surface knows whether an answer arrived: the loop that would otherwise call this
+        callback once per question can only recognize "no answer" from the returned sentinel text,
+        and treated that text as the question's answer.
+        """
+        if questions:
+            return self._clarify_batch_sync(questions)
+        response, _answered = self._ask_clarify_question(question, choices, multi_select)
+        return response
+
+    def _clarify_batch_sync(self, questions) -> str:
+        """Answer a batch: one card per question, stop at the first the user never answers.
+        Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
+        the last question — between two cards it only opens a bubble the next boundary closes."""
+        answers: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
+        last = len(questions) - 1
+        for index, entry in enumerate(questions):
+            raw, answered = self._ask_clarify_question(
+                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
+                rearm=index == last)
+            if not answered:
+                # The surface's own no-answer text ("could not be delivered", "did not respond
+                # within Nm") rides along as ``notice``: blank answers alone read as user
+                # inactivity, which is the misreport #112684 describes for an undelivered card.
+                payload.update(timed_out=True, notice=raw)
+                break
+            answers[entry.get("qid") or f"q{index}"] = raw
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
+        """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
+        Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
+        for a single question, the batch's ``timed_out`` flag."""
         from gateway.run import _clarify_send_then_wait
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
-            return ""
+            return "", False
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
@@ -1283,10 +1373,19 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
-        # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
-        # timeout/cancellation strings start with '[' and must pass through untouched.
-        if not (isinstance(response, str) and response.startswith("[")):
+        response, answered = _clarify_send_then_wait(
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
+        # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
+        if not answered:
+            # No answer arrived (timeout, /new, run end): retire the native card so it stops
+            # looking answerable. Adapters without a persistent card have no such method.
+            retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
+            if callable(retire):
+                self._schedule(
+                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
+                    "Clarify card retire failed to schedule")
+        elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
             # a no-op outside the reopen-pending native state.
@@ -1300,12 +1399,13 @@ class TurnRunner:
                 ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
             except Exception:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
-        return response
+        return response, answered
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
+        from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1332,6 +1432,11 @@ class TurnRunner:
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Without this, a card whose timer runs out keeps live buttons and nobody
+                    # learns the command did NOT run (only the TUI registered a settle hook).
+                    register_timeout_notice(
+                        self, approval_data, command=cmd,
+                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1387,6 +1492,9 @@ class TurnRunner:
             )
             if fut is not None:
                 fut.result(timeout=15)
+                # No card to edit on the text path: the prompt has no buttons to drop and carries
+                # the /approve instructions, so the timeout notice is posted as a new message.
+                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 
@@ -1740,7 +1848,16 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+            # Model/credential resolution failed before the turn began; the raw text (URLs, status
+            # codes) belongs in the log, and the chat gets the commands that fix it.
+            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            return {
+                "final_response": (
+                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
+                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
+                    "failing, run `hermes doctor` on the host."),
+                "messages": [], "api_calls": 0, "tools": [],
+            }
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config

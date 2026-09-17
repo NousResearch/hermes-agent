@@ -518,6 +518,92 @@ class TestSchemaConversion:
         assert "definitions" not in schema["parameters"]
 
 
+    def test_properties_map_entry_named_properties_is_not_injected_with_type(self):
+        """A ``properties`` map must be repaired per-entry, never as a schema node.
+
+        Regression: ``_repair_object_shape`` recursed over every value as a
+        schema node, including the ``properties`` map itself. When one of its
+        KEYS was literally named ``properties``/``required``, the
+        missing-``type`` heuristic fired on the map and injected
+        ``"type": "object"`` — a bare string, not a schema — as a *parameter*.
+        Strict providers then 400 the whole tool array with
+        ``"object" is not of types "boolean", "object"``. Real-world repro: a
+        Tencent Docs MCP server whose ``smartsheet_add_table`` tool has a
+        parameter named ``properties`` (#110530).
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "properties": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                },
+            },
+        })
+
+        props = normalized["properties"]
+        # No bogus "type" parameter was injected into the properties map itself.
+        assert set(props) == {"file_id", "properties"}
+        # The legitimately-named `properties` parameter keeps its schema shape.
+        assert props["properties"]["type"] == "object"
+        assert props["properties"]["properties"] == {"title": {"type": "string"}}
+
+        # Same signature one level deeper (smartsheet add_view: items.properties map).
+        nested = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "condition_items": {
+                    "type": "object",
+                    "properties": {
+                        "properties": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                },
+            },
+        })
+        inner = nested["properties"]["condition_items"]["properties"]
+        assert set(inner) == {"properties", "value"}
+
+        # ``$defs`` is a schema map too: an entry literally named ``properties`` must not
+        # gain a bogus ``type`` sibling inside the ``$defs`` map.
+        defs_case = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "$defs": {"properties": {"type": "string"}},
+        })
+        assert set(defs_case["$defs"]) == {"properties"}
+
+
+    def test_properties_map_entry_named_required_is_not_injected_with_type(self):
+        """A parameter literally named ``required`` keeps its map entry intact.
+
+        Same code path as the ``properties``-named collision above (#110530),
+        and the one where the keyword and the parameter name collide at the
+        same level: the map is repaired per-entry, so no phantom
+        ``properties`` entry appears inside it and no non-list ``required``
+        keyword is synthesised at the object level.
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "required": {"type": "array", "items": {"type": "string"}},
+            },
+        })
+
+        props = normalized["properties"]
+        assert set(props) == {"table", "required"}
+        # The legitimately-named `required` parameter keeps its array schema.
+        assert props["required"] == {"type": "array", "items": {"type": "string"}}
+        # No non-list `required` keyword was synthesised at the object level.
+        assert "required" not in normalized
+
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool_schema import _normalize_mcp_input_schema

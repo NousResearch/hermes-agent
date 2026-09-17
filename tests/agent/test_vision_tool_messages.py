@@ -68,11 +68,6 @@ class TestProviderSupportsVisionToolMessages:
         assert agent._provider_supports_vision_tool_messages() is False
 
 
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # _tool_result_content_for_active_model — proactive downgrade
 # ---------------------------------------------------------------------------
@@ -89,6 +84,17 @@ class TestToolResultContentProactiveDowngrade:
 
         assert isinstance(content, str)
         assert "screenshot captured" in content
+
+    def test_openrouter_xiaomi_route_downgrades_to_text_summary(self):
+        """OpenRouter must not bypass Xiaomi's list-type tool-message veto."""
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+        result = _multimodal_result(text="aggregated screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+
+        assert isinstance(content, str)
+        assert "aggregated screenshot captured" in content
 
     def test_xiaomi_non_multimodal_passes_through(self):
         """Non-multimodal results should pass through unchanged."""

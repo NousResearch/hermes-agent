@@ -1,0 +1,26 @@
+name: hermes-telemetry
+repo: https://github.com/nujovich/hermes-telemetry
+sha: 146f6744fc4117ade784eefd7aa231c9b3f36281
+description: Observability + budget guardrails for Hermes Agent — tokens, cost, latency, tool calls per
+  session and cron job. Persists to local SQLite. Exposes /stats and /budget slash commands.
+maintainer: nujovich
+tier: community
+category: general
+docs_url: https://github.com/nujovich/hermes-telemetry#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - api_request_error
+  - on_session_end
+  - on_session_finalize
+  - on_session_start
+  - post_api_request
+  - post_llm_call
+  - post_tool_call
+  - pre_api_request
+  - pre_llm_call
+  - pre_tool_call
+  - subagent_start
+  - subagent_stop
+  provides_middleware: []
+  requires_env: []

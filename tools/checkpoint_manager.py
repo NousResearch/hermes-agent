@@ -620,7 +620,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
+            store, dir_hash = _store_path(), self._ledger_key(str(path))
             _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -637,7 +637,9 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
-        ledger = _load_ledger(p.store, p.dir_hash)
+        # p.dir_hash is the exact restore dir; the ledger was written under the walked key. Reading
+        # the wrong key looked like "no ledger" and degraded to a full restore over user edits.
+        ledger = _load_ledger(p.store, self._ledger_key(p.abs_dir))
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
@@ -818,6 +820,10 @@ class CheckpointManager:
                     logger.warning("Safe restore: could not remove %s: %s", rel, exc)
                     targets.failed_deletes.append(rel)
         return targets
+
+    def _ledger_key(self, path: str) -> str:
+        """Agent-write ledger key: hash of the marker-walked project dir, for writer and reader alike."""
+        return _project_hash(self.get_working_dir_for_path(path))
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory (nearest project-marker ancestor)."""
@@ -1254,9 +1260,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
 
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
-    """Delete all ``legacy-*`` archive directories.  Returns ``{"bytes_freed": N, "deleted": count}``."""
+    """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
-    out = {"bytes_freed": 0, "deleted": 0}
+    out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
     for child in _legacy_archives(base):

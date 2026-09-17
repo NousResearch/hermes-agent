@@ -390,6 +390,71 @@ class TestDisplayDedupe:
         assert [m["id"] for m in db.get_messages(sid, include_compacted=True)][-1:] == [newest_id]
         assert len([m for m in db.get_messages(sid, include_compacted=True) if m["content"] == "same"]) == 1
 
+    def test_display_metadata_update_does_not_invalidate_display_identity(self, tmp_path):
+        # Install the pre-narrowing trigger (``display_metadata`` in UPDATE OF, no WHEN) as an existing
+        # store would carry it; the reopen must replace it, since IF NOT EXISTS alone never would.
+        path = tmp_path / "state.db"
+        SessionDB(path).close()
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute(
+            "CREATE TRIGGER messages_display_identity_update AFTER UPDATE OF role, content, timestamp, "
+            "tool_call_id, tool_calls, tool_name, display_kind, display_metadata ON messages "
+            "BEGIN UPDATE messages SET display_identity = NULL, display_order = NULL WHERE id = new.id; END")
+        conn.commit()
+        conn.close()
+        db = SessionDB(path)
+        trigger_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_display_identity_update'").fetchone()[0]
+        assert "display_metadata" not in trigger_sql and "display_kind" in trigger_sql
+
+        sid = "metadata"
+        db.create_session(sid, source="desktop")
+        row_ids = [
+            db.append_message(sid, role="assistant", content=f"row-{index}", timestamp=100.0)
+            for index in range(3)
+        ]
+        before = db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
+
+        changes = db._conn.total_changes
+        db.set_message_reaction(sid, row_ids[1], "👍", author="user")
+        assert db._conn.total_changes - changes == 1
+        assert db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall() == before
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes == changes
+
+    def test_display_backfill_rewrites_only_changed_identity_group(self, db):
+        sid = "identity-update"
+        db.create_session(sid, source="desktop")
+        first = db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        unaffected = db.append_message(sid, role="assistant", content="other", timestamp=100.0)
+        unaffected_before = db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone()
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?", ('"changed"', first)))
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes - changes == 2
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (display_order IS NULL OR display_identity IS NULL)",
+            (sid,),
+        ).fetchone()[0] == 0
+        assert db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone() == unaffected_before
+
     def test_legacy_store_is_readable_then_lazily_migrated(self, tmp_path):
         path = tmp_path / "legacy.db"
         writer = SessionDB(path)

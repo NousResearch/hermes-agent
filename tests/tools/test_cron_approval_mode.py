@@ -264,6 +264,50 @@ class TestCronDenyModeAllGuards:
             result = check_all_command_guards("echo hello", "local")
             assert result["approved"]
 
+    def test_permanent_pattern_key_allows_matching_command_in_cron_deny(self, monkeypatch):
+        """A canonical dangerous-pattern key in command_allowlist applies in unattended mode."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.load_permanent({"script execution via heredoc"})
+
+        from unittest.mock import patch as mock_patch
+        with (
+            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.tirith_security.check_command_security",
+                       return_value={"action": "allow", "findings": [], "summary": ""}),
+        ):
+            result = check_all_command_guards("python3 - <<'PY'\nprint('ok')\nPY", "local")
+
+        assert result["approved"] is True
+
+    def test_pattern_key_allowlist_does_not_bypass_tirith_in_cron_deny(self, monkeypatch):
+        """Approving one dangerous pattern must not suppress an independent Tirith finding."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.load_permanent({"script execution via heredoc"})
+
+        from unittest.mock import patch as mock_patch
+        threat = {
+            "action": "block",
+            "findings": [{"severity": "HIGH", "title": "Independent threat",
+                          "description": "content remains unsafe"}],
+            "summary": "independent threat",
+        }
+        with (
+            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.tirith_security.check_command_security", return_value=threat),
+        ):
+            result = check_all_command_guards("python3 - <<'PY'\nprint('ok')\nPY", "local")
+
+        assert result["approved"] is False
+        assert "Independent threat" in result["message"]
+
     def test_combined_guard_approve_mode(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

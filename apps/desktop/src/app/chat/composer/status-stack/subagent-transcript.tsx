@@ -62,7 +62,7 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
       <h4 className="text-(--ui-text-secondary)">{t.agents.extendedTranscript}</h4>
       {tail?.truncated && <p className="text-(--ui-text-tertiary)">{t.agents.transcriptTruncated}</p>}
       {tail?.available ? (
-        <pre className="max-h-[30vh] overflow-auto whitespace-pre-wrap break-words font-mono text-[0.68rem]">
+        <pre className="max-h-[30vh] overflow-auto overscroll-y-auto whitespace-pre-wrap break-words font-mono text-[0.68rem]">
           {tail.text}
         </pre>
       ) : (

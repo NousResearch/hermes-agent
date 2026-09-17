@@ -69,13 +69,11 @@ _PRICING_AUTH_KEY_PREFIX = "\x00auth:"
 def _pricing_auth_fingerprint(api_key: str | None) -> str:
     """Cache-key suffix identifying the credential a catalog was read with: a governed endpoint
     answers each token with the catalog its org may reach, so two credentials cannot share an
-    entry. blake2b for fingerprinting only (same rationale as ``_custom_endpoint_fingerprint``)."""
+    entry. It is a stable fingerprint, not a password verifier."""
     if not api_key:
         return ""
-    import hashlib
-
-    digest = hashlib.blake2b(api_key.encode("utf-8", errors="replace"), digest_size=8)
-    return _PRICING_AUTH_KEY_PREFIX + digest.hexdigest()
+    from agent.secure_fingerprint import stable_fingerprint
+    return _PRICING_AUTH_KEY_PREFIX + stable_fingerprint(api_key)
 
 
 def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:

@@ -16,13 +16,11 @@ import type { DesktopRosterAgent } from '@/global'
 import {
   editLearningNode,
   getLearningNode,
-  getOfficialSkills,
   getProfiles,
   getSkillContent,
   getSkills,
   getToolsets,
   getUsageAnalytics,
-  previewSkillHub,
   type ProfileScope,
   profileScopeKey,
   setSkillEnabled,
@@ -30,17 +28,14 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
-import { Loader2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
-import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import type { OfficialSkillInfo, SkillInfo, ToolsetInfo } from '@/types/hermes'
+import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -67,10 +62,13 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CapabilityTabs, type CapabilityView } from './capability-tabs'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
-import { PluginsTab } from './plugins-tab'
+import { PluginActions, PluginsTab } from './plugins-tab'
+import { SkillCatalog } from './skill-catalog'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
+import { UpdateSkillsButton } from './update-skills-button'
 
 // The Hub is a durable page-local tab. Its iframe is mounted on first visit,
 // then kept hidden across tab switches so returning never reloads the docs site.
@@ -155,23 +153,6 @@ function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): Skil
         !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
     )
     .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
-}
-
-// Catalog rows have no usage yet — plain A–Z, same query fields as installed
-// rows plus tags (the catalog's frontmatter tags are its richest search text).
-function filteredOfficial(skills: OfficialSkillInfo[], query: string): OfficialSkillInfo[] {
-  const q = normalize(query)
-
-  return skills
-    .filter(
-      skill =>
-        !q ||
-        includesQuery(skill.name, q) ||
-        includesQuery(skill.description, q) ||
-        includesQuery(skill.category, q) ||
-        skill.tags.some(tag => includesQuery(tag, q))
-    )
-    .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
 }
 
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
@@ -260,6 +241,8 @@ export function SkillsView({
     setHubMounted(true)
   }
 
+  const [capabilityView, setCapabilityView] = useState<CapabilityView>('installed')
+
   // Capabilities scope selector: which profile's Skills/Tools/MCP config we're
   // editing — and on WHICH gateway. A profile belongs to one gateway, so on a
   // multi-connection desktop the selector offers every (connection, profile)
@@ -294,7 +277,7 @@ export function SkillsView({
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
-    queryFn: getProfiles,
+    queryFn: () => getProfiles(),
     staleTime: 60_000,
     // Pinned scope never shows the selector, so don't fetch the roster for it.
     enabled: !fixedProfile
@@ -341,17 +324,6 @@ export function SkillsView({
     staleTime: 0
   })
 
-  // The built-in optional-skills catalog (optional-skills/ shipped with the
-  // repo) — rendered under the installed list with install buttons. Local
-  // checkout scan on the backend, so it's cheap; failures (older backend
-  // without the endpoint) just render no catalog rows.
-  const { data: officialData } = useQuery({
-    queryKey: [...OFFICIAL_SKILLS_KEY, scopeKey],
-    queryFn: () => getOfficialSkills(scopeProfile),
-    staleTime: 60_000,
-    retry: false
-  })
-
   // Optimistic write-through against the scoped Skills key: toggles/bulk/
   // archive repaint instantly; the next background refetch reconciles.
   const setSkills = useCallback(
@@ -370,16 +342,12 @@ export function SkillsView({
   const toolsetsSortDesc = useStore($toolsetsSortDesc)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
-  // Catalog selection is separate from installed-skill selection: identifiers
-  // (official/<category>/<name>) vs names. Non-null wins the detail pane.
-  const [selectedOfficial, setSelectedOfficial] = useState<string | null>(null)
   const [selectedToolset, setSelectedToolset] = useState<string | null>(null)
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY }),
-      queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY }),
-      queryClient.invalidateQueries({ queryKey: OFFICIAL_SKILLS_KEY })
+      queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
     ])
 
     invalidateSlashCompletions()
@@ -437,7 +405,6 @@ export function SkillsView({
     toolCallsEpoch.current += 1
     setToolCalls(null)
     setScopeOverride(null)
-    setSelectedOfficial(null)
   })
 
   const visibleSkills = useMemo(
@@ -445,29 +412,9 @@ export function SkillsView({
     [query, skills, skillsSortDesc]
   )
 
-  // Installed-name set for the hub picker's already-installed guard — the
+  // Installed-name set for the catalog's already-installed guard — the
   // UNFILTERED list on purpose (search must not make a skill look absent).
   const installedSkillNames = useMemo(() => new Set((skills ?? []).map(s => s.name)), [skills])
-
-  // Catalog rows still available to install: drop entries whose lock says
-  // installed AND entries whose name already appears in the installed list
-  // (covers installs from before the lock existed, or by hand).
-  const visibleOfficial = useMemo(() => {
-    const catalog = (officialData?.skills ?? []).filter(s => !s.installed && !installedSkillNames.has(s.name))
-
-    return filteredOfficial(catalog, query)
-  }, [installedSkillNames, officialData, query])
-
-  // Identifiers with a hub install currently running — selected as a joined
-  // string so $hubActions' per-log-line churn doesn't re-render the list.
-  const runningInstallKey = useStoreSelector($hubActions, actions =>
-    Object.keys(actions)
-      .filter(key => actions[key]?.running)
-      .sort()
-      .join('|')
-  )
-
-  const runningInstalls = useMemo(() => new Set(runningInstallKey.split('|').filter(Boolean)), [runningInstallKey])
 
   // Provenance counts make it clear why a skill appears in this list (agent,
   // bundled, or Skills Hub) instead of implying that only one source exists.
@@ -538,13 +485,6 @@ export function SkillsView({
     [selectedSkill, visibleSkills]
   )
 
-  // A selected catalog row wins the detail pane; it clears when filtered out
-  // (or when its install finishes and the row leaves the catalog list).
-  const activeOfficial = useMemo(
-    () => visibleOfficial.find(s => s.identifier === selectedOfficial) ?? null,
-    [selectedOfficial, visibleOfficial]
-  )
-
   const activeToolset = useMemo(
     () => visibleToolsets.find(ts => ts.name === selectedToolset) ?? visibleToolsets[0] ?? null,
     [selectedToolset, visibleToolsets]
@@ -567,16 +507,6 @@ export function SkillsView({
       )
       notifyError(err, t.skills.failedToUpdate(skill.name))
     }
-  }
-
-  // Catalog install: routes through the standard hub action pipeline
-  // (background action + tailed log + query invalidation), same as the
-  // embedded hub picker — the row's button spins off ITS $hubActions entry
-  // and the finished install refetches both lists, flipping the row from the
-  // catalog section into the installed section with the normal toggle.
-  function handleInstallOfficial(skill: OfficialSkillInfo) {
-    notify({ kind: 'success', title: t.skills.hub.installStarted(skill.name), message: t.skills.hub.actionLog })
-    void installHubSkill(skill.identifier, scopeProfile).catch(err => notifyError(err, t.skills.hub.actionFailed))
   }
 
   async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {
@@ -804,7 +734,6 @@ export function SkillsView({
     setSkillEditor(null)
     setSkillDraft('')
     setArchiveTarget(null)
-    setSelectedOfficial(null)
   }
 
   // Scope-selector rows. Multi-connection desktops list every reachable
@@ -850,25 +779,18 @@ export function SkillsView({
   // Browse Hub). Lets the user configure ANY profile's capabilities — on any
   // registered gateway — without switching the whole app. Only meaningful
   // with >1 option; hidden otherwise to avoid clutter.
-  // Plugins embeds the selector in its Agent-column header (compact, no label,
-  // no border): desktop halves on that page are app-level and must not read as
-  // governed by "Configuring: <profile>".
-  const compactSelector = mode === 'plugins'
+  // Keep the selector in the same slot across tabs. Plugins labels its scope
+  // as Agent because desktop halves belong to the app, not this profile.
   const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
 
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
-      <div
-        className={cn(
-          'flex min-w-0 items-center gap-2',
-          compactSelector ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
-        )}
-      >
-        {!compactSelector && (
-          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
-        )}
+      <div className="flex min-w-0 items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
+        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">
+          {mode === 'plugins' ? t.skills.plugins.halfAgent : t.skills.configuringProfile}
+        </span>
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
+          <SelectTrigger className="h-7 w-56 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -890,9 +812,15 @@ export function SkillsView({
       onTabChange={id => setMode(id as (typeof SKILLS_MODES)[number])}
       // MCP manages a handful of entries with the editor right there —
       // searching it is noise.
-      searchHidden={mode === 'mcp' || mode === 'plugins' || mode === 'hub'}
+      searchHidden={mode === 'mcp' || mode === 'hub'}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={
+        mode === 'plugins'
+          ? t.catalog.searchPlugins
+          : mode === 'skills'
+            ? t.catalog.searchSkills
+            : t.skills.searchToolsets
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
@@ -906,26 +834,34 @@ export function SkillsView({
           active, so Skills / Tools / MCP all read and write the SAME selected
           profile. */}
       <div className="flex h-full flex-col">
-        {/* Plugins renders the selector INSIDE its agent section: desktop
-            plugins on that page belong to the app, not to any profile, and
-            must not sit under a "Configuring: <profile>" header. */}
-        {mode !== 'plugins' && profileScopeSelector}
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div
-            className={
-              mode === 'hub' ? 'hidden' : mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'
+        {profileScopeSelector}
+        {(mode === 'skills' || mode === 'plugins') && (
+          <CapabilityTabs
+            actions={
+              mode === 'skills' ? (
+                <UpdateSkillsButton profile={scopeProfile} />
+              ) : (
+                <PluginActions profile={scopeProfile} />
+              )
             }
-          >
+            onChange={setCapabilityView}
+            value={capabilityView}
+          />
+        )}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className={mode === 'hub' ? 'hidden' : 'min-h-0 flex-1 overflow-hidden'}>
             {mode === 'plugins' ? (
               // Agent plugins for the scoped profile (selector in the section
-              // header), app-level desktop plugins, the live catalog picker
+              // header), app-level desktop plugins, and the native catalog
               // underneath. Keyed on scope so a profile/connection switch
               // reloads the agent list.
               <PluginsTab
                 key={`plugins-${scopeKey}`}
+                onQueryChange={setQuery}
                 profile={scopeProfile}
+                query={query}
                 scopeLabel={scopeLabel}
-                scopeSelector={profileScopeSelector}
+                view={capabilityView}
               />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
@@ -934,7 +870,15 @@ export function SkillsView({
               // machine's MCP servers, so it is withheld (config edits still
               // apply on that backend's next session).
               <McpTab gateway={crossBackendScope ? null : gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
-            ) : mode === 'hub' ? null : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
+            ) : mode === 'hub' ? null : mode === 'skills' && capabilityView === 'browse' ? (
+              <SkillCatalog
+                installedNames={installedSkillNames}
+                key={scopeKey}
+                onQueryChange={setQuery}
+                profile={scopeProfile}
+                query={query}
+              />
+            ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
               <PanelEmpty
                 action={
                   <Button onClick={() => void refreshCapabilities()} size="sm">
@@ -948,13 +892,7 @@ export function SkillsView({
             ) : !skills || !toolsets ? (
               <PageLoader label={t.skills.loading} />
             ) : mode === 'skills' ? (
-              // Installed skills on top, the Skills Hub browser underneath —
-              // discovery sits with management. The list region keeps a floor
-              // (min-h-40, on the wrapper above) so a tall hub viewport or a
-              // short window shrinks the HUB, never the list: the sort strip
-              // and "changes apply" footer can no longer be starved to 0px
-              // and painted over by the hub header.
-              visibleSkills.length === 0 && visibleOfficial.length === 0 ? (
+              visibleSkills.length === 0 ? (
                 capabilityEmpty('skills')
               ) : (
                 <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
@@ -987,73 +925,27 @@ export function SkillsView({
                   >
                     {visibleSkills.map(skill => (
                       <CapRow
-                        active={activeOfficial === null && activeSkill?.name === skill.name}
+                        active={activeSkill?.name === skill.name}
                         busy={bulkBusy}
                         enabled={skill.enabled}
                         key={skill.name}
                         meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                        onSelect={() => {
-                          setSelectedSkill(skill.name)
-                          setSelectedOfficial(null)
-                        }}
+                        onSelect={() => setSelectedSkill(skill.name)}
                         onToggle={enabled => void handleToggleSkill(skill, enabled)}
                         subtitle={skillSubtitle(skill)}
                         title={skill.name}
                         toggleLabel={skill.name}
                       />
                     ))}
-                    {/* The built-in optional-skills catalog, below the
-                        installed list: every official skill Hermes ships but
-                        hasn't installed yet, with a one-click install that
-                        flips the row into the installed section above. */}
-                    {visibleOfficial.length > 0 && (
-                      <div className="flex h-7 shrink-0 items-end px-2 pb-1 text-[0.62rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
-                        {t.skills.officialCatalog}
-                      </div>
-                    )}
-                    {visibleOfficial.map(skill => {
-                      const installing = runningInstalls.has(skill.identifier)
-
-                      return (
-                        <CapRow
-                          action={
-                            <Button
-                              disabled={installing}
-                              onClick={() => handleInstallOfficial(skill)}
-                              size="xs"
-                              variant="text"
-                            >
-                              {installing && <Loader2 className="size-3 animate-spin" />}
-                              {installing ? t.skills.hub.installing : t.skills.hub.install}
-                            </Button>
-                          }
-                          active={activeOfficial?.identifier === skill.identifier}
-                          enabled={false}
-                          key={skill.identifier}
-                          onSelect={() => setSelectedOfficial(skill.identifier)}
-                          subtitle={prettyName(skill.category)}
-                          title={skill.name}
-                        />
-                      )
-                    })}
                   </ListColumn>
                   <DetailColumn footer={t.skills.changesApplyNewSessions}>
-                    {activeOfficial ? (
-                      <OfficialSkillDetail
-                        installing={runningInstalls.has(activeOfficial.identifier)}
-                        onInstall={() => handleInstallOfficial(activeOfficial)}
+                    {activeSkill && (
+                      <SkillDetail
+                        onArchive={() => setArchiveTarget(activeSkill.name)}
+                        onEdit={() => void openSkillEditor(activeSkill.name)}
                         profile={scopeProfile}
-                        skill={activeOfficial}
+                        skill={activeSkill}
                       />
-                    ) : (
-                      activeSkill && (
-                        <SkillDetail
-                          onArchive={() => setArchiveTarget(activeSkill.name)}
-                          onEdit={() => void openSkillEditor(activeSkill.name)}
-                          profile={scopeProfile}
-                          skill={activeSkill}
-                        />
-                      )
                     )}
                   </DetailColumn>
                 </MasterDetail>
@@ -1293,76 +1185,6 @@ function SkillDetail({
         </div>
       )}
       {contentQuery.isLoading ? (
-        <CountSkeleton />
-      ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
-      ) : null}
-    </>
-  )
-}
-
-// Detail pane for a not-yet-installed catalog skill: metadata + full SKILL.md
-// via the hub preview endpoint (same resolver an install uses), plus the same
-// install button as the row.
-function OfficialSkillDetail({
-  installing,
-  onInstall,
-  profile,
-  skill
-}: {
-  installing: boolean
-  onInstall: () => void
-  profile?: ProfileScope
-  skill: OfficialSkillInfo
-}) {
-  const { t } = useI18n()
-
-  const previewQuery = useQuery({
-    queryKey: ['official-skill-preview', skill.identifier, profileScopeKey(profile)],
-    queryFn: () => previewSkillHub(skill.identifier, profile),
-    staleTime: 5 * 60_000,
-    retry: false
-  })
-
-  const parsed = useMemo(
-    () => (previewQuery.data?.skill_md ? parseFrontmatter(previewQuery.data.skill_md) : null),
-    [previewQuery.data]
-  )
-
-  return (
-    <>
-      <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
-        pills={
-          <>
-            <PanelPill>{prettyName(skill.category)}</PanelPill>
-            <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
-          </>
-        }
-        title={skill.name}
-      />
-      <div className="flex items-center gap-2">
-        <Button disabled={installing} onClick={onInstall} size="xs" variant="textStrong">
-          {installing && <Loader2 className="size-3 animate-spin" />}
-          {installing ? t.skills.hub.installing : t.skills.hub.install}
-        </Button>
-      </div>
-      {parsed && parsed.meta.length > 0 && (
-        <div className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
-          {parsed.meta.map(([key, value]) => (
-            <div className="flex gap-2 text-[0.68rem] leading-4" key={key}>
-              <span className="w-24 shrink-0 font-medium text-(--ui-text-tertiary)">{key}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">{value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {previewQuery.isLoading ? (
         <CountSkeleton />
       ) : parsed ? (
         <pre

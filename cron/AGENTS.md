@@ -15,7 +15,11 @@ A's last output into job B's prompt), `workdir` (run with that directory's `AGEN
 loaded), multi-platform delivery.
 
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
-- **3-minute hard interrupt** on cron sessions: runaway loops cannot monopolise the scheduler.
+- **Inactivity watchdog** on cron agent sessions (`_cron_inactivity_seconds()`): default 600s idle,
+  `HERMES_CRON_TIMEOUT` overrides, `0` = unlimited. It is idle time, not wall-clock — a stalled
+  session is hard-interrupted so it cannot monopolise the scheduler, while a long-but-active job
+  is never cut off. Attached scripts (pre-run or `no_agent`) are bounded separately by the script
+  timeout (`_DEFAULT_SCRIPT_TIMEOUT`, 3600s).
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
 - Every recurring occurrence is accounted for: `tick()` advances `next_run_at` BEFORE dispatch
   (at-most-once across a mid-run crash) and stamps `pending_slot` in the same save; a scan that
@@ -84,6 +88,11 @@ recycled PID gets killed on reclaim.
   Dispatched workers get `HERMES_KANBAN_BOARD` and the assignee's `HERMES_HOME` pinned in a
   scrubbed child env (`build_subprocess_env` + `strip_launch_profile_env`); they never inherit the
   default profile's `.env`.
+- **Prompt injection sites gate on ownership, not tool access.** Tool access (`kanban_show` visible
+  via a profile's toolset) and an inherited `HERMES_KANBAN_TASK` (delegate children, cron runs beside
+  a worker) are not ownership. The kanban guidance (`agent_init`, `system_prompt` fallback) and the
+  stop nudge resolve the task via `agent/delegation_context.py::owned_kanban_task()`; other readers
+  pair their env read with `is_dispatcher_owned_worker_context()`.
 - **Descendant fence is a path, not a flag.** A delegated child's Kanban marker
   (`agent/delegation_context.py::DELEGATED_CHILD_ENV_MARKER`) carries the fenced board ROOT;
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`

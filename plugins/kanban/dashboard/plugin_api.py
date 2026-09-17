@@ -547,9 +547,10 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
-# detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
+# detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "done": lambda conn, tid, p: kanban_db.complete_task(
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
@@ -691,11 +692,12 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
     """Direct status write for drag-drop moves without a structured verb (todo<->ready,
     running<->ready) + a ``status`` event. Leaving ``running`` closes the run as 'reclaimed'
     so attempt history isn't orphaned; the worker is killed only AFTER the txn commits."""
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            "SELECT status, current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
+            (task_id,)).fetchone()
         if prev is None:
             return False
         if prev["status"] == "running" and new_status == "ready":
@@ -722,7 +724,7 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             run_id = kanban_db._end_run(
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
+            terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
@@ -731,8 +733,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             # back worker terminations to perform post-commit.
             result = kanban_db.invalidate_descendants_for_parent_reopen(conn, task_id, author="dashboard")
             terminations.extend(result["terminations"])
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    for pid, claim_lock, started_at in terminations:
+        kanban_db._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     # Re-opening something may have made children stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
@@ -764,8 +766,8 @@ class LinkBody(BaseModel):
 @router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True}
+        gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        return {"ok": True, "gated": gated}
 
 
 @router.delete("/links")
@@ -1018,7 +1020,7 @@ class EstimateBody(BaseModel):
 @router.post("/estimate")
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
-    return _run_estimate(payload.title, payload.body)
+    return _run_estimate(payload.title, payload.body, task_id=None)
 
 
 @router.post("/tasks/{task_id}/estimate")
@@ -1026,7 +1028,7 @@ def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
         task = _require_task(conn, task_id)
-    return _run_estimate(task.title, task.body)
+    return _run_estimate(task.title, task.body, task_id=task_id)
 
 
 def _cap(s: Optional[str], n: int) -> str:
@@ -1034,7 +1036,7 @@ def _cap(s: Optional[str], n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def _run_estimate(title: str, body: Optional[str]) -> dict:
+def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) -> dict:
     """Never raises — config/parse/API errors become ``{"ok": False, "reason"}`` so the UI renders them inline."""
     if not (title or "").strip():
         return {"ok": False, "reason": "a title is required to estimate"}
@@ -1043,6 +1045,11 @@ def _run_estimate(title: str, body: Optional[str]) -> dict:
     except Exception:
         return {"ok": False, "reason": "auxiliary client unavailable"}
     user_msg = f"Title: {_cap(title, 400)}\n\nDescription:\n{_cap(body, 4000) or '(none)'}"
+    # Headless like specify/decompose's _call_aux: without a bound affinity scope the relay-affinity
+    # headers are omitted and the OpenCode Go relay answers 400 MissingSessionID (#112043). The
+    # create dialog has no task yet, so it shares one stable key.
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
     try:
         resp = call_llm(
             task="kanban_estimator",
@@ -1050,6 +1057,9 @@ def _run_estimate(title: str, body: Optional[str]) -> dict:
             temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
     try:
         raw = (resp.choices[0].message.content or "").strip()
         model = getattr(resp, "model", None)

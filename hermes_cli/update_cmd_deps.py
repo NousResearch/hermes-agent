@@ -12,7 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
-from hermes_constants import venv_python_path
+from hermes_constants import project_venv_dir, venv_python_path
+from hermes_cli._subprocess_compat import bounded_probe_run
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -57,6 +58,10 @@ def _critical_module_import_failures(
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
+        # Importing hermes_cli.main runs the startup dotenv load, which pulls external secret
+        # sources (op/bws/command helpers, up to 120s each) unless argv says ``update``. The
+        # probe only checks importability, so it inherits the updater's own argv contract.
+        "sys.argv = ['hermes', 'update']\n"
         "failures = []\n"
         "for name in %r:\n"
         "    try:\n"
@@ -80,17 +85,20 @@ def _critical_module_import_failures(
     try:
         interpreter = sys.executable
         with suppress(Exception):
-            venv_python = venv_python_path(Path(root) / "venv", windows=_m()._is_windows())
+            venv_dir = project_venv_dir(root) or Path(root) / "venv"
+            venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
             if venv_python.exists():
                 interpreter = str(venv_python)
-        result = subprocess.run(
-            [interpreter, "-c", probe], cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120)
-    except subprocess.TimeoutExpired:
-        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
+        result = bounded_probe_run(
+            [interpreter, "-c", probe], timeout=120, cwd=str(root), raise_on_spawn_failure=True,
+        )
     except (OSError, subprocess.SubprocessError):
-        # Can't run the probe — don't block the update on our own tooling.
+        # Keep this guard advisory: a probe we could not even spawn (unreadable venv
+        # interpreter, fork failure) says nothing about the checkout, so it must not
+        # fail an otherwise successful update. A spawned child that hangs does.
         return {}
+    if result is None:
+        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
     output = result.stdout or ""
     if marker not in output:
         return _probe_failure(
@@ -380,6 +388,41 @@ def _refresh_active_memory_provider_dependencies() -> None:
         print(f"  ⚠ {provider} dependencies failed to refresh: {exc}")
 
 
+def _reapply_plugin_python_dependencies() -> None:
+    """Re-install every enabled user plugin's declared Python deps after the venv was rebuilt (a
+    ``uv sync``/reinstall strips anything Hermes' own lock does not know). Non-memory plugins whose
+    deps no longer resolve are disabled loudly, memory providers last. Never raises."""
+    from hermes_cli.plugin_python_deps import reapply_all
+    from hermes_cli.update_cmd import _m
+
+    def _disable(home, name: str) -> None:
+        # Write through the real config writer (comments/defaults preserved), scoped to *home*.
+        from hermes_cli.config import load_config, save_config
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+        try:
+            config = load_config()
+            plugins = config.setdefault("plugins", {})
+            plugins["enabled"] = sorted(set(plugins.get("enabled") or []) - {name})
+            plugins["disabled"] = sorted(set(plugins.get("disabled") or []) | {name})
+            save_config(config, merge_existing=True)
+        finally:
+            reset_hermes_home_override(token)
+
+    try:
+        report = reapply_all(project_root=_m().PROJECT_ROOT, disable=_disable)
+    except Exception as exc:  # the update must finish even if the plugin step blows up
+        print(f"  ⚠ Plugin Python dependencies not re-applied: {exc}")
+        return
+    if report.installed:
+        print(f"  ✓ Plugin Python dependencies re-applied: {', '.join(report.installed)}")
+    for name, reason in report.dropped:
+        print(f"  ✗ Plugin '{name}' DISABLED: {reason}. Fix the plugin's declared dependencies, "
+              f"then `hermes plugins enable {name}`.")
+    if report.failed:
+        print(f"  ⚠ Plugin Python dependencies not re-applied: {report.failed}")
+
+
 def _is_android_python() -> bool:
     from hermes_cli.update_cmd import _m
     return _m().sys.platform == "android"
@@ -631,7 +674,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     imports, catching a half-updated venv that "Already up to date!" would otherwise never re-sync.
     Returns ``(healthy, detail)``; never raises, unknown states report healthy."""
     from hermes_cli.update_cmd import _m
-    venv_dir = _m().PROJECT_ROOT / "venv"
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
     venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
     if not venv_python.exists():
         # No venv: normal for a dev checkout (healthy), but on a MANAGED install (bootstrap
@@ -943,7 +986,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
     See #83529.
     """
-    foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    foreign = _venv_foreign_owned_paths(project_venv_dir(project_root) or Path(project_root) / "venv")
     if not foreign:
         return
     print("\n✗ Update stopped: this install's venv contains files owned by another user.")
@@ -1017,11 +1060,9 @@ def _sync_python_dependencies_after_pull(
     # failure can't be "healed" by a narrow core import probe.
     _m()._clear_update_incomplete_marker()
 
-    # Still the old interpreter process: refresh caches/modules before lazy refresh imports
-    # newly-pulled modules. The install may have regenerated bytecode from build-cache
-    # copies — this second sweep catches those stragglers.
+    # The install may have regenerated bytecode from build-cache copies — this second sweep
+    # catches those stragglers.
     _sweep_bytecode_after_update(branch)
-    _m()._reload_updated_runtime_modules()
 
     # Stale pip can fail source builds and leave partially-written packages.
     # See #57828.
@@ -1040,6 +1081,7 @@ def _sync_python_dependencies_after_pull(
 
     # Heal memory-provider bridge packages last — the steps above may have stripped them.
     _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
 
     # Remaining import failures are real breakage. Warn only — never roll back: `cannot import
     # name X` is also the stale-bytecode signature, which self-heals next launch.

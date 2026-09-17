@@ -1,0 +1,5 @@
+name: jev-provider
+kind: model-provider
+version: 1.0.0
+description: Jev (TypeSafe System One advisory model)
+author: Nous Research

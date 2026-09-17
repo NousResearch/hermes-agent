@@ -130,6 +130,20 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
     output = capsys.readouterr().out
     expected = {"catch_up": "catch-up", "late": "last fire was late", "forward_error": "loopback unavailable"}
     assert expected[dispatch] in output
+    assert "Review the findings above, then run `hermes cron doctor` again." in output
+    jobs.mark_job_run(job["id"], success=True)
     if dispatch == "forward_error":
-        jobs.mark_job_run(job["id"], success=True)
         assert cron_doctor() == 0
+    else:
+        assert "This warning clears at the next on-time fire." in output
+        assert cron_doctor() == 1
+        capsys.readouterr()
+        records = jobs.load_jobs()
+        records[0]["next_run_at"] = datetime.now(timezone.utc).isoformat()
+        jobs.save_jobs(records)
+        assert len(jobs.get_due_jobs()) == 1
+        persisted = jobs.get_job(job["id"])
+        assert persisted is not None
+        assert persisted["last_dispatch"]["kind"] == "on_time"
+        assert cron_doctor() == 0
+        assert "This warning clears" not in capsys.readouterr().out

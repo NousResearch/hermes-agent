@@ -550,7 +550,8 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
         labels = {"catch_up": "a catch-up after a missed schedule", "late": "late"}
         if label := labels.get(dispatch.get("kind", "")):
             issues.append(f"last fire was {label} (scheduled {dispatch.get('scheduled_at', '?')}, "
-                          f"{_format_lateness(dispatch.get('lateness_seconds', 0))} late)")
+                          f"{_format_lateness(dispatch.get('lateness_seconds', 0))} late). "
+                          "This warning clears at the next on-time fire.")
     if isinstance(fire_err := job.get("last_fire_error"), dict) and fire_err.get("detail"):
         # The handoff error survives next_run_at advancing beyond the failed dispatch.
         issues.append(f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}")
@@ -588,7 +589,7 @@ def cron_doctor() -> int:
         for issue in issues:
             print(f"    - {issue}")
     print()
-    print(color("Next: fix the listed job config, then run `hermes cron doctor` again.", Colors.DIM))
+    print(color("Review the findings above, then run `hermes cron doctor` again.", Colors.DIM))
     return 1
 
 

@@ -194,6 +194,131 @@ class TestGenerateTitle:
 
 
 
+    def test_retries_without_response_format_on_rejection(self):
+        """Providers that reject json_schema (DeepSeek, Anthropic, Ollama,
+        some OpenRouter backends) must still produce a title via a plain
+        retry, instead of silently falling back to the derived title."""
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("extra_body", {}).get("response_format"):
+                raise RuntimeError(
+                    "Error code: 400 - This response_format type is unavailable now"
+                )
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Rotate the staging database password"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("rotate the staging database password before the audit")
+
+        assert title == "Rotate the staging database password"
+        assert len(calls) == 2
+        # First attempt carries response_format; second does not.
+        assert calls[0]["extra_body"]["response_format"] is not None
+        assert "response_format" not in calls[1].get("extra_body", {})
+
+    def test_reasoning_truncation_escalates_the_token_budget_once(self):
+        """The small budget is the default; only a response actually cut off inside a
+        thinking block escalates it.
+
+        Verified 2026-08 against MiniMax M2.7: a 64-token cap is exhausted inside
+        <think> before the JSON title is emitted, and the LLM upgrade silently fell
+        back to the derived title. Escalating unconditionally would instead charge
+        every provider an 8x token cost for a ~20-token answer, so the escalation is
+        evidence-driven: a ``length`` finish or an unclosed thinking block.
+        """
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            if len(calls) == 1:
+                resp.choices[0].finish_reason = "length"
+                resp.choices[0].message.content = "<think>Let me summarize the user's intent. Still"
+            else:
+                resp.choices[0].finish_reason = "stop"
+                resp.choices[0].message.content = (
+                    "<think>Done.</think>{\"title\": \"Debugging python import errors\"}"
+                )
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("help me fix this import")
+
+        assert title == "Debugging python import errors"
+        assert len(calls) == 2
+        assert calls[0]["max_tokens"] == 64, "the first attempt must stay cheap"
+        assert calls[1]["max_tokens"] >= 256, "the retry must leave room for reasoning"
+
+    def test_rejection_retry_never_chains_into_a_truncation_retry(self):
+        """Two retry reasons, one retry budget.
+
+        A provider that rejects structured output *and* then answers with a truncated reasoning
+        preamble must not trigger a third call — and the second attempt must not re-send the
+        ``response_format`` it just refused.
+        """
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("extra_body", {}).get("response_format"):
+                raise RuntimeError("Error code: 400 - This response_format type is unavailable now")
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].finish_reason = "length"
+            resp.choices[0].message.content = "<think>Still reasoning, no answer yet"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("rotate the staging database password before the audit")
+
+        assert title is None  # nothing usable came back, so the derived title survives
+        assert len(calls) == 2, f"expected exactly one retry, saw {len(calls)} calls"
+        assert "response_format" not in calls[1].get("extra_body", {})
+
+    def test_no_escalation_when_the_first_answer_is_complete(self):
+        """A normal answer must not pay for a second call."""
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].finish_reason = "stop"
+            resp.choices[0].message.content = (
+                "<think>Done.</think>{\"title\": \"Debugging python import errors\"}"
+            )
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("help me fix this import")
+
+        assert title == "Debugging python import errors"
+        assert len(calls) == 1
+        assert calls[0]["max_tokens"] == 64
+
+    def test_structured_output_still_works_first_attempt(self):
+        """OpenAI-style providers that accept json_schema must succeed on the
+        first call — no retry, no regression."""
+        calls = []
+
+        def _mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Rotate the staging database password"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=_mock_call_llm):
+            title = generate_title("rotate the staging database password before the audit")
+
+        assert title == "Rotate the staging database password"
+        assert len(calls) == 1
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

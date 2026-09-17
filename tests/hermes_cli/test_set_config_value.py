@@ -505,10 +505,12 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067 / #112003: an unknown path UNDER a known section is a typo and is refused before
-    anything is written (headline case ``gateway.discord.gateway_restart_notification``, correct
-    path ``discord.gateway_restart_notification``). Unknown TOP-LEVEL keys stay writable — their
-    scalars bridge into os.environ for skills/external apps — with a post-write notice.
+    """#34067 / #112003 / #114107: only a WRONG-PREFIX path under a known section is provably a typo
+    and refused before anything is written (headline case
+    ``gateway.discord.gateway_restart_notification``, correct path
+    ``discord.gateway_restart_notification``). Every other unknown path — unseeded runtime-read keys
+    and same-section misspellings alike — is written with a post-write notice, because
+    DEFAULT_CONFIG is not a complete registry of what the runtime reads.
     """
 
     def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
@@ -523,13 +525,18 @@ class TestSchemaValidation:
         assert "nothing was written" in err
         assert "discord.gateway_restart_notification" in err
 
-    @pytest.mark.parametrize("key,value,expected", [
-        ("skills.creation_nudge_interval", "50", 50),
-        ("display.tool_progress", "all", "all"),
-        ("stt.provider", "whisper", "whisper"),
+    @pytest.mark.parametrize("key,value,expected,suggestion", [
+        # Unseeded runtime-read keys (teknium's list in da942e4483): a stored value is an explicit
+        # user pick, so the schema walk must not refuse them.
+        ("skills.creation_nudge_interval", "50", 50, None),
+        ("display.tool_progress", "all", "all", None),
+        ("stt.provider", "whisper", "whisper", None),
+        # TRADE-OFF made explicit: a same-section typo is indistinguishable from an unseeded key,
+        # so it is written too — the user gets the sibling suggestion instead of a refusal.
+        ("agent.max_turnz", "50", 50, "agent.max_turns"),
     ])
-    def test_runtime_read_subkeys_are_written_without_force(
-        self, key, value, expected, _isolated_hermes_home
+    def test_unknown_leaf_under_known_section_is_written_with_notice(
+        self, key, value, expected, suggestion, _isolated_hermes_home, capsys
     ):
         """Unseeded runtime settings are not proven typos merely by a schema walk."""
         set_config_value(key, value)
@@ -537,6 +544,10 @@ class TestSchemaValidation:
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         section, name = key.split(".")
         assert saved[section][name] == expected
+        out = capsys.readouterr().out
+        assert "not a recognized config key" in out
+        if suggestion:
+            assert f"Did you mean: {suggestion}" in out
 
     def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
         set_config_value("brand_new_future_key", "value")

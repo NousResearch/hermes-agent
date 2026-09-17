@@ -620,6 +620,51 @@ def _model_flow_copilot_acp(config, current_model=""):
                   base_url=effective_base, api_mode="chat_completions")
 
 
+def _model_flow_external_process(config, provider_id, current_model=""):
+    """Generic flow for external-process (ACP) providers — pick the model for a local agent CLI.
+
+    Launch details and the catalog probe belong to the provider's own profile, so this flow serves
+    any plugin ACP provider (a local agent CLI registered with ``auth_type="external_process"``)
+    without a bespoke ``_model_flow_*``. copilot-acp keeps its own
+    flow because its catalog comes from the Copilot REST API rather than from an ACP session.
+    """
+    del config
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, get_external_process_provider_status,
+        resolve_external_process_provider_credentials)
+    from hermes_cli.models import cached_provider_model_ids
+
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig is None:
+        print(f"Provider '{provider_id}' is not registered. No change.")
+        return
+    status = get_external_process_provider_status(provider_id) or {}
+    resolved_command = status.get("resolved_command") or status.get("command") or ""
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    _say(f"  {pconfig.name} delegates Hermes turns to a local agent CLI over ACP.",
+         "  Hermes starts its own subprocess for each request.",
+         "  The selected model is applied to that subprocess' ACP session.",
+         f"  Command: {resolved_command or '(not found)'}",
+         f"  Backend marker: {effective_base}", "")
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        _say(f"  ⚠ {exc}")
+        return
+    effective_base = creds.get("base_url") or effective_base
+
+    models = cached_provider_model_ids(provider_id)
+    if not models:
+        _say("  ⚠ Could not read the model catalog from the CLI (missing binary or not signed in).",
+             "     Type a model id manually, or fix the CLI and re-run `hermes model`.", "")
+    selected = _pick_model_or_prompt(
+        models, "Model name: ", current_model=current_model, confirm_provider=provider_id,
+        confirm_base_url=effective_base, confirm_api_key="")
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {pconfig.name})",
+                  base_url=effective_base, api_mode="chat_completions")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection; the endpoint is chosen by key prefix (no URL prompt):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""

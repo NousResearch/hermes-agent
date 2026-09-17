@@ -358,18 +358,23 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# Bespoke-UX flows (OAuth device code, cloud SDKs, the Copilot catalogue) are skipped:
+# ``external_process`` is NOT, because an ACP provider reports its own catalog through the
+# profile's fetch_models() (models.provider_model_ids) and dispatches to the generic
+# external-process flow in select_provider_and_model().
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+_plugin_canonical_aliases: list[tuple[str, tuple[str, ...]]] = []  # applied after _PROVIDER_ALIASES
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
         if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
+            "oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex",
         }:
             continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))
         _canonical_slugs.add(_pp.name)
+        _plugin_canonical_aliases.append((_pp.name, tuple(getattr(_pp, "aliases", ()) or ())))
 except Exception:
     pass
 
@@ -447,7 +452,7 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = dict((
+_PROVIDER_ALIASES: dict[str, str] = dict((
     ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("github", "copilot"),
     ("github-copilot", "copilot"), ("github-models", "copilot"), ("github-model", "copilot"),
     ("github-copilot-acp", "copilot-acp"), ("copilot-acp-agent", "copilot-acp"), ("google", "gemini"),
@@ -479,6 +484,16 @@ _PROVIDER_ALIASES = dict((
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
 ))
+
+
+# Aliases declared by auto-extended plugin providers (`devin` → `devin-acp`), so `provider:model`
+# parsing, `/model` and the picker treat them like first-party spellings. Applied with setdefault
+# after the table above, so a first-party alias always wins over a plugin's.
+for _plugin_slug, _plugin_aliases in _plugin_canonical_aliases:
+    for _alias in _plugin_aliases:
+        _alias = str(_alias).strip().lower()
+        if _alias and _alias not in _canonical_slugs:
+            _PROVIDER_ALIASES.setdefault(_alias, _plugin_slug)
 
 
 # Offline/fresh-install fallback for the model Hermes silently lands on when the user never picked

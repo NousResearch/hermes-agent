@@ -1442,7 +1442,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
-    """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
+    """Generic live fetch for any provider registered in providers/ (``api_key`` or
+    ``external_process``).
 
     Live results are merged with the curated list so models the live endpoint omits still appear:
     curated-first by default so the newest curated models lead when the live API lags;
@@ -1453,7 +1454,21 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
-    if not (profile and profile.auth_type == "api_key" and profile.base_url):
+    if not (profile and profile.base_url):
+        return None
+    if profile.auth_type == "external_process":
+        # The subprocess owns auth, so there is no api_key/base_url to resolve: the profile's own
+        # fetch_models() is the only catalog source (e.g. an ACP ``session/new`` config option).
+        # Those ids are the account's real entitlement, so they lead the curated fallbacks.
+        try:
+            live = profile.fetch_models()
+        except Exception:
+            live = None
+        if not live:
+            return list(profile.fallback_models) if profile.fallback_models else None
+        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+        return _merge_unique(live, curated, key=_model_dedup_key) if curated else list(live)
+    if profile.auth_type != "api_key":
         return None
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None

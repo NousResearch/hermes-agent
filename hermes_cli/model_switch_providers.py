@@ -910,6 +910,16 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        # External-process providers deliberately own authentication in their local subprocess, so
+        # they have no API key, auth-store entry, or credential pool. A resolved/configured CLI is
+        # their picker eligibility, matching the overlay path used by bundled copilot-acp.
+        if not has_creds and cp_config and cp_config.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_auth_status
+                status = get_auth_status(cp.slug) or {}
+                has_creds = bool(status.get("logged_in") or status.get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for canonical provider %s: %s", cp.slug, exc)
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):

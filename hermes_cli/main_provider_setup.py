@@ -21,6 +21,18 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
         return False
 
 
+def _is_profile_external_process_provider(provider_id: str) -> bool:
+    """True when *provider_id* maps to a profile with ``auth_type='external_process'`` — the
+    catch-all in select_provider_and_model() so a plugin ACP provider (a local agent CLI driven
+    over stdio) reaches the generic external-process flow instead of no-oping."""
+    try:
+        from providers import get_provider_profile
+        _p = get_provider_profile(provider_id)
+        return _p is not None and _p.auth_type == "external_process"
+    except Exception:
+        return False
+
+
 _GENERIC_API_KEY_PROVIDERS = frozenset({
     "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
     "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",

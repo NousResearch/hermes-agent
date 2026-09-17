@@ -725,6 +725,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_external_process,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock,
@@ -769,6 +770,7 @@ from hermes_cli.main_provider_setup import (
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
+    _is_profile_external_process_provider,
     _named_custom_provider_map,
     _offer_reasoning_after_pick,
     _prompt_main_reasoning_effort,
@@ -2098,6 +2100,10 @@ def select_provider_and_model(args=None):
         _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
+    elif _is_profile_external_process_provider(selected_provider):
+        # A plugin ACP provider (local agent CLI over stdio). Its profile owns the launch details
+        # and the catalog probe, so the generic flow replaces the per-provider entry.
+        _model_flow_external_process(config, selected_provider, current_model)
     elif (
         selected_provider in _GENERIC_API_KEY_PROVIDERS
         or _is_profile_api_key_provider(selected_provider)

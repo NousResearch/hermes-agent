@@ -1576,6 +1576,68 @@ def _run_conversation_turn(
     return result
 
 
+def _turn_owns_its_own_context_repair(result: Dict[str, Any]) -> bool:
+    """True for the context-pressure classes whose repair is rotation or a retry, not a row.
+
+    Reads the typed fields the loop itself stamps — ``compression_exhausted`` (#98722,
+    ``agent/turn_overflow.py``), ``compression_deferred`` (``_compression_deferred_result``)
+    and the ``context_overflow`` site code — rather than re-deriving overflow from provider
+    error text. Exhaustion is answered by moving future input to a clean session (the gateway
+    does this in ``_hmwa_compression_exhaustion_reset``); a deferral is answered by the next
+    message retrying normally. Appending a boundary to either would grow a session that is
+    already too large, which is the #1630 growth loop, and would paper over the rotation that
+    is the actual fix.
+    """
+    return bool(
+        result.get("compression_exhausted")
+        or result.get("compression_deferred")
+        or result.get("failure_reason") == "context_overflow"
+    )
+
+
+def close_durable_failed_turn(agent: Any, result: Any) -> Any:
+    """Close a durable turn that ended without an assistant row (in place; returns ``result``).
+
+    The single seam every envelope passes through, so one owner covers the classes that never
+    reach ``finalize_turn``: the content-policy refusal return, ``_Trunc.end_turn``, the
+    overflow builders and the codex runtime all persist and return directly.
+
+    Two gates, and the second is the authority:
+
+    1. the envelope says the turn did not complete and is not a context-pressure class;
+    2. the DURABLE conversation tail — ``SessionDB.latest_conversation_role`` (#108033), not
+       ``messages[-1]`` — is still an open ``user`` row.
+
+    Keying idempotence on durable state rather than content means a redelivery, a retry, or a
+    turn already closed by another writer is a no-op by construction, and the gateway's
+    ``_hmwa_close_failed_turn`` finds a non-user tail and no-ops in turn. Append-only: no
+    existing row is rewritten, and no envelope field is touched.
+
+    Fail-open: this is transcript hygiene, so any error leaves the result exactly as it was.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("completed") is True:
+            return result
+        if _turn_owns_its_own_context_repair(result):
+            return result
+        messages = result.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return result
+        db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+        if db is None or not session_id:
+            return result  # nothing durable to close
+        if db.latest_conversation_role(session_id) != "user":
+            return result
+
+        from agent.turn_failure_copy import failed_turn_notice
+
+        append_message(messages, {"role": "assistant", "content": failed_turn_notice(messages)})
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("failed-turn boundary not written", exc_info=True)
+    return result
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1615,6 +1677,7 @@ def run_conversation(
         moa_config=moa_config,
         turn_author=turn_author,
     )
+    result = close_durable_failed_turn(agent, result)
     return export_current_turn_boundary(agent, result, user_message)
 
 

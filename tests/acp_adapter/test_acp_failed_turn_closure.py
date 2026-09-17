@@ -1,17 +1,24 @@
-"""RED regression: standalone ACP leaves a failed turn's user row as the durable tail.
+"""A failed turn must not leave its accepted user row as the durable conversation tail.
 
 #108033 closed this for the gateway (``gateway/run_turn.py::_hmwa_close_failed_turn``,
-keyed on ``SessionDB.latest_conversation_role``). The ACP adapter has no equivalent:
-``acp_adapter/server.py::_finish_turn`` never inspects the terminal result's ``failed``
-flag, so a turn that ends in a terminal provider failure persists its accepted user row
-and stops. The next prompt appends a second user row, ``repair_message_sequence`` merges
-the pair into one user instruction, and the provider is asked to act on the refused
+keyed on ``SessionDB.latest_conversation_role``), but only for turns that come back
+through the gateway. ``acp_adapter/server.py::_finish_turn`` never inspects the terminal
+result, and the paths that produce these envelopes — the content-policy refusal return,
+``_Trunc.end_turn``, the overflow builders, the codex runtime — persist and return
+without reaching ``finalize_turn``. Standalone ACP therefore used to persist the user row
+and stop; the next prompt appended a second user row, ``repair_message_sequence`` merged
+the pair into one user instruction, and the provider was asked to act on the failed
 request again.
+
+Closed at the one seam every envelope passes through:
+``agent/conversation_loop.py::close_durable_failed_turn``.
 
 These tests drive the real ``HermesACPAgent.prompt()`` path with a real ``AIAgent``, a
 real ``SessionDB`` and a loopback fixture provider. Nothing here is mocked at the
 transcript layer: every assertion reads rows back out of SQLite, or reads the request
 body the provider actually received.
+
+Context overflow is deliberately NOT closed here — see the two overflow tests at the end.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ import json
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -255,13 +263,17 @@ _OVERFLOW = {
 # ── Test A — refusal followed by a new prompt ─────────────────────────────────
 
 
-def test_acp_refusal_leaves_open_user_tail_and_replays_into_next_prompt(acp):
+def test_acp_refusal_is_closed_and_not_replayed_into_the_next_prompt(acp):
     """Turn 1 is an HTTP-200 content-policy refusal; turn 2 is an unrelated request.
 
-    RED on current main: the durable tail after turn 1 is ``user``, and the provider
-    request for turn 2 carries ONE merged user instruction containing the refused
-    request. The next provider must see only the new request as the live instruction.
+    (Was ``test_acp_refusal_leaves_open_user_tail_and_replays_into_next_prompt`` while RED.)
+
+    Before the fix the durable tail after turn 1 was ``user`` and the provider request for
+    turn 2 carried ONE merged user instruction containing the refused request. After it,
+    turn 1 ends ``user, assistant(boundary)`` and turn 2 stands alone.
     """
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+
     sid = acp.new_session(cwd=str(acp.db_path.parent))
 
     # ── Turn 1: accepted request, provider refuses at HTTP 200 ──
@@ -269,24 +281,24 @@ def test_acp_refusal_leaves_open_user_tail_and_replays_into_next_prompt(acp):
     acp.prompt(sid, _REFUSED)
 
     rows = acp.conversation_rows(sid)
-    assert [r["role"] for r in rows] == ["user"], (
-        f"expected only the accepted user row to be durable, got {[r['role'] for r in rows]}"
+    assert [r["role"] for r in rows] == ["user", "assistant"], (
+        f"the failed turn must be closed, got {[r['role'] for r in rows]}"
     )
     assert _REFUSED in (rows[0]["content"] or "")
+
+    # No tool ran, so the boundary must not hedge about side effects.
+    assert rows[1]["content"] == FAILED_TURN_NOTICE
 
     # The refusal detail reached the ACP caller ...
     assert any(_REFUSAL_DETAIL in t for t in acp.conn.all_texts()), (
         "the provider's refusal detail should reach the ACP client"
     )
-    # ... but was NOT persisted as ordinary assistant content.
+    # ... but is not in the boundary, nor anywhere in canonical assistant history.
     assert not any(
         r["role"] == "assistant" and _REFUSAL_DETAIL in (r["content"] or "") for r in acp.rows(sid)
     ), "provider refusal detail must never become canonical assistant history"
 
-    # The defect, stated as durable state.
-    assert acp.durable_tail_role(sid) == "user", (
-        "precondition for this RED test: current main leaves the failed turn open"
-    )
+    assert acp.durable_tail_role(sid) == "assistant"
 
     # ── Turn 2: unrelated new request ──
     acp.provider.script = [_ok("Paris.")]
@@ -295,12 +307,19 @@ def test_acp_refusal_leaves_open_user_tail_and_replays_into_next_prompt(acp):
     sent_users = acp.provider.user_rows_of_last_request()
     merged = f"{_REFUSED}\n\n{_NEW_REQUEST}"
     assert merged not in sent_users, (
-        "RED: the failed turn's user row was merged into the new request.\n"
+        "the failed turn's user row was merged into the new request.\n"
         f"provider received user rows: {sent_users!r}"
     )
-    assert sent_users == [_NEW_REQUEST], (
-        "the next provider request must carry only the new request as the live user "
-        f"instruction; got {sent_users!r}"
+    # The refused turn stays in history — closing it is not erasing it — but it is a
+    # CLOSED past turn, not part of the live instruction. The new request is its own row,
+    # and it is the last one.
+    assert sent_users == [_REFUSED, _NEW_REQUEST], sent_users
+    assert sent_users[-1] == _NEW_REQUEST
+
+    sent_roles = [m["role"] for m in acp.provider.requests[-1]["messages"] if m["role"] != "system"]
+    assert sent_roles == ["user", "assistant", "user"], (
+        "the boundary must separate the failed turn from the new one; "
+        f"got {sent_roles}"
     )
 
 
@@ -392,17 +411,35 @@ def test_acp_failed_turn_after_assistant_text_adds_no_second_boundary(acp):
         f"a failed turn must add the user row and exactly one boundary; roles={roles}"
     )
 
-    # Idempotence: re-running the closer over the now-closed tail is a no-op.
-    before = acp.rows(sid)
-    from acp_adapter import server as acp_server
+    # Idempotence 1: re-running the CORE closer over the now-closed tail is a no-op.
+    # Durable state is the authority, so a redelivery of the same terminal envelope
+    # cannot stack a second boundary.
+    from agent.conversation_loop import close_durable_failed_turn
 
-    closer = getattr(acp_server.HermesACPAgent, "_close_failed_turn", None)
-    assert closer is not None, (
-        "no ACP failed-turn closer exists yet; this assertion pins the idempotence "
-        "contract the production helper must satisfy"
-    )
-    asyncio.run(closer(acp.server, sid, "boundary"))
+    before = acp.rows(sid)
+    state = acp.manager.get_session(sid)
+    redelivered = {"completed": False, "failed": True,
+                   "failure_reason": "content_policy_blocked",
+                   "messages": list(state.history)}
+    close_durable_failed_turn(state.agent, redelivered)
     assert acp.rows(sid) == before, "closing an already-closed turn must be a no-op"
+
+    # Idempotence 2: the gateway writer from #108033 also no-ops once the core has
+    # closed the turn — it reads the same durable tail, so no double boundary.
+    from gateway.config import GatewayConfig
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import AsyncSessionStore, SessionStore
+
+    store = SessionStore(sessions_dir=acp.db_path.parent / "sessions", config=GatewayConfig())
+    assert store.transcript_tail_role(sid) != "user", (
+        "the gateway's guard must see a closed tail after core closure"
+    )
+    holder = SimpleNamespace(async_session_store=AsyncSessionStore(store))
+    asyncio.run(GatewayTurnMixin._hmwa_close_failed_turn(
+        holder, sid, GatewayTurnMixin._FAILED_TURN_NOTICE))
+    assert acp.rows(sid) == before, (
+        "gateway _hmwa_close_failed_turn must not add a second boundary"
+    )
 
 
 # ── Test D — success unaffected ───────────────────────────────────────────────
@@ -454,15 +491,15 @@ def test_acp_context_overflow_is_not_a_boundary_class(acp):
 # ── Section 4 — the remaining failure classes, characterized ──────────────────
 
 
-def test_acp_interrupt_with_no_assistant_text_leaves_an_open_user_tail(acp):
+def test_acp_interrupt_with_no_assistant_text_closes_the_durable_turn(acp):
     """Interrupt with no assistant text and no tool activity.
 
-    Distinct code path from the terminal-failure classes above: an interrupt reaches
+    Distinct code path from the terminal-failure classes above: an interrupt DOES reach
     ``finalize_turn``, but ``_close_transcript_tail`` gates its append on
     ``not interrupted`` and ``close_interrupted_tool_sequence`` only fires on a ``tool``
-    tail — so a bare interrupt leaves the accepted user row as the durable tail.
-
-    RED on current main.
+    tail — so before the fix a bare interrupt left the accepted user row as the durable
+    tail. The core closer sits past ``finalize_turn`` on the same envelope, so it covers
+    this class too.
     """
     import threading as _t
 
@@ -494,7 +531,7 @@ def test_acp_interrupt_with_no_assistant_text_leaves_an_open_user_tail(acp):
     assert not raised or isinstance(raised[0], AttributeError), raised
 
     rows = acp.conversation_rows(sid)
-    assert [r["role"] for r in rows] == ["user"], [r["role"] for r in rows]
+    assert [r["role"] for r in rows] == ["user", "assistant"], [r["role"] for r in rows]
     assert acp.durable_tail_role(sid) != "user", (
         "an interrupted turn whose accepted user row stayed durable must not leave the "
         f"transcript open; roles={[r['role'] for r in rows]}"
@@ -577,3 +614,92 @@ def test_acp_context_overflow_session_should_not_replay_the_failed_request(acp):
     acp.provider.script = [_ok("Paris.")]
     acp.prompt(sid, _NEW_REQUEST)
     assert acp.provider.user_rows_of_last_request() == [_NEW_REQUEST]
+
+
+# ── Partial effects — the boundary must not claim "not processed" ─────────────
+
+
+def test_boundary_hedges_when_a_tool_may_already_have_run():
+    """Tool evidence in the turn slice selects the partial-effect notice.
+
+    Unit-level on purpose: the selector is the whole policy, and driving a real tool round
+    to a terminal failure would test the tool runner, not the boundary. The evidence shapes
+    are exactly the two the gateway keys on — a ``tool`` result row, and an assistant row
+    carrying ``tool_calls``.
+    """
+    from agent.turn_failure_copy import (
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, failed_turn_notice,
+    )
+
+    no_effects = [{"role": "user", "content": "hi"}]
+    assert failed_turn_notice(no_effects) == FAILED_TURN_NOTICE
+
+    tool_result = [
+        {"role": "user", "content": "delete the temp files"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "removed 12 files"},
+    ]
+    assert failed_turn_notice(tool_result) == PARTIAL_FAILED_TURN_NOTICE
+
+    # An assistant row with tool_calls and no result yet still counts: the call may have
+    # left effects even though its result never came back.
+    unanswered = [
+        {"role": "user", "content": "delete the temp files"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+    ]
+    assert failed_turn_notice(unanswered) == PARTIAL_FAILED_TURN_NOTICE
+
+    # Evidence from a PREVIOUS turn must not leak into this turn's notice: the slice
+    # starts at the last user row.
+    previous_turn_only = [
+        {"role": "user", "content": "delete the temp files"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "removed 12 files"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "what is the capital of France?"},
+    ]
+    assert failed_turn_notice(previous_turn_only) == FAILED_TURN_NOTICE
+
+
+def test_acp_failed_turn_with_tool_evidence_persists_the_partial_notice(acp):
+    """End-to-end through the real closer and the real SessionDB.
+
+    The reachable shape, and the only one: tool activity happened in this turn's LIVE
+    messages but nothing after the user row became durable — an incremental flush that
+    failed, or a rolled-back envelope projection such as
+    ``_get_messages_up_to_last_assistant``. When tool rows DO persist, the durable tail
+    is ``tool``, the tail gate no-ops, and no boundary is written at all. The gateway's
+    ``_hmwa_close_failed_turn`` has exactly the same reachability, since it gates on the
+    same durable tail.
+    """
+    from agent.conversation_loop import close_durable_failed_turn
+    from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
+
+    sid = acp.new_session(cwd=str(acp.db_path.parent))
+    state = acp.manager.get_session(sid)
+
+    # Durable: the accepted user row only (what _persist_turn_start leaves behind).
+    user_row = {"role": "user", "content": "delete the temp files"}
+    state.agent._flush_messages_to_session_db([user_row])
+    assert acp.durable_tail_role(sid) == "user"
+
+    # Live: the same turn also ran a tool, which never reached the DB.
+    messages = [user_row,
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "terminal", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "name": "terminal",
+                 "content": "removed 12 files"}]
+
+    close_durable_failed_turn(state.agent, {
+        "completed": False, "failed": True, "failure_reason": "overloaded",
+        "messages": messages,
+    })
+
+    rows = acp.conversation_rows(sid)
+    assert rows[-1]["role"] == "assistant"
+    assert rows[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE, rows[-1]["content"]
+    assert "not processed" not in (rows[-1]["content"] or "")
+    # The boundary is in the returned messages too, not only in the DB.
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE

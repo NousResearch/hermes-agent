@@ -28,6 +28,55 @@ def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[
     return result
 
 
+# ---- failed-turn transcript boundary copy -----------------------------------------------
+# The assistant row that closes a durable turn which ended without one. Hermes-authored and
+# deliberately generic: it is a transcript boundary, NOT the model's answer, so no provider
+# or model failure/refusal detail is ever interpolated into it (that detail rides
+# ``final_response``/``error`` instead). Owned here, in the agent layer, because both the
+# core closer (``agent/conversation_loop.py::close_durable_failed_turn``) and the gateway's
+# own writer (``gateway/run_turn.py::_hmwa_close_failed_turn``) must say the same thing;
+# the gateway aliases these rather than keeping a second copy that can drift.
+
+FAILED_TURN_NOTICE = (
+    "Your request was not processed. Send it again if you still want me to carry it out."
+)
+PARTIAL_FAILED_TURN_NOTICE = (
+    "This turn did not complete. Some actions may already have run; verify their effects "
+    "before resending."
+)
+
+
+def turn_slice_after_last_user(messages: Any) -> list:
+    """This turn's messages: everything from the last ``user`` row onward.
+
+    No index needed and none trusted: a turn's ``current_turn_user_idx`` can be invalidated
+    by compaction, and a rolled-back envelope carries a different projection than the live
+    list. The last user row is this turn's accepted input in every one of those shapes.
+    Fails open to the whole list when there is no user row at all.
+    """
+    if not isinstance(messages, list):
+        return []
+    for index in range(len(messages) - 1, -1, -1):
+        row = messages[index]
+        if isinstance(row, dict) and row.get("role") == "user":
+            return messages[index:]
+    return messages
+
+
+def failed_turn_notice(messages: Any) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run.
+
+    Same evidence the gateway uses — a ``tool`` result, or an assistant row carrying
+    ``tool_calls``, anywhere in this turn's slice.
+    """
+    for row in turn_slice_after_last_user(messages):
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")):
+            return PARTIAL_FAILED_TURN_NOTICE
+    return FAILED_TURN_NOTICE
+
+
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
     from hermes_cli.models import provider_label

@@ -16,6 +16,10 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error, tool_result
 
+# Hard cap on handoff document size. Generous enough for any realistic
+# session-state document while bounding disk-fill risk from a runaway write.
+MAX_HANDOFF_CONTENT_LENGTH = 200_000
+
 HANDOFF_SCHEMA = {
     "name": "handoff",
     "description": (
@@ -35,14 +39,25 @@ HANDOFF_SCHEMA = {
             },
             "content": {
                 "type": "string",
+                "maxLength": MAX_HANDOFF_CONTENT_LENGTH,
                 "description": "The handoff document content (markdown) to write to disk.",
             },
             "path": {
                 "type": "string",
                 "description": (
                     "Optional destination. An absolute path is used as-is. A bare "
-                    "filename is written under the handoffs/ directory inside the "
-                    "Hermes home. If omitted, a UTC-timestamped filename is used."
+                    "filename (or relative path) is written under the handoffs/ "
+                    "directory inside the Hermes home and may not use '..' to "
+                    "escape that directory. If omitted, a UTC-timestamped filename "
+                    "is used."
+                ),
+            },
+            "overwrite": {
+                "type": "boolean",
+                "description": (
+                    "If true, allow overwriting a file that already exists at the "
+                    "resolved path. Defaults to false, in which case a write to an "
+                    "existing path is refused."
                 ),
             },
         },
@@ -51,11 +66,17 @@ HANDOFF_SCHEMA = {
 }
 
 
+class HandoffPathError(ValueError):
+    """Raised when a relative handoff path would escape the handoffs directory."""
+
+
 def _resolve_handoff_path(path: str | None) -> Path:
     """Resolve the target path for a handoff document.
 
-    - Absolute ``path`` is used as-is.
-    - Bare-filename ``path`` is written under ``get_hermes_home()/handoffs/``.
+    - Absolute ``path`` is used as-is (explicit, intentional escape hatch).
+    - Relative/bare ``path`` is resolved under ``get_hermes_home()/handoffs/``
+      and rejected via ``HandoffPathError`` if ``..`` (or a symlink) would let
+      it resolve outside that directory.
     - No ``path`` defaults to a UTC-timestamped filename under the same directory.
     """
     handoffs_dir = get_hermes_home() / "handoffs"
@@ -63,17 +84,39 @@ def _resolve_handoff_path(path: str | None) -> Path:
         candidate = Path(path)
         if candidate.is_absolute():
             return candidate
-        return handoffs_dir / candidate
+        resolved_root = handoffs_dir.resolve()
+        resolved = (handoffs_dir / candidate).resolve()
+        if resolved != resolved_root and resolved_root not in resolved.parents:
+            raise HandoffPathError(
+                f"path '{path}' resolves outside the handoffs directory; "
+                "remove '..' segments or use an absolute path."
+            )
+        return resolved
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return handoffs_dir / f"{timestamp}-handoff.md"
 
 
-def _handoff_write(content: str, path: str | None = None) -> str:
+def _handoff_write(content: str, path: str | None = None, overwrite: bool = False) -> str:
     """Write a handoff document to disk. Returns a JSON tool_result/tool_error string."""
     if not content or not content.strip():
         return tool_error("content is required and cannot be empty.")
+    if len(content) > MAX_HANDOFF_CONTENT_LENGTH:
+        return tool_error(
+            f"content is too large ({len(content)} chars); "
+            f"limit is {MAX_HANDOFF_CONTENT_LENGTH} chars."
+        )
 
-    target = _resolve_handoff_path(path)
+    try:
+        target = _resolve_handoff_path(path)
+    except HandoffPathError as exc:
+        return tool_error(str(exc))
+
+    if target.exists() and not overwrite:
+        return tool_error(
+            f"refusing to overwrite existing file at {target}; "
+            "pass overwrite=true to replace it, or choose a different path."
+        )
+
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
@@ -96,7 +139,11 @@ def handoff(args: dict, **kwargs) -> str:
     action = args.get("action")
     if action != "write":
         return tool_error("Unsupported action for handoff tool; only 'write' is supported.")
-    return _handoff_write(content=args.get("content", ""), path=args.get("path"))
+    return _handoff_write(
+        content=args.get("content", ""),
+        path=args.get("path"),
+        overwrite=bool(args.get("overwrite", False)),
+    )
 
 
 registry.register(

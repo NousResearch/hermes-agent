@@ -153,3 +153,78 @@ class TestSafetyBoundary:
         for forbidden in ("reset", "inject", "restart", "new", "continue", "resume"):
             assert forbidden not in enum_values
         assert enum_values == ["write"]
+
+
+class TestPathEscapeRejected:
+    def test_dotdot_relative_path_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        outside_marker = tmp_path / "outside.md"
+
+        result = _call_handoff(action="write", content="content", path="../outside.md")
+
+        assert "error" in result
+        assert not outside_marker.exists()
+        assert not (tmp_path / "handoffs" / "outside.md").exists()
+
+    def test_deep_dotdot_relative_path_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        result = _call_handoff(
+            action="write", content="content", path="../../../etc/cron.d/evil"
+        )
+
+        assert "error" in result
+
+    def test_absolute_path_still_allowed_as_explicit_escape_hatch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        other_dir = tmp_path / "elsewhere"
+        other_dir.mkdir()
+        absolute_target = other_dir / "abs-handoff.md"
+
+        result = _call_handoff(action="write", content="content", path=str(absolute_target))
+
+        assert result["success"] is True
+        assert absolute_target.is_file()
+
+
+class TestOverwriteGuard:
+    def test_write_to_existing_path_refused_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        first = _call_handoff(action="write", content="first content", path="dup.md")
+        assert first["success"] is True
+
+        second = _call_handoff(action="write", content="second content", path="dup.md")
+        assert "error" in second
+        assert Path(first["path"]).read_text(encoding="utf-8") == "first content"
+
+    def test_write_to_existing_path_allowed_with_overwrite_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        first = _call_handoff(action="write", content="first content", path="dup.md")
+        assert first["success"] is True
+
+        second = _call_handoff(
+            action="write", content="second content", path="dup.md", overwrite=True
+        )
+        assert second["success"] is True
+        assert Path(second["path"]).read_text(encoding="utf-8") == "second content"
+
+
+class TestContentMaxLength:
+    def test_schema_advertises_max_length(self):
+        entry = registry.get_entry("handoff")
+        assert entry is not None
+        content_schema = entry.schema["parameters"]["properties"]["content"]
+        assert "maxLength" in content_schema
+        assert content_schema["maxLength"] > 0
+
+    def test_oversized_content_rejected_by_handler(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        entry = registry.get_entry("handoff")
+        max_len = entry.schema["parameters"]["properties"]["content"]["maxLength"]
+
+        result = _call_handoff(action="write", content="x" * (max_len + 1), path="big.md")
+
+        assert "error" in result
+        assert not (tmp_path / "handoffs" / "big.md").exists()

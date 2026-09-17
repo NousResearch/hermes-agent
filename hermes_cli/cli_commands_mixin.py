@@ -1949,7 +1949,7 @@ class CLICommandsMixin:
                     model=turn_route["model"], acp_command=runtime.get("command"),
                     acp_args=runtime.get("args"), max_iterations=self.max_turns,
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
-                                                   "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
+                                                   "max_tokens", "capabilities")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,

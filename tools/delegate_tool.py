@@ -28,9 +28,9 @@ from tools.delegate_tool_child_run import (  # noqa: F401
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _child_route_capabilities, _get_child_timeout, _get_max_async_children,
+    _get_max_concurrent_children, _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback,
+    _get_worktree_isolation, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
@@ -168,6 +168,8 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
+    # Endpoint trust declared by the pinned route itself (never the parent's).
+    override_capabilities: Optional[Dict[str, bool]] = None,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
@@ -221,6 +223,7 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
+        override_capabilities=override_capabilities,
         routing_cfg=routing_cfg,
     )
     if override_request_overrides is not None:
@@ -372,6 +375,7 @@ def _build_children(
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
         "override_request_overrides": creds.get("request_overrides"),
+        "override_capabilities": creds.get("capabilities"),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
         "routing_cfg": routing_cfg,

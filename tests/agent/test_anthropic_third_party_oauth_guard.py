@@ -1,7 +1,7 @@
 """Tests for ``_is_anthropic_oauth`` guard against third-party Anthropic-compatible providers.
 
-The invariant: ``self._is_anthropic_oauth`` must only ever be True when
-``self.provider == 'anthropic'`` (native Anthropic).  Third-party providers
+The invariant: without an explicit ``anthropic_oauth_proxy`` capability,
+OAuth semantics are reserved for native Anthropic endpoints. Third-party providers
 that speak the Anthropic protocol (MiniMax, Zhipu GLM, Alibaba DashScope,
 Kimi, LiteLLM proxies, etc.) must never trip OAuth code paths — doing so
 injects Claude-Code identity headers and system prompts that cause

@@ -185,8 +185,10 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         # ``session_id`` rides along so the background titler's OpenCode request carries the
         # same ``x-opencode-session`` affinity as the turn it belongs to (#112717).
         main_runtime = {
-            k: getattr(agent, k, None)
-            for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
+            k: getattr(agent, k, None) for k in (
+                "model", "provider", "requested_provider", "base_url", "api_key", "api_mode",
+                "capabilities", "session_id",
+            )
         }
         # See #19027.
         maybe_auto_title(
@@ -438,6 +440,7 @@ def _publish_runtime_main(agent: Any) -> None:
             **{k: _str_attr(agent, k) for k in (
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
+            capabilities=dict(getattr(agent, "capabilities", {}) or {}),
             cache_scope=_cache_scope,
         )
 

@@ -24,6 +24,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -1843,7 +1844,6 @@ class GatewayTurnMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
-        from gateway.warning_notifications import diagnostic_wake_muted
         if diagnostic_wake_muted(event):
             return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
@@ -2109,10 +2109,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner,
-                    **({"notification_category": "diagnostic"}
-                       if event.internal and (event.metadata or {}).get("notification_category") == "diagnostic" else {}),
-                },
+                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -2990,7 +2987,6 @@ class GatewayTurnMixin:
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
         turn_runner = TurnRunner(self, turn_ctx)
-        from gateway.warning_notifications import diagnostic_turn_muted
         turn_ctx.mute_notification_reply = diagnostic_turn_muted(
             turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
@@ -3783,10 +3779,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_display_kind=next_display_kind,
-                persist_user_display_metadata=(
-                    {"notification_category": "diagnostic"}
-                    if pending_event is not None and pending_event.internal
-                    and (pending_event.metadata or {}).get("notification_category") == "diagnostic" else None),
+                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

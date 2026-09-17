@@ -15,6 +15,37 @@ def is_warning_status(event_type: str, message: str) -> bool:
     return event_type == "warn" or isinstance(message, DiagnosticText)
 
 
+def is_diagnostic_notice(notice) -> bool:
+    """Out-of-band ``AgentNotice`` classification shared by the gateway, TUI and CLI sinks.
+
+    Credit-service notices are automatic diagnostics at every level (usage bands are ``info``,
+    ``credits.restored`` is ``success``); everything else is diagnostic only when it warns.
+    """
+    return (getattr(notice, "level", None) in {"warn", "error"}
+            or str(getattr(notice, "key", "") or "").startswith("credits."))
+
+
+def diagnostic_metadata(event) -> dict:
+    """``{"notification_category": "diagnostic"}`` for a trusted diagnostic-only wake, else ``{}``.
+
+    Only internal wakes may classify a turn; human content never does.
+    """
+    if getattr(event, "internal", False) and (getattr(event, "metadata", None) or {}).get(
+            "notification_category") == "diagnostic":
+        return {"notification_category": "diagnostic"}
+    return {}
+
+
+def effective_user_config() -> dict:
+    """The active profile's effective config, or ``{}`` when it cannot be read (presentation fails open)."""
+    from hermes_cli.config_effective import load_user_config_effective
+    try:
+        config = load_user_config_effective()
+    except Exception:
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
 def diagnostic_turn_muted(display_metadata, platform, user_config=None) -> bool:
     """One admission rule for every surface: a diagnostic-category wake mutes its turn's
     presentation only when the owning policy hides diagnostics. Human content never mutes."""
@@ -63,12 +94,8 @@ def warning_notifications_enabled(platform, user_config=None) -> bool:
     Unknown values never opt in; null inherits via the canonical display resolver.
     """
     if user_config is None:
-        from hermes_cli.config_effective import load_user_config_effective
-        try:
-            user_config = load_user_config_effective()
-        except Exception:
-            user_config = {}
-    if not isinstance(user_config, dict):
+        user_config = effective_user_config()
+    elif not isinstance(user_config, dict):
         user_config = {}
     platform_key = getattr(platform, "value", platform)
     return not resolve_display_setting(user_config, platform_key, "suppress_warning_notifications", False)

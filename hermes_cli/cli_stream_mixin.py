@@ -74,12 +74,12 @@ class CLIStreamMixin:
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
-            from gateway.warning_notifications import render_notification
+            from gateway.warning_notifications import is_diagnostic_notice, render_notification
             def queue_notice():
                 if not hasattr(self, "_pending_credit_notices"):
                     self._pending_credit_notices = []
                 self._pending_credit_notices.append((level, text))
-            render_notification(queue_notice, platform="cli", diagnostic=level in {"warn", "error"},
+            render_notification(queue_notice, platform="cli", diagnostic=is_diagnostic_notice(notice),
                                 user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
         except Exception:
             pass

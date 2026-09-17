@@ -29,25 +29,19 @@ def diagnostic_process_event(event: dict) -> bool:
 
 
 def notification_config_snapshot():
-    """Read the canonical owning effective config once; presentation fails open."""
-    from copy import deepcopy
-    from hermes_cli.config_effective import load_user_config_effective
-    try:
-        config = load_user_config_effective()
-        return deepcopy(config) if isinstance(config, dict) else {}
-    except Exception:
-        return {}
+    """Read the owning effective config once per turn (the loader already returns a fresh copy)."""
+    from gateway.warning_notifications import effective_user_config
+    return effective_user_config()
 
 
 @contextmanager
 def notification_policy_snapshot(agent, platform, config):
-    """Bind one foreground policy for callbacks, including worker threads."""
-    from copy import deepcopy
+    """Bind one foreground policy for callbacks, including worker threads. ``config`` is read-only."""
     missing = object()
     saved = {key: getattr(agent, key, missing)
              for key in ("_notification_config", "_notification_platform")}
     try:
-        agent._notification_config = deepcopy(config)
+        agent._notification_config = config
         agent._notification_platform = platform
         yield
     finally:

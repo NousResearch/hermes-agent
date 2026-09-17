@@ -53,5 +53,7 @@ def test_actual_credit_capture_depletion_and_recovery(tmp_path, monkeypatch, set
     levels = [row[0] for row in projected] if surface == "cli" else [
         frame["params"]["payload"]["level"] for frame in projected]
     assert ("error" in levels) is not (setting is True)
-    assert "success" in levels  # recovery is informational, not a warning
+    # Every credit-service notice is an automatic diagnostic, recovery included: a "restored"
+    # line after a hidden depletion notice would be orphan noise (same rule as the gateway).
+    assert ("success" in levels) is not (setting is True)
     assert sum(n.key == "credits.restored" for n in observed) == 1

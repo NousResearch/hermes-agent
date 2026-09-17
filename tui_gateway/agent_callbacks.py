@@ -108,7 +108,8 @@ def _agent_thinking_update(sid: str, text: str) -> None:
 
 
 def _agent_notice_update(sid: str, notice) -> None:
-    if not _agent_presentation_enabled(sid, diagnostic=notice.level in {"warn", "error"}):
+    from gateway.warning_notifications import is_diagnostic_notice
+    if not _agent_presentation_enabled(sid, diagnostic=is_diagnostic_notice(notice)):
         return
     _emit("notification.show", sid,
           {"text": notice.text, "level": notice.level, "kind": notice.kind,

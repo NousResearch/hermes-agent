@@ -1156,11 +1156,10 @@ class TurnRunner:
         """Credits / out-of-band notices (usage bands, depletion, restored) fire from the agent's
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
-        from gateway.warning_notifications import render_notification
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
         if self._ctx.mute_notification_reply or not self._status_live():
             return
-        diagnostic = (getattr(notice, "level", None) in {"warn", "error"}
-                      or str(getattr(notice, "key", "") or "").startswith("credits."))
+        diagnostic = is_diagnostic_notice(notice)
         def present():
             try:
                 line = render_notice_line(notice)

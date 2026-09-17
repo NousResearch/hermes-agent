@@ -839,8 +839,10 @@ text in a user request or an ordinary result is not filtered by its wording.
 
 Suppression changes presentation, not execution. Existing logs, stored diagnostic
 content, retry decisions, failure state, scheduler bookkeeping and notification
-cursors remain available. A diagnostic-only internal wake can still execute, but
-its unsolicited text, media and streaming presentation are muted. Structured
+cursors remain available. A diagnostic-only internal wake (a subagent or credit
+failure, a Kanban crash notice) still runs its agent turn — so the agent can act on
+the failure and the session history stays consistent — and that turn is billed as
+usual; only its unsolicited text, media and streaming presentation are muted. Structured
 approval and clarification controls, direct command/API outcomes and requested
 results are not converted into success or discarded. API failure flags, status
 codes and usage remain truthful even when diagnostic text is hidden.

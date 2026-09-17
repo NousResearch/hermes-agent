@@ -49,6 +49,7 @@ const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchPrimaryServerRequest,
   ensureGatewayForProfile,
   openGatewayForAgent,
   pruneSecondaryGateways,
@@ -354,5 +355,26 @@ describe('secondary connection timeout (#93454)', () => {
     // resolve after a single 20s timeout instead of two stacked ones.
     expect(callCount).toBe(2)
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
+  })
+})
+
+describe('server→client request routing without a registry handler (#112791)', () => {
+  it('answers -32601 when the registry has no onServerRequest, and forwards with the profile when it does', () => {
+    const request = { fail: vi.fn(), id: 'srq-1', method: 'clarify', params: { session_id: 's1' }, respond: vi.fn() }
+
+    // beforeEach configured a registry with onEvent only: nobody can answer,
+    // so the backend must hear -32601 now instead of waiting out its deadline.
+    dispatchPrimaryServerRequest(request as never, 'default')
+    expect(request.fail).toHaveBeenCalledTimes(1)
+    expect(request.fail).toHaveBeenCalledWith(-32601, expect.stringMatching(/registry/))
+
+    const onServerRequest = vi.fn()
+
+    configureGatewayRegistry({ onEvent: vi.fn(), onServerRequest } as never)
+    request.fail.mockClear()
+    dispatchPrimaryServerRequest(request as never, 'work')
+    expect(request.fail).not.toHaveBeenCalled()
+    expect(onServerRequest).toHaveBeenCalledTimes(1)
+    expect(onServerRequest).toHaveBeenCalledWith(expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' }))
   })
 })

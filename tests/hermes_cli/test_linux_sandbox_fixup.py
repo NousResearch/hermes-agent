@@ -95,6 +95,28 @@ class TestDesktopLinuxSandboxFixup:
              patch.object(main_desktop.shutil, "which", return_value=None):
             assert main_desktop._desktop_linux_sandbox_fixup(exe) is False
 
+    def test_restricted_host_uses_noninteractive_sudo(self, monkeypatch, tmp_path):
+        """Autostart has no TTY; interactive sudo conversation-failed and killed launch."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, check=False, **kw):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1)
+
+        with patch.object(
+                 main_desktop, "_desktop_linux_userns_sandbox_available", return_value=False
+             ), \
+             patch.object(
+                 main_desktop.shutil, "which",
+                 lambda n: "/usr/bin/sudo" if n == "sudo" else None,
+             ), \
+             patch.object(main_desktop.subprocess, "run", fake_run):
+            assert main_desktop._desktop_linux_sandbox_fixup(exe) is False
+        assert calls
+        assert all(c[:2] == ["/usr/bin/sudo", "-n"] for c in calls)
+
     def test_root_owned_setuid_helper_short_circuits(self, monkeypatch, tmp_path):
         """A correctly configured helper wins before the userns probe runs."""
         monkeypatch.setattr(sys, "platform", "linux")

@@ -60,7 +60,7 @@
 import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty } from './stage-native-deps.mjs'
+import { removeDirSync, stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -73,6 +73,13 @@ export function cleanStaleAppOutDir(appOutDir) {
   // can't block the wipe. retry/maxRetries rides out transient EBUSY on
   // Windows where an AV/indexer may briefly hold a handle.
   rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  // Node's native rmSync silently deletes nothing on non-ASCII Windows
+  // paths (nodejs/node#56049, fixed in v24.13.1) — without this check the
+  // stale tree survives and the "removed" log below lies. Fall back to
+  // the libuv-backed walk, which handles those paths on every version.
+  if (existsSync(appOutDir)) {
+    removeDirSync(appOutDir)
+  }
   return true
 }
 
@@ -103,6 +110,11 @@ export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe')
   const backupDir = `${appOutDir}.bak`
   try {
     rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    // Same non-ASCII rmSync no-op as cleanStaleAppOutDir: a surviving .bak
+    // makes the rename fail and the previous build is wiped instead of kept.
+    if (existsSync(backupDir)) {
+      removeDirSync(backupDir)
+    }
     renameSync(appOutDir, backupDir)
     return true
   } catch {
@@ -144,11 +156,15 @@ export default async function beforePack(context) {
         await stageNodePty({ platform, arch: archName })
         console.log(`[before-pack] re-staged node-pty for target ${platform}-${archName}`)
       }
+      // The macOS helper is universal, while Windows bindings are arch-specific.
+      // Pass the target arch so an ARM64 package never stages an x64 binding.
+      stageGetWindows({ platform, arch: archName })
+      console.log(`[before-pack] re-staged get-windows for target ${platform}-${archName}`)
     }
   } catch (err) {
     // This one SHOULD fail the build — a missing/wrong native binary for the
     // target arch means a broken package shipped to users, which is worse
     // than a build that fails loudly here.
-    throw new Error(`[before-pack] failed to stage node-pty for this target: ${err.message}`)
+    throw new Error(`[before-pack] failed to stage native deps for this target: ${err.message}`)
   }
 }

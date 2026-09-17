@@ -301,6 +301,7 @@ def test_invalid_entries_and_unsupported_remote_preserve_valid_stdio(
                 "remote": {
                     "type": "streamable-http",
                     "url": "https://example.test/mcp",
+                    "headers": {"X-Tenant": "a", "x-tenant": "b"},
                 },
             },
         },
@@ -360,7 +361,7 @@ def test_enabled_portable_mcp_probe_does_not_load_plugins(
     )
 
 
-def test_portable_mcp_probe_ignores_unsupported_only_config(
+def test_portable_mcp_probe_counts_streamable_http_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
@@ -384,8 +385,156 @@ def test_portable_mcp_probe_ignores_unsupported_only_config(
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
 
+    assert has_enabled_agent_plugin_mcp(
+        {"plugins": {"enabled": ["portable.test"]}}
+    )
+
+
+def test_portable_mcp_probe_ignores_unsupported_only_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "portable"
+    plugin.mkdir(parents=True)
+    _write_json(plugin / "plugin.json", _manifest())
+    _write_json(
+        plugin / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "remote": {
+                    "type": "sse",
+                    "url": "https://example.test/sse",
+                }
+            },
+        },
+    )
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
     assert not has_enabled_agent_plugin_mcp(
         {"plugins": {"enabled": ["portable.test"]}}
+    )
+
+
+def test_streamable_http_translates_to_native_remote_config(tmp_path: Path) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "deploy": {
+                    "type": "streamable-http",
+                    "url": "https://deploy.example.test/mcp",
+                    "headers": {"X-Tenant": "public-tenant"},
+                },
+                "local": {
+                    "type": "streamable-http",
+                    "url": "http://127.0.0.1:8000/mcp",
+                },
+                "bare": {
+                    "type": "streamable-http",
+                    "url": "https://bare.example.test/mcp",
+                },
+            },
+        },
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert set(package.mcp_servers) == {"deploy", "local", "bare"}
+    deploy = package.mcp_servers["deploy"]
+    assert deploy == {
+        "url": "https://deploy.example.test/mcp",
+        "headers": {"X-Tenant": "public-tenant"},
+        "strict_redirect_headers": True,
+    }
+    assert "command" not in deploy
+    assert package.mcp_servers["bare"] == {
+        "url": "https://bare.example.test/mcp",
+        "strict_redirect_headers": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "ftp://example.test/mcp",
+        "https://user:pass@example.test/mcp",
+        "https://example.test/mcp#fragment",
+        "http://example.test/mcp",  # non-loopback plain HTTP
+        "http://10.0.0.5/mcp",
+        "https:///mcp",  # empty host
+    ],
+)
+def test_streamable_http_rejects_invalid_urls(tmp_path: Path, url: str) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "remote": {"type": "streamable-http", "url": url},
+                "valid": {"type": "stdio", "command": "python"},
+            },
+        },
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert set(package.mcp_servers) == {"valid"}
+    assert any(d.scope == "mcp:remote" for d in package.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8000/mcp",
+        "http://127.0.0.1/mcp",
+        "http://[::1]:9000/mcp",
+        "https://remote.example.test/mcp",
+    ],
+)
+def test_streamable_http_accepts_loopback_http_and_https(
+    tmp_path: Path, url: str
+) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {"remote": {"type": "streamable-http", "url": url}},
+        },
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert set(package.mcp_servers) == {"remote"}
+    assert package.mcp_servers["remote"]["url"] == url
+
+
+def test_sse_remains_unsupported(tmp_path: Path) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "legacy": {"type": "sse", "url": "https://legacy.example.test/sse"}
+            },
+        },
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert package.mcp_servers == {}
+    assert any(
+        d.scope == "mcp:legacy" and "not supported" in d.message
+        for d in package.diagnostics
     )
 
 

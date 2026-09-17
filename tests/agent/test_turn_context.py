@@ -15,7 +15,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_context import (
+    PreflightCompressionTimedOut,
+    TurnContext,
+    build_turn_context,
+)
 from hermes_state import SessionDB
 
 
@@ -203,9 +207,57 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
     # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
+    assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
+
+
+def test_preflight_timeout_stops_turn_before_provider_boundary():
+    """An unchanged oversized payload must not escape turn construction."""
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.max_compression_attempts = 3
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=2,
+        protect_last_n=2,
+        threshold_tokens=1_000,
+        context_length=4_000,
+        summary_target_ratio=0.3,
+        last_prompt_tokens=0,
+        should_compress=lambda tokens=None: True,
+        should_compress_info=lambda tokens=None: (True, None),
+        get_active_compression_failure_cooldown=lambda: None,
+    )
+
+    def stalled_compression(messages, *_args, **_kwargs):
+        agent._last_compression_timed_out = True
+        return messages, "SYSTEM"
+
+    agent._compress_context = MagicMock(side_effect=stalled_compression)
+    oversized_history = [
+        {"role": "assistant", "content": "x" * 8_000},
+    ]
+    provider_call = MagicMock()
+
+    def run_turn():
+        context = _build(agent, conversation_history=oversized_history)
+        provider_call(context.messages)
+
+    with pytest.raises(PreflightCompressionTimedOut, match="provider call was not sent"):
+        run_turn()
+
+    agent._compress_context.assert_called_once()
+    provider_call.assert_not_called()
+
+
+def test_user_message_preserves_platform_event_timestamp():
+    agent = _FakeAgent()
+
+    ctx = _build(agent, persist_user_timestamp=123.5)
+
+    assert ctx.messages[-1]["timestamp"] == 123.5
 
 
 # ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
@@ -236,8 +288,61 @@ def test_prefetch_runs_for_substantive_user_message():
     agent, mm = _agent_with_memory_manager()
     query = "what did we decide about the deploy pipeline?"
     ctx = _build(agent, user_message=query)
-    mm.prefetch_all.assert_called_once_with(query)
+    mm.prefetch_all.assert_called_once_with(query, session_id=agent.session_id)
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
+
+
+# ── Per-turn author ──────────────────────────────────────────────────────────
+
+
+def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stash():
+    agent, mm = _agent_with_memory_manager()
+
+    _build(agent, user_message="what did we decide about the deploy pipeline?",
+           turn_author={"id": " bot:al\x00pha ", "name": "Alpha", "is_bot": 1, "x": 1})
+
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert (kwargs["author_id"], kwargs["author_name"], kwargs["author_is_bot"]) == ("bot:alpha", "Alpha", True)
+    # The end-of-turn sync reads this back off the agent.
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+
+def test_turn_without_author_clears_previous_bot_author():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="first turn", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author["id"] == "bot:alpha"
+
+    _build(agent, user_message="second turn")
+
+    assert agent._turn_author is None
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert kwargs["author_id"] is None
+    assert kwargs["author_is_bot"] is False
+
+
+def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
+    """``AIAgent.run_conversation(turn_author=...)`` crosses the facade and the loop entry point, not only
+    ``build_turn_context``; a kwarg dropped at either hop raised TypeError on every real turn."""
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+
+    class _Completions:
+        def create(self, **_kw):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=None, reasoning=None, reasoning_content=None),
+                finish_reason="stop")], usage=None, model="test-model")
+
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+                        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
+                    max_iterations=2, quiet_mode=True, skip_memory=True)
+    agent._disable_streaming = True
+
+    agent.run_conversation("hi", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+    agent.run_conversation("hi again")
+    assert agent._turn_author is None
 
 
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
@@ -267,7 +372,10 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
     assert agent._current_turn_id.startswith("compression-child:")
     log_context.assert_called_once_with("compression-child")
     assert ctx.conversation_history == compacted_history
-    assert ctx.messages == compacted_history + [{"role": "user", "content": "hello"}]
+    assert ctx.messages[:-1] == compacted_history
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
+    assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert all(message.get("content") != "stale parent" for message in ctx.messages)
 
 
@@ -286,14 +394,6 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
-
-
-
-
-
-
-
-
 def test_pending_cli_message_uses_clean_override_for_api_local_note():
     """A noted API message reuses the clean staged dict and its DB marker."""
     agent = _FakeAgent()
@@ -309,13 +409,41 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert ctx.messages[-1] is staged
     assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
     assert ctx.messages[-1]["_db_persisted"] is True
+    assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None
 
 
+def test_recall_indicator_emitted_when_memory_injected():
+    """When prefetch injects memory, the deterministic indicator is emitted."""
+    agent = _FakeAgent()
+    agent._emit_status = MagicMock()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = "- recalled fact"
+    mm.describe_recall.return_value = "👁️ Hindsight — recalled 2 memories"
+    agent._memory_manager = mm
+
+    # A substantive query — a trivial prompt ("hi", "hello") skips prefetch_all
+    # entirely, so there'd be nothing to indicate. See is_trivial_prompt.
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+
+    agent._emit_status.assert_any_call("👁️ Hindsight — recalled 2 memories")
 
 
+def test_recall_indicator_skipped_when_nothing_injected():
+    """No memory injected → describe_recall isn't consulted, nothing emitted."""
+    agent = _FakeAgent()
+    agent._emit_status = MagicMock()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = ""
+    agent._memory_manager = mm
 
+    # Substantive query so prefetch_all actually runs; it returns nothing, so the
+    # indicator path must stay silent (as opposed to being skipped as trivial).
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
 
+    mm.describe_recall.assert_not_called()
+    for call in agent._emit_status.call_args_list:
+        assert "👁️" not in str(call)
 
 
 def test_ensure_db_session_runs_after_system_prompt_restore():
@@ -357,7 +485,8 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
     import model_tools
-    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
+    import tools.mcp_tool  # noqa: F401 — the prologue's import-cost gate requires it in sys.modules
+    with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
 
@@ -365,13 +494,43 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
+class _TitlingAgent:
+    """Only what ``_maybe_title_session_at_turn_start`` reads off an agent."""
+
+    def __init__(self, platform):
+        self.platform = platform
+        self.session_id = "sess-1"
+        self.model = "test/model"
+        self.provider = "openrouter"
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.api_key = "sk-x"
+        self.api_mode = "chat_completions"
+        self._session_db = MagicMock()
+        self._session_db_created = True
 
 
+def _title_turn(platform, message="Fix the login button"):
+    """Run the prologue's titling step and return the maybe_auto_title mock."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent(platform),
+            [{"role": "user", "content": message}],
+        )
+    return titler
 
 
+@pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
+def test_prologue_titles_the_surfaces_a_person_reads(platform):
+    assert _title_turn(platform).called
 
 
+@pytest.mark.parametrize("platform", ["cron", "CRON", "subagent"])
+def test_prologue_does_not_title_machine_driven_runs(platform):
+    """Cron names its own session after the job, and nobody opens a subagent's.
 
-
-
-
+    Both would otherwise pay a side-LLM call per run for a name that is either
+    overwritten or never read.
+    """
+    assert not _title_turn(platform).called

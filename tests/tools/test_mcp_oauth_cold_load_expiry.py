@@ -280,6 +280,76 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     assert provider.context.token_expiry_time <= time.time() + 7200 + 5
 
 
+@pytest.mark.asyncio
+async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
+    tmp_path, monkeypatch
+):
+    """An expired token must not pass the SDK's same-tick validity check.
+
+    ``OAuthContext.update_token_expiry`` maps ``expires_in=0`` to ``time.time()``
+    and ``is_token_valid`` accepts equality.  Cold-loaded expired tokens therefore
+    need an expiry that is already in the past before the SDK selects its refresh
+    or authorization-code path.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="expired-access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="refresh-token",
+        )
+    )
+    token_path = _get_token_dir() / "srv.json"
+    persisted = json.loads(token_path.read_text())
+    fixed_now = time.time()
+    persisted["expires_at"] = fixed_now - 60
+    token_path.write_text(json.dumps(persisted))
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    # Reproduce the SDK's equality boundary deterministically: its zero-TTL
+    # expiry is exactly ``time.time()``, and validity accepts ``<=``.
+    monkeypatch.setattr("mcp.client.auth.oauth2.time.time", lambda: fixed_now)
+    await provider._initialize()
+
+    assert provider.context.current_tokens is not None
+    assert provider.context.current_tokens.expires_in == 0
+    assert not provider.context.is_token_valid(), (
+        "An expired cold-loaded token must be invalid before the SDK chooses "
+        "between refresh and authorization-code flow."
+    )
+
+
 async def _noop_redirect(_url: str) -> None:
     return None
 
@@ -310,7 +380,11 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    import httpx
+    # The SDK's httpx flavour (httpx2 on mcp >= 2.0). _prefetch_oauth_metadata
+    # builds its client from the same module, so the MockTransport and the
+    # patched AsyncClient below have to come from there too.
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
@@ -380,7 +454,7 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
 
     # Patch the AsyncClient constructor used by _prefetch_oauth_metadata so
     # it uses our mock transport instead of the real network.
-    import httpx as real_httpx
+    real_httpx = httpx
 
     original_async_client = real_httpx.AsyncClient
 

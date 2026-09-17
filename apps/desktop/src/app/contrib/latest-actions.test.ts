@@ -11,6 +11,7 @@ function makeChatActions(): ChatActions {
     onAddUrl: vi.fn(),
     onAttachDroppedItems: vi.fn(),
     onAttachImageBlob: vi.fn(),
+    onAttachPastedText: vi.fn(),
     onBranchInNewChat: vi.fn(),
     onCancel: vi.fn(),
     onDeleteSelectedSession: vi.fn(),
@@ -25,6 +26,7 @@ function makeChatActions(): ChatActions {
     onRestoreToMessage: vi.fn(),
     onRetryResume: vi.fn(),
     onSteer: vi.fn(),
+    onSteerHidden: vi.fn(),
     onSubmit: vi.fn(),
     onThreadMessagesChange: vi.fn(),
     onToggleSelectedPin: vi.fn(),
@@ -38,7 +40,6 @@ function makeSidebarActions(): SidebarActions {
     onBranchSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onLoadMoreMessaging: vi.fn(),
-    onLoadMoreProfileSessions: vi.fn(),
     onLoadMoreSessions: vi.fn(),
     onManageCronJob: vi.fn(),
     onNavigate: vi.fn(),
@@ -50,6 +51,15 @@ function makeSidebarActions(): SidebarActions {
 }
 
 describe('latestActions adapters', () => {
+  it('forwards every present handler — an optional one the adapter forgets never reaches ChatView', () => {
+    const actions = makeChatActions()
+    const adapted = latestChatActions(actions)
+
+    for (const key of Object.keys(actions) as (keyof ChatActions)[]) {
+      expect(typeof adapted[key], key).toBe('function')
+    }
+  })
+
   it('dereferences the latest steer handler from a stable actions object', async () => {
     const staleSteer = vi.fn(async () => false)
     const latestSteer = vi.fn(async () => true)
@@ -100,12 +110,10 @@ describe('latestActions adapters', () => {
 
     const sidebar = makeSidebarActions()
     sidebar.onLoadMoreMessaging = undefined
-    sidebar.onLoadMoreProfileSessions = undefined
 
     const adaptedSidebar = latestSidebarActions(sidebar)
 
     expect(adaptedSidebar.onLoadMoreMessaging).toBeUndefined()
-    expect(adaptedSidebar.onLoadMoreProfileSessions).toBeUndefined()
   })
 
   it('still late-binds a PRESENT optional handler to the latest closure', async () => {

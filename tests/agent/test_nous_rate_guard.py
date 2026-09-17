@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.hermes_cli.anon_portal import make_jwt
+
 
 @pytest.fixture
 def rate_guard_env(tmp_path, monkeypatch):
@@ -164,6 +166,7 @@ class TestAuxiliaryClientIntegration:
             "inference_base_url": "https://api.nous.test/v1",
         })
 
+        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
         result = aux._try_nous()
         assert result == (None, None)
 
@@ -174,6 +177,7 @@ class TestAuxiliaryClientIntegration:
         # (will return None because no real creds, but won't be blocked
         # by the rate guard)
         monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
+        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
         result = aux._try_nous()
         assert result == (None, None)
 
@@ -199,7 +203,28 @@ class TestIsGenuineNousRateLimit:
         }
         assert is_genuine_nous_rate_limit(headers=headers) is True
 
+    def test_a_welcome_host_429_with_exhausted_buckets_trips_the_breaker(
+        self, rate_guard_env, monkeypatch,
+    ):
+        from agent.nous_rate_guard import (
+            is_genuine_nous_rate_limit,
+            nous_rate_limit_remaining,
+            record_nous_rate_limit,
+        )
 
+        headers = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "0",
+            "x-ratelimit-reset-requests-1h": "600",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is True
+        record_nous_rate_limit(headers=headers)
+        assert nous_rate_limit_remaining() > 0
+        verdict, _buffered, statuses = TestWelcomeRouteCopy._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+        assert verdict.action == "return"
+        assert "/login" in statuses[0]
 
     def test_bare_429_with_no_headers_is_upstream(self):
         from agent.nous_rate_guard import is_genuine_nous_rate_limit
@@ -237,6 +262,68 @@ class TestIsGenuineNousRateLimit:
             headers=None, last_known_state=last_state
         ) is False
 
+
+
+class TestWelcomeRouteCopy:
+    @staticmethod
+    def _drive_guard(base_url, monkeypatch):
+        from types import SimpleNamespace
+
+        from agent import nous_rate_guard
+        from agent.turn_api_call import nous_rate_limit_guard
+
+        monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda **kw: 600)
+        buffered = []
+        statuses = []
+        agent = SimpleNamespace(
+            provider="nous",
+            api_key=make_jwt(account_tier="anonymous" if "welcome-api" in base_url else "paid"),
+            base_url=base_url,
+            log_prefix="",
+            _buffer_vprint=buffered.append,
+            _buffer_status=statuses.append,
+            _try_activate_fallback=lambda: False,
+            _flush_status_buffer=lambda: None,
+            _persist_session=lambda *_args: None,
+        )
+        verdict = nous_rate_limit_guard(
+            agent,
+            _retry=None,
+            api_messages=[],
+            messages=[],
+            conversation_history=[],
+            active_system_prompt="system",
+            retry_count=0,
+            compression_attempts=0,
+            api_call_count=0,
+        )
+        return verdict, buffered, statuses
+
+    def test_the_welcome_host_rate_limit_message_names_the_slash_command(self, monkeypatch):
+        from hermes_cli import anon_auth
+
+        verdict, buffered, statuses = self._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+
+        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=anon_auth.friendly_wait(600))
+        assert verdict.action == "return"
+        assert statuses == [f"⏳ {expected}"]
+        assert expected in verdict.result["final_response"]
+        assert "/login" in expected
+        assert "Nous Portal" not in expected
+        assert buffered == [f"⏳ {expected} Trying fallback..."]
+
+    def test_a_non_welcome_route_keeps_todays_sentence(self, monkeypatch):
+        verdict, buffered, statuses = self._drive_guard(
+            "https://inference-api.nousresearch.com/v1", monkeypatch
+        )
+
+        expected = "Your Nous account has hit its rate limit; it resets in 10m."
+        assert verdict.action == "return"
+        assert statuses == [f"⏳ {expected}"]
+        assert verdict.result["final_response"].startswith(f"⏳ {expected}\n\n")
+        assert buffered == [f"⏳ {expected} Trying fallback..."]
 
 
 class TestRateGuardStateEncoding:

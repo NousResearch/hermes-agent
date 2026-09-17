@@ -4,8 +4,10 @@ import type { SidebarListRow } from '@/lib/session-date-groups'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  mergeVisibleReorder,
   orderByIds,
   orderRowsWithinGroups,
+  rankSessions,
   reconcileOrderIds,
   reorderableRowIds,
   resolveManualSessionOrderIds,
@@ -50,6 +52,11 @@ describe('orderByIds', () => {
     expect(orderByIds(items, id, ['b', 'a'])).toEqual([{ id: 'fresh' }, { id: 'b' }, { id: 'a' }])
   })
 
+  it('never duplicates an item when the persisted order repeats its id', () => {
+    const items = [{ id: 'a' }, { id: 'b' }]
+    expect(orderByIds(items, id, ['a', 'a', 'b'])).toEqual([{ id: 'a' }, { id: 'b' }])
+  })
+
   it('keeps a newly-loaded older page below the hand-picked order', () => {
     // Callers pass recency-sorted lists, so an unknown id BELOW the ordered
     // ones is an older page that just loaded — hoisting it to the top was
@@ -64,6 +71,23 @@ describe('orderByIds', () => {
   })
 })
 
+describe('rankSessions', () => {
+  const sessions = [{ id: 'newest' }, { id: 'middle' }, { id: 'oldest' }]
+
+  it('leaves the lane alone when the sidebar is on its default sort', () => {
+    expect(rankSessions(sessions)).toBe(sessions)
+    expect(rankSessions(sessions, [])).toBe(sessions)
+  })
+
+  it('applies the active sort key to a lane the flat list never renders', () => {
+    expect(rankSessions(sessions, ['oldest', 'newest', 'middle']).map(s => s.id)).toEqual([
+      'oldest',
+      'newest',
+      'middle'
+    ])
+  })
+})
+
 describe('reconcileOrderIds', () => {
   it('returns empty for no current ids', () => {
     expect(reconcileOrderIds([], ['a'])).toEqual([])
@@ -75,6 +99,10 @@ describe('reconcileOrderIds', () => {
 
   it('puts newly-seen ids ahead of the retained saved order', () => {
     expect(reconcileOrderIds(['fresh', 'a', 'b'], ['b', 'a', 'gone'])).toEqual(['fresh', 'b', 'a'])
+  })
+
+  it('dedupes a corrupted saved order instead of perpetuating it', () => {
+    expect(reconcileOrderIds(['a', 'b'], ['a', 'a', 'b'])).toEqual(['a', 'b'])
   })
 })
 
@@ -142,5 +170,17 @@ describe('reorderableRowIds', () => {
     const rows = [session('a'), session('branch', '├─ '), divider('yesterday'), session('b')]
 
     expect(reorderableRowIds(rows)).toEqual(['a', 'b'])
+  })
+})
+
+describe('mergeVisibleReorder', () => {
+  it('returns the visible order when nothing is hidden', () => {
+    expect(mergeVisibleReorder(['a', 'b', 'c'], ['c', 'a', 'b'])).toEqual(['c', 'a', 'b'])
+  })
+
+  it('keeps hidden ids in their original slots', () => {
+    // 'c' and 'd' sit under a collapsed divider; a drag of the open group
+    // must not forget the ranking that group already had.
+    expect(mergeVisibleReorder(['a', 'b', 'c', 'd'], ['b', 'a'])).toEqual(['b', 'a', 'c', 'd'])
   })
 })

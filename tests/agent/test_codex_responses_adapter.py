@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
+    _classify_responses_issuer,
+    _sanitize_replayed_fn_name,
     _format_responses_error,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
@@ -17,6 +20,61 @@ _HARMONY_SOURCE_SNIPPET = (
     "Need to generate one image according to the description."
     "<|end|><|start|>assistant<|channel|>final<|message|>"
 )
+
+
+def test_chat_content_drops_images_from_assistant_role():
+    content = [
+        {"type": "text", "text": "generated image"},
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/p.png"}},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+
+    assert _chat_content_to_responses_parts(content, role="assistant") == [
+        {"type": "output_text", "text": "generated image"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
+    ]
+
+
+def test_chat_content_keeps_images_on_user_role():
+    content = [{
+        "type": "image_url",
+        "image_url": {"url": "https://example.invalid/p.png", "detail": "high"},
+    }]
+
+    assert _chat_content_to_responses_parts(content, role="user") == [{
+        "type": "input_image",
+        "image_url": "https://example.invalid/p.png",
+        "detail": "high",
+    }]
+
+
+@pytest.mark.parametrize("part_type", ["video_url", "video", "input_video"])
+def test_chat_content_rejects_video_instead_of_sending_text_only(part_type):
+    content = [
+        {"type": part_type, part_type: {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+    with pytest.raises(ValueError, match=f"does not support {part_type} input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
+def test_preflight_rewrites_raw_assistant_images_to_text_markers():
+    raw = [{
+        "role": "assistant",
+        "content": [{
+            "type": "input_image",
+            "image_url": "https://example.invalid/p.png",
+        }],
+    }]
+
+    assert _preflight_codex_input_items(raw) == [{
+        "role": "assistant",
+        "content": [{
+            "type": "output_text",
+            "text": "[Assistant image omitted during replay]",
+        }],
+    }]
 
 
 def _harmony_token(name: str) -> str:
@@ -227,8 +285,6 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.codex_reasoning_items is None
 
 
-
-
 # ---------------------------------------------------------------------------
 # Server-side built-in tool calls (xAI native web_search, code interpreter,
 # etc.) come back as discrete ``*_call`` output items that xAI's
@@ -243,10 +299,6 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Replayed assistant message items with an oversized server-assigned ``id``
 # (Codex issues 400+ char base64 blobs) must never reach the API — the
@@ -259,10 +311,7 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
-
-
-
-
+_FOREIGN_ITEM_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 # The codex app-server overflows the Responses 64-char call_id limit for
@@ -331,8 +380,183 @@ def test_chat_messages_to_responses_input_keeps_short_call_id():
     assert output["call_id"] == "call_abc123"
 
 
+def test_sanitize_replayed_fn_name_valid_passthrough():
+    """Valid names pass through unchanged (identity — cache-prefix safe)."""
+    for name in ("web_search", "exec-command", "a1_B2-c3", "x" * 64):
+        assert _sanitize_replayed_fn_name(name) == name
 
 
+def test_sanitize_replayed_fn_name_coerces_invalid_chars():
+    assert _sanitize_replayed_fn_name("exec.command") == "exec_command"
+    assert _sanitize_replayed_fn_name("run shell cmd") == "run_shell_cmd"
+    assert _sanitize_replayed_fn_name("weird..__name") == "weird_name"
+    assert _sanitize_replayed_fn_name("  tool!  ") == "tool"
+
+
+def test_sanitize_replayed_fn_name_degenerate_inputs():
+    """All-invalid / non-string names degrade to a placeholder, never empty —
+    an empty name would trade the API 400 for a preflight ValueError."""
+    assert _sanitize_replayed_fn_name("") == "fn"
+    assert _sanitize_replayed_fn_name("...") == "fn"
+    assert _sanitize_replayed_fn_name("日本語") == "fn"
+    assert _sanitize_replayed_fn_name(None) == "fn"
+    assert len(_sanitize_replayed_fn_name("a." * 100)) <= 64
+
+
+def test_chat_messages_to_responses_input_sanitizes_replayed_fn_name():
+    """A degenerate tool name stored in history must not brick the replay
+    with a non-retryable 400 (#31666)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "call_abc123",
+                    "function": {"name": "exec.command", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_abc123",
+            "content": "some result",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    call = next(i for i in items if i.get("type") == "function_call")
+    output = next(i for i in items if i.get("type") == "function_call_output")
+    assert call["name"] == "exec_command"
+    # Pairing is by call_id and must survive the rename.
+    assert call["call_id"] == output["call_id"] == "call_abc123"
+
+
+def test_chat_messages_to_responses_input_canonicalizes_fc_only_pair():
+    """A legacy fc_-only stored id must map the paired function_call and
+    function_call_output to the SAME call_id — including the oversized case
+    where both sides clamp to the same surrogate (#49224)."""
+    for fc_id in ("fc_short123", "fc_" + "a" * 64):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": fc_id,
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": fc_id,
+                "content": "some result",
+            },
+        ]
+
+        items = _chat_messages_to_responses_input(messages)
+
+        call = next(i for i in items if i.get("type") == "function_call")
+        output = next(i for i in items if i.get("type") == "function_call_output")
+        assert call["call_id"] == output["call_id"]
+        assert len(call["call_id"]) <= 64
+
+
+def test_chat_messages_to_responses_input_uniquifies_call_id_reused_across_turns():
+    """A stored call_id (e.g. a short-lived id like "terminal:0") can recur
+    on a later, unrelated turn. Replayed verbatim, both function_call items
+    and both function_call_output items would carry the same call_id, and
+    the Responses API rejects the whole request with 400 "Duplicate
+    function_call_output" (#102629). Each occurrence must get a unique
+    call_id, still correctly paired with its own output."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "terminal:0",
+                    "function": {"name": "terminal", "arguments": '{"command":"first"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "terminal:0",
+            "content": "first result",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "terminal:0",
+                    "function": {"name": "terminal", "arguments": '{"command":"second"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "terminal:0",
+            "content": "second result",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    calls = [i for i in items if i.get("type") == "function_call"]
+    outputs = [i for i in items if i.get("type") == "function_call_output"]
+    assert len(calls) == 2
+    assert len(outputs) == 2
+
+    call_ids = [c["call_id"] for c in calls]
+    assert len(set(call_ids)) == 2, "duplicate call_ids would 400 the whole request"
+
+    assert calls[0]["call_id"] == outputs[0]["call_id"]
+    assert calls[1]["call_id"] == outputs[1]["call_id"]
+    assert outputs[0]["output"] == "first result"
+    assert outputs[1]["output"] == "second result"
+
+
+def test_preflight_codex_input_items_sanitizes_replayed_fn_name():
+    """The preflight choke-point also coerces invalid replayed names
+    (covers callers that build input items without the chat converter)."""
+    normalized = _preflight_codex_input_items(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "bad name!",
+                "arguments": "{}",
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ]
+    )
+    call = next(i for i in normalized if i.get("type") == "function_call")
+    assert call["name"] == "bad_name"
+
+
+def test_preflight_codex_api_kwargs_leaves_tool_definition_names_alone():
+    """Live tool schema names must NOT be rewritten — they have to match the
+    dispatch registry exactly. Sanitization is replay-only."""
+    kwargs = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "x",
+            "input": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "my_tool",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+    )
+    assert kwargs["tools"][0]["name"] == "my_tool"
 
 
 def test_preflight_codex_input_items_drops_short_id_for_github_responses():
@@ -354,6 +578,116 @@ def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     assert items[0]["status"] == "in_progress"
     assert items[0]["phase"] == "final_answer"
     assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _FOREIGN_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    codex_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="codex_backend"
+    )
+    xai_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="xai_responses"
+    )
+
+    codex_message = next(item for item in codex_items if item.get("type") == "message")
+    xai_message = next(item for item in xai_items if item.get("type") == "message")
+    assert "id" not in codex_message
+    assert codex_message["phase"] == "final_answer"
+    assert xai_message["id"] == _FOREIGN_ITEM_ID
+
+
+def _reasoning_history(item):
+    return [
+        {"role": "assistant", "content": "done", "codex_reasoning_items": [item]},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_reasoning_replay_requires_matching_issuer_model_on_same_endpoint():
+    # Blobs are sealed to the minting model, not just the endpoint: same endpoint + other model must drop.
+    issuer = "other:https://responses.example.com/v1"
+    normalized, _ = _normalize_codex_response(
+        SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_a", encrypted_content="model-a-blob", summary=[]),
+                SimpleNamespace(
+                    type="message", role="assistant", status="completed", id="msg_a",
+                    content=[SimpleNamespace(type="output_text", text="done")],
+                ),
+            ],
+        ),
+        issuer_kind=issuer, issuer_model="gpt-5.6-sol",
+    )
+    captured = normalized.codex_reasoning_items[0]
+    assert captured["_issuer_model"] == "gpt-5.6-sol"
+
+    same = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    other = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.7-sol"
+    )
+    replayed = [i for i in same if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["model-a-blob"]
+    assert "_issuer_model" not in replayed[0] and "_issuer_kind" not in replayed[0]
+    assert not any(i.get("type") == "reasoning" for i in other)
+
+
+def test_legacy_endpoint_stamped_item_without_model_replays_on_same_issuer():
+    # WHY: native compaction checkpoints and reasoning persisted before model stamping carry only the
+    # endpoint stamp; dropping them would erase every existing session's context once after upgrade.
+    issuer = "other:https://responses.example.com/v1"
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": issuer}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    replayed = [i for i in items if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["legacy-blob"]
+    # A different endpoint stamp still drops.
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="codex_backend", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
+
+
+def test_issuer_kind_is_canonical_across_trailing_slash_and_host_case():
+    # The openai SDK stores ``client.base_url`` with a trailing slash; the aux adapter and the main
+    # transport must agree on one issuer kind or aux calls drop every main-minted blob.
+    canonical = _classify_responses_issuer(base_url="https://h/v1")
+    assert _classify_responses_issuer(base_url="https://h/v1/") == canonical
+    assert _classify_responses_issuer(base_url=" HTTPS://H/v1 ") == canonical
+    assert _classify_responses_issuer(base_url="https://other/v1") != canonical
+
+
+def test_legacy_raw_endpoint_stamp_replays_on_canonical_issuer():
+    # WHY: items persisted before issuer canonicalisation carry the raw ``agent.base_url`` (trailing slash,
+    # host case); they must still replay on the same endpoint instead of being dropped as foreign.
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": "other:https://H/v1/"}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://h/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert [i["encrypted_content"] for i in items if i.get("type") == "reasoning"] == ["legacy-blob"]
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://other/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
@@ -408,8 +742,6 @@ def test_preflight_passes_native_web_search_tool_through():
     assert any(t.get("type") == "function" and t.get("name") == "read_file" for t in tools)
 
 
-
-
 # ---------------------------------------------------------------------------
 # _format_responses_error — adapted from anomalyco/opencode#28757.
 # Provider failures should surface BOTH the code (rate_limit_exceeded /
@@ -419,23 +751,9 @@ def test_preflight_passes_native_web_search_tool_through():
 # ---------------------------------------------------------------------------
 
 
-
-
 def test_format_responses_error_message_only():
     err = {"message": "Upstream model unavailable"}
     assert _format_responses_error(err, "failed") == "Upstream model unavailable"
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_normalize_codex_response_failed_includes_code_in_error():
@@ -459,8 +777,6 @@ def test_normalize_codex_response_failed_includes_code_in_error():
     )
     with pytest.raises(RuntimeError, match=r"^rate_limit_exceeded: Slow down$"):
         _normalize_codex_response(response)
-
-
 
 
 # ---------------------------------------------------------------------------

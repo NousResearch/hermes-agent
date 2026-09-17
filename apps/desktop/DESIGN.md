@@ -63,6 +63,13 @@ one-off at the call site.
 - **Projects own workspace cwd.** Use Sidebar → Projects for local folders and
   worktrees; do not reintroduce a per-session/right-sidebar folder-picker flow.
 
+Profile icons and condensed profile rows offer **Open in new window** and
+**Set as default** in their existing context menus. Opening a profile creates a
+full peer window without switching the source window. The desktop default
+applies at startup and to generic new chats; explicit profile/project actions
+and profile-specific windows keep their own destinations. Changing the default
+does not move existing sessions or replace the active conversation.
+
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
@@ -102,7 +109,11 @@ represented execution rows appear only when explicitly expanded. Empty text
 continuations must not introduce paragraph gaps. Keep inline approvals beside
 the conversation and let genuine content scroll normally; do not inject padding
 or write scroll offsets to pin the decision. Preview this order with delayed
-start and completion events, not pre-created tool rows.
+start and completion events, not pre-created tool rows. Final approval removal
+retires both the painted card and its measured layout footprint; restoring tool
+rows must not insert their full height before the outgoing stack can settle.
+No completion callback may clear the measurement of a newly arrived card.
+Reduced motion settles immediately without retaining empty clearance.
 
 ## Window glass
 
@@ -217,7 +228,8 @@ blurred backdrop.
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows.
+  pill rows. `iconOnly` renders compact icon buttons with label tooltips and
+  accessible names; use `codiconIcon()` for Codicon options.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -327,8 +339,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   queues stay session-owned. Docking restores the individual pane composers.
   In either placement, moving into a chat pane gives its editor typing focus
   immediately and preserves its caret. Layout-only hover events and delayed
-  focus callbacks cannot replace that choice. Movement within the same pane
+  focus callbacks cannot replace that choice, and a live transcript selection
+  is never cleared by focus-follow. Movement within the same pane
   must not flush React; deliberate Tab navigation and clicked controls still work.
+  An inline message edit is a typing target of its own: opening one keeps focus
+  in the edit editor, and neither its mount-time focus nor mouse movement while
+  it is open hands the caret back to the pane composer.
   Active dictation or voice conversation pins the recipient until capture ends,
   keeping the microphone's stop controls and shortcut attached to its owner.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state

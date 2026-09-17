@@ -25,6 +25,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -96,10 +97,12 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
-    # unknown profile refuses without spawning
+    # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
     calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
+    (home / "profiles" / "sessions" / "cron").mkdir(parents=True)
+    for target in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](3, {"profile": target, "message": "x"})
+        assert "error" in err and target in err["error"]["message"]
     assert not calls
 
 

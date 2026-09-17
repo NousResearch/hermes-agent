@@ -63,6 +63,7 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retainGatewayForAgent,
@@ -723,5 +724,81 @@ describe('secondary stalled-dial budget', () => {
 
     expect(reopened).not.toBeNull()
     expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
+  })
+})
+
+describe('cooperative pool retirement (supersedes #104871)', () => {
+  it('a retired scope parks: no reconnect on socket drop and no redial from the wake/focus nudge; an explicit open re-arms it', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    // A bot tile pinned this local child under the registry-local scope; main
+    // pools that child under the bare profile key.
+    await ensureGatewayForAgent('local', 'bot-a')
+    await ensureGatewayForAgent('homelab', 'bot-b')
+    expect(gatewayMocks.instances).toHaveLength(2)
+    const dialsBefore = getConnectionFor.mock.calls.length
+
+    // Main announces the retirement BEFORE it SIGTERMs the child.
+    expect(parkSecondariesForRetiredBackend('bot-a')).toEqual(['conn:local::bot-a'])
+
+    // Then the child exits and the socket drops.
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Neither the recovery nudge (focus / online / wake) nor time redials the
+    // retired scope; the unrelated remote scope is untouched.
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    expect(getConnectionFor.mock.calls.filter(([args]) => args.profile === 'bot-a')).toHaveLength(
+      getConnectionFor.mock.calls.slice(0, dialsBefore).filter(([args]) => args.profile === 'bot-a').length
+    )
+
+    // Ambient hydration and relay/status RPCs must not undo the park either.
+    const { requestGatewayForAgent } = await import('./gateway')
+    const parkedDials = getConnectionFor.mock.calls.length
+    await expect(openGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list')).rejects.toThrow(/retired/i)
+    await expect(retainGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials)
+
+    // Parked ≠ evicted: the entry survives for its tile, and an explicit open
+    // (a click on the bot) is the one thing that re-arms and redials it.
+    const before = getConnectionFor.mock.calls.length
+    await ensureGatewayForAgent('local', 'bot-a')
+    expect(getConnectionFor.mock.calls.length).toBe(before + 1)
+    expect(getConnectionFor.mock.calls.at(-1)?.[0]).toMatchObject({ connectionId: 'local', profile: 'bot-a' })
+
+    // Once re-armed, the nudge treats it like any other scope again.
+    ;(gatewayMocks.instances.at(-1) as unknown as { connectionState: string }).connectionState = 'closed'
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getConnectionFor.mock.calls.length).toBe(before + 2)
+  })
+
+  it('touch pings carry the scope turn lease so main can skip leased residents early', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    const touchBackend = vi.fn(async () => ({ ok: true }))
+
+    installDesktop({ getConnectionFor, touchBackend })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    touchBackend.mockClear()
+
+    touchSecondaryGateways()
+    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
   })
 })

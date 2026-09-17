@@ -2,6 +2,7 @@
 
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -51,28 +52,37 @@ export const PendingApprovalStack: FC = () => {
   const sessionId = useStore(useSessionView().$runtimeId)
   const requests = useStore(useMemo(() => sessionApprovalRequests(sessionId), [sessionId]))
   const total = useStore(useMemo(() => sessionApprovalStackSize(sessionId), [sessionId]))
+  const reduced = useReducedMotion()
 
   return (
-    <section
+    <motion.section
+      animate={{ paddingBlock: requests.length ? 8 : 0 }}
       aria-label={t.assistant.approval.jumpToApproval}
       className={cn(
-        'min-w-0 has-[[data-stack-key]]:py-2',
+        'min-w-0',
         placement === 'floating' ? 'sticky bottom-4 z-10 mt-auto w-full max-w-xl self-center' : 'w-full max-w-xl'
       )}
       data-approval-placement={placement}
       data-approval-stack=""
       data-slot="tool-approval-stack"
+      initial={false}
+      transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
     >
-      {requests.length > 0 && <ApprovalActivity floating={placement === 'floating'} />}
+      <ApprovalActivity floating={placement === 'floating'} visible={requests.length > 0} />
       <ApprovalQueue floating={placement === 'floating'} requests={requests} total={total} />
-    </section>
+    </motion.section>
   )
 }
 
-function ApprovalActivity({ floating }: { floating: boolean }) {
+function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
+  const reduced = useReducedMotion()
 
   const summary = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
     const start = state.thread.messages.findLastIndex(message => message.role === 'user')
 
     const tools = state.thread.messages
@@ -89,6 +99,10 @@ function ApprovalActivity({ floating }: { floating: boolean }) {
   })
 
   const disclosureIds = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
     const start = state.thread.messages.findLastIndex(message => message.role === 'user')
 
     return state.thread.messages
@@ -104,27 +118,40 @@ function ApprovalActivity({ floating }: { floating: boolean }) {
   })
 
   return (
-    <div
-      className={cn('mb-1 min-w-0', floating && 'rounded bg-(--ui-chat-surface-background)')}
-      data-approval-activity=""
-      data-glass-opaque={floating ? '' : undefined}
-      data-tool-summary=""
-    >
-      <ScaffoldRow
-        onToggle={
-          disclosureIds
-            ? () => {
-                for (const id of disclosureIds.split('\n')) {
-                  setToolDisclosureOpen(id, true)
-                }
+    <AnimatePresence initial={false}>
+      {visible && (
+        <motion.div
+          animate={{ height: 'auto', opacity: 1 }}
+          className="overflow-hidden"
+          exit={{ height: 0, opacity: 0 }}
+          initial={{ height: 0, opacity: 0 }}
+          key="activity"
+          transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
+        >
+          <div
+            className={cn('mb-1 min-w-0', floating && 'rounded bg-(--ui-chat-surface-background)')}
+            data-approval-activity=""
+            data-glass-opaque={floating ? '' : undefined}
+            data-tool-summary=""
+          >
+            <ScaffoldRow
+              onToggle={
+                disclosureIds
+                  ? () => {
+                      for (const id of disclosureIds.split('\n')) {
+                        setToolDisclosureOpen(id, true)
+                      }
+                    }
+                  : undefined
               }
-            : undefined
-        }
-        open={false}
-      >
-        <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
-      </ScaffoldRow>
-    </div>
+              open={false}
+            >
+              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
+            </ScaffoldRow>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 

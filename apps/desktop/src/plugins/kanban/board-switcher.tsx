@@ -1,8 +1,6 @@
 /**
- * Titlebar board switcher — the board page projects this into `titleBar.center`
- * (where chat shows the session-title dropdown) via `<Contribute>`, so it
- * exists exactly while the page is mounted — no route sniffing. Same chrome as
- * the session title: quiet label + chevron, menu on click.
+ * Board switcher projected through `titleBar.center` into the workspace
+ * panel's tab-header space while the board page is mounted.
  */
 
 import {
@@ -338,7 +336,7 @@ export function BoardSwitcher() {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button className="h-7 max-w-56 gap-1.5 px-2" size="sm" variant="ghost">
+          <Button className="h-full min-w-0 max-w-full gap-1.5 px-2" size="sm" variant="ghost">
             <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
             {typeof current?.total === 'number' && (
               <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>

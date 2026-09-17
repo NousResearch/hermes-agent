@@ -10,7 +10,7 @@ def test_log_directory_tracks_selected_profile(monkeypatch, tmp_path):
     pytest.importorskip("fastapi")
     from contextlib import contextmanager
     from plugins.groupchat.dashboard.plugin_api import get_settings
-    import hermes_cli.web_server as server
+    import hermes_cli.web_server_profiles as server_profiles
     import hermes_cli.config as config
     import hermes_constants
 
@@ -23,7 +23,7 @@ def test_log_directory_tracks_selected_profile(monkeypatch, tmp_path):
         finally:
             selected.pop()
 
-    monkeypatch.setattr(server, "_config_profile_scope", profile_scope)
+    monkeypatch.setattr(server_profiles, "_config_profile_scope", profile_scope)
     monkeypatch.setattr(config, "read_raw_config", lambda: {})
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path / selected[-1])
     for profile in ("first", "second"):

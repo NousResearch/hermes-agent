@@ -46,7 +46,7 @@ class SettingsUpdate(BaseModel):
 
 @router.get("/settings")
 def get_settings(profile: str | None = None):
-    from hermes_cli.web_server import _config_profile_scope
+    from hermes_cli.web_server_profiles import _config_profile_scope
     from hermes_cli.config import read_raw_config
     with _config_profile_scope(profile):
         from hermes_constants import get_hermes_home
@@ -72,7 +72,8 @@ def get_settings(profile: str | None = None):
 
 @router.put("/settings")
 def put_settings(body: SettingsUpdate, profile: str | None = None):
-    from hermes_cli.web_server import _config_profile_scope, _CONFIG_MUTATION_LOCK
+    from hermes_cli.web_server import _CONFIG_MUTATION_LOCK
+    from hermes_cli.web_server_profiles import _config_profile_scope
     from hermes_cli.config import read_raw_config, save_config
     try:
         settings = validate_settings(body.settings)

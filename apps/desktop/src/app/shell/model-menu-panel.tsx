@@ -2,6 +2,7 @@ import type { ModelOptionsResult } from '@hermes/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useComposerModelRowExtras } from '@/app/chat/composer/contrib'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
@@ -25,6 +26,9 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
   const { activeSessionId, controller } = useModelMenuController(props)
+  // Whoever registered `composer.modelRowExtras` gets to decorate every row
+  // (core registers none, so this is an empty array by default).
+  const rowExtras = useComposerModelRowExtras()
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -81,6 +85,7 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
       ownerConnectionId={ownerConnectionId}
       profile={profile}
       request={requestGateway}
+      rowExtras={rowExtras}
       sessionId={activeSessionId}
     />
   )

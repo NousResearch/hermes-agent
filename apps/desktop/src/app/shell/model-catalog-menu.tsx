@@ -2,7 +2,7 @@ import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -107,11 +107,29 @@ interface ModelCatalogMenuProps {
    *  key on model changes — a surface bound to a session must pass it or its
    *  menu goes stale. Detached surfaces (per-task overrides) omit it. */
   sessionId?: null | string
+  /** Trailing content rendered on EVERY model row — what a
+   *  `composer.modelRowExtras` contribution supplies. Omitted by surfaces with
+   *  no contributor, so their menu renders exactly as before. */
+  rowExtras?: readonly ModelRowExtra[]
 }
 
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+}
+
+/** One model row's identity, handed to every `rowExtras` component so a
+ *  decoration can say something about THAT row (its price, its context size). */
+export interface ModelRowRef {
+  model: string
+  provider: string
+}
+
+/** Trailing content for every model row, owned by whoever contributes it (a
+ *  plugin registering `composer.modelRowExtras`). A component rather than a
+ *  render callback so it may use hooks; return null to decorate nothing. */
+export interface ModelRowExtra {
+  component: ComponentType<ModelRowRef>
 }
 
 /**
@@ -129,6 +147,7 @@ export function ModelCatalogMenu({
   ownerConnectionId,
   profile = 'default',
   request,
+  rowExtras,
   sessionId = null
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
@@ -548,6 +567,19 @@ export function ModelCatalogMenu({
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
+                          {rowExtras?.length
+                            ? rowExtras.map((extra, index) => {
+                                const Extra = extra.component
+
+                                return (
+                                  <Extra
+                                    key={`row-extra-${index}`}
+                                    model={family.id}
+                                    provider={group.provider.slug}
+                                  />
+                                )
+                              })
+                            : null}
                           {loadProgress ? (
                             <span
                               className="ml-auto flex shrink-0 items-center gap-1.5"

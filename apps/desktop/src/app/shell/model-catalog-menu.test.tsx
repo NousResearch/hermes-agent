@@ -14,7 +14,7 @@ import {
 } from '@/store/model-visibility'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
+import { ModelCatalogMenu, type ModelMenuController, type ModelRowExtra, type ModelRowRef } from './model-catalog-menu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -60,7 +60,7 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(props: { rowExtras?: ModelRowExtra[] } = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -77,7 +77,7 @@ function renderMenu() {
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelCatalogMenu controller={controller} />
+          <ModelCatalogMenu controller={controller} {...props} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -205,5 +205,27 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText(/Qwen3\.6 27B/i)).toBeNull()
     expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     expect(screen.queryByText('Local')).toBeNull()
+  })
+
+  // `composer.modelRowExtras`: whoever contributes one decorates EVERY row,
+  // and each decoration is told which row it is on (never the whole catalog).
+  it('renders a contributed row extra on each row, one per row', async () => {
+    const Price = ({ model }: ModelRowRef) => (
+      <span data-testid="row-extra">{model === 'gemini-3.1-pro' ? '$1.25' : '$0.10'}</span>
+    )
+
+    renderMenu({ rowExtras: [{ component: Price }] })
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.getAllByTestId('row-extra')).toHaveLength(2)
+    expect(screen.getByText('$1.25')).toBeTruthy()
+    expect(screen.getByText('$0.10')).toBeTruthy()
+  })
+
+  it('renders bare rows when nothing contributes a row extra', async () => {
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryAllByTestId('row-extra')).toHaveLength(0)
   })
 })

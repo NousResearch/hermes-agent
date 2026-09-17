@@ -27,20 +27,20 @@ logger = logging.getLogger("gateway.run")
 async def _watcher_has_active_loops(runner: object, profile_home) -> bool:
     """Idle gate for the loop wakeup watcher's per-profile scans: True when the profile's
     store holds an ACTIVE ``loop:*`` row — or when the probe can't prove otherwise (fail
-    OPEN: a probe error must never skip a due loop). The scan's SessionDB read goes through
+    OPEN: an unavailable store, a failing read or a corrupt row must never skip a due loop). The scan's SessionDB read goes through
     the runner's executor hop (off the loop thread, #92413); runners without one (bare test
     stand-ins) skip the gate entirely and keep the historical always-enter behavior."""
 
     def _probe() -> bool:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        token = set_hermes_home_override(str(profile_home))
-        try:
-            from hermes_cli.loops import list_active_loops
-            return bool(list_active_loops())
-        except Exception:
+        from gateway.run import _profile_meta_rows
+        from hermes_cli.loops import _META_PREFIX, _parse_state
+
+        rows = _profile_meta_rows(profile_home, _META_PREFIX)
+        if rows is None:
             return True
-        finally:
-            reset_hermes_home_override(token)
+        # ``list_active_loops()`` collapses an unavailable store to ``[]`` (fail CLOSED), so parse
+        # the rows here; a corrupt row is "unknown" and keeps the scan.
+        return any((state := _parse_state(raw)) is None or state.status == "active" for _key, raw in rows)
 
     offload = getattr(runner, "_run_in_executor_with_context", None)
     if not callable(offload):

@@ -1806,6 +1806,20 @@ def _profile_session_db_probe(profile_home: "Path"):
         reset_hermes_home_override(token)
 
 
+def _profile_meta_rows(profile_home: "Path", prefix: str) -> Optional[list]:
+    """``list_meta_prefix(prefix)`` rows from the probe DB, or None when the store is unavailable or
+    the read fails. None means "cannot prove emptiness": every idle gate treats it as work present, so
+    a broken or migrating store can never suppress a heartbeat restore or a due loop (fail OPEN)."""
+    db = _profile_session_db_probe(profile_home)
+    if db is None:
+        return None
+    try:
+        return db.list_meta_prefix(prefix)
+    except Exception:
+        logger.debug("meta probe %r failed for %s", prefix, profile_home, exc_info=True)
+        return None
+
+
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that

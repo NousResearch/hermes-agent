@@ -6,32 +6,32 @@ import logging
 logger = logging.getLogger("gateway.run")
 
 
-def _profile_has_heartbeat_keys(profile_home) -> bool:
-    """Indexed ``heartbeat:*`` probe on one profile's SessionDB — no config/secret parsing.
+def _profile_has_active_heartbeat(profile_home) -> bool:
+    """One profile's SessionDB holds a ``heartbeat:*`` row still ACTIVE — the only rows the sweep can
+    restore (``HeartbeatManager.is_active``). Reads the goals-cached DB only: no config/secret parsing.
+    Fails OPEN: an unavailable store, a failing read or a corrupt row all answer True, so the gate can
+    never suppress a restore the full sweep would have made. ``clear``/``pause`` keep their rows (status
+    ``cleared``/``paused``), so key existence alone would re-enable the sweep forever after first use."""
+    from gateway.run import _profile_meta_rows
+    from hermes_cli.heartbeat import HeartbeatState
 
-    Fails OPEN: a probe error or unavailable DB must not suppress the restore sweep.
-    """
-    from gateway.run import _profile_session_db_probe
-
-    db = _profile_session_db_probe(profile_home)
-    if db is None:
+    rows = _profile_meta_rows(profile_home, "heartbeat:")
+    if rows is None:
         return True
-    try:
-        return bool(db.list_meta_prefix("heartbeat:"))
-    except Exception:
-        logger.debug("heartbeat probe failed for %s; running full sweep", profile_home, exc_info=True)
-        return True
+    for _key, raw in rows:
+        try:
+            if HeartbeatState.from_json(raw).status == "active":
+                return True
+        except Exception:
+            return True
+    return False
 
 
-def _served_profile_homes(runner, default_home):
-    """Homes whose SessionDBs may hold heartbeat state (multiplex set, else just the default)."""
-    try:
-        from hermes_cli.profiles import profiles_to_serve
-        multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
-        homes = [home for _name, home in profiles_to_serve(multiplex)]
-        return homes or [default_home]
-    except Exception:
-        return [default_home]
+def _watched_homes(runner, default_home) -> list:
+    """The gateway home plus every multiplexed secondary the watchers already poll."""
+    from gateway.run import _handoff_watch_scopes
+
+    return [default_home] + [home for _name, home in _handoff_watch_scopes(runner) if home is not None]
 
 
 async def restore_heartbeat_watches(runner) -> None:
@@ -54,7 +54,7 @@ async def restore_heartbeat_watches(runner) -> None:
         home = getattr(store, "_routing_home", None) or get_hermes_home()
         # Cheap gate: with no heartbeat persisted in any served profile there is nothing to
         # restore — skip the per-origin profile-scope re-parse over every routed session.
-        if not any(_profile_has_heartbeat_keys(h) for h in _served_profile_homes(runner, home)):
+        if not any(_profile_has_active_heartbeat(h) for h in _watched_homes(runner, home)):
             return restored
         with _profile_runtime_scope(home):
             entries = store.list_sessions()

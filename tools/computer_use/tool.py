@@ -22,6 +22,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from tools.computer_use.execution_revision import (
+    CAPTURE_DEPS, INPUT_DEPS, ExecutionRevision, ExecutionState, target_mismatch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +72,9 @@ def _reject_unsafe(action: str, args: Dict[str, Any]) -> Optional[str]:
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
-    """Current sticky-target app when it provably differs from *requested_app*: both known and neither a substring
-    of the other ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
-    last_app = getattr(backend, "_last_app", None)
-    current, wanted = (last_app or "").strip().lower(), requested_app.strip().lower()
-    return None if not current or not wanted or wanted in current or current in wanted else last_app
+    """Current sticky-target app when it provably differs from *requested_app* — the ``target_mismatch`` rule
+    read live off the backend (kept for direct callers/tests)."""
+    return target_mismatch(getattr(backend, "_last_app", None), requested_app)
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
@@ -82,6 +83,12 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
+# Per-session backend generation: bumped on every _install_backend, so a revision admitted before a rebind
+# (e.g. a /yolo permission-mode toggle swapping the daemon) no longer validates. Keyed by scoped sid.
+_backend_generations: Dict[str, int] = {}
+# Per-profile ExecutionState registry (Phase 0B of #112734); ground truth comes from _current_revision_facts.
+_revision_lock = threading.Lock()
+_execution_states: Dict[str, ExecutionState] = {}
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -170,6 +177,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     Caller holds ``_backend_lock``."""
     global _backend
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
+    _backend_generations[sid] = _backend_generations.get(sid, 0) + 1  # a rebind invalidates admitted revisions
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -202,6 +210,33 @@ def _scoped_sid(session_id: str) -> str:
     from hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
+
+def _current_revision_facts(sid: str) -> Dict[str, object]:
+    """Ground truth for the provable revision fields. control_epoch stays None until #108914 lands its lease
+    epochs; display identity is only provable where the OS names the display (X11 DISPLAY). Unprovable
+    fields validate open — a revision is never invalidated on a fact the runtime cannot prove."""
+    return {
+        "display_identity": os.environ.get("DISPLAY") if sys.platform == "linux" else None,
+        "backend_generation": _backend_generations.get(sid),
+        "control_epoch": None,  # deferred: populated when #108914 (Bot Screen lease epochs) lands
+    }
+
+def _execution_state(session_id: Optional[str]) -> ExecutionState:
+    """This profile's revision bookkeeper, keyed by scoped sid so multiplexed profiles never share one."""
+    sid = _scoped_sid(session_id or "")
+    with _revision_lock:
+        if (state := _execution_states.get(sid)) is None:
+            state = _execution_states[sid] = ExecutionState(sid, lambda: _current_revision_facts(sid))
+        return state
+
+def _admit_revision(session_id: Optional[str], backend) -> ExecutionRevision:
+    """Snapshot the facts this operation relies on: structural facts from the runtime, target facts from the
+    backend's sticky target (whatever capture()/focus_app() last selected)."""
+    target = getattr(backend, "_last_target", None) or {}
+    return _execution_state(session_id).admit(
+        app=getattr(backend, "_last_app", None) or None,
+        pid=target.get("pid"), window_id=target.get("window_id"),
+    )
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
@@ -252,6 +287,9 @@ def _shutdown_backend_atexit() -> None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backend_generations.clear()  # generations die with the backends they counted
+    with _revision_lock:
+        _execution_states.clear()  # admitted revisions cannot outlive the runtime facts they snapshotted
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -372,13 +410,24 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
+def _guarded_capture(backend, session_id: Optional[str], **capture_kwargs) -> Any:
+    """Capture fence (#112734 §B: publication is a commit boundary): admit the revision the operation relies on,
+    capture, then validate BEFORE the result reaches any sink (persist/spill/aux-vision/model). A stale revision
+    fails closed instead of publishing a frame its assumptions no longer authorize."""
+    state, rev = _execution_state(session_id), _admit_revision(session_id, backend)
+    cap = backend.capture(**capture_kwargs)
+    if not (verdict := state.validate(rev, CAPTURE_DEPS)).ok:
+        return json.dumps({"ok": False, "action": "capture", "code": "revision_invalidated",
+                           "invalidation_reason": verdict.reason,
+                           "error": f"capture discarded: {verdict.describe()} — re-capture and retry."})
+    return _capture_response(cap, session_id=session_id)
+
 def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
-    return _capture_response(backend.capture(mode=mode, app=args.get("app"),
-                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
-                             session_id=session_id)
+    return _guarded_capture(backend, session_id, mode=mode, app=args.get("app"),
+                            **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -433,14 +482,21 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
-    # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
-    # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
-    if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
-            and (mismatch := _input_target_mismatch(backend, requested_app)) is not None):
-        return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
-            f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
-            "— input actions always hit the sticky target from the last capture/focus_app. "
-            f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
+    # app= guard, via the execution revision: input goes to the sticky target from the last capture/focus_app
+    # and the backend drops app= silently — refuse a clear mismatch rather than type into the wrong window while
+    # reporting ok:true. The admitted revision also carries the backend generation, so an input admitted before
+    # a rebind fails closed instead of landing on the new backend's target.
+    if spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip():
+        rev = _admit_revision(session_id, backend)
+        if not (verdict := _execution_state(session_id).validate(rev, INPUT_DEPS)).ok:
+            return json.dumps({"ok": False, "action": action, "code": "revision_invalidated",
+                               "invalidation_reason": verdict.reason,
+                               "error": f"{action} refused: {verdict.describe()} — re-capture and retry."})
+        if (mismatch := target_mismatch(rev.app, requested_app)) is not None:
+            return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
+                f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
+                "— input actions always hit the sticky target from the last capture/focus_app. "
+                f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
     res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
@@ -646,18 +702,23 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
         # app-only recapture can switch targets.
         exact = {k: (getattr(backend, "_last_target", None) or {}).get(k) for k in ("pid", "window_id")}
-        cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
-                                                            else {"app": getattr(backend, "_last_app", None)}))
+        resp = _guarded_capture(backend, session_id, mode=_capture_after_mode(),
+                                **(exact if None not in exact.values()
+                                   else {"app": getattr(backend, "_last_app", None)}))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    payload = _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
         resp["action_result"] = payload
         return resp
-    return json.dumps({**json.loads(resp), **payload})  # text capture: merge the action payload in
+    data = json.loads(resp) if isinstance(resp, str) else dict(resp)
+    if data.get("code") == "revision_invalidated":
+        # The input stood; only its follow-up frame was fenced — keep both visible, the error wins.
+        return json.dumps({**payload, "follow_capture": data})
+    return json.dumps({**data, **payload})  # text capture: merge the action payload in
 
 # ── Cache files (screenshots, element spills, vision temps) ─────────────────
 def _cache_file(subdir: str, legacy: str, name: str, pattern: str = "", cap: int = 0):

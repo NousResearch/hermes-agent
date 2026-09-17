@@ -367,7 +367,7 @@ def _cache_load(service_id: str, digest: str, revision: Optional[str]) -> Option
         return None
     path = directory / f"{_cache_key(digest, revision)}.json"
     try:
-        return json.loads(path.read_text("utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 

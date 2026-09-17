@@ -171,6 +171,28 @@ def:
             - "tests/tools/test_service_health.py"
             - "tests/tools/test_notify_on_complete.py"
             - "tests/tools/test_code_execution.py"
+        - title: "Per-service code knowledge graph (`code.graph`)"
+          description: |
+            The code behind a service, as a graph rather than a file list: `code.graph` runs
+            graphify's deterministic AST extraction over the `source_files` a service declares
+            and maps its relation grammar onto the `{type, class}` edges Portal draws
+            (`imports`/`calls` are flow, `implements`/`inherits`/`contains` are structure).
+            The browse-root allowlist and the size/binary/no-recursion contract are re-enforced
+            here, so a declaration cannot widen what the graph reads. Output is sorted and
+            token-stripped to be byte-stable, then cached under `HERMES_HOME/code_graphs/` keyed
+            by service + content digest + verified revision.
+
+            graphify runs in a subprocess under a timeout: a missing or broken extractor
+            degrades to "unavailable" instead of destabilizing the gateway, which is also why
+            the dependency is an optional `code-graph` extra rather than a core install.
+            `build_cron_graph` only stamps the cheap digest, so drawing the dataflow never pays
+            for a subprocess.
+          globs:
+            - "cron/code_graph.py"
+            - "tools/code_graph_runner.py"
+            - "tests/cron/test_code_graph.py"
+            - "pyproject.toml"
+            - "uv.lock"
     - title: "Living artifacts"
       description: |
         Revisioned models that any writer maintains and clients render live: dataset, model,

@@ -84,6 +84,9 @@ class TestTurnRunner:
                 self.session_prompt_tokens = 0
                 self.session_completion_tokens = 0
 
+            def _conversation_root_id(self):
+                return getattr(self, "session_id", None)
+
             def run_conversation(self, _message, **_kwargs):
                 return {
                     "final_response": "Context length exceeded. Cannot compress further.",

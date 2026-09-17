@@ -19,7 +19,11 @@ def _tool_call(name: str, args: dict, call_id: str) -> SimpleNamespace:
 
 
 def test_image_generate_batch_routes_to_concurrent_executor():
-    agent = SimpleNamespace()
+    agent = SimpleNamespace(
+        session_id="task-image-batch",
+        _conversation_root_id=lambda: "task-image-batch",
+        _tool_guardrails=MagicMock(),
+    )
     agent._execute_tool_calls = run_agent.AIAgent._execute_tool_calls.__get__(agent)
     agent._execute_tool_calls_concurrent = MagicMock()
     agent._execute_tool_calls_sequential = MagicMock()

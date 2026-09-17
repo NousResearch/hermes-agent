@@ -84,6 +84,9 @@ class _PendingVoiceAgent:
         self._interrupt_message = message
         self._interrupted.set()
 
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).messages.append(message)
         if len(type(self).messages) == 1:

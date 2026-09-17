@@ -69,7 +69,10 @@ class PreInterruptAgent:
     def is_interrupted(self) -> bool:
         return self._interrupt_requested
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         self.tool_progress_callback("tool.started", "web_search", "first search", {})
         time.sleep(0.35)  # let the drain loop process
         return {"final_response": "done", "messages": [], "api_calls": 1}
@@ -94,7 +97,10 @@ class InterruptedAgent:
     def is_interrupted(self) -> bool:
         return self._interrupt_requested
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         # Parallel tool batch — in production these come from one LLM
         # response with 5 tool_calls.  All are post-interrupt.
         self.tool_progress_callback("tool.started", "web_search", "cognee hermes", {})
@@ -118,7 +124,10 @@ class PartialTruncationAgent:
     def is_interrupted(self) -> bool:
         return self._interrupt_requested
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         return {
             "final_response": None,
             "messages": [],

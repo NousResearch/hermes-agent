@@ -103,7 +103,10 @@ class StalePrefixAgent:
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.stream_delta_callback:
             self.stream_delta_callback(STREAMED_PREFIX)
         return {
@@ -121,7 +124,10 @@ class CompleteStreamAgent:
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         if self.stream_delta_callback:
             self.stream_delta_callback(FULL_RESPONSE)
         return {

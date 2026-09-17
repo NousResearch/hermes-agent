@@ -318,6 +318,12 @@ def _run_child_iteration(root: Path, index: int, session_count: int) -> dict[str
                 result = registry.wait(worker_id, timeout=5.0)
                 if result is None or result.status != "completed" or result.parent_task_id != task_id:
                     return _child_failure(metadata, started, f"worker result failed for {session_id}")
+                # wait() exposes the durable result before the worker finishes
+                # its journal append. Join that writer before recording the
+                # iteration boundary; the journal lease must not be contested
+                # by this harness's two threads.
+                registry.stop_worker(worker_id)
+                worker = None
                 journal.record(
                     ExecutionEventKind.ACTION,
                     f"soak iteration {index} completed",

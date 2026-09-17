@@ -39,9 +39,12 @@ class _NoopAgent:
         self.context_compressor = None
         self.is_interrupted = False
 
+    def _conversation_root_id(self):
+        return getattr(self, "session_id", None)
+
     def run_conversation(self, user_message, conversation_history=None,
                          task_id=None, persist_user_message=None,
-                         persist_user_timestamp=None):
+                         persist_user_timestamp=None, **kwargs):
         return {
             "final_response": "Hello from the agent.",
             "messages": [],

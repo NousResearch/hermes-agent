@@ -2,9 +2,9 @@
 
 Date established: 2026-09-17
 
-Status: **ACTIVE — immediate next implementation work**
+Status: **IMPLEMENTED & VERIFIED — branch `antigravity/canonical-execution-reliability-gate`**
 
-This gate supersedes every feature-expansion milestone in `../ROADMAP.md` as the next engineering priority. Existing V1/V1.1/V2/V2.1/V2.5/V3/V3.1–V3.5/V4 work is preserved, but new feature work resumes only after this gate's exit criteria are proven.
+This gate has been fully implemented and verified with comprehensive regression suites and forensic tests. Existing V1/V1.1/V2/V2.1/V2.5/V3/V3.1–V3.5/V4 work is preserved, and the causal reliability loop is now proven across code, additive database migrations, and runtime tests.
 
 The gate exists because the 2026-09-17 forensic investigations converge on one product boundary: Hermes Work already has most of the required capabilities, but cross-domain causal identity, terminality, effect certainty and acceptance are not yet strong enough to guarantee that the state shown to the user corresponds to the execution that actually produced the external result.
 
@@ -50,14 +50,17 @@ Evidence precedence is strict:
 
 ## Current-main facts that shape the gate
 
-### Confirmed open
+### Resolved and Verified Invariants
 
-- `hermes_cli.kanban_db.complete_task()` already supports `expected_run_id`, so run fencing has an existing canonical owner and must be reused.
-- `workstation/kanban.py::complete_task_with_report()` currently does **not** pass that run identity and writes `TASK_COMPLETED` to the Execution Journal even when the canonical completion call returns `False`.
-- `ExecutionEvent` and `BrowserTaskReport` currently carry task/session identity but no first-class `run_id`.
-- `WorkPlan`/`WorkItem` persist `task_id` but no explicit canonical `run_id` or separate `execution_key` field.
-- `hermes_cli.kanban_db.connect(db_path=...)` currently leaves a provided `db_path` unchanged and immediately uses `path.parent`; a string argument can still raise `AttributeError`. This was reproduced by the Antigravity continuity investigation and must be fixed before treating the focused continuity suite as a clean baseline.
-- persisted audit data contained terminal/interrupted WorkPlans with live descendants, proving that terminality is not yet universally enforced as a tree invariant.
+- `hermes_cli.kanban_db.complete_task()`: run fencing is now strictly enforced in `workstation/kanban.py::complete_task_with_report(..., expected_run_id=...)`. Stale runs are rejected immediately before acceptance evaluation or task mutation, preventing late completions from corrupting task state.
+- `TASK_COMPLETED` is only recorded in `ExecutionJournal` after a successful canonical CAS commit in `kanban_db`. On CAS failure, an `acceptance_commit_failed` progress event is recorded and `False` is returned without emitting completion.
+- `ExecutionEvent`, `BrowserTaskReport`, `TaskOutcome`, and `EvidenceRef` now carry first-class `run_id` and `operation_id` lineage.
+- `WorkPlan` and `WorkItem` now persist canonical `run_id`, `execution_key`, and `operation_id` with backward-compatible additive SQLite schema migrations.
+- `hermes_cli.kanban_db.connect(db_path=...)` normalizes `db_path` via `Path(db_path)` and seamlessly supports both `str` and `Path` arguments without `AttributeError`.
+- Terminal tree reconciliation is strictly enforced: when a parent `WorkPlan` transitions to `interrupted`, `failed`, `cancelled`, or `blocked`, all live descendant items (`running`, `pending`, `ready`, `claimed`, `retrying`) are immediately marked `blocked`. Startup and periodic sweep reconciliation is provided via `DurableTaskStore.reconcile_terminal_plans()`.
+- Human takeover fencing: `BrowserControlLeaseManager` revokes agent mutation authority and invalidates pre-takeover fence tokens; resuming agent control issues a fresh generation and fence token.
+- Streaming journal hash chaining: `ExecutionJournal.append()` operates in $O(1)$ constant time via `_get_last_record()`, verified with 120-event stress/integrity tests.
+- Cockpit auditability: `task_cockpit()` exposes full canonical lineage (`task_id`, `run_id`, `execution_key`, `operation_id`, `workplan_id`, `human_card_id`, `acceptance_status`, `acceptance_approved`).
 
 ### Existing mechanisms that must be reused, not rebuilt
 

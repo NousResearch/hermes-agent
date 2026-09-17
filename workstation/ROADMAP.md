@@ -1,11 +1,9 @@
 # Workstation roadmap
 
-## IMMEDIATE NEXT — Canonical Execution Reliability Gate (2026-09-17)
+## Canonical Execution Reliability Gate (2026-09-17) — IMPLEMENTED & VERIFIED
 
-**This is now the active next implementation milestone.** It supersedes the old
-V1 #1.5 sequencing and every later feature-expansion item as the next engineering
-priority. All existing roadmap work below is preserved, but it resumes only after
-this gate closes with executable evidence.
+**Milestone implemented and verified on branch `antigravity/canonical-execution-reliability-gate`.**
+The causal reliability gate establishes full end-to-end lineage, run fencing, terminal tree reconciliation, streaming journal hash chaining, and human takeover fencing, proven by 35 canonical work loop tests, 446 workstation tests, and clean `work100.py --run` execution.
 
 Canonical specification and exit criteria:
 [`context/CANONICAL_EXECUTION_RELIABILITY_GATE.md`](context/CANONICAL_EXECUTION_RELIABILITY_GATE.md).

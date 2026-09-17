@@ -2512,3 +2512,34 @@ verified completion, intent authority, live handles vs durable proof, lineage,
 additive migrations and exact pending integrations. Prior descriptions of
 unconditional report completion and automatic critical-event promotion are
 superseded by these fail-closed contracts. The complete program remains active.
+
+## Canonical Execution Reliability Gate — Implementação e Invariantes (2026-09-17)
+
+O milestone canônico de confiabilidade de execução fecha o ciclo causal entre intenção, execução e evidência com as seguintes garantias provadas em código e testes:
+
+1. **Linhagem Causal Completa:**
+   - Todo trabalho mutável transita com quádrupla canônica: `task_id`, `run_id`, `execution_key` e `operation_id`.
+   - `WorkPlan` e `WorkItem` persistem `run_id`, `execution_key` e `operation_id` com migrações SQLite aditivas e compatíveis.
+   - `ExecutionEvent`, `BrowserTaskReport` e `TaskOutcome` propagam a linhagem completa.
+
+2. **Commit Canônico com Fencing de Run:**
+   - `workstation/kanban.py::complete_task_with_report` exige e valida `expected_run_id` via CAS em `tasks.current_run_id`.
+   - Runs obsoletos/abandonados que tentam relatar ou completar pós-takeover/reclaim são rejeitados imediatamente antes de avaliar aceitação ou mutar o estado da tarefa.
+   - O evento `TASK_COMPLETED` só é gravado no `ExecutionJournal` APÓS o commit canônico bem-sucedido na base de dados. Falha de CAS emite `acceptance_commit_failed` e retorna `False`.
+
+3. **Reconciliação de Árvore Terminal:**
+   - Transição de planos pais para estados terminais (`interrupted`, `failed`, `cancelled`, `blocked`) bloqueia em cascata todos os itens filhos ativos (`running`, `pending`, `ready`, `claimed`, `retrying`).
+   - `DurableTaskStore.reconcile_terminal_plans()` executa reconciliação de inicialização e varreduras periódicas.
+
+4. **Fencing em Human Takeover:**
+   - `BrowserControlLeaseManager` gera gerações monotônicas e `fence_token`s únicos.
+   - O takeover humano revoga imediatamente a autoridade residual de mutação do agente (`browser_click`, `browser_type`, `navigate`, `submit`, etc.) e invalida tokens de fence de runs anteriores.
+   - Retomada do agente emite nova geração e novo token de autorização.
+
+5. **Journal Hash Chaining Streaming $O(1)$:**
+   - `ExecutionJournal.append()` utiliza `_get_last_record()` para inspecionar o último registro sem reler o arquivo completo, garantindo tempo constante $O(1)$ mesmo em tarefas longas com mais de 100 eventos.
+   - Teste de stress de 120 eventos comprova ausência de degradação e integridade criptográfica da cadeia.
+
+6. **Auditabilidade Total no Cockpit:**
+   - `task_cockpit()` projeta linhagem canônica ponta a ponta: `task_id`, `run_id`, `execution_key`, `operation_id`, `workplan_id`, `human_card_id`, `acceptance_status` e `acceptance_approved`.
+

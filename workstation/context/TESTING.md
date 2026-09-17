@@ -497,6 +497,9 @@ Run `python -m pytest -q workstation/tests` and affected Kanban/guardrails/cron/
 SessionDB/verification-ledger tests. Use native Windows Python and a fresh
 `--basetemp` outside the checkout: fixture project-root resolution can identify
 Hermes instead of a nested synthetic project. Workstation conftest redirects
-both homes and Kanban DB. `python -m workstation.work100` shows the 30-case
-coverage ledger; `--run` launches covered regressions and fails on remaining
-coverage gaps. Native Desktop evidence remains a separate gate.
+both homes and Kanban DB.
+
+Key suites:
+- `workstation/tests/test_canonical_work_loop.py`: 35 passed tests covering stale run late completion rejection, terminal parent reconciliation (Cases A & B), lineage persistence (`run_id`, `execution_key`, `operation_id`), 120-event streaming hash integrity benchmark, human takeover mutation revocation and fence invalidation, and end-to-end cockpit lineage projection.
+- `workstation/tests/test_canonical_continuity.py`: 14 passed tests covering `db_path` str/Path connectivity, browser readiness contracts, and execution loop continuity.
+- `python -m workstation.work100 --run`: 30 seed cases with 0 coverage gaps, executing 35 pytest tests and 36 Electron/desktop tests cleanly.

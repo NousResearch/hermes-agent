@@ -21,25 +21,17 @@ evidence -> canonical commit -> projection.
 The audit changes the interpretation of the existing implementation without
 invalidating the many mechanisms that are already useful.
 
-### Confirmed current-code gaps
+### Resolved and Verified Invariants (Canonical Execution Reliability Gate)
 
-- Canonical Kanban already exposes `task_runs`, `tasks.current_run_id` and
-  `complete_task(..., expected_run_id=...)`; that is the existing Run authority
-  and must be reused.
-- `workstation/kanban.py::complete_task_with_report()` currently calls canonical
-  completion **without** `expected_run_id`, so a Workstation completion path does
-  not consume the Run fencing already implemented by Kanban.
-- The same method writes `TASK_COMPLETED` to the Execution Journal after the call
-  regardless of whether the canonical completion returned `False`. Journal and
-  canonical Task lifecycle can therefore contradict each other.
-- `ExecutionEvent` and `BrowserTaskReport` carry Task/session identity but do not
-  carry first-class `run_id`.
-- `WorkPlan` / `WorkItem` persist `task_id` but do not persist an explicit
-  canonical `run_id`; the deterministic `work_<hash>` plan identity needs to be
-  treated as an `execution_key`, not as substitute Task identity.
-- Persisted audit data contained terminal/interrupted WorkPlans with live
-  descendants, proving that terminality is not yet universally enforced as a
-  tree invariant.
+- **Run Fencing Enforcement:** `workstation/kanban.py::complete_task_with_report()` now requires and enforces `expected_run_id` CAS checks against `tasks.current_run_id`. Stale runs are rejected immediately before acceptance evaluation or mutation, preventing concurrency violations and state corruption.
+- **Canonical Commit Before Journal:** `TASK_COMPLETED` is only recorded in `ExecutionJournal` after the canonical completion commit succeeds in SQLite. On CAS failure, an `acceptance_commit_failed` event is recorded and `False` is returned.
+- **Canonical Lineage:** `ExecutionEvent`, `BrowserTaskReport`, `TaskOutcome`, and `EvidenceRef` carry first-class `run_id` and `operation_id`.
+- **Plan Lineage & Execution Key:** `WorkPlan` and `WorkItem` persist canonical `run_id`, separate `execution_key`, and `operation_id` via additive schema migrations.
+- **Database Connection Portability:** `hermes_cli.kanban_db.connect(db_path=...)` normalizes `Path(db_path)` supporting both `str` and `Path`.
+- **Terminal Tree Consistency:** `DurableTaskStore.update_plan_state` cascades terminal parent states (`interrupted`, `failed`, `cancelled`, `blocked`) to mark all live descendant items as `blocked`. `reconcile_terminal_plans()` provides startup and periodic reconciliation sweeps.
+- **Human Takeover & Fencing:** `BrowserControlLeaseManager` generates monotonic lease generations and `fence_token`s. Takeover revokes agent mutation authority (`browser_click`, `browser_type`, `navigate`, `submit`, etc.), and rejects stale fence tokens from previous runs.
+- **Constant-Time Journal Chaining:** `ExecutionJournal.append()` operates in $O(1)$ constant time via `_get_last_record()` without parsing entire files, verified by a 120-event streaming benchmark.
+- **Cockpit Auditability:** `task_cockpit()` exposes full canonical lineage (`run_id`, `execution_key`, `operation_id`, `workplan_id`, `human_card_id`, `acceptance_status`, `acceptance_approved`).
 
 ### Existing mechanisms that must be reused, not rebuilt
 

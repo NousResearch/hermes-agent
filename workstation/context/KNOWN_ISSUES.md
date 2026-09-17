@@ -237,10 +237,20 @@ The native smoke proved same-page identity across hide/show and park/show, expli
 
 When an issue is fixed, move it to the resolved section with the validated behavior and test/evidence boundary. Do not delete the historical symptom if it documents a regression class that future tests protect.
 
-## Canonical Work Loop program gaps (2026-09-17)
+## Canonical Work Loop Reliability Gaps — RESOLVED (2026-09-17)
 
-The safety contract implementation is not the full program. Work100 explicitly
-tracks five uncovered scenarios; ingress/publisher parity, internal event-wait
-adoption, browser observation/handoff, full lineage and Desktop cockpit wiring
-remain. See [implementation evidence](CANONICAL_WORK_LOOP.md). Do not classify
-these as PASS from Python projection tests.
+The canonical execution reliability gate resolved and verified the identified causal gaps:
+
+### KI-007 — Stale run late completion could corrupt task state [RESOLVED]
+**Resolved behavior:** `workstation/kanban.py::complete_task_with_report` enforces `expected_run_id` CAS checks. Stale runs from superseded attempts are rejected immediately before acceptance evaluation or mutation, and late reports cannot mutate canonical task state. Covered by `test_stale_run_late_completion_rejected`.
+
+### KI-008 — Terminal parents left live descendants [RESOLVED]
+**Resolved behavior:** `DurableTaskStore.update_plan_state` cascades terminal states (`interrupted`, `failed`, `cancelled`, `blocked`) to mark all live descendant items as `blocked`. Startup and periodic reconciliation is provided by `reconcile_terminal_plans()`. Covered by `test_terminal_parent_reconciliation_cases_a_and_b`.
+
+### KI-009 — Missing canonical lineage across WorkPlans and reports [RESOLVED]
+**Resolved behavior:** Canonical lineage fields (`run_id`, `execution_key`, `operation_id`) are now first-class on `WorkPlan`, `WorkItem`, `ExecutionEvent`, `BrowserTaskReport`, and `TaskOutcome`, with backward-compatible SQLite migrations. Exposed via `task_cockpit()`. Covered by `test_workplan_persists_canonical_lineage_run_and_execution_key` and `test_task_cockpit_exposes_canonical_lineage`.
+
+### KI-010 — O(N^2) ExecutionJournal append scaling degradation [RESOLVED]
+**Resolved behavior:** `ExecutionJournal.append()` utilizes `_get_last_record()` to achieve $O(1)$ streaming hash chaining without parsing the full journal file on each append. Verified under 120-event stress test in `test_journal_100_events_streaming_hash_integrity`.
+
+All 30 seed cases in `work100.py` pass with 0 coverage gaps, and all 446 workstation tests pass green.

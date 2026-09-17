@@ -55,6 +55,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   const [data, setData] = useState<TerminalBackendsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -73,18 +74,24 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   }, [refresh])
 
   async function handleSelect(backend: TerminalBackendInfo) {
-    if (backend.active || selecting) {
+    if (backend.active || selecting || confirming) {
       return
     }
 
     if (backend.status === 'needs_setup') {
-      const proceed = await confirm({
-        title: copy.needsSetupConfirmTitle(backend.label),
-        description: backend.detail
-          ? copy.needsSetupConfirmDescription(backend.detail)
-          : copy.needsSetupConfirmDescriptionGeneric,
-        confirmLabel: copy.needsSetupConfirmAction
-      })
+      setConfirming(backend.name)
+      let proceed: boolean
+      try {
+        proceed = await confirm({
+          title: copy.needsSetupConfirmTitle(backend.label),
+          description: backend.detail
+            ? copy.needsSetupConfirmDescription(backend.detail)
+            : copy.needsSetupConfirmDescriptionGeneric,
+          confirmLabel: copy.needsSetupConfirmAction
+        })
+      } finally {
+        setConfirming(null)
+      }
 
       if (!proceed) {
         return
@@ -146,7 +153,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
                 ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
                 : 'border-transparent bg-background/55 hover:bg-accent/40'
             )}
-            disabled={selecting !== null}
+            disabled={selecting !== null || confirming !== null}
             key={backend.name}
             onClick={() => void handleSelect(backend)}
             type="button"

@@ -1479,7 +1479,7 @@ export const zhHant = defineLocale({
         selectedTitle: '已選擇後端',
         selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
         failedSelect: backend => `選擇 ${backend} 失敗`,
-        needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。',
+        needsSetupHint: '此後端已選取但尚未完成設定——在設定完成前命令將會失敗。',
         needsSetupConfirmTitle: backend => `仍要選擇 ${backend} 嗎？`,
         needsSetupConfirmDescription: detail => `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
         needsSetupConfirmDescriptionGeneric: '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deferred } from '@/test/deferred'
@@ -136,15 +136,46 @@ describe('TerminalBackendPanel', () => {
     expect(screen.getByText(/Docker daemon not reachable/)).toBeTruthy()
   })
 
+  it('does not stack a second confirm dialog on a double click while one is pending', async () => {
+    const confirmGate = deferred<boolean>()
+    confirmMock.mockReturnValue(confirmGate.promise)
+    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
+
+    const dockerButton = await screen.findByRole('button', { name: /Docker/ })
+    fireEvent.click(dockerButton)
+    fireEvent.click(dockerButton)
+    fireEvent.click(dockerButton)
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      confirmGate.resolve(true)
+      await confirmGate.promise
+    })
+
+    // Only one selection is ever issued, matching the single confirm call.
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledTimes(1))
+  })
+
   it('does not select a needs_setup backend when the confirm dialog is declined', async () => {
-    confirmMock.mockResolvedValue(false)
+    const confirmGate = deferred<boolean>()
+    confirmMock.mockReturnValue(confirmGate.promise)
     const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
 
     await waitFor(() => expect(confirmMock).toHaveBeenCalled())
-    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Resolve inside act() and await the same promise handleSelect is
+    // awaiting, so its post-await early return has actually run (no
+    // arbitrary-duration sleep — deterministic on the real microtask queue).
+    await act(async () => {
+      confirmGate.resolve(false)
+      await confirmGate.promise
+    })
+
     expect(selectTerminalBackend).not.toHaveBeenCalled()
   })
 
@@ -154,7 +185,10 @@ describe('TerminalBackendPanel', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Local/ }))
 
-    await new Promise(resolve => setTimeout(resolve, 50))
+    // Local is already active: handleSelect's guard clause returns before
+    // calling confirm() or selectTerminalBackend() at all, so there is no
+    // async boundary to wait on — assert immediately instead of sleeping.
+    expect(confirmMock).not.toHaveBeenCalled()
     expect(selectTerminalBackend).not.toHaveBeenCalled()
   })
 })

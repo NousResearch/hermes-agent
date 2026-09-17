@@ -1862,7 +1862,7 @@ export const zh = defineLocale({
         selectedTitle: '已选择后端',
         selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
         failedSelect: backend => `选择 ${backend} 失败`,
-        needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。',
+        needsSetupHint: '此后端已选中但尚未完成设置——在设置完成前命令将会失败。',
         needsSetupConfirmTitle: backend => `仍要选择 ${backend} 吗？`,
         needsSetupConfirmDescription: detail => `${detail} 此更改生效后启动的会话在设置完成前将没有终端或文件工具。`,
         needsSetupConfirmDescriptionGeneric: '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',

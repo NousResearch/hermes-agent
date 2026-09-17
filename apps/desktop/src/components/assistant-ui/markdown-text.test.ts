@@ -390,4 +390,11 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('\\sqrt[3]{8}')
   })
+
+  it('does not corrupt markdown links whose label is a full URL', () => {
+    const input = 'Open [https://clickpesa.paymentrequired.com/](https://clickpesa.paymentrequired.com/) in browser'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe('Open [https://clickpesa.paymentrequired.com/](https://clickpesa.paymentrequired.com/) in browser')
+  })
 })

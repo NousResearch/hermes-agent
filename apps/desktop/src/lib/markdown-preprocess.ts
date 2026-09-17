@@ -44,7 +44,7 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 // likewise strips trailing emphasis/punctuation — so dropping it here is safe
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
-const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+const RAW_URL_RE = /https?:\/\/[^\s<>"'`*()\[\]]+[^\s<>"'`*()\[\].,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
@@ -166,6 +166,10 @@ function autoLinkRawUrls(text: string): string {
     const beforePrevious = text[index - 2] || ''
 
     if (previous === '<' || (beforePrevious === ']' && previous === '(')) {
+      return url
+    }
+
+    if (previous === '[' && text.slice(index + url.length, index + url.length + 2) === '](') {
       return url
     }
 

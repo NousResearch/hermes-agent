@@ -240,3 +240,17 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     assert slugs.count("kimi-coding") == 1
     assert "kimi" not in slugs          # alias collapsed into the canonical row
     assert "kimi-coding-cn" in slugs    # distinct China endpoint preserved
+
+
+def test_cap_models_keeps_allowlisted_aggregator_catalogs_intact():
+    """Aggregators in _UNCAPPED_PICKER_PROVIDERS must never be truncated by max_models.
+
+    CommandCode (plugins/model-providers/commandcode/) serves a large combined
+    catalog via /v1/models — truncating it at max_models hides most of the
+    picker's rows (#108771). Non-allowlisted providers stay capped (control).
+    """
+    from hermes_cli.model_switch_providers import _cap_models
+
+    models = [f"m{i}" for i in range(69)]
+    assert _cap_models(models, 50, "commandcode") == models
+    assert _cap_models(models, 50, "plain-provider") == models[:50]

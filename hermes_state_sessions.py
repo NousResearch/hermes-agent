@@ -1290,10 +1290,7 @@ class SessionSessionsMixin:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
             pinned_query = f"""
-                {select_head}COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
                 ORDER BY s.started_at DESC

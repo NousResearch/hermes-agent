@@ -3164,9 +3164,19 @@ def request_review(
 
     Implementer and reviewer are recorded on the event so requested changes
     route back to the right profile; ``reviewer`` reassigns the task, and on
-    re-review defaults to the latest ``changes_requested`` provenance. A live
-    claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    re-review defaults to the latest ``changes_requested`` provenance. On a
+    genuine FIRST review with no ``reviewer=`` given, falls back to
+    ``kanban.default_reviewer`` when configured; when that is also
+    unset/unresolvable, refuses rather than silently leaving the row
+    self-assigned (assignee == implementer) for the review-lane dispatcher
+    to hand back to its own author. A live claim is only cleared with proof
+    of ownership (``expected_run_id``) or ``force=True``. Returns ``bool``,
+    or ``(ok, reason)`` with ``with_reason``.
+
+    Not a *block*: even a refusal here never touches ``block_recurrences`` /
+    ``block_kind`` or routes through ``kanban_block`` — repeated review
+    requests on the same task (review -> rerun -> review) still never
+    escalate to triage.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3223,19 +3233,24 @@ def request_review(
                     # First review, no reviewer named: fall back to the
                     # operator-configured kanban.default_reviewer so the row
                     # doesn't land in the review lane self-assigned (assignee
-                    # stays == implementer). Purely additive — when unset
-                    # (the common case; every pre-existing caller relies on
-                    # this), behavior is unchanged from before this guard:
-                    # reviewer stays None and assignee is left as the
-                    # implementer. request_review has never blocked here and
-                    # must keep not blocking (see module docstring: "NOT a
-                    # blocker"); the review-lane dispatcher's
-                    # check_respawn_guard is the actual enforcement point for
-                    # a row that ends up self-assigned — it withholds the
-                    # respawn (reason="self_review") instead of handing the
-                    # card back to its own author, visibly, without ever
-                    # failing this handoff.
+                    # would otherwise stay == implementer — nothing else sets
+                    # it between the claim and this call). When that is also
+                    # unset/unresolvable, refuse outright rather than silently
+                    # leaving the card self-assigned: a refused transition is
+                    # an immediate, actionable error at the call site (the
+                    # tool handler's `_check(ok, ...)` surfaces it to the
+                    # model; the CLI's `_cmd_request_review` prints it and
+                    # returns non-zero) instead of a card that dispatches
+                    # clean and gates nothing.
                     reviewer = _resolve_default_reviewer()
+                    if reviewer is None:
+                        return _ret(
+                            False, "no reviewer: this is a first review with no "
+                            "reviewer= given, and kanban.default_reviewer is "
+                            "unset (or names no installed profile) — pass "
+                            "reviewer= explicitly or configure "
+                            "kanban.default_reviewer",
+                        )
             reviewer = _canonical_assignee(reviewer)
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"

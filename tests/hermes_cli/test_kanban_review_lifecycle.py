@@ -146,9 +146,16 @@ def test_repeated_review_requests_never_triage(kanban_home: Path) -> None:
                 assert claimed is not None
 
             run_id = kb.get_task(conn, tid).current_run_id
+            # reviewer="reviewer" throughout: distinct from implementer
+            # "worker" so this cycle test isn't itself a self-review setup
+            # (see test_kanban_review_self_review_guard.py) — passing it on
+            # every pass is harmless, request_review honors an explicit
+            # reviewer= even on a re-review where _prior_reviewer would
+            # otherwise apply.
             ok = kb.request_review(
                 conn, tid,
                 summary="pass complete",
+                reviewer="reviewer",
                 expected_run_id=run_id,
             )
             assert ok is True
@@ -219,8 +226,15 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         assert kb.request_review(conn, tid) is False
 
         # 2) Worker path: proving ownership via expected_run_id works.
+        # reviewer= is explicit here because this test is pinned on the
+        # live-claim/CAS-guard behavior, not reviewer resolution (which has
+        # its own coverage in test_kanban_review_self_review_guard.py) — an
+        # omitted reviewer= on a first review with no default_reviewer
+        # configured now refuses (see request_review's docstring), which
+        # would fail this assertion for an unrelated reason.
         assert kb.request_review(
-            conn, tid, summary="done", expected_run_id=claimed.current_run_id,
+            conn, tid, summary="done", reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
         ) is True
         assert kb.get_task(conn, tid).status == "review"
 
@@ -228,7 +242,9 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
     with kbc.connect() as conn:
         tid2 = kb.create_task(conn, title="forced", assignee="worker")
         assert kb.claim_task(conn, tid2) is not None
-        assert kb.request_review(conn, tid2, summary="override", force=True) is True
+        assert kb.request_review(
+            conn, tid2, summary="override", reviewer="reviewer", force=True,
+        ) is True
         assert kb.get_task(conn, tid2).status == "review"
 
 
@@ -292,7 +308,9 @@ def test_request_review_whitespace_only_summary_does_not_crash(
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
 
-        ok = kb.request_review(conn, tid, summary=blank, expected_run_id=run_id)
+        ok = kb.request_review(
+            conn, tid, summary=blank, reviewer="reviewer", expected_run_id=run_id,
+        )
         assert ok is True
         assert kb.get_task(conn, tid).status == "review"
 
@@ -315,7 +333,7 @@ def test_complete_task_closes_review_to_done(kanban_home: Path) -> None:
         tid = kb.create_task(conn, title="approve me", assignee="worker")
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="ready",
+            conn, tid, summary="ready", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -351,7 +369,7 @@ def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None
         )
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="please review",
+            conn, tid, summary="please review", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
 
@@ -707,10 +725,16 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         )
         implementation = kb.claim_task(conn, task_id)
         assert implementation is not None
+        # reviewer= explicit (and distinct from the "reviewer" assignee
+        # label): a first request_review with no reviewer= and no
+        # kanban.default_reviewer configured now refuses (see
+        # request_review's docstring) — this test is about skill
+        # propagation through dispatch, not reviewer resolution.
         assert kb.request_review(
             conn,
             task_id,
             summary="ready",
+            reviewer="reviewer2",
             expected_run_id=implementation.current_run_id,
         )
         monkeypatch.setattr(
@@ -852,7 +876,7 @@ def test_review_cycle_end_to_end(kanban_home: Path) -> None:
         # Pass 1: implement -> review.
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="v1",
+            conn, tid, summary="v1", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -862,7 +886,7 @@ def test_review_cycle_end_to_end(kanban_home: Path) -> None:
         assert kb.get_task(conn, tid).status == "ready"
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="v2",
+            conn, tid, summary="v2", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -889,7 +913,9 @@ def test_request_review_on_unclaimed_ready_synthesizes_run(kanban_home: Path) ->
         assert kb.get_task(conn, tid).status == "ready"
         assert kb.get_task(conn, tid).current_run_id is None
 
-        ok = kb.request_review(conn, tid, summary="done without a claim")
+        ok = kb.request_review(
+            conn, tid, summary="done without a claim", reviewer="reviewer",
+        )
         assert ok is True
         assert kb.get_task(conn, tid).status == "review"
 

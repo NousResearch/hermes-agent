@@ -686,7 +686,7 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
         run_id = kb.get_task(conn, t).current_run_id
         assert run_id is not None
         assert kb.request_review(
-            conn, t, summary="ready for review",
+            conn, t, summary="ready for review", reviewer="reviewer",
             metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
         assert kb.complete_task(conn, t, summary="approved")
@@ -712,7 +712,10 @@ def test_request_review_rollback_discards_staged_copies(kanban_home):
         artifact.write_bytes(b"{}")
         kb.claim_task(conn, t)
         run_id = kb.get_task(conn, t).current_run_id
-        kwargs = dict(summary="ready", metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
+        kwargs = dict(
+            summary="ready", reviewer="reviewer",
+            metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id,
+        )
 
         def _boom(*_a, **_k):
             raise RuntimeError("run bookkeeping failed")

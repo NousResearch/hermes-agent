@@ -2,20 +2,24 @@
 
 Two cooperating pieces:
 
-* ``request_review``'s first-review path best-effort routes to the
-  operator-configured ``kanban.default_reviewer`` when no explicit
-  ``reviewer=`` is given, so the row doesn't land in the review lane
-  self-assigned in the first place. This is additive and never refuses —
-  ``request_review`` is documented as NOT a blocker (see
-  test_kanban_review_lifecycle.py) and every existing caller that omits
-  ``reviewer=`` on a first review must keep working unchanged when
-  ``default_reviewer`` is unset (the shipped default).
-* ``check_respawn_guard`` is the actual enforcement point: a review-lane row
+* ``request_review``'s first-review path resolves a reviewer in order:
+  explicit ``reviewer=``, then the operator-configured
+  ``kanban.default_reviewer`` (only when it names a real, live profile).
+  When BOTH are unavailable, it refuses the transition outright (``ok=False``
+  with a reason) rather than writing a review row whose assignee still
+  equals the implementer — this is the primary enforcement point for the
+  common case. It never refuses a re-review: ``_prior_reviewer`` (the
+  reviewer recorded on the latest ``changes_requested`` event) always takes
+  precedence and is trusted even if it happens to equal the implementer
+  (e.g. a lone worker approving its own follow-up on a single-operator
+  board is a deliberate, existing capability this change does not touch).
+* ``check_respawn_guard`` is the dispatch-time backstop: a review-lane row
   whose ``assignee`` still equals the implementer recorded on the latest
   ``review_requested`` event is withheld from dispatch with
-  reason="self_review" — whether it got that way because default_reviewer
-  is unset/unresolvable, or because of a hand-edit (CLI reassign, direct DB
-  write, an older Hermes version) that points assignee back at the author.
+  reason="self_review" regardless of how it got that way — an explicit
+  ``reviewer=`` naming the implementer itself, or a later hand-edit (CLI
+  reassign, direct DB write, an older Hermes version) that points assignee
+  back at the author after a valid request_review call already succeeded.
 """
 from __future__ import annotations
 
@@ -48,20 +52,23 @@ def _fake_spawn(*_args, **_kwargs):
 # ---------------------------------------------------------------------------
 
 
-def test_self_assigned_review_row_is_guarded(kanban_home: Path) -> None:
-    """No reviewer=, no default_reviewer configured: assignee stays == the
-    implementer (existing, unchanged first-review behavior) — the dispatcher
-    must not hand the card back to its own author."""
+def test_self_assigned_review_row_is_guarded(
+    kanban_home: Path, all_assignees_spawnable,
+) -> None:
+    """With an explicit reviewer= naming the implementer itself (the only
+    way to get assignee == implementer onto a review row now that a first
+    review with no reviewer/default_reviewer refuses outright), the
+    dispatcher must not hand the card back to its own author."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="solo", assignee="worker")
         kb.claim_task(conn, tid)
         assert kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, summary="done", reviewer="worker",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         task = kb.get_task(conn, tid)
         assert task.status == "review"
-        assert task.assignee == "worker"  # unchanged: no fallback configured
+        assert task.assignee == "worker"
 
         assert kbd.check_respawn_guard(conn, tid, lane="review") == "self_review"
 
@@ -128,7 +135,7 @@ def test_dispatch_withholds_self_assigned_review_row(
         tid = kb.create_task(conn, title="solo", assignee="worker")
         kb.claim_task(conn, tid)
         assert kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, summary="done", reviewer="worker",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
@@ -199,38 +206,48 @@ def test_default_reviewer_naming_nonexistent_profile_is_ignored(
     kanban_home: Path,
 ) -> None:
     """default_reviewer naming a profile that doesn't exist on this host is
-    treated the same as unset — never written to the row — so the guard
-    (not a broken assignment) is what catches the self-review case."""
+    treated the same as unset: request_review refuses the first review
+    rather than writing a self-assigned row (see _resolve_default_reviewer's
+    docstring — it's the last resort before refusing outright, and a ghost
+    name doesn't count as a resort)."""
     (kanban_home / "config.yaml").write_text(
         "kanban:\n  default_reviewer: ghost-profile\n", encoding="utf-8",
     )
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ghost fallback", assignee="worker")
         kb.claim_task(conn, tid)
-        assert kb.request_review(
-            conn, tid, summary="done",
-            expected_run_id=kb.get_task(conn, tid).current_run_id,
-        )
-        task = kb.get_task(conn, tid)
-        assert task.assignee == "worker"
-        assert kbd.check_respawn_guard(conn, tid, lane="review") == "self_review"
-
-
-def test_default_reviewer_unset_matches_prior_behavior(kanban_home: Path) -> None:
-    """No config key at all: identical to the pre-guard contract — reviewer
-    stays None, assignee is left as the implementer. Only the (separate)
-    dispatch-time guard changes behavior, never this handoff."""
-    with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="baseline", assignee="worker")
-        kb.claim_task(conn, tid)
-        ok, reviewer_ish = kb.request_review(
+        ok, reason = kb.request_review(
             conn, tid, summary="done",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
             with_reason=True,
         )
-        assert ok is True
-        assert reviewer_ish is None
-        assert kb.get_task(conn, tid).assignee == "worker"
+        assert ok is False
+        assert reason is not None and "reviewer" in reason.lower()
+        # Refused: the task stays running/claimed, never landed self-assigned
+        # in the review lane for the dispatch guard to catch after the fact.
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.assignee == "worker"
+
+
+def test_default_reviewer_unset_matches_prior_behavior(kanban_home: Path) -> None:
+    """No config key at all, no explicit reviewer=: refused. This is the
+    documented contract now (see request_review's docstring) — a first
+    review with no way to resolve a reviewer must not land a self-assigned
+    row in the review lane at all."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="baseline", assignee="worker")
+        kb.claim_task(conn, tid)
+        ok, reason = kb.request_review(
+            conn, tid, summary="done",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+            with_reason=True,
+        )
+        assert ok is False
+        assert reason is not None
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.assignee == "worker"
 
 
 # ---------------------------------------------------------------------------

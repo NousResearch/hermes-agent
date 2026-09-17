@@ -1428,18 +1428,19 @@ def check_respawn_guard(
     # completed run and a fresh PR URL are the canonical *inputs* to a review
     # handoff, not duplicate-work signals. But the review lane gets its OWN
     # check no ready row needs: assignee must not be the implementer who
-    # requested the review. request_review()'s first-review path best-effort
-    # routes to kanban.default_reviewer when set (never refuses — see its
-    # docstring: "NOT a blocker"), so a row still lands here self-assigned
-    # whenever that config is unset (the common default) or names no live
-    # profile, plus any row hand-edited (CLI reassign, direct DB write, an
-    # older Hermes version) to point assignee back at the implementer. This
-    # is the actual enforcement point, not a backstop for one. Both sides are
-    # raw ``tasks.assignee`` column values — already canonical (every write
-    # path normalizes via _canonical_assignee before persisting) — so a plain
-    # string compare is enough; no need to re-normalize (and risk a stray
-    # ValueError on a value that predates a tightened profile-name rule) in
-    # this per-row dispatch hot path.
+    # requested the review. request_review()'s first-review path now refuses
+    # outright when no reviewer resolves (no explicit reviewer= and
+    # kanban.default_reviewer is unset/unresolvable) — see its docstring —
+    # so in the common case a self-assigned review row should never be
+    # written in the first place. This check is the backstop for what that
+    # refusal cannot catch: any row hand-edited AFTER a valid request_review
+    # call (CLI reassign, direct DB write, an older Hermes version) to point
+    # assignee back at the implementer. Both sides are raw ``tasks.assignee``
+    # column values — already canonical (every write path normalizes via
+    # _canonical_assignee before persisting) — so a plain string compare is
+    # enough; no need to re-normalize (and risk a stray ValueError on a value
+    # that predates a tightened profile-name rule) in this per-row dispatch
+    # hot path.
     if lane == "review":
         implementer = _kb._nonblank_str(
             _kb._json_dict(_kb._row_get(_kb._latest_event(conn, task_id, "review_requested"), "payload")).get(

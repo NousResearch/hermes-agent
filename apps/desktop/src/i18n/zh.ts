@@ -1962,6 +1962,8 @@ export const zh = defineLocale({
         '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
       desktopHalfPending: '复制中…',
       desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
+      desktopHalfRemote: '不可用（远程后端）',
+      desktopHalfRemoteTip: '此包的桌面部分安装在远程后端的磁盘上。应用只能从本机运行的后端复制桌面部分。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',

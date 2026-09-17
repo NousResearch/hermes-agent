@@ -444,11 +444,29 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
-    updates = dict(
-        attached_images=[], queued_prompt=None,
-        _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,
-        edit_snapshots={}, image_counter=0, running=False, show_reasoning=_load_show_reasoning(),
-        tool_progress_mode=_load_tool_progress_mode(), tool_started_at={})
+    # Reset is a conversation boundary. Revoke a personal turn before doing
+    # any rebuild work so no stale holder survives an exception or races a
+    # newly admitted turn.
+    show_reasoning = _load_show_reasoning()
+    tool_progress_mode = _load_tool_progress_mode()
+    with session["history_lock"]:
+        abandoned_admissions = _collect_person_admissions(session)
+        _clear_active_turn_state(session)
+        session.update(
+            attached_images=[],
+            queued_prompt=None,
+            _queued_prompt_generation=int(
+                session.get("_queued_prompt_generation", 0)
+            ) + 1,
+            edit_snapshots={},
+            image_counter=0,
+            running=False,
+            show_reasoning=show_reasoning,
+            tool_progress_mode=tool_progress_mode,
+            tool_started_at={},
+        )
+        session.pop("queued_prompts", None)
+    _emit_person_admissions(sid, abandoned_admissions, reason="session_reset")
     tokens = _set_session_context(session["session_key"])
     try:
         # /new is a full conversation boundary: session-scoped runtime overrides (/model,
@@ -462,8 +480,6 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
-    session.update(updates)
-    session.pop("queued_prompts", None)
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1

@@ -281,6 +281,22 @@ def _interpolate_env_vars(value):
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
 _whitespace_warned: Set[Tuple[str, str]] = set()
 
+_PER_CALL_AUTHORIZATION_KEY = "fizko_person_access_token"
+_FIZKO_MCP_URL = "https://mcp.fizko.ai/mcp"
+
+
+def _valid_per_call_authorization_config(config: dict) -> bool:
+    """The only supported per-call credential rail is the canonical Fizko HTTPS endpoint."""
+    if "per_call_authorization" not in config:
+        return True
+    mode = config.get("per_call_authorization")
+    return (
+        mode == _PER_CALL_AUTHORIZATION_KEY
+        and config.get("url") == _FIZKO_MCP_URL
+        and config.get("transport") in (None, "streamable_http")
+        and "command" not in config
+    )
+
 
 def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     """Warn once per (server, key path) about string values with leading/trailing whitespace (a
@@ -357,6 +373,14 @@ def _load_mcp_config() -> Dict[str, dict]:
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
+                if not _valid_per_call_authorization_config(interpolated):
+                    logger.error(
+                        "Skipping MCP server '%s': invalid per_call_authorization config; "
+                        "fizko_person_access_token is valid only for the canonical "
+                        "https://mcp.fizko.ai/mcp Streamable HTTP endpoint",
+                        name,
+                    )
+                    continue
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)
         return safe_servers

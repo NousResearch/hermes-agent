@@ -2016,46 +2016,92 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
+def _active_turn_has_person_authorization(session: dict) -> bool:
+    authorization = session.get("_active_turn_authorization")
+    return bool(
+        session.get("running")
+        and authorization is not None
+        and authorization.is_personal
+    )
+
+
+def _person_authorized_mutation_error(rid) -> dict:
+    return _err(
+        rid,
+        4125,
+        "direct session mutation is unavailable for a person-authorized turn; "
+        "send an authenticated prompt.submit correction instead",
+    )
+
+
+def _direct_personal_turn_mutation_error(rid, session: dict) -> dict | None:
+    """Fail closed: these legacy RPCs carry no trusted per-person credential."""
+    with session["history_lock"]:
+        personal_turn = _active_turn_has_person_authorization(session)
+    if not personal_turn:
+        return None
+    return _person_authorized_mutation_error(rid)
+
+
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
-    _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if expected := _str_param(params, "expected_hosted_task_id"):
-        with session["history_lock"]:
-            task = session.get("_hosted_room_task")
-            if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
-                return _ok(rid, {"status": "not_interrupted", "interrupted": False})
+    if (err := _direct_personal_turn_mutation_error(rid, session)) is not None:
+        return err
+    expected_hosted_task_id = _str_param(params, "expected_hosted_task_id") or None
     sid = str(params.get("session_id") or "")
-    if _session_uses_compute_host(session):
+    if _session_active_turn_uses_compute_host(session):
         try:
-            _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
+            routed = _interrupt_session_turn(
+                sid,
+                session,
+                request_id=f"interrupt-{rid}",
+                reject_person_authorized=True,
+                stop_tts=True,
+                retire_turn_marker=True,
+                expected_hosted_task_id=expected_hosted_task_id,
+            )
         except Exception as exc:
             return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+        if routed is None:
+            return _person_authorized_mutation_error(rid)
+        if routed in {
+            _INTERRUPT_HOSTED_TASK_MISMATCH,
+            _INTERRUPT_TURN_MISMATCH,
+        }:
+            return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    _interrupt_session_turn(sid, session)
-    # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
-    # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
-    # rotating session_key mid-turn).
-    with session["history_lock"]:
-        active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
-    _retire_turn_marker(session, active_marker_key)
+    routed = _interrupt_session_turn(
+        sid,
+        session,
+        reject_person_authorized=True,
+        stop_tts=True,
+        retire_turn_marker=True,
+        expected_hosted_task_id=expected_hosted_task_id,
+    )
+    if routed is None:
+        return _person_authorized_mutation_error(rid)
+    if routed in {
+        _INTERRUPT_HOSTED_TASK_MISMATCH,
+        _INTERRUPT_TURN_MISMATCH,
+    }:
+        return _ok(rid, {"status": "not_interrupted", "interrupted": False})
     return _ok(rid, {"status": "interrupted"})
 
 
 def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
-    try:
-        accepted = getattr(session["agent"], verb)(text)
-    except Exception as exc:
-        return _err(rid, 5000, f"{verb} failed: {exc}")
-    if accepted:
-        with session["history_lock"]:
+    with session["history_lock"]:
+        if _active_turn_has_person_authorization(session):
+            return _person_authorized_mutation_error(rid)
+        try:
+            accepted = getattr(session["agent"], verb)(text)
+        except Exception as exc:
+            return _err(rid, 5000, f"{verb} failed: {exc}")
+        if accepted:
             _record_inflight_correction(session, text)
             # #84417: steer does not cancel the live original, but a server queue self-copy of that original
             # must still not re-fire after settle (same class as redirect).
@@ -2076,13 +2122,19 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        if (err := _direct_personal_turn_mutation_error(rid, session)) is not None:
+            return err
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
-        if verb == "redirect" and agent is None and session.get("running"):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
-            session["last_active"] = time.time()
-            return _ok(rid, {"status": "queued", "text": text})
+        if verb == "redirect" and agent is None:
+            with session["history_lock"]:
+                if _active_turn_has_person_authorization(session):
+                    return _person_authorized_mutation_error(rid)
+                if session.get("running"):
+                    _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+                    session["last_active"] = time.time()
+                    return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
         return _apply_correction(rid, session, verb, text, accepted_status)

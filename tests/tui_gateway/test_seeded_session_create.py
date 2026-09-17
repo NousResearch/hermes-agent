@@ -1,5 +1,6 @@
 """session.create with seeded messages: the seed is durable before the first prompt, and durable once."""
 
+from agent.turn_authorization import TurnAuthorization
 from hermes_state import SessionDB
 from tui_gateway import server
 
@@ -15,6 +16,23 @@ def _create(params: dict) -> dict:
     resp = server.handle_request({"id": "create", "method": "session.create", "params": params})
     assert "result" in resp, resp
     return resp["result"]
+
+
+def _persist_first_submit(session: dict):
+    authorization = TurnAuthorization.from_raw(None)
+    with session["history_lock"]:
+        session.update(
+            running=True,
+            _active_turn_id="seeded-first-submit",
+            _active_turn_authorization=authorization,
+            _active_turn_route="inline",
+        )
+    return server._persist_session_row_for_submit(
+        "rid",
+        session,
+        expected_turn_id="seeded-first-submit",
+        expected_authorization=authorization,
+    )
 
 
 def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, tmp_path):
@@ -54,7 +72,7 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
         sids.append(resumed["result"]["session_id"])
         assert [m["role"] for m in resumed["result"]["messages"]] == ["assistant", "user"]
 
-        assert server._persist_session_row_for_submit("rid", server._sessions[sids[-1]]) is None  # the first prompt.submit
+        assert _persist_first_submit(server._sessions[sids[-1]]) is None
         assert len(db.get_messages_as_conversation(key)) == 3
         assert [hit["session_id"] for hit in db.search_messages("Second question")] == [key]
         assert db.search_messages("Private setup runbook") == []  # the hidden row is not searchable either
@@ -79,7 +97,7 @@ def test_branch_child_seed_is_written_once(monkeypatch, tmp_path):
         sid, key = result["session_id"], result["stored_session_id"]
         assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hello from parent", "parent reply"]
 
-        assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None  # the first prompt.submit
+        assert _persist_first_submit(server._sessions[sid]) is None
         assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hello from parent", "parent reply"]
     finally:
         if sid:
@@ -108,7 +126,7 @@ def test_partial_seed_copy_is_rolled_back_not_duplicated(monkeypatch, tmp_path):
         sid, key = result["session_id"], result["stored_session_id"]
         assert db.get_session(key) is None  # rolled back, so the first prompt starts clean
 
-        assert server._persist_session_row_for_submit("rid", server._sessions[sid]) is None
+        assert _persist_first_submit(server._sessions[sid]) is None
         assert [r["content"] for r in db.get_messages_as_conversation(key)] == ["hi", "hello"]
         assert server._sessions[sid]["pending_title"] == "Welcome"  # still queued: the turn applies it, as for any lazy row
     finally:

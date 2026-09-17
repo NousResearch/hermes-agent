@@ -24,6 +24,8 @@ def request_hard_interrupt(
     message: str | None = None,
     *,
     tool_reason: str | None = None,
+    require_generation: int | None = None,
+    require_turn_id: str | None = None,
 ) -> bool:
     """Request an explicit stop, falling back to the legacy interrupt ABI.
 
@@ -45,11 +47,23 @@ def request_hard_interrupt(
         interrupt = getattr(agent, "interrupt", None)
     if not callable(interrupt):
         return False
+    if require_generation is not None and not _accepts_keyword(
+        interrupt, "require_generation"
+    ):
+        return False
+    if require_turn_id is not None and not _accepts_keyword(
+        interrupt, "require_turn_id"
+    ):
+        return False
     kwargs = {}
     if tool_reason is not None and _accepts_keyword(interrupt, "tool_reason"):
         kwargs["tool_reason"] = tool_reason
+    if require_generation is not None:
+        kwargs["require_generation"] = require_generation
+    if require_turn_id is not None:
+        kwargs["require_turn_id"] = require_turn_id
     if message is None:
-        interrupt(**kwargs)
+        applied = interrupt(**kwargs)
     else:
-        interrupt(message, **kwargs)
-    return True
+        applied = interrupt(message, **kwargs)
+    return applied is not False

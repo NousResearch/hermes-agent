@@ -59,6 +59,8 @@ terminal.resize         clipboard.paste         image.attach
 
 Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
+`session.steer`, `session.redirect`, and `session.interrupt` do not carry a trusted per-person credential. While a token-authorized turn is active, the gateway therefore rejects these direct mutation RPCs (error `4125`) rather than letting another attached client control that person's turn. Same-person corrections and interruptions must be sent through authenticated `prompt.submit`, using its normal busy-input policy. The private authorization sidecar is accepted only by `prompt.submit`; it is not accepted by the direct session RPCs.
+
 ### Rewinding history on `prompt.submit`
 
 A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored transcript before running the new turn. Because that write is a destructive rewrite of the session's durable rows, the gateway honors it only when the client states its intent:

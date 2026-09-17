@@ -20,6 +20,7 @@ from tools.mcp_tool_content import (
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_per_call_headers import call_tool_with_headers
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -357,12 +358,16 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(
+    server, server_name: str, tool_name: str, args: dict,
+    request_headers: Optional[dict[str, str]] = None,
+):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
     owns the reconnect signal; only pre-call failure is safe to replay. callable()/``is True``
-    because MagicMock attributes are truthy."""
+    because MagicMock attributes are truthy.  ``request_headers`` is an explicit caller-thread
+    snapshot; it never depends on ContextVar propagation to the MCP loop."""
     # Fast-fail (#81995): a stdio subprocess that is already dead must not own this call slot — fail
     # immediately instead of waiting out the full tool timeout on a transport nobody will ever answer.
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
@@ -371,7 +376,13 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    _call_coro = (
+        call_tool_with_headers(
+            server.session, tool_name, args, headers=request_headers
+        )
+        if request_headers is not None
+        else server.session.call_tool(tool_name, arguments=args)
+    )
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -529,11 +540,51 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
 
+        config = getattr(server, "_config", None) or {}
+        from tools.mcp_tool_config import _valid_per_call_authorization_config
+        if not _valid_per_call_authorization_config(config):
+            return tool_error(
+                f"MCP server '{server_name}' has invalid per_call_authorization config; "
+                "the request was blocked"
+            )
+
+        personal_authorization = None
+        if config.get(
+            "per_call_authorization"
+        ) == "fizko_person_access_token":
+            # Capture the opaque holder on the tool worker before crossing to the dedicated
+            # MCP loop. The closure revalidates it immediately before every transport attempt;
+            # retries can neither reuse an expired header nor switch to ambient authority.
+            from agent.turn_authorization import current_turn_authorization
+
+            holder = current_turn_authorization()
+            if holder is not None and holder.is_personal:
+                if not holder.has_token:
+                    return tool_error(
+                        "person authorization unavailable; the MCP request was blocked"
+                    )
+                if holder.is_expired:
+                    return tool_error(
+                        "person authorization expired; the MCP request was blocked"
+                    )
+                personal_authorization = holder
+
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
+                request_headers = None
+                if personal_authorization is not None:
+                    person_header = personal_authorization._fizko_authorization_header()
+                    if not person_header:
+                        raise PermissionError(
+                            "person authorization expired before transport dispatch; "
+                            "the MCP request was blocked"
+                        )
+                    request_headers = {"Authorization": person_header}
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(
+                        server, server_name, tool_name, args, request_headers=request_headers
+                    )
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy

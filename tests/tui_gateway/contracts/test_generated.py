@@ -33,9 +33,25 @@ def test_generated_files_are_current(gen):
     assert not stale, f"stale generated contract files {stale}: run scripts/gen_gateway_contracts.py"
 
 
+def test_session_interrupt_contract_rejects_person_authority_fields():
+    from pydantic import ValidationError
+
+    from tui_gateway.contracts.sessions import SessionInterruptParams
+
+    with pytest.raises(ValidationError):
+        SessionInterruptParams.model_validate(
+            {
+                "session_id": "sid",
+                "_fizko_person_access_token": "forged",
+                "_fizko_person_access_token_expires_at": 9999999999,
+                "_fizko_person_principal_id": "a" * 64,
+            }
+        )
+
+
 # The emitter inventory the old gateway-events.json scan used, kept as the completeness oracle:
 # names must come from CODE the gateway runs, never from the contract tables themselves.
-_EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
+_EMIT_HELPERS = ("_emit", "_emit_private_live", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
 _LITERAL_EMIT = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_EMIT_HELPERS))
 _REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
 _LITERAL_REQUEST = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_REQUEST_HELPERS))

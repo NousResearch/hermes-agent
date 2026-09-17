@@ -73,6 +73,11 @@ class ComputeHost:
         # Future -> the ``sid`` whose turn it runs; ``shutdown`` leaves live sids unfinalized.
         self._turn_futures: dict[concurrent.futures.Future, str] = {}
         self._turn_futures_lock = threading.Lock()
+        # The frame reader handles interrupts immediately while turn.start is
+        # queued on the executor. This lock + tombstones linearize those two
+        # paths so an interrupt that wins before admission prevents execution.
+        self._turn_admission_lock = threading.Lock()
+        self._cancelled_turn_ids: dict[str, float] = {}
         self._transport = _HostTransport(self.emit)
         self._heartbeat_secs = (
             float(heartbeat_secs) if heartbeat_secs is not None
@@ -179,14 +184,49 @@ class ComputeHost:
 
     def _handle_interrupt(self, frame: dict[str, Any]) -> None:
         def body(server: Any, sid: str, request_id: Any) -> None:
-            session = server._sessions.get(sid)
-            if session is None:
-                self._reply("interrupt.ack", sid, request_id, applied=False)
-                return
+            expected_turn_id = (
+                str(frame.get("expected_turn_id"))
+                if frame.get("expected_turn_id") is not None
+                else None
+            )
+            with self._turn_admission_lock:
+                session = server._sessions.get(sid)
+                admitted = bool(
+                    session is not None
+                    and session.get("running")
+                    and (
+                        expected_turn_id is None
+                        or session.get("_active_turn_id") == expected_turn_id
+                    )
+                )
+                if not admitted:
+                    if expected_turn_id:
+                        self._cancelled_turn_ids[expected_turn_id] = time.monotonic()
+                    self._reply(
+                        "interrupt.ack",
+                        sid,
+                        request_id,
+                        applied=bool(expected_turn_id),
+                        admitted=False,
+                        applied_ns=now_ns(),
+                    )
+                    return
             # In the child the shared helper interrupts the local agent and releases this
             # process's pending clarify Event (the parent only has a metadata mirror).
-            server._interrupt_session_turn(sid, session)
-            self._reply("interrupt.ack", sid, request_id, applied=True, applied_ns=now_ns())
+            outcome = server._interrupt_session_turn(
+                sid,
+                session,
+                expected_turn_id=expected_turn_id,
+            )
+            applied = outcome is not server._INTERRUPT_TURN_MISMATCH
+            self._reply(
+                "interrupt.ack",
+                sid,
+                request_id,
+                applied=applied,
+                admitted=True,
+                applied_ns=now_ns(),
+            )
         self._guarded(frame, "interrupt.ack", body, applied=False)
 
     def _handle_respond(self, frame: dict[str, Any]) -> None:
@@ -213,26 +253,43 @@ class ComputeHost:
     def _run_real_turn(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
+        admitted_turn_id = ""
         if not sid:
             self._reply("turn.error", sid, request_id, message="sid required")
             return
         try:
             from tui_gateway import server
-            session = self._ensure_server_session(server, frame)
-            text = frame["text"] if "text" in frame else frame.get("prompt", "")
-            inflight = frame["text"] if "text" in frame else frame.get("prompt")
-            with session["history_lock"]:
-                queued_gen = frame.get("queued_prompt_generation")
-                current_gen = int(session.get("_queued_prompt_generation", 0))
-                if queued_gen is not None and current_gen != int(queued_gen):
-                    self._reply("turn.end", sid, request_id, interrupted=True, ended_ns=now_ns())
+            turn_id = str(frame.get("turn_id") or "")
+            with self._turn_admission_lock:
+                if turn_id and self._cancelled_turn_ids.pop(turn_id, None) is not None:
+                    self._reply(
+                        "turn.end", sid, request_id, interrupted=True, ended_ns=now_ns()
+                    )
                     return
-                if session.get("running"):
-                    self._reply("turn.error", sid, request_id, message="session busy")
-                    return
-                session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(session, inflight)
-                turn_started_at = time.time()
+                session = self._ensure_server_session(server, frame)
+                text = frame["text"] if "text" in frame else frame.get("prompt", "")
+                inflight = frame["text"] if "text" in frame else frame.get("prompt")
+                with session["history_lock"]:
+                    queued_gen = frame.get("queued_prompt_generation")
+                    current_gen = int(session.get("_queued_prompt_generation", 0))
+                    if queued_gen is not None and current_gen != int(queued_gen):
+                        self._reply(
+                            "turn.end", sid, request_id, interrupted=True, ended_ns=now_ns()
+                        )
+                        return
+                    if session.get("running") or session.get("_turn_interrupt_claim") is not None:
+                        self._reply("turn.error", sid, request_id, message="session busy")
+                        return
+                    session.update(
+                        running=True,
+                        _turn_cancel_requested=False,
+                        _active_turn_route="inline",
+                        last_active=time.time(),
+                    )
+                    server._activate_turn_identity(session, turn_id or None)
+                    admitted_turn_id = str(session.get("_active_turn_id") or "")
+                    server._start_inflight_turn(session, inflight)
+                    turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)
@@ -241,9 +298,29 @@ class ComputeHost:
                 hermes_undo.on_user_message_appended(session["session_key"])
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
-            server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
-            run_thread = session.get("_run_thread")
+            started = server._run_prompt_submit(
+                request_id,
+                sid,
+                session,
+                text,
+                display_kind=frame.get("display_kind") or None,
+                expected_turn_id=admitted_turn_id,
+            )
+            if not started:
+                self._reply(
+                    "turn.end",
+                    sid,
+                    request_id,
+                    interrupted=True,
+                    ended_ns=now_ns(),
+                )
+                return
+            with session["history_lock"]:
+                run_thread = (
+                    session.get("_run_thread")
+                    if session.get("_run_thread_turn_id") == admitted_turn_id
+                    else None
+                )
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
                     run_thread.join(timeout=1.0)
@@ -264,8 +341,15 @@ class ComputeHost:
                 session = server._sessions.get(sid)
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
-                        session["running"] = False
-                        server._clear_inflight_turn(session)
+                        if (
+                            admitted_turn_id
+                            and session.get("_active_turn_id") == admitted_turn_id
+                        ):
+                            session["running"] = False
+                            server._clear_inflight_turn(session)
+                            server._clear_active_turn_state(
+                                session, expected_turn_id=admitted_turn_id
+                            )
             self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
 
     def _emit_turn_activity(self, sid: str, session: dict, turn_id: str, started_at: float) -> None:

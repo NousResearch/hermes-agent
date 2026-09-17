@@ -74,7 +74,9 @@ def test_prompt_claim_and_automatic_continuations_cannot_cross_prepare(runtime, 
     session["queued_prompt"] = {"text": "next", "transport": None}
     assert server._drain_queued_prompt("r", "s", session) is False
     assert session["queued_prompt"]["text"] == "next"
-    assert server._notif_claim_turn(session) is False
+    # _notif_claim_turn now returns the claimed turn id (None when refused) so deferred
+    # work can be generation-fenced; the refusal contract under prepare() is unchanged.
+    assert server._notif_claim_turn(session) is None
     # Use a separate idle session so the goal branch is reached without the queued prompt.
     goal_session = {"history_lock": threading.RLock(), "running": False}
     server._run_post_turn_followups("r", "s", goal_session, {}, "keep going")
@@ -91,5 +93,5 @@ def test_prompt_claim_and_automatic_continuations_cannot_cross_prepare(runtime, 
                        "active_session_lease": SimpleNamespace(lease_id="l", released=False)}
     assert server._poll_bot_live_delivery_once("s", mailbox_session) is False
     assert fence.cancel(token) == {"ok": True}
-    assert server._notif_claim_turn(session) is True
+    assert server._notif_claim_turn(session) == session["_active_turn_id"]
     assert session["running"] is True

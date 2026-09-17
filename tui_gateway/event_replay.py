@@ -41,6 +41,8 @@ _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
 
+_PRIVATE_LIVE_EVENT_TYPES = frozenset({"person.admission"})
+
 
 def replay_epoch() -> str:
     """Opaque token identifying this server process's seq numbering."""
@@ -53,6 +55,10 @@ def _stamp_event(obj: dict) -> None:
         return
     params = obj.get("params")
     if not isinstance(params, dict):
+        return
+    if params.get("type") in _PRIVATE_LIVE_EVENT_TYPES:
+        # Sidecar accounting is delivered live by write_json, but must never
+        # enter the browser-visible reconnect ring or consume a public seq.
         return
     sid = params.get("session_id") or ""
     if not sid:
@@ -105,7 +111,10 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
     """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        return [event for seq, event, _size in buf if seq > last_seen] if buf else []
+        return [
+            event for seq, event, _size in buf
+            if seq > last_seen and event.get("type") not in _PRIVATE_LIVE_EVENT_TYPES
+        ] if buf else []
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:

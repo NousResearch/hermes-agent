@@ -9,6 +9,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -108,10 +109,14 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, turn_authorization=None,
+    *, expected_turn_id: str | None = None,
+) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    from tui_gateway.session_auto_continue import _clear_active_turn_state
+
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
@@ -119,16 +124,39 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
-            session["running"] = False
-            session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+            still_current = bool(
+                (not expected_turn_id or session.get("_active_turn_id") == expected_turn_id)
+                and session.get("_active_turn_authorization") is turn_authorization
+            )
+            if still_current and _clear_active_turn_state(
+                session, turn_authorization, expected_turn_id=expected_turn_id
+            ):
+                session["running"] = False
+                # no turn runs: the submit-time row stays as the send
+                session.pop("_submit_user_row", None)
+        if still_current:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
+        admitted_turn_id = str(session.get("_active_turn_id") or "")
+        if (
+            not session.get("running")
+            or session.get("_turn_cancel_requested")
+            or session.get("_turn_interrupt_claim") is not None
+            or (expected_turn_id and admitted_turn_id != expected_turn_id)
+            or session.get("_active_turn_authorization") is not turn_authorization
+        ):
+            return None
         if session.get("_closing") or (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
-            session["running"] = False
-            session.pop("_submit_user_row", None)
+            if _clear_active_turn_state(
+                session,
+                turn_authorization,
+                expected_turn_id=expected_turn_id or admitted_turn_id,
+            ):
+                session["running"] = False
+                session.pop("_submit_user_row", None)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
@@ -140,9 +168,7 @@ def _admit_prompt_turn(
             _start_inflight_turn(
                 session, text, display_kind=display_kind, display_metadata=display_metadata)
         agent = session["agent"]
-        if agent is None:
-            session["running"] = False
-        else:
+        if agent is not None:
             with contextlib.suppress(Exception):
                 agent.clear_interrupt()
     if agent is None:
@@ -155,29 +181,73 @@ def _admit_prompt_turn(
         logger.info("Refusing turn for session %s: no agent attached (%s)", session.get("session_key") or sid, reason)
         _emit_terminal_turn_error(
             sid, session, reason,
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
+            expected_turn_id=expected_turn_id or admitted_turn_id,
+        )
+        # Released only after the frame is published: the terminal emit is itself
+        # generation-fenced, so clearing first would suppress the client's error.
+        # #111531 — without this the prompt vanishes and the session stays "busy".
+        with session["history_lock"]:
+            if _clear_active_turn_state(
+                session,
+                turn_authorization,
+                expected_turn_id=expected_turn_id or admitted_turn_id,
+            ):
+                session["running"] = False
         return None
     return images, agent
 
 
-def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True) -> str:
+def _record_turn_marker(
+    session: dict,
+    text: Any,
+    *,
+    auto_continue: bool = True,
+    turn_authorization=None,
+    turn_id: str | None = None,
+) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
     it; the post-write cancel check closes the inverse race (Stop landed first, no file)."""
-    marker_home = _session_home(session)
-    marker_key = str(session.get("session_key") or "")
-    marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
-    marker_text = session.pop("_auto_continue_prompt", None) or text
-    if isinstance(marker_text, str) and marker_text.strip():
+    def still_current() -> bool:
         with session["history_lock"]:
+            return bool(
+                session.get("running")
+                and not session.get("_turn_cancel_requested")
+                and session.get("_active_turn_id") == turn_id
+                and session.get("_active_turn_authorization")
+                is turn_authorization
+            )
+
+    with session["history_lock"]:
+        if not (
+            session.get("running")
+            and not session.get("_turn_cancel_requested")
+            and session.get("_active_turn_id") == turn_id
+            and session.get("_active_turn_authorization")
+            is turn_authorization
+        ):
+            return ""
+        marker_home = _session_home(session)
+        marker_key = str(session.get("session_key") or "")
+        marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
+        marker_text = session.pop("_auto_continue_prompt", None) or text
+        if isinstance(marker_text, str) and marker_text.strip():
             session["_active_turn_marker_key"] = marker_key
-        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
-                          auto_continue=auto_continue)
-        with session["history_lock"]:
-            marker_cancelled = bool(session.get("_turn_cancel_requested"))
-        if marker_cancelled:
-            clear_turn_marker(marker_home, marker_key)
+    if isinstance(marker_text, str) and marker_text.strip():
+        record_turn_start(
+            marker_home, marker_key, marker_text, attempts=marker_attempt,
+            auto_continue=auto_continue,
+            personal_authorization_blocked=bool(
+                getattr(turn_authorization, "is_personal", False)
+            ),
+            turn_id=turn_id,
+            should_record=still_current,
+        )
+        if not still_current():
+            clear_turn_marker(marker_home, marker_key, expected_turn_id=turn_id)
+            return ""
     return marker_key
 
 
@@ -399,24 +469,38 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 
 
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
-                            on_done=None, on_error=None) -> None:
+                            expected_turn_id: str,
+                            on_done=None, on_error=None, turn_authorization=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(
+            rid, sid, session, prompt, turn_authorization=turn_authorization,
+            expected_turn_id=expected_turn_id,
+        )
         if on_done is not None:
             on_done()
     except Exception as exc:
-        if on_error is not None:
-            on_error()
-        _hook_failure(what, exc)
-        with session["history_lock"]:
-            session["running"] = False
+        try:
+            if on_error is not None:
+                with contextlib.suppress(Exception):
+                    on_error()
+            with contextlib.suppress(Exception):
+                _hook_failure(what, exc)
+        finally:
+            with session["history_lock"]:
+                if session.get("_active_turn_id") == expected_turn_id:
+                    session["running"] = False
+                    _clear_active_turn_state(
+                        session, expected_turn_id=expected_turn_id
+                    )
 
 
 def _run_post_turn_followups(
-    rid, sid: str, session: dict, result: Any, goal_followup: str | None) -> None:
+    rid, sid: str, session: dict, result: Any, goal_followup: str | None,
+    *, descendant_authorization=None,
+) -> None:
     """Chain whatever should run after ``running`` was released.  Order: a mid-turn user
     prompt wins over every auto follow-up (drain it, skip the rest); a leftover /steer is
     requeued first so it isn't dropped; then goal continuation, then completion
@@ -424,15 +508,33 @@ def _run_post_turn_followups(
     steer = result.get("pending_steer") if isinstance(result, dict) else None
     if isinstance(steer, str) and steer.strip():
         with session["history_lock"]:
-            _enqueue_prompt(session, steer, session.get("transport"))
+            _enqueue_prompt(
+                session, steer, session.get("transport"),
+                turn_authorization=descendant_authorization,
+            )
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
+        if descendant_authorization is None:
+            from agent.turn_authorization import TurnAuthorization
+            descendant_authorization = TurnAuthorization.from_raw(None)
         with _session_turn_admission(session) as admitted:
-            if not admitted or session.get("running"):
-                return  # user already sent something — their turn wins
+            if (
+                not admitted
+                or session.get("running")
+                or session.get("_turn_interrupt_claim") is not None
+            ):
+                return  # retiring backend, or user/interrupt already claimed the session
             session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+            followup_turn_id = _activate_turn_identity(session)
+            session["_turn_cancel_requested"] = False
+            session["_active_turn_route"] = "inline"
+            session["_active_turn_authorization"] = descendant_authorization
+        _dispatch_followup_turn(
+            rid, sid, session, goal_followup, "goal continuation dispatch",
+            expected_turn_id=followup_turn_id,
+            turn_authorization=descendant_authorization,
+        )
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
@@ -475,6 +577,7 @@ class _TurnRun:
     error_detail: str = ""
     prompt_text: str = ""
     marker_key: str = ""
+    turn_id: str = ""
     receipt_attempted: bool = False
 
 
@@ -607,14 +710,37 @@ def _invoke_agent(
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
         "session.title", sid, {"session_id": _k, "title": t})
-    _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+    with session["history_lock"]:
+        gateway_turn_id = str(session.get("_active_turn_id") or "")
+    bind_gateway_turn = getattr(agent, "bind_gateway_turn", None)
+    clear_gateway_turn = getattr(agent, "clear_gateway_turn", None)
+    bound_gateway_turn = bool(gateway_turn_id and callable(bind_gateway_turn))
+    if bound_gateway_turn:
+        bind_gateway_turn(gateway_turn_id)
     try:
-        st.result = agent.run_conversation(run_message, **st.run_kwargs)
+        with session["history_lock"]:
+            cancelled_before_run = bool(
+                session.get("_turn_cancel_requested")
+                or session.get("_active_turn_id") != gateway_turn_id
+            )
+        if cancelled_before_run:
+            st.result = {
+                "interrupted": True,
+                "final_response": "",
+                "messages": list(st.history),
+            }
+            return
+        _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+        try:
+            st.result = agent.run_conversation(run_message, **st.run_kwargs)
+        finally:
+            # Stop AND join before anything emits: a tick surviving past message.complete would
+            # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
+            _usage_stop.set()
+            _usage_thread.join()
     finally:
-        # Stop AND join before anything emits: a tick surviving past message.complete would
-        # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
-        _usage_stop.set()
-        _usage_thread.join()
+        if bound_gateway_turn and callable(clear_gateway_turn):
+            clear_gateway_turn(gateway_turn_id)
 
 
 def _absorb_turn_result(
@@ -735,7 +861,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             **({"error": str(error_value or raw)} if status == "error" else {})})
         st.receipt_committed = True
     if st.receipt_committed:
-        _retire_turn_marker(session, st.marker_key)
+        _retire_turn_marker(
+            session, st.marker_key, expected_turn_id=st.turn_id
+        )
     return payload, raw, status
 
 
@@ -761,7 +889,13 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
             logger.exception("hosted room terminal receipt commit failed")
     try:
         # Same terminal error frame shape as the returned-error path.
-        _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
+        _emit_terminal_turn_error(
+            sid,
+            session,
+            e,
+            retire_marker=st.receipt_committed,
+            expected_turn_id=st.turn_id,
+        )
         st.error_retained = True
         st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
     except Exception as emit_exc:
@@ -849,7 +983,14 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, turn_authorization=None,
+    expected_turn_id: str | None = None) -> bool:
+    from agent.turn_authorization import TurnAuthorization
+    from tui_gateway.session_auto_continue import (
+        _activate_turn_identity,
+        _clear_active_turn_state,
+    )
+
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -858,9 +999,76 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+    authorization = turn_authorization or TurnAuthorization.from_raw(None)
+    with session["history_lock"]:
+        if (
+            turn_authorization is None
+            and expected_turn_id
+            and session.get("_active_turn_id") == expected_turn_id
+            and session.get("_active_turn_authorization") is not None
+        ):
+            authorization = session["_active_turn_authorization"]
+        # Synthesized callers predate explicit authorization admission. Give
+        # their already-claimed inline turn an opaque no-token holder too, so
+        # all completion/failure cleanup uses the same identity fence.
+        if (
+            session.get("running")
+            and session.get("_active_turn_authorization") is None
+            and (
+                not expected_turn_id
+                or session.get("_active_turn_id") == expected_turn_id
+            )
+        ):
+            session["_active_turn_authorization"] = authorization
+            session.setdefault("_active_turn_route", "inline")
+        if (
+            session.get("running")
+            and not session.get("_active_turn_id")
+            and not expected_turn_id
+        ):
+            _activate_turn_identity(session)
+        if expected_turn_id and (
+            not session.get("running")
+            or session.get("_turn_cancel_requested")
+            or session.get("_active_turn_id") != expected_turn_id
+            or session.get("_active_turn_authorization") is not authorization
+        ):
+            # Refused after we already claimed the turn. An interrupt that lands
+            # before _run_thread is published declines to clear running (it has no
+            # worker to fence against), so THIS path owns the release -- otherwise
+            # the session stays busy forever with no worker able to recover it.
+            # Only release what is still ours: a newer generation that took the
+            # session (live id or holder differs) must never be published idle.
+            active_id = session.get("_active_turn_id")
+            holder = session.get("_active_turn_authorization")
+            ours = (not active_id or active_id == expected_turn_id) and (
+                holder is None or holder is authorization
+            )
+            if ours and session.get("running"):
+                session["running"] = False
+                _clear_active_turn_state(session, authorization)
+                _clear_inflight_turn(session)
+            return False
+        dispatch_turn_id = str(session.get("_active_turn_id") or "")
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind,
+        display_metadata, authorization, expected_turn_id=dispatch_turn_id)
     if admitted is None:
+        _emit_person_admission(
+            sid, authorization, "terminal", reason="admission_rejected"
+        )
+        with session["history_lock"]:
+            # Release running TOGETHER with the identity. Every downstream release is
+            # compare-and-swapped on _active_turn_id, so popping the id while running
+            # stays true wedges the session busy forever with no worker to recover it:
+            # later prompts only queue and the drain refuses. Both mutations are fenced
+            # on this turn's id, so a newer generation is never published idle.
+            if _clear_active_turn_state(
+                session,
+                authorization,
+                expected_turn_id=dispatch_turn_id,
+            ):
+                session["running"] = False
         return False
     images, agent = admitted
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -880,16 +1088,58 @@ def _run_prompt_submit(
     _emit("message.start", sid)
 
     def run():
-        # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
-        # before any tool can commission a child (delegate_task captures it as authority).
-        transport_token = bind_transport(session.get("transport"))
-        runtime_session_token = _current_runtime_session_record.set(session)
+        from agent.turn_authorization import (
+            reset_current_turn_authorization,
+            set_current_turn_authorization,
+        )
+
+        with session["history_lock"]:
+            stale_before_start = bool(
+                not session.get("running")
+                or session.get("_turn_cancel_requested")
+                or session.get("_active_turn_id") != dispatch_turn_id
+                or session.get("_active_turn_authorization") is not authorization
+            )
+            if stale_before_start and session.get("_run_thread") is threading.current_thread():
+                session.pop("_run_thread", None)
+        if stale_before_start:
+            _emit_person_admission(
+                sid, authorization, "terminal", reason="superseded_before_start"
+            )
+            return
+        _emit_person_admission(sid, authorization, "started")
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
+        st.turn_id = dispatch_turn_id
         goal_followup = None
+        terminal_reason = "run_failed"
+        authorization_token = None
+        transport_token = None
+        runtime_session_token = None
         try:
+            # RPC-dispatcher ContextVars do not follow onto this thread: rebind
+            # them inside the lifecycle fence so setup failures still retire the
+            # exact admitted generation.
+            transport_token = bind_transport(session.get("transport"))
+            runtime_session_token = _current_runtime_session_record.set(session)
+            st.marker_key = _record_turn_marker(
+                session, text, auto_continue=terminal_callback is None,
+                turn_authorization=authorization,
+                turn_id=st.turn_id,
+            )
+            with session["history_lock"]:
+                stale_after_marker = bool(
+                    not session.get("running")
+                    or session.get("_turn_cancel_requested")
+                    or session.get("_active_turn_id") != st.turn_id
+                    or session.get("_active_turn_authorization")
+                    is not authorization
+                )
+            if stale_after_marker:
+                terminal_reason = "superseded_after_marker"
+                return
+            authorization_token = set_current_turn_authorization(authorization)
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -912,20 +1162,52 @@ def _run_prompt_submit(
             # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
             # structured control snapshot now so the Desktop card never paints the pre-judge turn count.
             _publish_session_control_snapshot(sid, session, only_if_present=True)
+            terminal_reason = "finished"
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
-            _finish_turn(sid, session, st)
-            _current_runtime_session_record.reset(runtime_session_token)
-            reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
+            # End the authorization scope before persistence/events/follow-ups: none of those
+            # surfaces may inherit or serialize the person's bearer. Every best-effort
+            # finalizer is isolated so one failure cannot skip the identity-CAS release.
+            if authorization_token is not None:
+                with contextlib.suppress(Exception):
+                    reset_current_turn_authorization(authorization_token)
+            with contextlib.suppress(Exception):
+                _emit_person_admission(
+                    sid, authorization, "terminal", reason=terminal_reason
+                )
+            completion_claim = {
+                "turn_id": st.turn_id,
+                "event": threading.Event(),
+                "owner_thread_id": threading.get_ident(),
+                "stop_tts": False,
+                "retire_turn_marker": False,
+                "effects_sealed": False,
+                "error": None,
+            }
+            completion_owner = False
             with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
-                _release_hosted_room_turn_slot(session)
+                if (
+                    session.get("_active_turn_id") == st.turn_id
+                    and session.get("_active_turn_authorization") is authorization
+                    and session.get("_turn_completion_claim") is None
+                ):
+                    session["_turn_completion_claim"] = completion_claim
+                    completion_owner = True
+            try:
+                _finish_turn(sid, session, st)
+            except Exception as finish_exc:
+                st.error_retained = True
+                st.error_detail = f" finalizer_error={type(finish_exc).__name__}"
+                completion_claim["error"] = finish_exc
+                with contextlib.suppress(Exception):
+                    _hook_failure("turn finalization", finish_exc)
+            if runtime_session_token is not None:
+                with contextlib.suppress(Exception):
+                    _current_runtime_session_record.reset(runtime_session_token)
+            if transport_token is not None:
+                with contextlib.suppress(Exception):
+                    reset_transport(transport_token)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).
@@ -933,36 +1215,249 @@ def _run_prompt_submit(
                 status = _result_status(st.result)
             else:
                 status = "error" if st.error_retained else "complete"
-            logger.info(
-                "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
-                "error_retained=%s duration=%.1fs%s",
-                sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
-                status, st.error_retained, time.monotonic() - _turn_started_monotonic,
-                st.error_detail)
-            # Backstop for turns that never reached a terminal frame.
-            if st.receipt_committed:
-                _retire_turn_marker(session, st.marker_key)
+            with contextlib.suppress(Exception):
+                logger.info(
+                    "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
+                    "error_retained=%s duration=%.1fs%s",
+                    sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
+                    status, st.error_retained, time.monotonic() - _turn_started_monotonic,
+                    st.error_detail)
+            # Publish the complete terminal boundary while this exact identity is
+            # still live. Admissions remain closed, and interrupts join this claim
+            # instead of publishing idle between marker/cwd/session-info effects.
+            with session["history_lock"]:
+                owns_completion = bool(
+                    completion_owner
+                    and session.get("_turn_completion_claim") is completion_claim
+                    and session.get("_active_turn_id") == st.turn_id
+                    and session.get("_active_turn_authorization") is authorization
+                )
+                if owns_completion:
+                    completion_claim["effects_sealed"] = True
+                    stop_tts = bool(completion_claim.get("stop_tts"))
+                    retire_marker = bool(completion_claim.get("retire_turn_marker"))
+                    marker_keys = tuple(
+                        dict.fromkeys(
+                            key
+                            for key in (
+                                st.marker_key if st.receipt_committed else None,
+                                session.get("_active_turn_marker_key")
+                                if retire_marker else None,
+                                session.get("session_key") if retire_marker else None,
+                            )
+                            if key
+                        )
+                    )
+                else:
+                    stop_tts = False
+                    marker_keys = ()
+            if stop_tts:
+                try:
+                    _tts_stream_stop()
+                except Exception as effect_exc:
+                    completion_claim["error"] = (
+                        completion_claim.get("error") or effect_exc
+                    )
+                    with contextlib.suppress(Exception):
+                        _hook_failure("turn completion TTS stop", effect_exc)
+            if marker_keys:
+                try:
+                    _retire_turn_marker(
+                        session,
+                        *marker_keys,
+                        include_current=False,
+                        expected_turn_id=st.turn_id,
+                    )
+                except Exception as effect_exc:
+                    completion_claim["error"] = (
+                        completion_claim.get("error") or effect_exc
+                    )
+                    with contextlib.suppress(Exception):
+                        _hook_failure("turn completion marker retirement", effect_exc)
+            try:
                 with session["history_lock"]:
-                    if session.get("_active_turn_marker_key") == st.marker_key:
-                        session.pop("_active_turn_marker_key", None)
-                    session.pop("_hosted_room_task", None)
-            session.pop("_auto_continue_scheduled", None)
-            _emit_settled_session_info(sid, session, st.agent)
-        _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
-    # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
-    # state registry, and _sessions_lock gates every create/close/prompt on this backend.
-    with _routing_provenance_db(session) as routing_db, _sessions_lock:
-        registered = _sessions.get(sid)
-        can_start = not session.get("_closing") and (registered is None or registered is session)
+                    if (
+                        owns_completion
+                        and session.get("_turn_completion_claim") is completion_claim
+                        and session.get("_active_turn_id") == st.turn_id
+                        and session.get("_active_turn_authorization") is authorization
+                    ):
+                        # Only this exact generation may clear the shared agent's
+                        # callback and generation-owned session metadata.
+                        with contextlib.suppress(Exception):
+                            st.agent.interim_assistant_callback = None
+                        if session.get("_active_turn_marker_key") == st.marker_key:
+                            session.pop("_active_turn_marker_key", None)
+                        session.pop("_hosted_room_task", None)
+                        session.pop("_auto_continue_scheduled", None)
+                        if _clear_active_turn_state(session, authorization):
+                            session["running"] = False
+                            session["last_active"] = time.time()
+                            if not st.error_retained:
+                                _clear_inflight_turn(session)
+                            _release_hosted_room_turn_slot(session)
+                # Published after the session goes idle so a retiring backend sees an
+                # idle probe promptly; the worker's retirement permit (released in
+                # guarded_run) is what keeps the process alive through this. The emit
+                # is generation-fenced: it is skipped outright once a newer turn owns
+                # the session, so it can never rewrite that turn's cwd or session.info.
+                if owns_completion:
+                    try:
+                        _emit_settled_session_info(
+                            sid,
+                            session,
+                            st.agent,
+                            st.turn_id,
+                        )
+                    except Exception as effect_exc:
+                        completion_claim["error"] = (
+                            completion_claim.get("error") or effect_exc
+                        )
+                        with contextlib.suppress(Exception):
+                            _hook_failure("settled session info", effect_exc)
+            finally:
+                # A release helper may fail after publishing idle. Never leave a
+                # stale completion claim whose waiters can deadlock a later turn.
+                try:
+                    with session["history_lock"]:
+                        if session.get("_turn_completion_claim") is completion_claim:
+                            session.pop("_turn_completion_claim", None)
+                finally:
+                    completion_claim["event"].set()
+        descendant_authorization = (
+            TurnAuthorization.blocked() if authorization.is_personal else None
+        )
+        if descendant_authorization is None:
+            _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
+        else:
+            descendant_token = set_current_turn_authorization(descendant_authorization)
+            try:
+                _run_post_turn_followups(
+                    rid, sid, session, st.result, goal_followup,
+                    descendant_authorization=descendant_authorization,
+                )
+            finally:
+                reset_current_turn_authorization(descendant_token)
+    def guarded_run():
+        worker_failed = False
+        try:
+            run()
+        except BaseException:
+            worker_failed = True
+            with contextlib.suppress(Exception):
+                _emit_person_admission(
+                    sid, authorization, "terminal", reason="run_failed"
+                )
+            raise
+        finally:
+            completion_event = None
+            with session["history_lock"]:
+                completion_claim = session.get("_turn_completion_claim")
+                if (
+                    isinstance(completion_claim, dict)
+                    and completion_claim.get("turn_id") == dispatch_turn_id
+                ):
+                    session.pop("_turn_completion_claim", None)
+                    completion_event = completion_claim.get("event")
+                if (
+                    worker_failed
+                    and session.get("_active_turn_id") == dispatch_turn_id
+                    and session.get("_active_turn_authorization") is authorization
+                ):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+                    _clear_active_turn_state(
+                        session,
+                        authorization,
+                        expected_turn_id=dispatch_turn_id,
+                    )
+                    with contextlib.suppress(BaseException):
+                        _release_hosted_room_turn_slot(session)
+                if (
+                    session.get("_run_thread") is run_thread
+                    and session.get("_run_thread_turn_id") == dispatch_turn_id
+                ):
+                    session.pop("_run_thread", None)
+                    session.pop("_run_thread_turn_id", None)
+            if isinstance(completion_event, threading.Event):
+                completion_event.set()
+            # Released only after the worker (including every finalizer above) has
+            # unwound, so a retiring backend cannot exit mid-turn.
+            retirement.release()
+
+    from agent.memory_provider import spawn_context_thread
+    from hermes_cli.backend_retirement import retirement
+
+    # Reserve process admission before the thread exists: a turn that cannot hold the
+    # backend open must never publish itself as running.
+    admitted = retirement.acquire()
+    run_thread = None
+    if admitted:
+        # Everything between the acquire and a STARTED thread must hand the permit
+        # back on failure: the worker's finally can only release once it actually
+        # runs. A leaked permit keeps active_count() above zero forever, so
+        # RetirementFence.prepare() reports idle=False and this backend can never
+        # cooperatively retire again.
+        try:
+            run_thread = spawn_context_thread(guarded_run, name=f"prompt-turn-{sid}")
+        except BaseException:
+            retirement.release()
+            raise
+    start_error = None
+    try:
+        # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
+        # state registry, and _sessions_lock gates every create/close/prompt on this backend.
+        with _routing_provenance_db(session) as routing_db, _sessions_lock:
+            registered = _sessions.get(sid)
+            can_start = not session.get("_closing") and (registered is None or registered is session)
+            if can_start:
+                # Only a registered session is proof the conversation is routed here; an unregistered one may
+                # still run its turn, but its stamp stays (#106459).
+                if registered is session:
+                    _reopen_routed_session_row(routing_db, sid, session)
+        can_start = bool(can_start and admitted)
         if can_start:
-            # Only a registered session is proof the conversation is routed here; an unregistered one may
-            # still run its turn, but its stamp stays (#106459).
-            if registered is session:
-                _reopen_routed_session_row(routing_db, sid, session)
-            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
+            with session["history_lock"]:
+                can_start = bool(
+                    not session.get("_closing")
+                    and session.get("running")
+                    and not session.get("_turn_cancel_requested")
+                    and session.get("_active_turn_id") == dispatch_turn_id
+                    and session.get("_active_turn_authorization") is authorization
+                )
+                if can_start:
+                    session["_run_thread"] = run_thread
+                    session["_run_thread_turn_id"] = dispatch_turn_id
+        if can_start and run_thread is not None:
+            try:
+                run_thread.start()
+            except Exception as exc:
+                start_error = exc
+                can_start = False
+                with session["history_lock"]:
+                    if session.get("_run_thread") is run_thread:
+                        session.pop("_run_thread", None)
+                        session.pop("_run_thread_turn_id", None)
+    except BaseException:
+        # Dispatch itself blew up before the worker could take ownership: hand the
+        # permit back rather than wedging retirement on an unstarted turn.
+        if admitted:
+            retirement.release()
+        raise
     if not can_start:
+        # The worker's finally-block owns the release only once it actually runs;
+        # a turn that never started must hand the permit back here.
+        if admitted:
+            retirement.release()
+        _emit_person_admission(
+            sid, authorization, "terminal",
+            reason="start_failed" if start_error is not None else "start_rejected",
+        )
         with session["history_lock"]:
-            session["running"] = False
+            if _clear_active_turn_state(session, authorization):
+                session["running"] = False
+    if start_error is not None:
+        raise start_error
     return can_start
 
 

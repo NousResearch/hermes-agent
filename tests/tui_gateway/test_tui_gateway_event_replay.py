@@ -54,6 +54,51 @@ def test_stamp_ignores_non_event_and_sessionless_frames():
     assert replay_stats()["events"] == 0
 
 
+def test_private_person_admission_is_live_only_and_never_publicly_replayed():
+    from tui_gateway import server
+
+    class CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, frame):
+            self.frames.append(frame)
+            return True
+
+    transport = CaptureTransport()
+    server._sessions["s1"] = {"transport": transport}
+    try:
+        assert server._emit(
+            "person.admission",
+            "s1",
+            {"admission_id": "a" * 32, "status": "terminal", "reason": "finished"},
+        )
+        response = server._methods["session.events.since"](
+            "replay", {"session_id": "s1", "last_seen": 0}
+        )
+    finally:
+        server._sessions.pop("s1", None)
+
+    assert transport.frames[0]["params"]["type"] == "person.admission"
+    assert "seq" not in transport.frames[0]["params"]
+    assert events_since("s1", 0) == []
+    assert replay_stats()["events"] == 0
+    assert response["result"]["events"] == []
+    assert response["result"]["count"] == 0
+    assert response["result"]["latest_seq"] == 0
+
+
+def test_events_since_defensively_filters_private_person_admissions():
+    private = _frame("s1", "person.admission")["params"]
+    private["seq"] = 1
+    with event_replay._replay_lock:
+        event_replay._replay_buffers["s1"] = event_replay.deque([(1, private, 1)])
+        event_replay._replay_buffer_bytes["s1"] = 1
+        event_replay._replay_next_seq["s1"] = 1
+
+    assert events_since("s1", 0) == []
+
+
 def test_events_since_returns_only_newer_frames_in_order():
     frames = [_frame("s1") for _ in range(5)]
     for f in frames:

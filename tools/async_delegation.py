@@ -554,6 +554,13 @@ def _dispatch_admitted(
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
     crash_result = _batch_crash if is_batch else _single_crash
     dispatched_at = time.time()
+    # Records can outlive the foreground turn and are sampled by the stale monitor. Keep
+    # profile/routing ContextVars, but replace personal authority with its non-secret blocked
+    # marker before retaining the Context object.
+    from agent.turn_authorization import without_turn_authorization
+
+    with without_turn_authorization():
+        record_context = contextvars.copy_context()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id, "goal": goal, **({"goals": list(goals)} if is_batch else {}),
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
@@ -567,7 +574,7 @@ def _dispatch_admitted(
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # The one stale-monitor thread serves every profile and starts with an empty Context;
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
-        "_context": contextvars.copy_context(),
+        "_context": record_context,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -604,7 +611,12 @@ def _dispatch_admitted(
     # reservation too: the stall monitor may finalize its registry record before it really exits.
     retirement.acquire()
     try:
-        future = executor.submit(propagate_context_to_thread(_worker))
+        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
+        # Capture that portable context with turn-local bearer authority removed:
+        # this daemon work can outlive the foreground tool call that launched it.
+        with without_turn_authorization():
+            detached_worker = propagate_context_to_thread(_worker)
+        future = executor.submit(detached_worker)
         future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()

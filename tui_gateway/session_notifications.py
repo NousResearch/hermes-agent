@@ -137,32 +137,63 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
 
 
-def _notif_release_turn(session: dict) -> None:
+def _notif_release_turn(session: dict, expected_turn_id: str) -> None:
+    from tui_gateway.session_auto_continue import _clear_active_turn_state
+
     with session["history_lock"]:
+        if session.get("_active_turn_id") != expected_turn_id:
+            return
         session["running"] = False
+        _clear_inflight_turn(session)
+        _clear_active_turn_state(session)
+        session.pop("_hosted_room_task", None)
 
 
-def _notif_claim_turn(session: dict) -> bool:
+def _notif_claim_turn(session: dict) -> str | None:
     """Claim the idle session (running=True) under history_lock; False if a turn is live."""
+    from tui_gateway.session_auto_continue import _activate_turn_identity
+
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running"):
-            return False
+        claimed = (
+            admitted
+            and not session.get("running")
+            and session.get("_turn_interrupt_claim") is None
+        )
+        if not claimed:
+            return None
         session["running"] = True
-        return True
+        turn_id = _activate_turn_identity(session)
+        session["_turn_cancel_requested"] = False
+        session["_active_turn_route"] = "inline"
+        return turn_id
 
 
 def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
+def _notif_submit(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: str,
+    what: str,
+    *,
+    expected_turn_id: str,
+    **kwargs,
+) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        started = _run_prompt_submit(
+            rid, sid, session, text, expected_turn_id=expected_turn_id, **kwargs
+        )
+        if not started:
+            raise RuntimeError("notification turn admission was superseded")
     except Exception as exc:
-        _notif_log_failure(what, exc)
-        _notif_release_turn(session)
+        _notif_release_turn(session, expected_turn_id)
+        with contextlib.suppress(Exception):
+            _notif_log_failure(what, exc)
         raise
 
 
@@ -170,11 +201,13 @@ def _notif_loop_status(sid: str, text: str) -> None:
     _emit("status.update", sid, {"kind": "loop", "text": text})
 
 
-def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
+def _notif_slash_loop_tick(
+    rid: str, sid: str, session: dict, mgr, wakeup: str, expected_turn_id: str
+) -> bool:
     """Slash-command /loop wakeup: route through the slash pipeline, not the model. No model reply to evaluate, so the
     tick completes immediately — unless the command resolves to a prompt (skill command etc.), which runs as a normal
     turn whose post-turn hook completes the tick."""
-    _notif_release_turn(session)
+    _notif_release_turn(session, expected_turn_id)
     try:
         parts = wakeup.lstrip()[1:].split(None, 1)
         resp = _methods["command.dispatch"](
@@ -183,17 +216,30 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         if out := str(payload.get("output") or "").strip():
             _notif_loop_status(sid, out)
         if payload.get("type") == "send" and payload.get("message"):
-            if not _notif_claim_turn(session):
-                mgr.abandon_tick()
-                return
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload["message"])
-            return
+            if not (send_turn_id := _notif_claim_turn(session)):
+                return False
+            started = False
+            try:
+                _emit("message.start", sid)
+                started = bool(
+                    _run_prompt_submit(
+                        rid,
+                        sid,
+                        session,
+                        payload["message"],
+                        expected_turn_id=send_turn_id,
+                    )
+                )
+                return started
+            finally:
+                if not started:
+                    _notif_release_turn(session, send_turn_id)
     except Exception:
-        pass
+        return False
     decision = mgr.complete_tick("")
     if decision.get("message"):
         _notif_loop_status(sid, decision["message"])
+    return True
 
 
 def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
@@ -236,22 +282,35 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     mgr = HeartbeatManager(session_id=sid_key)
     if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
         return  # not due, or the gateway poller owns the routed conversation — stays due there
-    if not _notif_claim_turn(session):
+    if not (turn_id := _notif_claim_turn(session)):
         return  # busy — the tick coalesces to the next idle poll
-    if not (prompt := mgr.due_prompt()):
-        _notif_release_turn(session)
-        return
     started = False
+    abandon = True
     try:
+        prompt = mgr.due_prompt()
+        if not prompt:
+            abandon = False
+            return
         _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        started = bool(
+            _run_prompt_submit(
+                f"__heartbeat__{int(time.time() * 1000)}",
+                sid,
+                session,
+                prompt,
+                expected_turn_id=turn_id,
+            )
+        )
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
-    if not started:
-        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_fire()
+    finally:
+        if not started:
+            # The exact claimed generation must be released even if durable state
+            # lookup/advance failed before prompt dispatch began.
+            _notif_release_turn(session, turn_id)
+            if abandon:
+                with contextlib.suppress(Exception):
+                    mgr.abandon_fire()
 
 
 def _loop_route_is_gateway_chat(state) -> bool:
@@ -274,24 +333,36 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     mgr = LoopManager(session_id=sid_key)
     if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
         return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
-    if not _notif_claim_turn(session):
+    if not (turn_id := _notif_claim_turn(session)):
         return  # busy — stays due, next poll retries
-    if not (wakeup := mgr.fire_tick()):
-        _notif_release_turn(session)
-        return
     rid = f"__loop__{int(time.time() * 1000)}"
+    started = False
+    abandon = True
     try:
+        wakeup = mgr.fire_tick()
+        if not wakeup:
+            abandon = False
+            return
         _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
         if wakeup.lstrip().startswith("/"):
-            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
+            started = _notif_slash_loop_tick(
+                rid, sid, session, mgr, wakeup, turn_id
+            )
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            started = bool(
+                _run_prompt_submit(
+                    rid, sid, session, wakeup, expected_turn_id=turn_id
+                )
+            )
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_tick()
+    finally:
+        if not started:
+            _notif_release_turn(session, turn_id)
+            if abandon:
+                with contextlib.suppress(Exception):
+                    mgr.abandon_tick()
 
 
 def _kb_first_line(value: Any, limit: int) -> str:
@@ -423,27 +494,66 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _emit("status.update", sid, {"kind": "process", "text": text})
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
+    if not session.get("_kanban_pending"):
+        return
+    if not (turn_id := _notif_claim_turn(session)):
         return
     with session["history_lock"]:
         batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
-    with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
-
-
-def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
-    """Run the claimed (running=True) agent turn for one notification event."""
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
-    if (claim := claim_event_delivery(evt, "tui-poller")) is None:
-        return
-    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
-              if evt.get("type") == "async_delegation" else {})
     try:
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
+        _notif_submit(
+            f"__notif__{int(time.time() * 1000)}", sid, session,
+            "\n".join(batch), "kanban notification dispatch failed",
+            expected_turn_id=turn_id,
+        )
     except Exception:
-        release_event_delivery(evt, claim)
+        # Cursor claims are durable, so the in-memory batch is the only copy
+        # left to retry. Preserve arrival order ahead of notifications that
+        # were buffered while this dispatch attempt was in flight.
+        with session["history_lock"]:
+            session["_kanban_pending"] = [
+                *batch,
+                *(session.get("_kanban_pending") or []),
+            ]
+
+
+def _notif_dispatch_event(
+    sid: str, session: dict, evt: dict, text: str, expected_turn_id: str
+) -> None:
+    """Run the claimed (running=True) agent turn for one notification event."""
+    claim = None
+    release_event_delivery = None
+    try:
+        from tools.async_delegation import (
+            claim_event_delivery,
+            complete_event_delivery,
+            release_event_delivery,
+        )
+        claim = claim_event_delivery(evt, "tui-poller")
+        if claim is None:
+            _notif_release_turn(session, expected_turn_id)
+            return
+        kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+                  if evt.get("type") == "async_delegation" else {})
+        _notif_submit(
+            f"__notif__{int(time.time() * 1000)}", sid, session, text,
+            "notification poller dispatch failed",
+            expected_turn_id=expected_turn_id, **kwargs,
+        )
+    except Exception:
+        if claim is not None and release_event_delivery is not None:
+            with contextlib.suppress(Exception):
+                release_event_delivery(evt, claim)
+        _notif_release_turn(session, expected_turn_id)
         return
-    complete_event_delivery(evt, claim)
+    try:
+        complete_event_delivery(evt, claim)
+    except Exception as exc:
+        # The turn worker owns the generation once dispatch succeeds. Releasing
+        # either claim here would admit overlapping work and redeliver the same
+        # durable event while its first turn is still live.
+        with contextlib.suppress(Exception):
+            _notif_log_failure("notification delivery acknowledgement failed", exc)
 
 
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
@@ -489,13 +599,13 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
-    if not _notif_claim_turn(session):
+    if not (turn_id := _notif_claim_turn(session)):
         queue.put(evt)
         if deferred is not None:
             return False
         time.sleep(0.25)  # back off: the re-queued event keeps the queue non-empty, else this loop spins at 100% CPU
         return True
-    _notif_dispatch_event(sid, session, evt, text)
+    _notif_dispatch_event(sid, session, evt, text, turn_id)
     return True
 
 
@@ -505,29 +615,49 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
     if not notifications:
         return
-    if not _notif_claim_turn(session):
+    if not (turn_id := _notif_claim_turn(session)):
         for event, _text in notifications:
             (deferred.append if deferred is not None else registry.completion_queue.put)(event)
         if deferred is None:
             time.sleep(0.25)
         return
-    claimed = [(event, text, claim) for event, text in notifications
-               if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
-    batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
-    text = batch.render(registry)
-    if text is None:
-        _notif_release_turn(session)
+    claimed = []
+    dispatched = False
     try:
-        if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                          "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
-                          display_metadata={"display_text": batch.display_text(registry)})
-    except Exception:
+        claimed = [
+            (event, text, claim)
+            for event, text in notifications
+            if (claim := claim_event_delivery(
+                event, "tui-completion-batch"
+            )) is not None
+        ]
+        batch = ProcessNotificationBatch(
+            tuple((event, text) for event, text, _claim in claimed)
+        )
+        text = batch.render(registry)
+        if text is None:
+            _notif_release_turn(session, turn_id)
+        else:
+            _notif_submit(
+                f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+                display_metadata={"display_text": batch.display_text(registry)},
+                expected_turn_id=turn_id,
+            )
+            dispatched = True
         for event, _text, claim in claimed:
-            release_event_delivery(event, claim)
-        return
-    for event, _text, claim in claimed:
-        complete_event_delivery(event, claim)
+            complete_event_delivery(event, claim)
+    except Exception as exc:
+        if not dispatched:
+            for event, _text, claim in claimed:
+                with contextlib.suppress(Exception):
+                    release_event_delivery(event, claim)
+            _notif_release_turn(session, turn_id)
+        else:
+            with contextlib.suppress(Exception):
+                _notif_log_failure(
+                    "completion delivery acknowledgement failed", exc
+                )
 
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
@@ -546,6 +676,8 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
+    from agent.turn_authorization import TurnAuthorization
+    from tui_gateway.session_auto_continue import _activate_turn_identity
     from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
 
     home = _session_home(session)
@@ -556,7 +688,7 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     with _session_turn_admission(session) as admitted:
         if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
-                "_auto_continue_scheduled")) or session.get("agent") is None:
+                "_auto_continue_scheduled", "_turn_interrupt_claim")) or session.get("agent") is None:
             return False
         lease = session.get("active_session_lease")
         if lease is None or getattr(lease, "released", False):
@@ -571,6 +703,10 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
         if claimed is None:
             return False
         session["running"] = True
+        turn_id = _activate_turn_identity(session)
+        session["_turn_cancel_requested"] = False
+        session["_active_turn_route"] = "inline"
+        session["_active_turn_authorization"] = TurnAuthorization.from_raw(None)
 
     delivery_id = str(claimed["id"])
 
@@ -589,13 +725,14 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     try:
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
-                                     turn_author=claimed.get("author") or None)
+                                     turn_author=claimed.get("author") or None,
+                                     expected_turn_id=turn_id)
     except Exception as exc:
-        _notif_release_turn(session)
+        _notif_release_turn(session, turn_id)
         terminal_receipt({"status": "failed", "error": str(exc)})
         raise
     if not started:
-        _notif_release_turn(session)
+        _notif_release_turn(session, turn_id)
         terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
     return started
 

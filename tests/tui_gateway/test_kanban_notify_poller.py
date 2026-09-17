@@ -286,7 +286,7 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
+            lambda rid, sid, sess, text, **_kwargs: submits.append(text) or True,
         )
         stop = threading.Event()
         thread = threading.Thread(
@@ -362,3 +362,24 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+
+def test_failed_kanban_dispatch_restores_pending_batch(monkeypatch):
+    import threading
+    import tui_gateway.server as server
+
+    session = {
+        "session_key": SESSION_KEY,
+        "history_lock": threading.Lock(),
+        "running": False,
+        "_kanban_pending": ["must deliver"],
+    }
+    monkeypatch.setattr(server, "_collect_kanban_notifications", lambda _session: [])
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args, **_kwargs: False)
+
+    server._notif_poll_kanban("sid", session)
+
+    assert session["_kanban_pending"] == ["must deliver"]
+    assert session["running"] is False
+    assert "_active_turn_id" not in session

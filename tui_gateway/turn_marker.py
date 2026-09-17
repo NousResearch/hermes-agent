@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from utils import atomic_json_write
@@ -24,6 +26,40 @@ _MAX_ENTRIES = 32
 _MAX_PROMPT_CHARS = 64_000
 
 _lock = threading.Lock()
+
+
+@contextmanager
+def _interprocess_update_lock(path: Path):
+    """Serialize marker read/compare/write across sibling gateway processes."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _marker_path(home: Path | str) -> Path:
@@ -65,29 +101,61 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
     try:
         with _lock:
             path = _marker_path(home)
-            entries = mutate(_load(path))
-            if entries is not None:
-                _store(path, entries)
+            with _interprocess_update_lock(path):
+                entries = mutate(_load(path))
+                if entries is not None:
+                    _store(path, entries)
     except Exception:
         logger.debug("failed to %s turn marker for %s", what, session_key, exc_info=True)
 
 
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
-                      auto_continue: bool = True) -> None:
+                      auto_continue: bool = True,
+                      personal_authorization_blocked: bool = False,
+                      turn_id: str | None = None,
+                      should_record=None) -> None:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
     this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
     if not session_key or not prompt:
         return
     now = time.time()
     entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
-             "auto_continue": bool(auto_continue)}
-    _update(home, session_key, lambda entries: {**_prune(entries, now), session_key: entry}, "record")
+             "auto_continue": bool(auto_continue),
+             "personal_authorization_blocked": bool(personal_authorization_blocked)}
+    if turn_id:
+        entry["turn_id"] = str(turn_id)
+    def record_if_current(entries):
+        if should_record is not None and not should_record():
+            return None
+        return {**_prune(entries, now), session_key: entry}
+
+    _update(home, session_key, record_if_current, "record")
 
 
-def clear_turn_marker(home: Path | str, session_key: str) -> None:
+def clear_turn_marker(
+    home: Path | str,
+    session_key: str,
+    *,
+    expected_turn_id: str | None = None,
+    expected_started_at: float | None = None,
+) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if session_key:
-        _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
+        def clear_expected(entries: dict[str, dict]) -> dict[str, dict] | None:
+            current = entries.get(session_key)
+            if current is None:
+                return None
+            if expected_turn_id is not None and current.get("turn_id") != expected_turn_id:
+                return None
+            if (
+                expected_turn_id is None
+                and expected_started_at is not None
+                and _started_at(current) != float(expected_started_at)
+            ):
+                return None
+            return {k: v for k, v in entries.items() if k != session_key}
+
+        _update(home, session_key, clear_expected, "clear")
 
 
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
@@ -97,10 +165,22 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
     try:
         with _lock:
             entry = _load(_marker_path(home)).get(session_key)
-        prompt = str(entry.get("prompt") or "") if isinstance(entry, dict) else ""
+        if not isinstance(entry, dict):
+            return None
+        prompt = str(entry.get("prompt") or "")
         if not prompt.strip():
             return None
-        return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
-                "auto_continue": bool(entry.get("auto_continue", True))}
+        result = {
+            "attempts": max(0, int(entry.get("attempts") or 0)),
+            "prompt": prompt,
+            "started_at": _started_at(entry),
+            "auto_continue": bool(entry.get("auto_continue", True)),
+            "personal_authorization_blocked": bool(
+                entry.get("personal_authorization_blocked", False)
+            ),
+        }
+        if entry.get("turn_id"):
+            result["turn_id"] = str(entry["turn_id"])
+        return result
     except Exception:
         return None

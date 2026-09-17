@@ -26,11 +26,13 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     retired = []
     noop = lambda *args, **kwargs: None
     submit = rebind(prompt_turn._run_prompt_submit, {
-        "threading": threading, "time": time, "logger": logging.getLogger(__name__),
+        "threading": threading, "time": time, "contextlib": contextlib,
+        "logger": logging.getLogger(__name__),
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
-        "_admit_prompt_turn": lambda *args: ([], agent),
-        "_emit": noop, "bind_transport": noop, "reset_transport": noop,
+        "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
+        "_emit": noop, "_emit_person_admission": noop,
+        "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
         "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
@@ -38,7 +40,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_finish_turn": noop, "_clear_inflight_turn": noop,
         # Hosted room member sessions drop their bot_room slot at turn end (#106847); a canonical chat is not one.
         "_release_hosted_room_turn_slot": noop,
-        "_retire_turn_marker": lambda *args: retired.append(args),
+        "_retire_turn_marker": lambda *args, **kwargs: retired.append((args, kwargs)),
         "_emit_settled_session_info": noop,
         "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),
         "_reopen_routed_session_row": noop,
@@ -49,8 +51,9 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
                                   error=outcome.get("error", ""))
     assert submit(None, "live", session, "refused input", terminal_callback=terminal)
-    session["_run_thread"].join(timeout=5)
-    assert not session["_run_thread"].is_alive()
+    run_thread = session["_run_thread"]
+    run_thread.join(timeout=5)
+    assert not run_thread.is_alive()
     assert mailbox.read_delivery_result(tmp_path, queued["id"])["status"] == "failed"
     assert retired and session["running"] is False
 

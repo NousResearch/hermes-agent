@@ -69,6 +69,23 @@ def _handler_keys(selected):
 
 
 class TestCapabilityGatedRegistration:
+    def test_per_call_authorized_server_gets_no_generated_utility_tools(self):
+        from tools.mcp_tool_registration import _select_utility_schemas
+
+        server = _make_fake_server(
+            initialize_result=_make_init_result(resources=True, prompts=True)
+        )
+        selected = _select_utility_schemas(
+            "fizko",
+            server,
+            {
+                "url": "https://mcp.fizko.ai/mcp",
+                "per_call_authorization": "fizko_person_access_token",
+            },
+        )
+
+        assert selected == []
+
     def test_tools_only_server_gets_no_utility_schemas(self):
         """Context7-shaped server (tools only, no prompts / resources) should
         get zero utility stubs registered — this is the exact scenario

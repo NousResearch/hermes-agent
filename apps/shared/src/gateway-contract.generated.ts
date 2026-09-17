@@ -2137,6 +2137,10 @@ export interface PromptSubmitParams {
   confirm_truncate?: boolean | null
   confirm_empty_truncate?: boolean | null
   rebind_survivor_row_ids?: number[] | null
+  _fizko_person_access_token?: string | null
+  _fizko_person_access_token_expires_at?: number | null
+  _fizko_person_principal_id?: string | null
+  _fizko_person_admission_id?: string | null
 }
 /** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 export interface PromptSubmitResult {
@@ -3861,6 +3865,11 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+export interface PersonAdmissionPayload {
+  admission_id: string
+  status: string
+  reason?: string | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -4460,7 +4469,7 @@ export interface RpcMethods {
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
   /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
-  /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
+  /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. Trusted personal callers must provide per-turn bearer, Unix expiry, stable principal, and private admission metadata. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
   'reload.env': { params: ReloadEnvParams; result: ReloadEnvResult }
@@ -4508,7 +4517,7 @@ export interface RpcMethods {
   'session.foreign.preview': { params: SessionForeignIdParams; result: SessionForeignPreviewResult }
   /** The durable display transcript (ancestors included, row ids attached). */
   'session.history': { params: SessionHistoryParams; result: SessionHistoryResult }
-  /** Stop the running turn (and streaming TTS); retires the crash-recovery marker. */
+  /** Stop the running turn (and streaming TTS); retires the crash-recovery marker. Direct interruption is unavailable while a person-authorized turn is active; send an authenticated prompt.submit correction through the trusted admission rail. */
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
   /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
@@ -4942,6 +4951,8 @@ export interface BackendGatewayEventMap {
   'pairing.changed': ChangeSignalPayload
   /** Focus / reveal a named desktop pane. */
   'pane.reveal': PaneRevealPayload
+  /** Private exact-ID lifecycle accounting for a trusted personal prompt. */
+  'person.admission': PersonAdmissionPayload
   /** The active pet / its spritesheet changed (watcher). */
   'pet.changed': PetChangedPayload
   /** Pet base-draft generation progress. */
@@ -5055,6 +5066,7 @@ export const GATEWAY_EVENT_TYPES = [
   'notification.show',
   'pairing.changed',
   'pane.reveal',
+  'person.admission',
   'pet.changed',
   'pet.generate.progress',
   'pet.hatch.progress',

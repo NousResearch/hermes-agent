@@ -4,8 +4,11 @@ Messages/tools are already OpenAI-shaped, so convert_* are near-identity; the
 provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body).
 """
 
+import html
 import json
-from typing import Any
+import re
+import uuid
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -52,6 +55,124 @@ def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[lis
         tools, ("tool_search",), name_of=lambda t: (t.get("function") or {}).get("name"),
         rename=lambda t, alias: {**t, "function": {**t["function"], "name": alias}},
     )
+
+
+def _extract_xml_tool_calls(text: str) -> Tuple[List[ToolCall], str]:
+    """Extract tool calls embedded as XML (<dots_function_call>, <tool_call>, or <invoke>)
+    from text (e.g. reasoning_content or content).
+
+    Handles dots-studio native format:
+        <dots_function_call>
+        <invoke name="tool_name">
+        <parameter name="arg_name">arg_val</parameter>
+        </invoke>
+        </dots_function_call>
+
+    Also handles generic <function_call>, <tool_call>, or bare <invoke> tags,
+    tolerant of unclosed/streaming tags and JSON-serialized parameter values.
+
+    Returns:
+        (tool_calls, cleaned_text)
+    """
+    if not text or not isinstance(text, str):
+        return [], text or ""
+
+    if not (
+        "<invoke" in text
+        or "<dots_function_call>" in text
+        or "<tool_call>" in text
+        or "<function_call>" in text
+    ):
+        return [], text
+
+    tool_calls: List[ToolCall] = []
+
+    container_pattern = re.compile(
+        r"<(?:dots_function_call|function_call|tool_call)>(.*?)(?:</(?:dots_function_call|function_call|tool_call)>|$)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    invoke_pattern = re.compile(
+        r"<invoke\s+name=[\"']([^\"']+)[\"']>(.*?)(?:</invoke>|$)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    param_pattern = re.compile(
+        r"<parameter\s+name=[\"']([^\"']+)[\"']>(.*?)(?:</parameter>|$)",
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    spans_to_remove = []
+    container_matches = list(container_pattern.finditer(text))
+
+    def _parse_invokes(inv_text: str) -> List[ToolCall]:
+        parsed: List[ToolCall] = []
+        invokes = list(invoke_pattern.finditer(inv_text))
+        for inv in invokes:
+            tool_name = inv.group(1).strip()
+            inv_body = inv.group(2)
+            params = list(param_pattern.finditer(inv_body))
+            args: Dict[str, Any] = {}
+            for p in params:
+                p_name = p.group(1).strip()
+                p_val = p.group(2).strip("\r\n")
+                if "&" in p_val and any(
+                    ent in p_val for ent in ("&lt;", "&gt;", "&amp;", "&quot;", "&#")
+                ):
+                    try:
+                        p_val_unescaped = html.unescape(p_val)
+                    except Exception:
+                        p_val_unescaped = p_val
+                else:
+                    p_val_unescaped = p_val
+
+                stripped = p_val_unescaped.strip()
+                if (
+                    (stripped.startswith("{") and stripped.endswith("}"))
+                    or (stripped.startswith("[") and stripped.endswith("]"))
+                    or stripped in ("true", "false", "null")
+                ):
+                    try:
+                        args[p_name] = json.loads(stripped)
+                    except Exception:
+                        args[p_name] = p_val_unescaped
+                else:
+                    args[p_name] = p_val_unescaped
+
+            call_id = f"call_{uuid.uuid4().hex[:24]}"
+            parsed.append(
+                ToolCall(
+                    id=call_id,
+                    name=tool_name,
+                    arguments=json.dumps(args, ensure_ascii=False),
+                )
+            )
+        return parsed
+
+    if container_matches:
+        for c_match in container_matches:
+            block = c_match.group(1)
+            parsed_calls = _parse_invokes(block)
+            if parsed_calls:
+                tool_calls.extend(parsed_calls)
+                spans_to_remove.append(c_match.span())
+    else:
+        parsed_calls = _parse_invokes(text)
+        if parsed_calls:
+            tool_calls.extend(parsed_calls)
+            for inv in invoke_pattern.finditer(text):
+                spans_to_remove.append(inv.span())
+
+    if spans_to_remove:
+        cleaned_parts = []
+        last_idx = 0
+        for start, end in sorted(spans_to_remove, key=lambda x: x[0]):
+            cleaned_parts.append(text[last_idx:start])
+            last_idx = end
+        cleaned_parts.append(text[last_idx:])
+        cleaned_text = "".join(cleaned_parts).strip()
+    else:
+        cleaned_text = text
+
+    return tool_calls, cleaned_text
 
 
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
@@ -557,6 +678,61 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+
+        # Fallback: extract native XML tool calls (<dots_function_call>, <invoke>,
+        # <tool_call>) from reasoning or content if standard tool_calls was empty.
+        # Stealth/reasoning models (e.g. dots-studio/dots-3-note-preview, Qwen, or
+        # open models under high reasoning effort) often emit tool markup in their
+        # reasoning token stream which providers do not surface in msg.tool_calls.
+        if not tool_calls:
+            candidate_sources = [
+                ("reasoning_content", reasoning_content),
+                ("reasoning", getattr(msg, "reasoning", None)),
+                ("content", content),
+            ]
+            for source_name, raw_text in candidate_sources:
+                if isinstance(raw_text, str) and (
+                    "<invoke" in raw_text
+                    or "dots_function_call" in raw_text
+                    or "<tool_call>" in raw_text
+                    or "<function_call>" in raw_text
+                ):
+                    extracted, cleaned_text = _extract_xml_tool_calls(raw_text)
+                    if extracted:
+                        tool_calls = extracted
+                        finish_reason = "tool_calls"
+                        if source_name == "reasoning_content":
+                            reasoning_content = cleaned_text or None
+                            if reasoning_content is not None:
+                                provider_data["reasoning_content"] = reasoning_content
+                            elif "reasoning_content" in provider_data:
+                                del provider_data["reasoning_content"]
+                        elif source_name == "reasoning":
+                            provider_data["reasoning"] = cleaned_text or None
+                        elif source_name == "content":
+                            content = cleaned_text or None
+                        break
+
+            if not tool_calls:
+                rd = getattr(msg, "reasoning_details", None)
+                if rd and isinstance(rd, list):
+                    for detail in rd:
+                        if isinstance(detail, dict):
+                            detail_text = (
+                                detail.get("text")
+                                or detail.get("content")
+                                or detail.get("summary")
+                                or detail.get("thinking")
+                            )
+                            if isinstance(detail_text, str) and (
+                                "<invoke" in detail_text
+                                or "dots_function_call" in detail_text
+                            ):
+                                extracted, _ = _extract_xml_tool_calls(detail_text)
+                                if extracted:
+                                    tool_calls = extracted
+                                    finish_reason = "tool_calls"
+                                    break
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,

@@ -222,7 +222,17 @@ def _late_legacy_intent(record: Optional[dict], conn: Optional[sqlite3.Connectio
     if state is False:
         return False
     if state is True and conn is not None:
-        conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (record["id"],))
+        # Write-time recheck: `record` is a snapshot taken before the stat. A replay that landed
+        # the complete manifest in between must not be re-armed with a flag nothing can clear.
+        cur = conn.execute(
+            "UPDATE executions SET delivery_manifest_pending=1 WHERE id=? AND delivery_manifest_pending=0 "
+            "AND delivery_manifest IS NOT NULL AND instr(delivery_manifest, '\"bot\"')=0",
+            (record["id"],))
+        if cur.rowcount == 0:
+            # The row moved on (complete manifest landed, or already flagged): defer to the
+            # authoritative row state rather than the stale snapshot.
+            current = _fetch(conn, record["id"])
+            return bool(current and (current.get("delivery_manifest_pending") or _placeholder_only(current)))
     return True
 
 

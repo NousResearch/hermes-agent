@@ -142,7 +142,9 @@ class TestWriteFileToolGuard:
         wal = _make_wal_db(db)
         original = wal.read_bytes()
         result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
-        assert result.get("error"), "text write into .db-wal must be refused"
+        # The no-baseline overwrite guard would also refuse; pin the binary
+        # refusal so the message steers the model to sqlite3, not to read_file.
+        assert "binary" in result.get("error", ""), result
         assert wal.read_bytes() == original
         conn = sqlite3.connect(db)
         assert conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"

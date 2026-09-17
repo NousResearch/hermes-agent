@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EARS Requirement",
+  "description": "Schema-validated JSON record for one EARS-syntax requirement line, cross-referenced by id from spec.md and used to seed property-based tests.",
+  "type": "object",
+  "required": ["id", "pattern", "actor", "response", "acceptance_criteria"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^FR-[0-9]{3,}$",
+      "description": "Matches the FR-xxx id used in spec.md."
+    },
+    "pattern": {
+      "type": "string",
+      "enum": ["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"],
+      "description": "Which of the five EARS patterns this line follows."
+    },
+    "trigger": {
+      "type": ["string", "null"],
+      "description": "The WHEN/WHILE/WHERE/IF condition. Null only for the ubiquitous pattern."
+    },
+    "actor": {
+      "type": "string",
+      "description": "The system or component the SHALL applies to."
+    },
+    "response": {
+      "type": "string",
+      "description": "The required behavior after SHALL."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["given", "when", "then"],
+        "properties": {
+          "given": {"type": "string"},
+          "when": {"type": "string"},
+          "then": {"type": "string"}
+        }
+      },
+      "description": "Given/When/Then scenarios, linked 1+ per requirement -- these seed both hand-written and property-based test generation."
+    },
+    "testable": {
+      "type": "boolean",
+      "description": "Whether ears-sensibility-gate (or equivalent review) judged this requirement to have a deterministic, observable oracle."
+    },
+    "links": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "IDs of related/conflicting/superseding requirements."
+    }
+  },
+  "additionalProperties": false
+}

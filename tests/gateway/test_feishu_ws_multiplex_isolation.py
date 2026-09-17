@@ -95,6 +95,94 @@ def test_two_concurrent_clients_each_use_their_own_loop_and_overrides(monkeypatc
     assert getattr(feishu_adapter._ws_isolation_state, "connect_kwargs", None) is None
 
 
+def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch):
+    """#113662: with the SDK's reconnect ladder disabled, a receive-loop death
+    used to strand ``start()`` in ``run_until_complete(_select())`` forever —
+    the thread stayed alive on a deaf socket and the supervisor's executor
+    future never completed. The isolation wrap must stop the worker loop so
+    ``start()`` raises and the thread exits for the supervisor to rebuild."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        def __init__(self):
+            self._auto_reconnect = False
+
+        async def _receive_message_loop(self):
+            # Mirror lark_oapi 1.6.8: bare raise (no reconnect) out of an
+            # unawaited create_task when Hermes disables _auto_reconnect.
+            await asyncio.sleep(0.01)
+            raise ConnectionError("simulated half-open peer")
+
+        def start(self):
+            loop = client_mod.loop
+
+            async def _select():  # the SDK's forever-parked select loop
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub()
+
+    def run():
+        feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    # On main the thread parks inside start() forever and this assert fails.
+    assert not thread.is_alive()
+    # The executor future completes: _run_official_feishu_ws_client ran its
+    # full teardown, which is what _supervise_websocket_thread awaits.
+    assert stub._ws_thread_loop is None
+
+
+def test_live_receive_loop_keeps_start_parked(monkeypatch):
+    """The exit-notify wrap must only fire when the receive loop actually
+    dies — a healthy socket keeps start() parked (no false-positive stop)."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+    parked = threading.Event()
+    loop_holder = {}
+
+    class FakeSDKClient:
+        async def _receive_message_loop(self):
+            parked.set()
+            await asyncio.sleep(3600)
+
+        def start(self):
+            loop = client_mod.loop
+            # Resolve the real worker loop from inside the thread (the module
+            # global is a thread-local proxy that falls back off-thread).
+            loop_holder["loop"] = asyncio.get_event_loop()
+
+            async def _select():
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub()
+
+    def run():
+        feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert parked.wait(timeout=10)
+    thread.join(timeout=0.5)
+    assert thread.is_alive()  # healthy link: start() stays parked
+    # Clean teardown for the test process: wake the parked selector and stop
+    # the worker loop from this (foreign) thread, then let the thread's own
+    # finally block close it out.
+    loop_holder["loop"].call_soon_threadsafe(loop_holder["loop"].stop)
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+
 def _supervisor_stub():
     stub = SimpleNamespace(
         _running=True,

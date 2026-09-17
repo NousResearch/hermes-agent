@@ -1044,6 +1044,34 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         _dispatch_connect.__wrapped__ = real_connect
         _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
         ws_client_module.websockets.connect = _dispatch_connect
+
+        client_cls = getattr(ws_client_module, "Client", None)
+        original_receive_loop = (
+            getattr(client_cls, "_receive_message_loop", None)
+            if client_cls is not None
+            else None
+        )
+        if original_receive_loop is not None:
+
+            async def _receive_message_loop_exit_notify(self: Any) -> None:
+                try:
+                    await original_receive_loop(self)
+                finally:
+                    # ``Client.start()`` parks in ``run_until_complete(_select())``, which only
+                    # returns when this worker loop stops, and the receive loop runs as a bare
+                    # ``create_task`` whose exception nobody retrieves. With the SDK's own
+                    # reconnect ladder disabled, a dead receive loop would therefore leave a
+                    # deaf-but-ESTABLISHED socket whose executor future never completes and the
+                    # supervisor never rebuilds (#113662). Stopping the loop makes ``start()``
+                    # raise, completing the future so ``_supervise_websocket_thread`` runs; the
+                    # deliberate-disconnect paths are unaffected because they nil ``_ws_client``
+                    # first and the supervisor exits without restarting.
+                    try:
+                        asyncio.get_running_loop().stop()
+                    except RuntimeError:  # pragma: no cover - no running loop
+                        pass
+
+            client_cls._receive_message_loop = _receive_message_loop_exit_notify
         _WS_ISOLATION_INSTALLED = True
 
 

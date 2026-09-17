@@ -49,6 +49,15 @@ def test_classify_deleted_wal_separately_from_main_file_replacement():
     assert classify_persistence_error(str(replaced)) == "replaced"
 
 
+def test_classify_cantopen_as_deleted_wal_generation():
+    # A surviving writer whose -wal/-shm sidecars were unlinked by a clean
+    # gateway close raises SQLITE_CANTOPEN on its next append, not the prose guard.
+    assert classify_persistence_error("unable to open database file") == "deleted_wal"
+    assert classify_persistence_error(
+        sqlite3.OperationalError("unable to open database file")
+    ) == "deleted_wal"
+
+
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_state.sys, "platform", "win32")
     assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []

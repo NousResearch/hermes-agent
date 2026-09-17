@@ -226,7 +226,9 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("closed by compression",), "compression_closed"),
     (("being compressed", "compression lease"), "compression"),
     # RPC-wrapped errors lose their exception type; retain the same sidecar/main-file split.
-    (("deleted state.db-wal", "deleted state.db-shm"), "deleted_wal"),
+    # "unable to open database file" (SQLITE_CANTOPEN) is the raw sqlite3 error a surviving
+    # writer sees after a clean close unlinked the -wal/-shm sidecars it still holds.
+    (("deleted state.db-wal", "deleted state.db-shm", "unable to open database file"), "deleted_wal"),
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),

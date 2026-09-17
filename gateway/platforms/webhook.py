@@ -550,7 +550,8 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception:
             logger.exception("[webhook] cron-trigger admission failed job=%s route=%s", job_ref, route_name)
             return self._cron_trigger_unavailable()
-        if not admitted.get("claimed"):
+        # claimed:true without a job snapshot is the claim-exception dict, not admission.
+        if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
             logger.warning("[webhook] cron-trigger job=%s route=%s not admitted: %s", job_ref, route_name,
                            admitted.get("error"))
             return self._cron_trigger_unavailable()

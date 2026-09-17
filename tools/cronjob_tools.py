@@ -390,7 +390,8 @@ def execute_job_for_event(
     ``{"claimed": bool, "success": bool, "error": str|None}``.
     """
     admitted = admit_job_for_event(job_ref)
-    if not admitted.get("claimed"):
+    # claimed:true without a job snapshot is the claim-exception dict, not a win.
+    if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
         return {
             "claimed": False,
             "success": False,

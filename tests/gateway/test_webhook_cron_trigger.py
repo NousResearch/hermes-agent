@@ -14,6 +14,9 @@ Covers:
   was created"
 - Paused/unknown/busy targets are retryable non-2xx and do not consume
   the delivery ID
+- A claim-exception result (``claimed: true`` without a job snapshot)
+  is the same retryable refusal: 503 + Retry-After, ID unconsumed, no
+  dispatch; ``execute_job_for_event`` returns the error dict
 - Startup validation rejects routes that set both ``cron_job`` and
   ``deliver_only``
 - ``execute_job_for_event`` resolves refs and fails cleanly on unknowns
@@ -331,6 +334,78 @@ class TestCronJobTrigger:
         assert "pull_request_review" in extra_prompt
         assert handle_message_calls == []
 
+    @pytest.mark.asyncio
+    async def test_claim_exception_is_retryable_and_does_not_consume_delivery_id(self):
+        """``_claim_for_manual_run`` may return claimed:true with no snapshot.
+
+        That shape must not KeyError into a bare 500: the producer gets a
+        retryable 503, the delivery ID stays unconsumed, and nothing runs.
+        """
+        from cron.jobs import create_job, get_job
+        from tools import cronjob_tools
+
+        secret_prompt = "SECRET_CLAIM_EXCEPTION_PROMPT_do_not_leak"
+        job = create_job(
+            prompt=secret_prompt, schedule="every 5m", name="claim-exception-target"
+        )
+        delivery_id = "delivery-claim-exception-1"
+        adapter = _make_adapter(
+            {
+                "herdr": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "cron_job": job["id"],
+                    "prompt": "event {n}",
+                }
+            }
+        )
+        handle_message_calls = []
+
+        async def _capture(event):
+            handle_message_calls.append(event)
+
+        adapter.handle_message = _capture
+        ran = []
+
+        def _fake_run(claimed_job, extra_prompt=None):
+            ran.append((claimed_job, extra_prompt))
+            return {"claimed": True, "success": True, "error": None}
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-GitHub-Delivery": delivery_id,
+        }
+
+        with patch.object(
+            cronjob_tools, "claim_job_for_fire", side_effect=OSError("disk")
+        ), patch.object(cronjob_tools, "_run_claimed_job", side_effect=_fake_run):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                resp = await cli.post(
+                    "/webhooks/herdr", data=b'{"n": 1}', headers=headers
+                )
+                body = await resp.json()
+                public = json.dumps(body)
+                assert resp.status == 503
+                assert resp.headers.get("Retry-After") == "60"
+                assert body.get("status") != "accepted"
+                assert body.get("error") == "Cron job is not available"
+                assert "disk" not in public
+                assert "SECRET_CLAIM_EXCEPTION_PROMPT" not in public
+
+                retry = await cli.post(
+                    "/webhooks/herdr", data=b'{"n": 1}', headers=headers
+                )
+                retry_body = await retry.json()
+                assert retry.status == 503
+                assert retry.headers.get("Retry-After") == "60"
+                assert retry_body.get("status") != "duplicate"
+
+        await _drain_background_tasks(adapter)
+        assert handle_message_calls == []
+        assert ran == []
+        refreshed = get_job(job["id"])
+        assert refreshed is not None
+        assert not refreshed.get("fire_claim")
+
 
 # ===================================================================
 # Startup validation
@@ -401,3 +476,27 @@ class TestExecuteJobForEvent:
             )
         assert result["success"] is True
         mock_exec.assert_called_once_with(claimed, extra_prompt="event context")
+
+    def test_claim_exception_returns_error_dict_without_raising(self):
+        """Claim-exception results have claimed:true and no job snapshot.
+
+        Base ``execute_job_for_event`` returned the error dict; H KeyError'd
+        on ``admitted["job"]``. Public contract is the error dict, no run.
+        """
+        from tools import cronjob_tools
+
+        job = {"id": "job-123", "name": "sweeper"}
+        with patch.object(
+            cronjob_tools, "resolve_job_ref", return_value=job
+        ), patch.object(
+            cronjob_tools, "claim_job_for_fire", side_effect=OSError("disk")
+        ), patch.object(
+            cronjob_tools, "mark_job_run"
+        ), patch.object(
+            cronjob_tools, "_run_claimed_job"
+        ) as mock_exec:
+            result = cronjob_tools.execute_job_for_event("sweeper")
+        assert result["success"] is False
+        assert result.get("error") == "disk"
+        assert "job" not in result
+        mock_exec.assert_not_called()

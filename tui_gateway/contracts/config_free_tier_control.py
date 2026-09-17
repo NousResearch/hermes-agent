@@ -436,17 +436,20 @@ class HeartbeatSnapshot(Result):
 
 class SessionControlSnapshot(Result):
     """``_snapshot_control`` — ``revision`` is a hash of the visible state (``""`` when empty);
-    ``updated_at`` is the newest persisted timestamp (``0`` when none)."""
+    ``updated_at`` is the newest persisted timestamp (``0`` when none); ``loop_min_interval_seconds``
+    rides along only when the read opted in."""
 
     goal: GoalSnapshot | None
     loop: LoopSnapshot | None
     heartbeat: HeartbeatSnapshot | None
     revision: str
     updated_at: float
+    loop_min_interval_seconds: int | None = None
 
 
 class SessionControlReadParams(ProfileParams):
     session_id: str
+    include_loop_min_interval: bool = False
 
 
 class SessionControlReadResult(Result):
@@ -458,26 +461,40 @@ method("session.control.read", params=SessionControlReadParams, result=SessionCo
 
 
 class SessionControlAction(WireEnum):
+    goal_create = "goal.create"
+    goal_update = "goal.update"
     goal_pause = "goal.pause"
     goal_resume = "goal.resume"
     goal_clear = "goal.clear"
     goal_unwait = "goal.unwait"
+    loop_create = "loop.create"
+    loop_update = "loop.update"
     loop_pause = "loop.pause"
     loop_resume = "loop.resume"
     loop_stop = "loop.stop"
     subgoal_add = "subgoal.add"
     subgoal_remove = "subgoal.remove"
     subgoal_clear = "subgoal.clear"
+    heartbeat_create = "heartbeat.create"
+    heartbeat_update = "heartbeat.update"
     heartbeat_pause = "heartbeat.pause"
     heartbeat_resume = "heartbeat.resume"
     heartbeat_clear = "heartbeat.clear"
 
 
 class SessionControlArgs(Params):
-    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``."""
+    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``; the
+    create / update actions read ``prompt``, ``criteria``, ``max_turns``, ``interval_seconds``,
+    ``run_limit`` and ``stop_condition``."""
 
     text: str | None = None
     index: int | None = None
+    prompt: str | None = None
+    criteria: list[str] | None = None
+    max_turns: int | None = None
+    interval_seconds: int | None = None
+    run_limit: int | None = None
+    stop_condition: str | None = None
 
 
 class SessionControlParams(ProfileParams):
@@ -487,6 +504,7 @@ class SessionControlParams(ProfileParams):
     session_id: str
     action: str
     args: SessionControlArgs | None = None
+    include_loop_min_interval: bool = False
 
 
 class SessionControlDispatch(Result):

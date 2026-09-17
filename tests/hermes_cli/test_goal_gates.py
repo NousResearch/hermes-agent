@@ -66,14 +66,16 @@ def test_run_gate_pass():
 
 
 def test_run_gate_fail_captures_output():
-    passed, code, out = run_gate(GoalGate(command="echo broken >&2; exit 3"))
+    passed, code, out = run_gate(GoalGate(command=_python_gate(3, "broken\n")))
     assert passed is False
     assert code == 3
     assert "broken" in out
 
 
 def test_run_gate_timeout():
-    passed, code, out = run_gate(GoalGate(command="sleep 5", timeout_seconds=1))
+    passed, code, out = run_gate(
+        GoalGate(command=f'"{sys.executable}" -c "import time; time.sleep(5)"', timeout_seconds=1)
+    )
     assert passed is False
     assert code == -1
     assert "timed out" in out
@@ -111,6 +113,12 @@ def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager gate management
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _python_gate(exit_code=0, stderr=""):
+    """Portable shell command for a deterministic passing/failing quality gate."""
+    script = f"import sys; sys.stderr.write({stderr!r}); sys.exit({exit_code})"
+    return f'"{sys.executable}" -c "{script}"'
 
 
 def _mgr_with_goal(session_id="gate-test-sid"):
@@ -161,19 +169,19 @@ def test_status_line_mentions_gates():
 
 def test_failing_gate_short_circuits_judge():
     mgr = _mgr_with_goal("gate-fail-sid")
-    mgr.add_gate("exit 5")
+    mgr.add_gate(_python_gate(5))
     with patch("hermes_cli.goals.judge_goal") as mock_judge:
         decision = mgr.evaluate_after_turn("I think it's done!")
     mock_judge.assert_not_called()
     assert decision["verdict"] == "gate_failed"
     assert decision["should_continue"] is True
-    assert "exit 5" in decision["continuation_prompt"]
+    assert "sys.exit(5)" in decision["continuation_prompt"]
     assert "quality gate" in decision["continuation_prompt"].lower()
 
 
 def test_passing_gates_fall_through_to_judge():
     mgr = _mgr_with_goal("gate-pass-sid")
-    mgr.add_gate("true")
+    mgr.add_gate(_python_gate())
     with patch(
         "hermes_cli.goals.judge_goal",
         return_value=("done", "all good", False, None, False),
@@ -186,10 +194,27 @@ def test_passing_gates_fall_through_to_judge():
     assert mgr.state.gates[0].last_exit_code == 0
 
 
+def test_gate_failure_persists_runtime_receipt_without_looking_replaced():
+    """Gate output/attempts are runtime receipts, not a concurrent user definition edit."""
+    mgr = _mgr_with_goal("gate-runtime-receipt-sid")
+    mgr.add_gate("exit 1")
+    with patch("hermes_cli.goals.run_gate", return_value=(False, 1, "red")), \
+         patch("hermes_cli.goals.judge_goal") as mock_judge:
+        decision = mgr.evaluate_after_turn("gate failed")
+
+    mock_judge.assert_not_called()
+    assert decision["verdict"] == "gate_failed"
+    assert decision["should_continue"] is True
+    assert mgr.state.gates[0].attempts == 1
+    assert mgr.state.gates[0].last_exit_code == 1
+    assert mgr.state.gates[0].last_output_tail == "red"
+
+
 def test_gate_retry_exhaustion_pauses_goal():
     mgr = _mgr_with_goal("gate-exhaust-sid")
-    mgr.add_gate("exit 1")
+    mgr.add_gate(_python_gate(1))
     mgr.state.gates[0].max_retries = 2
+    save_goal(mgr.session_id, mgr.state)
     with patch("hermes_cli.goals.judge_goal") as mock_judge:
         d1 = mgr.evaluate_after_turn("attempt one")
         d2 = mgr.evaluate_after_turn("attempt two")
@@ -229,7 +254,7 @@ def test_failed_gate_reruns_when_untracked_file_content_changes(tmp_path, monkey
 def test_gate_continuation_respects_turn_budget():
     mgr = GoalManager(session_id="gate-budget-sid", default_max_turns=1)
     mgr.set("budget goal")
-    mgr.add_gate("exit 1")
+    mgr.add_gate(_python_gate(1))
     with patch("hermes_cli.goals.judge_goal"):
         decision = mgr.evaluate_after_turn("only turn")
     assert decision["status"] == "paused"

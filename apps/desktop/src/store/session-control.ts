@@ -80,26 +80,56 @@ export interface SessionControlSnapshot {
   goal: SessionControlGoal | null
   heartbeat: SessionControlHeartbeat | null
   loop: SessionControlLoop | null
+  loop_min_interval_seconds?: number
   revision: string
   updated_at: number
 }
 
+export interface GoalCreateArgs {
+  prompt: string
+  criteria?: string[]
+  max_turns?: number
+}
+
+export interface LoopCreateArgs {
+  prompt: string
+  interval_seconds: number
+  run_limit?: number
+  stop_condition?: string
+}
+
+export interface HeartbeatCreateArgs {
+  prompt: string
+  interval_seconds: number
+}
+
 export type SessionControlAction =
   | 'goal.clear'
+  | 'goal.create'
   | 'goal.pause'
   | 'goal.resume'
   | 'goal.unwait'
+  | 'goal.update'
   | 'heartbeat.clear'
+  | 'heartbeat.create'
   | 'heartbeat.pause'
   | 'heartbeat.resume'
+  | 'heartbeat.update'
+  | 'loop.create'
   | 'loop.pause'
   | 'loop.resume'
   | 'loop.stop'
+  | 'loop.update'
   | 'subgoal.add'
   | 'subgoal.clear'
   | 'subgoal.remove'
 
-export type SessionControlActionArgs = { index: number } | { text: string }
+export type SessionControlActionArgs =
+  | { index: number }
+  | { text: string }
+  | GoalCreateArgs
+  | LoopCreateArgs
+  | HeartbeatCreateArgs
 
 export interface SessionControlDispatch {
   display: string | null
@@ -115,6 +145,8 @@ export interface SessionControlEntry {
   loading: boolean
   pendingAction: SessionControlAction | null
   snapshot: SessionControlSnapshot | null
+  /** A mutation was rejected by a reachable backend; this remains retryable. */
+  actionError: string | null
 }
 
 interface RefreshOptions {
@@ -445,11 +477,21 @@ function parseHeartbeat(value: unknown): SessionControlHeartbeat | null {
 
 /** Parses the stable allowlisted backend shape into fresh renderer-owned data. */
 export function parseSessionControlSnapshot(value: unknown): SessionControlSnapshot | null {
-  if (!isRecord(value) || !hasExactFields(value, ['goal', 'loop', 'heartbeat', 'revision', 'updated_at'])) {
+  if (
+    !isRecord(value) ||
+    !hasExactFields(value, ['goal', 'loop', 'heartbeat', 'revision', 'updated_at'], ['loop_min_interval_seconds'])
+  ) {
     return null
   }
 
   if (typeof value.revision !== 'string' || !isFiniteNumber(value.updated_at)) {
+    return null
+  }
+
+  if (
+    hasOwn(value, 'loop_min_interval_seconds') &&
+    (!isInteger(value.loop_min_interval_seconds) || value.loop_min_interval_seconds < 5)
+  ) {
     return null
   }
 
@@ -461,7 +503,14 @@ export function parseSessionControlSnapshot(value: unknown): SessionControlSnaps
     return null
   }
 
-  return { goal, heartbeat, loop, revision: value.revision, updated_at: value.updated_at }
+  return {
+    goal,
+    heartbeat,
+    loop,
+    ...(hasOwn(value, 'loop_min_interval_seconds') ? { loop_min_interval_seconds: value.loop_min_interval_seconds as number } : {}),
+    revision: value.revision,
+    updated_at: value.updated_at
+  }
 }
 
 function parseSessionControlDispatch(value: unknown): SessionControlDispatch | null {
@@ -489,7 +538,7 @@ function parseSessionControlDispatch(value: unknown): SessionControlDispatch | n
 }
 
 function emptyEntry(): SessionControlEntry {
-  return { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null }
+  return { capability: 'unknown', error: null, loading: false, pendingAction: null, snapshot: null, actionError: null }
 }
 
 function currentVersion(sessionId: string): number {
@@ -522,6 +571,7 @@ function sameEntry(first: SessionControlEntry, second: SessionControlEntry): boo
   return (
     first.capability === second.capability &&
     first.error === second.error &&
+    first.actionError === second.actionError &&
     first.loading === second.loading &&
     first.pendingAction === second.pendingAction &&
     first.snapshot === second.snapshot
@@ -541,14 +591,30 @@ function publishEntry(sessionId: string, next: SessionControlEntry): SessionCont
   return next
 }
 
+function reconcileSnapshot(
+  current: SessionControlSnapshot | null,
+  incoming: SessionControlSnapshot,
+  preserveLoopMinimum: boolean
+): SessionControlSnapshot {
+  const snapshot =
+    preserveLoopMinimum && incoming.loop_min_interval_seconds === undefined && current?.loop_min_interval_seconds !== undefined
+      ? { ...incoming, loop_min_interval_seconds: current.loop_min_interval_seconds }
+      : incoming
+
+  return current?.revision === snapshot.revision && current.loop_min_interval_seconds === snapshot.loop_min_interval_seconds
+    ? current
+    : snapshot
+}
+
 function applyParsedSnapshot(sessionId: string, snapshot: SessionControlSnapshot): SessionControlEntry {
   advanceVersion(sessionId)
   const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
-  const nextSnapshot = current.snapshot?.revision === snapshot.revision ? current.snapshot : snapshot
+  const nextSnapshot = reconcileSnapshot(current.snapshot, snapshot, false)
 
   return publishEntry(sessionId, {
     capability: 'supported',
     error: null,
+    actionError: null,
     loading: false,
     pendingAction: null,
     snapshot: nextSnapshot
@@ -587,12 +653,13 @@ export function applySessionControlUpdate(sessionId: string, rawSnapshot: unknow
     advanceVersion(sessionId)
   }
 
-  const nextSnapshot = current.snapshot?.revision === snapshot.revision ? current.snapshot : snapshot
+  const nextSnapshot = reconcileSnapshot(current.snapshot, snapshot, true)
 
   return publishEntry(sessionId, {
     ...current,
     capability: 'supported',
     error: null,
+    actionError: null,
     loading: actionIsPending ? current.loading : false,
     pendingAction: actionIsPending ? current.pendingAction : null,
     snapshot: nextSnapshot
@@ -639,6 +706,7 @@ function beginRead(sessionId: string, background: boolean): number {
   publishEntry(sessionId, {
     ...current,
     error: null,
+    actionError: null,
     loading: background ? current.loading : true
   })
 
@@ -652,6 +720,7 @@ function beginAction(sessionId: string, action: SessionControlAction): number {
   publishEntry(sessionId, {
     ...current,
     error: null,
+    actionError: null,
     loading: true,
     pendingAction: action
   })
@@ -679,8 +748,24 @@ function publishFailure(sessionId: string, token: number, error: unknown, clearP
   publishEntry(sessionId, {
     ...current,
     error: boundedError(error),
+    actionError: null,
     loading: false,
     pendingAction: clearPendingAction ? null : current.pendingAction
+  })
+}
+
+function publishActionRejection(sessionId: string, token: number, error: unknown): void {
+  if (!isCurrent(sessionId, token)) {
+    return
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+  publishEntry(sessionId, {
+    ...current,
+    error: null,
+    actionError: boundedError(error),
+    loading: false,
+    pendingAction: null
   })
 }
 
@@ -694,7 +779,8 @@ function finishGoneRequest(sessionId: string, token: number, clearPendingAction:
   publishEntry(sessionId, {
     ...current,
     loading: false,
-    pendingAction: clearPendingAction ? null : current.pendingAction
+    pendingAction: clearPendingAction ? null : current.pendingAction,
+    actionError: null
   })
 }
 
@@ -714,6 +800,7 @@ function markUnsupported(sessionId: string, token: number): boolean {
     ...current,
     capability: 'unsupported',
     error: null,
+    actionError: null,
     loading: false,
     pendingAction: null
   })
@@ -730,6 +817,13 @@ function isMethodNotFound(error: unknown): boolean {
     error instanceof Error ? error.message : isRecord(error) && typeof error.message === 'string' ? error.message : ''
 
   return message.toLowerCase().includes('method not found') || message.toLowerCase().includes('method-not-found')
+}
+
+function isApplicationRejection(error: unknown): boolean {
+  // Only validation/busy rejections (the backend's 4004 class) leave the known snapshot
+  // safely retryable. Numeric 5xxx responses can mean the mutation succeeded but verification
+  // failed, so they remain an outage and force a refresh before another attempt.
+  return isRecord(error) && error.code === 4004
 }
 
 /** Hydrates one session's structured controls; background refreshes never flash a loading state. */
@@ -756,7 +850,7 @@ export async function refreshSessionControl(
       sessionId,
       ambientRequestFor(gateway),
       'session.control.read',
-      { session_id: sessionId }
+      { include_loop_min_interval: true, session_id: sessionId }
     )
 
     if (!isCurrent(sessionId, token)) {
@@ -826,6 +920,7 @@ export async function runSessionControlAction(
     const response = await requestForOwnedSession<unknown>(sessionId, ambientRequestFor(gateway), 'session.control', {
       action,
       args: args ?? {},
+      include_loop_min_interval: true,
       session_id: sessionId
     })
 
@@ -854,6 +949,8 @@ export async function runSessionControlAction(
       }
     } else if (isSessionGoneForBackgroundPolling(error)) {
       finishGoneRequest(sessionId, token, true)
+    } else if (isApplicationRejection(error)) {
+      publishActionRejection(sessionId, token, error)
     } else {
       publishFailure(sessionId, token, error, true)
     }

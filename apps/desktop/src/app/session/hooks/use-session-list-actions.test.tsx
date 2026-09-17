@@ -103,8 +103,19 @@ vi.mock('@/store/session-removal', async importActual => ({
   $removedSessionIds: { get: () => removed.ids }
 }))
 
+// The recents exclusion list is the built-in machine sources plus whatever
+// `sessions.exclude_sources` adds. Stub the shared config record so these tests
+// can drive the config side without a React Query client (the real hook reads
+// GET /api/config through useHermesConfigRecord).
+const configRecord = vi.hoisted(() => ({ value: undefined as unknown }))
+
+vi.mock('@/app/hooks/use-config-record', () => ({
+  useHermesConfigRecord: () => ({ data: configRecord.value })
+}))
+
 beforeEach(() => {
   gatewayScope.epoch = 0
+  configRecord.value = undefined
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -868,5 +879,54 @@ describe('messaging profile scope', () => {
 
     expect(listAllProfileSessions).not.toHaveBeenCalled()
     expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 12 })
+  })
+})
+
+// `sessions.exclude_sources` reaches the recents fetch as an addition to the
+// built-in exclusions: default config hides `a2a`, an absent key or an explicit
+// `[]` leaves the built-in list exactly as it was.
+describe('recents source exclusions', () => {
+  const recentsExcludeCall = (): string[] =>
+    (listSidebarSessions.mock.calls[0][0] as { recentsExclude: string[] }).recentsExclude
+
+  it('hides the built-in machine sources plus the configured ones', async () => {
+    configRecord.value = { sessions: { exclude_sources: ['a2a'] } }
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(recentsExcludeCall()).toContain('a2a')
+    expect(recentsExcludeCall()).toContain('cron')
+  })
+
+  it('falls back to the built-in list when the config key is absent', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(recentsExcludeCall()).toContain('cron')
+    expect(recentsExcludeCall()).not.toContain('a2a')
+  })
+
+  it('lets an explicit empty list keep only the built-in exclusions', async () => {
+    configRecord.value = { sessions: { exclude_sources: [] } }
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(recentsExcludeCall()).toContain('cron')
+    expect(recentsExcludeCall()).not.toContain('a2a')
   })
 })

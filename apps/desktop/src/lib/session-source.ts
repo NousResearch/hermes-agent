@@ -128,3 +128,37 @@ export function sessionSourceSearchTerms(source: null | string | undefined): str
 
   return [id, label ?? '', ...(SOURCE_ALIASES[id] ?? [])].filter(Boolean)
 }
+
+/**
+ * Read `sessions.exclude_sources` out of the raw config record. The record is
+ * `Record<string, unknown>` (it is whatever config.yaml holds), so a missing
+ * key, a non-array value, and non-string entries all degrade to "nothing extra
+ * excluded" rather than throwing inside the sidebar render path. Entries are
+ * normalized the same way session sources are, so `A2A` and `a2a` both match.
+ */
+export function configuredExcludeSources(record: unknown): string[] {
+  const sessions = (record as { sessions?: { exclude_sources?: unknown } } | null | undefined)?.sessions
+  const raw = sessions?.exclude_sources
+
+  if (!Array.isArray(raw)) {
+    return []
+  }
+
+  const ids = raw.map(value => normalizeSessionSource(typeof value === 'string' ? value : null))
+
+  return Array.from(new Set(ids.filter((id): id is string => id != null)))
+}
+
+/**
+ * Merge configured exclusions on top of a built-in source list: the built-in
+ * entries always stay excluded, the configured ones are additive and deduped.
+ * Returns the built-in array identity when nothing is configured, so callers
+ * (the sidebar recents fetch) don't re-fetch on an unchanged list.
+ */
+export function mergeExcludedSources(builtIn: string[], configured: string[]): string[] {
+  if (!configured.length) {
+    return builtIn
+  }
+
+  return Array.from(new Set([...builtIn, ...configured]))
+}

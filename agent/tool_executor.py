@@ -1715,6 +1715,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _finalize_tool_batch(agent, messages, effective_task_id, len(assistant_message.tool_calls), _budget_for_agent(agent))
 
 
+def _stop_guarded_run(agent, messages: list, tool_calls, just_executed_1based: int, run_end: int,
+                      reason: str, effective_task_id: str, *, flush_stage: str) -> bool:
+    """Skip the unstarted tail of a stopped guarded run; False when the caller must stop the batch."""
+    remaining = tool_calls[just_executed_1based:run_end]
+    agent._vprint(
+        f"{agent.log_prefix}🛑 Guarded desktop run stopped ({reason}); "
+        f"skipping {len(remaining)} call(s)", force=True)
+    return _append_skipped_tool_results(
+        agent, messages, remaining, effective_task_id,
+        content=f"[Guarded desktop run stopped: {reason}. "
+                "{name} was not executed — re-observe before retrying.]",
+        flush_stage=flush_stage,
+    )
+
+
 def _execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
@@ -1767,18 +1782,32 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         _guarded_stop = guarded_run_stop(tool_calls, i - 1, managed)
         if _guarded_stop is not None:
             _run_end, _stop_reason = _guarded_stop
-            _remaining_run = tool_calls[i:_run_end]
-            agent._vprint(
-                f"{agent.log_prefix}🛑 Guarded desktop run stopped ({_stop_reason}); "
-                f"skipping {len(_remaining_run)} call(s)", force=True)
-            if not _append_skipped_tool_results(
-                agent, messages, _remaining_run, effective_task_id,
-                content=f"[Guarded desktop run stopped: {_stop_reason}. "
-                        "{name} was not executed — re-observe before retrying.]",
-                flush_stage="guarded-run skipped tool result",
-            ):
+            if not _stop_guarded_run(agent, messages, tool_calls, i, _run_end, _stop_reason,
+                                     effective_task_id, flush_stage="guarded-run skipped tool result"):
                 return
             _guarded_skip_until = _run_end
+        else:
+            # Verdict allowed continuation: confirm the step with a bounded
+            # readiness check instead of a capture + model round trip. The
+            # admission pre-check runs first so a backend is only looked up
+            # when a mid-run input just executed (the lookup would otherwise
+            # spawn a driver daemon for sessions that never use computer_use).
+            from agent.guarded_run_executor import (
+                backend_for_session,
+                guarded_run_readiness_stop,
+                run_step_needs_confirmation,
+            )
+            if run_step_needs_confirmation(tool_calls, i - 1):
+                _cu_backend = backend_for_session(agent.session_id or "")
+                if _cu_backend is not None:
+                    _readiness_stop = guarded_run_readiness_stop(tool_calls, i - 1, _cu_backend)
+                    if _readiness_stop is not None:
+                        _run_end, _stop_reason = _readiness_stop
+                        if not _stop_guarded_run(agent, messages, tool_calls, i, _run_end, _stop_reason,
+                                                 effective_task_id,
+                                                 flush_stage="guarded-run readiness skipped tool result"):
+                            return
+                        _guarded_skip_until = _run_end
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(

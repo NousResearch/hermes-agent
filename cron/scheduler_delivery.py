@@ -1756,12 +1756,13 @@ def _deliver_result(
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
-        from cron.executions import get_execution, _delivery_projection
+        from cron.executions import get_execution, _delivery_projection, manifest_pending
         execution = get_execution(external_execution)
         projection = _delivery_projection(execution) if execution and execution.get("delivery_manifest") else None
         job["last_delivery_queued"] = (
             {"gateway": {"status": "queued", "delivery_id": external_execution}}
-            if delivery_status and delivery_status["status"] in ("pending", "delivering")
+            if (delivery_status and delivery_status["status"] in ("pending", "delivering"))
+            or manifest_pending(execution)  # gateway sent children; their manifest is not recorded yet
             else projection[1]["last_delivery_queued"] if projection else None)
         from cron.jobs import update_delivery_projection
         update_delivery_projection(job["id"], external_execution,
@@ -1829,6 +1830,17 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    if any(t["platform"] == BOT_CHAT_PLATFORM for t in targets) and job.get("execution_id"):
+        # Durable intent BEFORE the first deferred send: until the manifest itself lands, no
+        # reader may treat this run's placeholder/absence of a manifest as a terminal disposition.
+        # Nothing has been sent yet, so a ledger fault here is a truthful pre-send failure.
+        from cron.executions import mark_delivery_manifest_pending
+        try:
+            mark_delivery_manifest_pending(str(job["execution_id"]))
+        except Exception as exc:
+            msg = f"delivery ledger unavailable before send: {exc}"
+            logger.error("Job '%s': %s", job["id"], msg)
+            return msg
     for target in targets:
         from gateway.warning_notifications import warning_notifications_enabled
         if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
@@ -1889,13 +1901,22 @@ def _deliver_result(
             record_delivery_manifest(job.get("execution_id"), manifest)
         except Exception:
             # Post-send bookkeeping: the sends above already happened and the receipts are
-            # durable. Journal the manifest for the reconciler (source-owned, independent of
-            # which receipt store holds the children); never report a transport failure, which
-            # would discard the pending sibling or invite a resend.
-            logger.exception("Job '%s': delivery manifest not recorded; journaled", job.get("id"))
+            # durable. The row's pending flag (set before the first send) keeps it queued and
+            # unprunable; the journal is a best-effort copy for the reconciler. Never report a
+            # transport failure, which would discard the pending sibling or invite a resend.
+            logger.exception("Job '%s': delivery manifest not recorded; row stays pending", job.get("id"))
             if job.get("execution_id"):
                 from cron.executions import journal_manifest
-                journal_manifest(str(job["execution_id"]), manifest)
+                journal_manifest(str(job["execution_id"]), manifest)  # never raises
+    elif job.get("execution_id") and any(t["platform"] == BOT_CHAT_PLATFORM for t in targets):
+        # Every Bot Chat target was filtered/rejected before a receipt existed: nothing deferred
+        # remains outstanding, so release the pre-send intent.
+        try:
+            from cron.executions import _transaction
+            with _transaction() as conn:
+                conn.execute("UPDATE executions SET delivery_manifest_pending=0 WHERE id=?", (str(job["execution_id"]),))
+        except Exception:
+            logger.debug("Job '%s': could not release manifest intent", job.get("id"), exc_info=True)
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

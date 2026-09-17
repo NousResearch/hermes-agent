@@ -18,12 +18,11 @@ lifecycle (``hermes_cli/observability/loop_diagnostics_integration.py``):
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
 import pytest
-
-import importlib
 
 
 def _integ():
@@ -35,19 +34,13 @@ def _integ():
     fresh config load. That orphans any module-level reference bound here at
     collection time: the tests would then exercise a stale module object whose
     ``_emit_event`` is NOT the one the fixtures patch, and every assertion on
-    captured events would see an empty list.
-
-    Everything in this module that reads integration internals goes through
-    these accessors so the object under test is always the live one.
+    captured events would see an empty list. Same hazard for the recorder
+    module the fixtures patch — see ``_live_recorder_module``.
     """
     return importlib.import_module(
         "hermes_cli.observability.loop_diagnostics_integration"
     )
 
-
-def _engine():
-    """Live ``loop_diagnostics_engine`` module (same purge hazard as ``_integ``)."""
-    return importlib.import_module("hermes_cli.observability.loop_diagnostics_engine")
 
 SCHEMA_VERSION = "hermes.loop_diagnostics.v1"
 

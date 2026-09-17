@@ -110,6 +110,11 @@ export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe')
   const backupDir = `${appOutDir}.bak`
   try {
     rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    // Same non-ASCII rmSync no-op as cleanStaleAppOutDir: a surviving .bak
+    // makes the rename fail and the previous build is wiped instead of kept.
+    if (existsSync(backupDir)) {
+      removeDirSync(backupDir)
+    }
     renameSync(appOutDir, backupDir)
     return true
   } catch {

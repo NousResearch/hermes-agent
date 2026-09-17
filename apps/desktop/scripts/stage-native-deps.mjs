@@ -515,11 +515,11 @@ export function stageGetWindowsInto(
     )
   }
 
-  rmSync(destRoot, { recursive: true, force: true })
+  removeDirSync(destRoot)
   mkdirSync(destRoot, { recursive: true })
 
-  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
-  cpSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
 
   // lib/*.js only — NOT copyGlobByExt, which recurses into lib/binding and
   // stages empty dirs for every prebuilt slot (including the darwin one the
@@ -527,7 +527,7 @@ export function stageGetWindowsInto(
   mkdirSync(join(destRoot, 'lib'), { recursive: true })
   for (const entry of readdirSync(join(srcRoot, 'lib'), { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith('.js')) {
-      cpSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
+      copyFileSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
     }
   }
 
@@ -538,7 +538,7 @@ export function stageGetWindowsInto(
     if (!existsSync(helper)) {
       throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
     }
-    cpSync(helper, join(destRoot, 'main'))
+    copyFileSync(helper, join(destRoot, 'main'))
     makeExecutable(join(destRoot, 'main'))
   }
 
@@ -592,7 +592,7 @@ export function stageGetWindowsInto(
       const dest = join(destRoot, 'lib', 'binding', dir)
       mkdirSync(dest, { recursive: true })
       const destFile = join(dest, 'node-get-windows.node')
-      cpSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
+      copyFileSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
       const classified = classifyNativeBinary(destFile)
       if (classified !== platform) {
         throw new Error(

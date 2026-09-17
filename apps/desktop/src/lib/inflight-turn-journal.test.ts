@@ -10,6 +10,7 @@ import {
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
 } from '@/lib/inflight-turn-journal'
+import { stubStorage } from '@/test/jsdom'
 
 const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
@@ -266,7 +267,7 @@ describe('persistInFlightTurnState', () => {
     }
 
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries: { 'stored-1': legacy }, version: 1 }))
-    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    const storage = stubStorage()
     const prompt = 'x'.repeat(64 * 1024 + 1)
 
     persistInFlightTurnState(
@@ -276,7 +277,8 @@ describe('persistInFlightTurnState', () => {
     )
     vi.advanceTimersByTime(400)
 
-    expect(getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
+    expect(storage.getItem).toHaveBeenCalled()
+    expect(storage.getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
@@ -307,7 +309,7 @@ describe('persistInFlightTurnState', () => {
   })
 
   it('strips pathological 5 MiB tool payloads before attempting a storage write', () => {
-    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const storage = stubStorage()
 
     const oversized: ChatMessage = {
       id: 'assistant-stream-1',
@@ -343,7 +345,8 @@ describe('persistInFlightTurnState', () => {
       type: 'tool-call'
     })
     expect(snapshot.messages[1].parts[1]).toEqual({ type: 'text', text: 'still useful' })
-    expect(setItem.mock.calls.every(([, value]) => value.length <= 256 * 1024)).toBe(true)
+    expect(storage.setItem).toHaveBeenCalled()
+    expect(storage.setItem.mock.calls.every(([, value]) => value.length <= 256 * 1024)).toBe(true)
   })
 
   it('clears the entry the moment the turn settles, cancelling pending writes', () => {
@@ -380,28 +383,37 @@ describe('persistInFlightTurnState', () => {
   })
 
   it('isolates storage read, write, and removal failures', () => {
-    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('read denied')
+    const reads = stubStorage({
+      getItem: () => {
+        throw new Error('read denied')
+      }
     })
 
     expect(() => readInFlightTurnJournal('stored-1')).not.toThrow()
-    getItem.mockRestore()
+    expect(reads.getItem).toHaveBeenCalled()
+    reads.restore()
 
-    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('quota')
+    const writes = stubStorage({
+      setItem: () => {
+        throw new Error('quota')
+      }
     })
 
     expect(() => {
       persistInFlightTurnState(journalState())
       vi.advanceTimersByTime(400)
     }).not.toThrow()
-    setItem.mockRestore()
+    expect(writes.setItem).toHaveBeenCalled()
+    writes.restore()
 
-    const removeItem = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
-      throw new Error('remove denied')
+    const removals = stubStorage({
+      removeItem: () => {
+        throw new Error('remove denied')
+      }
     })
 
     expect(() => clearInFlightTurnJournal('stored-1')).not.toThrow()
+    expect(removals.removeItem).toHaveBeenCalled()
   })
 
   it('discards malformed optional message metadata instead of throwing during recovery', () => {

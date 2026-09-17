@@ -376,3 +376,27 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_a_harness_refusal_is_not_counted_as_a_tool_failure():
+    """The read-dedup block carries `"error"` for the model's benefit, which is
+    exactly what `classify_tool_failure`'s substring test keys on. Counting it
+    let a refusal raise the failure streak that produces the next, harder
+    refusal -- an escalation to `repeated_exact_failure_block` reporting N
+    failures that never happened. Observed on a real session: 13 of 14 results
+    classified as failed were this block, against one genuine tool failure."""
+    from tools.file_tools import _dedup_stub_or_block
+
+    task_data = {"dedup_hits": {}}
+    key = ("/repo/responses.ts", 1, 999)
+    for _ in range(3):
+        blocked = _dedup_stub_or_block(task_data, key, "/repo/responses.ts")
+
+    assert json.loads(blocked)["guardrail_refusal"] is True
+    assert classify_tool_failure("read_file", blocked) == (False, "")
+
+
+def test_a_real_tool_error_is_still_a_failure():
+    """The exemption is keyed on the marker, not on the word: a body that
+    genuinely failed still counts, or the streak that stops a real loop is gone."""
+    assert classify_tool_failure("read_file", '{"error": "ENOENT: no such file"}')[0] is True

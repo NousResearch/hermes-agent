@@ -219,6 +219,14 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
 
+    # A body this harness emitted to REFUSE a call is not a call that failed.
+    # It carries `"error"` for the model's benefit, which is exactly what the
+    # substring test below keys on, so counting it would let a refusal raise
+    # the failure streak that produces the next, harder refusal.
+    data = safe_json_loads(result)
+    if isinstance(data, dict) and data.get("guardrail_refusal") is True:
+        return False, ""
+
     if tool_name == "terminal":
         data = safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None

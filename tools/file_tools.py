@@ -502,7 +502,14 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
             "still current. Proceed with your task using "
             "the information you already have.",
             path=path,
-            already_read=hits + 1)
+            already_read=hits + 1,
+            # This body is a REFUSAL the harness chose, not a failure the tool
+            # hit. Without the marker the guardrail's own block feeds its
+            # failure counter (`classify_tool_failure` keys on the literal
+            # `"error"`), so refusing a repeated read escalates to
+            # `repeated_exact_failure_block` and reports N failures that never
+            # happened.
+            guardrail_refusal=True)
 
     return json.dumps({
         "status": "unchanged",

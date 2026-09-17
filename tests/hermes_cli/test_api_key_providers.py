@@ -844,7 +844,7 @@ class TestKimiMoonshotModelListIsolation:
     def test_moonshot_list_excludes_coding_plan_only_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
         moonshot_models = _PROVIDER_MODELS["moonshot"]
-        coding_plan_only = {"kimi-for-coding", "kimi-k2-thinking-turbo"}
+        coding_plan_only = {"kimi-for-coding", "kimi-k2.8-preview", "kimi-k2-thinking-turbo"}
         leaked = set(moonshot_models) & coding_plan_only
         assert not leaked, f"Moonshot list contains Coding Plan-only models: {leaked}"
 

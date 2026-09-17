@@ -120,6 +120,13 @@ class TestKimiVocabulary:
 
     @pytest.mark.parametrize(
         "model",
+        ["kimi-k2.8-preview", "moonshotai/kimi-k2.8-preview"],
+    )
+    def test_k2_8_preview_slugs(self, model):
+        assert kimi_supported_efforts(model) is KIMI_K3_EFFORTS
+
+    @pytest.mark.parametrize(
+        "model",
         ["kimi-k2.6", "moonshotai/kimi-k2-0905", "kimi-latest", "mk3000", None],
     )
     def test_k2_era_slugs(self, model):

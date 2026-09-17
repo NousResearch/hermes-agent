@@ -29,4 +29,18 @@ def test_filter_indices_surfaces_ox_alpha_preview_slug():
         assert "x-preview-f-free" in ranked, query
 
 
+def test_model_search_text_k2_8_preview_aliases():
+    from hermes_cli.model_search import model_alias_canonical
+    assert model_search_text("kimi-for-coding") == "kimi-for-coding kimi-k2.8-preview k2.8"
+    assert model_alias_canonical("kimi-for-coding") == "kimi-k2.8-preview"
+
+
+def test_filter_indices_surfaces_k2_8_for_kimi_query():
+    models = ["kimi-k2.6", "kimi-k2.5", "kimi-k2.8-preview", "kimi-for-coding-highspeed"]
+    haystacks = [model_search_text(m) for m in models]
+    ranked = [models[i] for i in _filter_indices(haystacks, "k2.8")]
+    assert "kimi-k2.8-preview" in ranked
+
+
+
 

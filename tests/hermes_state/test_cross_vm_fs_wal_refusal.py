@@ -11,7 +11,12 @@ import sqlite3
 import pytest
 
 import hermes_state_wal
-from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
+from hermes_state_wal import (
+    WalUnsupportedError,
+    _decode_mountinfo_path,
+    _detect_cross_vm_fs,
+    apply_wal_with_fallback,
+)
 
 
 def _mountinfo(tmp_path, lines):
@@ -51,6 +56,36 @@ class TestDetectCrossVmFs:
 
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
+
+
+class TestDecodeMountinfoPath:
+    @pytest.mark.parametrize("raw,expected", [
+        ("/mnt/my\\040share", "/mnt/my share"),      # octal space still decodes
+        ("/mnt/a\\011b", "/mnt/a\tb"),               # octal tab still decodes
+        ("/mnt/plain", "/mnt/plain"),                # no backslash untouched
+        ("", ""),                                    # empty untouched
+    ])
+    def test_octal_escapes_decode(self, raw, expected):
+        assert _decode_mountinfo_path(raw) == expected
+
+    @pytest.mark.parametrize("raw", [
+        "/mnt/a\\tb",        # literal backslash-t is NOT a tab
+        "/mnt/a\\nb",        # literal backslash-n is NOT a newline
+        "/mnt/a\\x41b",      # literal hex escape is NOT decoded
+        "/mnt/a\\u0041b",    # literal unicode escape is NOT decoded
+        "/mnt/a\\NULb",      # literal named escape is NOT decoded
+    ])
+    def test_non_octal_backslashes_stay_literal(self, raw):
+        assert _decode_mountinfo_path(raw) == raw
+
+    @pytest.mark.linux_only
+    def test_literal_backslash_t_mount_routes_by_literal_path(self, tmp_path):
+        # A mount point spelled with a literal backslash-t must match the
+        # literal directory, not a tab-rewritten one (unicode_escape bug).
+        row = "616 25 0:56 / /mnt/a\\tb rw,relatime - virtiofs share rw"
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, row])
+        assert _detect_cross_vm_fs("/mnt/a\\tb/db", mountinfo_path=mi) is True
+        assert _detect_cross_vm_fs("/mnt/a\tb/db", mountinfo_path=mi) is False
 
 
 class TestWalRefusalOnCrossVmFs:

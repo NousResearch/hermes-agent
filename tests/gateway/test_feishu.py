@@ -726,12 +726,15 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_media",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n[Attachment: spec.pdf]")
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, ["/tmp/feishu-image.png", "/tmp/spec.pdf"])
         self.assertEqual(media_types, ["image/png", "application/pdf"])
+        self.assertEqual(media_text_inlined, [False, False])
         adapter._download_feishu_image.assert_awaited_once_with(
             message_id="om_post_media",
             image_key="img_123",
@@ -759,7 +762,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_audio",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         # Lark "audio" msg_type is a native voice recording (the fixture is
@@ -769,6 +774,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(msg_type.value, "voice")
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
+        self.assertEqual(media_text_inlined, [False])
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2178,6 +2184,31 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         self.assertEqual(result.text_content, "@Alice hello")
 
 
+class TestFeishuPostFileParsing(unittest.TestCase):
+    def test_collects_valid_top_level_files_and_dedupes_inline_refs(self):
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        result = parse_feishu_post_payload({
+            "title": "",
+            "content": [[
+                {"tag": "text", "text": "Review these"},
+                {"tag": "file", "file_key": "file_1", "file_name": "first.md"},
+            ]],
+            "files": [
+                {"file_key": "file_1", "file_name": "first.md", "is_folder": False},
+                {"file_key": "file_2", "file_name": "second.txt", "is_folder": False},
+                {"file_key": "folder_1", "file_name": "folder", "is_folder": True},
+                {"file_name": "missing-key.md", "is_folder": False},
+            ],
+        })
+
+        self.assertEqual([ref.file_key for ref in result.media_refs], ["file_1", "file_2"])
+        self.assertEqual(
+            result.text_content,
+            "Review these[Attachment: first.md]\n[Attachment: second.txt]",
+        )
+
+
 class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
     def test_text_elements_keep_markdown_characters_and_style_wrappers(self):
         """Inbound post text reaches the model verbatim (no backslash escapes) while the
@@ -2283,7 +2314,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         return adapter
 
-    def test_returns_five_tuple_with_mentions(self):
+    def test_returns_six_tuple_with_mentions(self):
         adapter = self._build_adapter()
         message = SimpleNamespace(
             content=json.dumps({"text": "@_user_1 hello"}),
@@ -2298,10 +2329,11 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, mentions = asyncio.run(
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")
+        self.assertEqual(media_text_inlined, [])
         self.assertEqual(len(mentions), 1)
         self.assertEqual(mentions[0].open_id, "ou_alice")
 
@@ -2324,6 +2356,47 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
+
+
+    def test_post_caption_is_preserved_when_text_attachment_is_inlined(self):
+        adapter = self._build_adapter()
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/cache/notes.md"], ["text/markdown"])
+        )
+        adapter._maybe_extract_text_document = AsyncMock(
+            return_value="[Content of notes.md]:\nattachment body"
+        )
+        message = SimpleNamespace(
+            content=json.dumps({
+                "title": "",
+                "content": [[{"tag": "text", "text": "Please review"}]],
+                "files": [{"file_key": "file_1", "file_name": "notes.md", "is_folder": False}],
+            }),
+            message_type="post",
+            message_id="m-post-file",
+            mentions=[],
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data={},
+            message=message,
+            sender_id=SimpleNamespace(open_id="ou_alice", user_id=None, union_id=None),
+            chat_type="p2p",
+            message_id="m-post-file",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(
+            event.text,
+            "Please review\n[Attachment: notes.md]\n\n[Content of notes.md]:\nattachment body",
+        )
+        self.assertEqual(event.media_urls, ["/cache/notes.md"])
+        self.assertEqual(event.media_text_inlined, [True])
 
 
     def test_non_command_message_with_mentions_injects_hint(self):

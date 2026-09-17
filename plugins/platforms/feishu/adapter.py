@@ -497,6 +497,18 @@ def parse_feishu_post_payload(
         )
         if row_text:
             parts.append(row_text)
+    for entry in resolved.get("files", []) or []:
+        if (
+            not isinstance(entry, dict)
+            or _to_boolean(entry.get("is_folder"))
+            or not str(entry.get("file_key", "")).strip()
+        ):
+            continue
+        placeholder = _render_post_element(
+            {**entry, "tag": "file"}, image_keys, media_refs, mentions_map,
+        )
+        if placeholder:
+            parts.append(placeholder)
     return FeishuPostParseResult(
         text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT, image_keys=image_keys, media_refs=media_refs,
     )
@@ -531,7 +543,12 @@ def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     content = candidate.get("content")
     if not isinstance(content, list):
         return {}
-    return {"title": str(candidate.get("title", "") or ""), "content": content}
+    files = candidate.get("files")
+    return {
+        "title": str(candidate.get("title", "") or ""),
+        "content": content,
+        "files": files if isinstance(files, list) else [],
+    }
 
 
 _STATIC_POST_TAGS = {"br": "\n", "hr": "\n\n---\n\n", "divider": "\n\n---\n\n"}
@@ -583,11 +600,15 @@ def _render_post_element(
         file_key = str(element.get("file_key", "")).strip()
         names = (str(element.get(k, "")).strip() for k in ("file_name", "title", "text"))
         file_name = next((n for n in names if n), "")
-        if file_key:
+        placeholder = f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+        if not file_key:
+            return placeholder
+        if not any(ref.file_key == file_key for ref in media_refs):
             media_refs.append(FeishuPostMediaRef(
                 file_key=file_key, file_name=file_name, resource_type=tag if tag in {"audio", "video"} else "file",
             ))
-        return f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+            return placeholder
+        return ""
     if tag in {"emotion", "emoji"}:
         label = str(element.get("text", "")).strip() or str(element.get("emoji_type", "")).strip()
         return f":{_escape_markdown_text(label)}:" if label else "[Emoji]"
@@ -2497,7 +2518,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
-        text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -2544,6 +2565,7 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = MessageEvent(
             text=text, message_type=inbound_type, source=source, raw_message=data,
             message_id=message_id, media_urls=media_urls, media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
@@ -2880,7 +2902,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _extract_message_content(
         self, message: Any
-    ) -> tuple[str, MessageType, List[str], List[str], List[FeishuMentionRef]]:
+    ) -> tuple[str, MessageType, List[str], List[str], List[bool], List[FeishuMentionRef]]:
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
@@ -2891,13 +2913,17 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
-        if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
-            and len(media_urls) == 1
-            and normalized.preferred_message_type in {"document", "audio"}
-        ):
-            text = await self._maybe_extract_text_document(media_urls[0], media_types[0]) or text
-        return text, inbound_type, media_urls, media_types, list(normalized.mentions)
+        media_text_inlined: List[bool] = []
+        inlined_parts: List[str] = []
+        for media_url, media_type in zip(media_urls, media_types):
+            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            media_text_inlined.append(bool(extracted))
+            if extracted:
+                inlined_parts.append(extracted)
+        if inlined_parts:
+            extracted_text = "\n\n".join(inlined_parts)
+            text = f"{text}\n\n{extracted_text}" if text else extracted_text
+        return text, inbound_type, media_urls, media_types, media_text_inlined, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
         self, *, message_id: str, normalized: FeishuNormalizedMessage,

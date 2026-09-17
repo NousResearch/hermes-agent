@@ -34,6 +34,19 @@ _log = logging.getLogger(__name__)
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
+def _lossy_text(value: Any) -> Any:
+    """bytes -> str with U+FFFD for undecodable sequences; anything else passes through.
+
+    Installed as every board connection text_factory (a TEXT cell holding
+    invalid UTF-8 otherwise aborts the whole fetchall) and applied to
+    BLOB-typed cells in from_row constructors so one corrupt row degrades
+    to replacement characters instead of taking the board listing down.
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _row_get(row: Any, col: str, default: Any = None) -> Any:
     """``row[col]`` tolerant of the column being absent from the SELECT / schema."""
     if row is None or col not in row.keys():

@@ -3039,3 +3039,103 @@ def test_poke_send_exception_does_not_consume_cooldown() -> None:
     out = asyncio.run(_dispatch_notice_raw(adapter, _poke_notice()))
     assert out == []  # 异常被 notice 隔离层吞掉，未传播
     assert adapter._poke_last_reply == {}
+
+
+# ---------------------------------------------------------------------------
+# /model 文字选择器（T6：QQ 无 callback 按钮，序号回复形态）
+# ---------------------------------------------------------------------------
+
+
+def test_model_picker_text_lists_numbered_with_current_marker() -> None:
+    """send_model_picker 渲染"序号. 模型"文字列表，当前项标 ← 当前，含回复提示。"""
+    from plugins.platforms.onebot.onebot_utils import render_model_picker_text
+
+    adapter = _make_adapter()
+    captured = {}
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        captured.update(chat_id=chat_id, content=content, metadata=metadata)
+        return SendResult(success=True, message_id="9")
+
+    adapter.send = fake_send
+    providers = [
+        {"slug": "openai", "name": "OpenAI", "models": ["gpt-4o", "gpt-4.1"], "total_models": 2},
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-4-5"], "total_models": 1},
+    ]
+
+    result = asyncio.run(adapter.send_model_picker(
+        chat_id="group:777", providers=providers, current_model="claude-sonnet-4-5",
+        current_provider="anthropic", session_key="s", on_model_selected=None))
+
+    assert result.success is True
+    assert captured["chat_id"] == "group:777"
+    text = captured["content"]
+    assert "1. gpt-4o" in text
+    assert "2. gpt-4.1" in text
+    assert "3. claude-sonnet-4-5 ← 当前" in text
+    assert "/model <序号>" in text
+    # 列表是纯文本渲染（QQ 不渲染 Markdown），无 markdown 强调语法
+    assert "**" not in text and "`" not in text
+    # 网关解析与渲染共用同一展开约定：纯函数可独立复算
+    assert "2. gpt-4.1" in render_model_picker_text(providers, "gpt-4.1", "openai")
+
+
+def test_model_picker_outbound_is_text_segment_array() -> None:
+    """出站铁律：picker 列表经 send() 仍以 OneBot segment 数组下发。"""
+    adapter = _make_adapter()
+    adapter._ws = object()  # connected
+    calls = []
+
+    async def fake_call_action(action, params, timeout=None):
+        calls.append((action, params))
+        return {"message_id": 77}
+
+    adapter._call_action = fake_call_action
+    providers = [
+        {"slug": "openai", "name": "OpenAI", "models": ["gpt-4o"], "total_models": 1},
+    ]
+
+    result = asyncio.run(adapter.send_model_picker(
+        chat_id="group:777", providers=providers, current_model="gpt-4o",
+        current_provider="openai", session_key="s", on_model_selected=None))
+
+    assert result.success is True
+    assert result.message_id == "77"
+    action, params = calls[0]
+    assert action == "send_msg"
+    assert params["group_id"] == 777
+    assert isinstance(params["message"], list) and params["message"]
+    segment = params["message"][0]
+    assert segment["type"] == "text" and "1. gpt-4o" in segment["data"]["text"]
+
+
+def test_model_picker_empty_providers_reports_failure() -> None:
+    """无可列项：返回失败（网关据此回退文字列表），且不出站。"""
+    adapter = _make_adapter()
+    sent = []
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True)
+
+    adapter.send = fake_send
+    result = asyncio.run(adapter.send_model_picker(
+        chat_id="group:777", providers=[], current_model="m",
+        current_provider="p", session_key="s", on_model_selected=None))
+
+    assert result.success is False
+    assert sent == []
+
+
+def test_render_model_picker_skips_empty_provider_rows() -> None:
+    """无模型的 provider 行不占序号（与网关 _flatten_picker_items 展开约定一致）。"""
+    from plugins.platforms.onebot.onebot_utils import render_model_picker_text
+
+    providers = [
+        {"slug": "a", "name": "A", "models": [], "total_models": 0},
+        {"slug": "b", "name": "B", "models": ["m1", "m2"], "total_models": 2},
+    ]
+    text = render_model_picker_text(providers, "m2", "b")
+    assert "【A】" not in text
+    assert "1. m1" in text
+    assert "2. m2 ← 当前" in text

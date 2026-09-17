@@ -459,3 +459,44 @@ def resolve_request_ref(ref: str, records: List[dict]) -> Optional[dict]:
         if str(rec.get("flag", "") or "") == ref:
             return rec
     return None
+
+
+# ── /model 文字选择器（QQ 无 callback 按钮）────────────────────────────
+def render_model_picker_text(
+    providers: Any, current_model: str = "", current_provider: str = ""
+) -> str:
+    """渲染 ``/model`` 文字选择器："序号. provider/模型" 列表，当前项标"← 当前"。
+
+    QQ 没有 inline callback 按钮，文字列表 + 序号回复就是正确的 picker 形态：
+    用户回复 ``/model <序号>``，由网关按最近一次 picker 快照解释（快照记录在
+    网关 runner 侧，见 gateway/slash_commands_model.py）。
+
+    编号约定与网关 ``_flatten_picker_items`` 严格一致：providers 顺序 × 每个
+    provider 的 models 顺序，跳过无模型行——两侧编号一致性由跨层测试锁定。
+
+    返回空串表示无可列项（调用方回退 SendResult 失败，网关走文字列表回退）。
+    """
+    current_model = str(current_model or "")
+    current_provider = str(current_provider or "")
+    lines: List[str] = ["📋 可用模型（回复 /model <序号> 切换，列表 5 分钟内有效）："]
+    seq = 0
+    listed = False
+    for p in providers or []:
+        slug = str(p.get("slug", "") or "")
+        name = str(p.get("name", "") or slug)
+        models = p.get("models") or []
+        if not models:
+            continue  # 与网关展开约定一致：无模型行不占序号
+        lines.append("")
+        lines.append(f"【{name}】")
+        for model in models:
+            seq += 1
+            model = str(model)
+            marker = ""
+            if current_model and model == current_model and slug == current_provider:
+                marker = " ← 当前"
+            lines.append(f"{seq}. {model}{marker}")
+            listed = True
+    if not listed:
+        return ""
+    return "\n".join(lines)

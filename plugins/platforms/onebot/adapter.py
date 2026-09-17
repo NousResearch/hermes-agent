@@ -2361,6 +2361,33 @@ class OneBotAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[onebot] send_typing failed: %s", e)
 
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """文字版 /model 选择器：QQ 无 callback 按钮，渲染“序号. provider/模型”
+        列表，用户回复 /model <序号> 由网关按最近一次 picker 快照解释并走现有
+        切换链路（快照记录在网关 _send_model_picker 成功发送后统一落账）。
+
+        ``on_model_selected`` 仅为与 telegram/discord 等按钮型 picker 的签名对齐，
+        文字流程没有回调——序号选择经 /model 斜杠命令回到网关。
+
+        列表渲染为纯文本（QQ 不渲染 Markdown），出站仍走 ``send()`` 的 segment
+        数组铁律。无可列项时返回失败，网关自动回退文字列表。
+        """
+        text = _load_onebot_utils().render_model_picker_text(
+            providers, current_model, current_provider
+        )
+        if not text:
+            return SendResult(success=False, error="no models to list")
+        return await self.send(chat_id, text, metadata=metadata)
+
     async def stop_typing(self, chat_id: str) -> None:
         """Clear the QQ input-status bubble (private chats only)."""
         if self._ws is None:

@@ -3382,7 +3382,19 @@ def _evict_cached_client_instance(target: Any) -> bool:
 
 
 def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
-    """Return a stable cache discriminator for pooled providers."""
+    """Return a stable cache discriminator for pooled providers.
+
+    The entry id alone is NOT enough. A subscription credential (Claude Code
+    OAuth) is refreshed in place by the owning CLI: the pool entry keeps its id
+    while the token inside it is replaced. A long-lived process would keep
+    serving a client built around the revoked token and every auxiliary call —
+    compression above all — fails 401 until the process restarts.
+
+    Folding a fingerprint of the live secret into the hint makes a refresh look
+    like a different credential, so the cache misses and the client is rebuilt.
+    The fingerprint is a truncated hash: enough to detect a change, never the
+    secret itself (this string reaches logs and cache dumps).
+    """
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
         runtime = _normalize_main_runtime(main_runtime)
@@ -3393,7 +3405,23 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = 
     if entry is None:
         return ""
     entry_id = str(getattr(entry, "id", "") or "").strip()
-    return f"{normalized}:{entry_id}" if entry_id else ""
+    if not entry_id:
+        return ""
+    secret_fp = _pool_entry_secret_fingerprint(entry)
+    return f"{normalized}:{entry_id}:{secret_fp}" if secret_fp else f"{normalized}:{entry_id}"
+
+
+def _pool_entry_secret_fingerprint(entry: Any) -> str:
+    """Short, non-reversible fingerprint of a pool entry's current secret.
+
+    Returns "" when no secret can be read, which degrades to the previous
+    id-only behaviour rather than inventing a discriminator that changes on
+    every call (that would defeat the cache entirely).
+    """
+    secret = _pool_runtime_api_key(entry)
+    if not secret:
+        return ""
+    return hashlib.sha256(str(secret).encode("utf-8", "replace")).hexdigest()[:12]
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.

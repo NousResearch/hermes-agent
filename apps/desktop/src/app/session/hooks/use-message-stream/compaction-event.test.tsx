@@ -94,4 +94,39 @@ describe('useMessageStream compaction lifecycle', () => {
     emit('session.info', { running: false })
     expect($compactingSessions.get()).toEqual({})
   })
+
+  // Manual /compress takes a different route through the gateway than
+  // auto-compaction and tags its status `compressing`, not `compacting`:
+  // methods_session.py pins the kind itself, while server.py::_status_update
+  // only re-tags the auto path's generic "lifecycle" status. The desktop
+  // listened for `compacting` alone, so the whole manual run — routinely two
+  // minutes on a large session — showed no indicator at all.
+  it('shows the compaction phase for a manual compress', () => {
+    mountStream()
+
+    emit('status.update', { kind: 'compressing', text: '⠋ compressing 328 messages (~85,980 tok)…' })
+
+    expect($compactingSessions.get()).toEqual({ [SID]: true })
+  })
+
+  it('ends a manual compress on the same compacted edge as auto-compaction', () => {
+    mountStream()
+
+    emit('status.update', { kind: 'compressing', text: '⠋ compressing 12 messages (~4,000 tok)…' })
+    emit('status.update', { kind: 'compacted' })
+
+    expect($compactingSessions.get()).toEqual({})
+  })
+
+  it('clears a manual compress phase when the turn resumes', () => {
+    mountStream()
+    setSessionCompacting(OTHER_SID, true)
+
+    emit('status.update', { kind: 'compressing', text: '⠋ compressing 40 messages…' })
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
+
+    emit('message.delta', { text: 'back to work' })
+
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
 })

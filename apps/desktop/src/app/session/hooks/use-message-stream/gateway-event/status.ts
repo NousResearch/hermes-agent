@@ -37,7 +37,13 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    if (sessionId && payload?.kind === 'compacting') {
+    // Two spellings, one state. Auto-compaction arrives as a generic
+    // "lifecycle" status that server.py::_status_update re-tags `compacting`;
+    // manual /compress goes through methods_session.py, which pins the kind
+    // `compressing` itself and never passes through that re-tag. Listening for
+    // one name left the whole manual run — minutes on a large session —
+    // without any indicator.
+    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && payload?.kind === 'compacted') {

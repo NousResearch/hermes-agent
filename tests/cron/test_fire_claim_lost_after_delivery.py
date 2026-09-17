@@ -1,5 +1,5 @@
 """#105861: a fire-claim that only *reads* as lost AFTER a run delivered must not overwrite
-the delivered success with an error.
+the delivered run's terminal status — an ok, or a failure notice carrying its real error.
 
 `_FireOwnership.lost()` samples the claim from the store once. When that sample misses after
 the notice already reached the channel, the run must fall through to the owner-fenced terminal
@@ -9,7 +9,6 @@ These drive the real store (``jobs.json`` under a temp HERMES_HOME) so the asser
 actual on-disk ``last_status`` the health watchdog reads, not a mock's call list.
 """
 
-import logging
 import threading
 
 import pytest
@@ -38,9 +37,9 @@ def _clean_running_state():
 class _SampledHeartbeat:
     """The real ``heartbeat_fire_claim``, with exactly ONE armed sample missing."""
 
-    def __init__(self, real, skip_samples: int):
+    def __init__(self, real, samples_before_miss: int):
         self._real = real
-        self._skip = skip_samples
+        self._samples_before_miss = samples_before_miss
         self._armed = False
         self._seen = 0
         self.missed = 0
@@ -48,14 +47,14 @@ class _SampledHeartbeat:
     def __call__(self, job_id, *, expected_owner):
         if self._armed:
             self._seen += 1
-            if self._seen > self._skip:
+            if self._seen > self._samples_before_miss:
                 self._armed = False
                 self.missed += 1
                 return False
         return self._real(job_id, expected_owner=expected_owner)
 
     def arm(self):
-        """Miss on the ``skip_samples + 1``-th sample taken from here on."""
+        """Answer ``samples_before_miss`` samples truthfully from here on, then miss once."""
         self._seen = 0
         self._armed = True
 
@@ -71,26 +70,26 @@ def _claimed_job():
     return job
 
 
-def _drive(monkeypatch, *, final_response, deliver, miss_at_sample):
+def _drive(monkeypatch, *, run_result, samples_before_miss):
     """Run one job through run_one_job with the sampled-heartbeat harness.
 
-    The claim is sampled once after ``run_job`` returns (the pre-delivery check), once again
-    just before the delivery side effect, and once after it (the post-delivery check that the
-    incidents tripped on). ``miss_at_sample`` picks which of those samples misses.
+    After ``run_job`` returns the claim is sampled once (the pre-delivery check), once again just
+    before the delivery side effect, and once after it (the post-delivery check that the incidents
+    tripped on). ``samples_before_miss=2`` therefore makes the third, post-delivery sample miss.
     """
     import cron.scheduler as sched
 
     job = _claimed_job()
-    hb = _SampledHeartbeat(sched.heartbeat_fire_claim, skip_samples=miss_at_sample)
+    hb = _SampledHeartbeat(sched.heartbeat_fire_claim, samples_before_miss=samples_before_miss)
     delivered = []
 
     def fake_run_job(job, **kwargs):
         hb.arm()
-        return (True, "output text", final_response, None)
+        return run_result
 
     def fake_deliver(job, content, **kwargs):
         delivered.append(content)
-        return deliver
+        return None
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -98,26 +97,42 @@ def _drive(monkeypatch, *, final_response, deliver, miss_at_sample):
     return sched, job, hb, delivered
 
 
-def test_delivered_run_stays_ok_when_claim_sample_misses_after_delivery(
-    temp_home, monkeypatch, caplog,
+_REAL_ERROR = "the real error text the failure path recorded"
+
+
+@pytest.mark.parametrize(
+    "success, run_result, expected_status, expected_error",
+    [
+        (True, (True, "output text", "the report", None), "ok", None),
+        (False, (False, "output text", "", _REAL_ERROR), "error", _REAL_ERROR),
+    ],
+    ids=["delivered-ok", "delivered-failure-notice"],
+)
+def test_delivered_run_keeps_its_terminal_status_when_claim_sample_misses_after_delivery(
+    temp_home, monkeypatch, success, run_result, expected_status, expected_error,
 ):
-    """Delivery completed, then the claim sample missed → last_status stays ok + warning."""
+    """Delivery completed, then the claim sample missed → the on-disk record is the delivered
+    run's real outcome (ok, or the real error — never ``_OWNERSHIP_LOST_INTERRUPTED``), and the
+    loss latch stays on the raw source: the caller's idle transport event is left unset."""
     from cron.jobs import get_job
 
-    sched, job, hb, delivered = _drive(
-        monkeypatch, final_response="the report", deliver=None, miss_at_sample=2)
+    sched, job, hb, delivered = _drive(monkeypatch, run_result=run_result, samples_before_miss=2)
+    cancel = threading.Event()
 
-    with caplog.at_level(logging.WARNING):
-        assert sched.run_one_job(job) is True
+    assert sched.run_one_job(job, cancel_event=cancel) is True
 
-    assert delivered == ["the report"], "the notice must have left the process"
+    assert len(delivered) == 1, "the notice must have left the process"
+    if success:
+        assert delivered == ["the report"]
+    else:
+        assert "failed" in delivered[0], "the failure notice, not the (empty) report, was delivered"
     assert hb.missed == 1, "exactly the post-delivery sample missed"
+    assert cancel.is_set() is False, "the run's loss latch must not cancel the caller's transport"
     record = get_job(job["id"])
-    assert record["last_status"] == "ok"
-    assert record["last_error"] is None
-    assert record["failure_streak"] == 0
-    warnings = " | ".join(r.getMessage().lower() for r in caplog.records)
-    assert "ownership lost" in warnings and "deliver" in warnings
+    assert record["last_status"] == expected_status
+    assert record["last_error"] == expected_error
+    assert record["last_error"] != sched._OWNERSHIP_LOST_INTERRUPTED
+    assert record["failure_streak"] == (0 if success else 1)
 
 
 def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypatch):
@@ -125,7 +140,8 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
     from cron.jobs import get_job
 
     sched, job, hb, delivered = _drive(
-        monkeypatch, final_response="the report", deliver=None, miss_at_sample=99)
+        monkeypatch, run_result=(True, "output text", "the report", None),
+        samples_before_miss=99)
     cancel = threading.Event()
     deliver_result = sched._deliver_result
 
@@ -143,23 +159,3 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
     record = get_job(job["id"])
     assert record["last_status"] == "error"
     assert record["last_error"] == sched._OWNERSHIP_LOST_INTERRUPTED
-
-
-def test_sampled_miss_leaves_an_idle_transport_event_alone(temp_home, monkeypatch):
-    """A sampled miss must latch on the raw source, not the combined event: the caller's
-    (unset) transport cancel stays unset and the delivered run stays ok."""
-    from cron.jobs import get_job
-
-    sched, job, hb, delivered = _drive(
-        monkeypatch, final_response="the report", deliver=None, miss_at_sample=2)
-    cancel = threading.Event()
-
-    assert sched.run_one_job(job, cancel_event=cancel) is True
-
-    assert delivered == ["the report"], "the notice had already left the process"
-    assert hb.missed == 1, "exactly the post-delivery sample missed"
-    assert cancel.is_set() is False, "the run's loss latch must not cancel the caller's transport"
-    record = get_job(job["id"])
-    assert record["last_status"] == "ok"
-    assert record["last_error"] is None
-    assert record["failure_streak"] == 0

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.conversation_sanitation import (
+    prepare_sanitation_commit,
     sanitation_snapshot_member_row_ids,
     sanitation_snapshot_row_ids,
     validate_sanitation_candidate,
@@ -456,3 +457,27 @@ def test_retry_taken_after_persistence_stamps_api_content_on_prefix():
         {"role": "assistant", "content": "refused answer"},
     ]
     assert not has_sanitation_retry(agent2, edited)
+
+
+def test_envelope_dropped_when_content_redacted():
+    """Round-2 finding 4041479190: a candidate whose content was redacted but
+    whose replay envelope stayed byte-identical must not publish the envelope —
+    the providers prefer it over content and would re-send the secret."""
+    original = [
+        {
+            "role": "assistant",
+            "content": "token=sk-live-value",
+            "codex_message_items": [{"type": "message", "text": "token=sk-live-value"}],
+        }
+    ]
+    candidate = [
+        {
+            "role": "assistant",
+            "content": "token=[REDACTED-PLACEHOLDER]",
+            "codex_message_items": [{"type": "message", "text": "token=sk-live-value"}],
+        }
+    ]
+    prepare_sanitation_commit(original, candidate, watermark_messages=[])
+    assert "codex_message_items" not in candidate[0], (
+        "the stale envelope must be dropped when content was redacted"
+    )

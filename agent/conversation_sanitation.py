@@ -579,6 +579,18 @@ def _drop_stale_api_content(original: Any, candidate: Any) -> None:
             and original_message.get("content") != candidate_message.get("content")
         ):
             candidate_message.pop("api_content", None)
+            # Replay-envelope invalidation (round-2 finding 4041479190): the
+            # provider adapters prefer codex_message_items / anthropic blocks
+            # over content, so a candidate whose content was redacted but whose
+            # envelope stayed byte-identical would re-send the secret from the
+            # envelope on the next request. When content changed, the envelope
+            # no longer describes the published message — drop it (content is
+            # the surviving authority). A redaction INSIDE an envelope field is
+            # still a structural refusal (validate_sanitation_candidate checks
+            # envelope fields for content-shape changes independently).
+            for envelope_field in _REPLAY_ENVELOPE_FIELDS:
+                if envelope_field in candidate_message:
+                    candidate_message.pop(envelope_field, None)
 
 
 def _verified_externalized_content(

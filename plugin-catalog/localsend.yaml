@@ -1,0 +1,19 @@
+name: localsend
+repo: https://github.com/tylerbrevard/hermes-localsend
+sha: 49dcb1f0c18ff2a25a2f3c9d89fa021307afbcde
+description: LocalSend peer-to-peer file transfer — discover devices on the LAN, send files or text to phones
+  and desktops, and run a headless receiver so they can send files back. Standard-library implementation
+  of LocalSend Protocol v2.2, no dependencies and no cloud service.
+maintainer: Tyler Lyon
+tier: community
+category: tools
+version: "1.12.2"
+docs_url: https://github.com/tylerbrevard/hermes-localsend#readme
+capabilities:
+  provides_tools:
+  - localsend_discover
+  - localsend_send
+  - localsend_receive
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -361,10 +361,8 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     started = time.monotonic()
 
     def _on_event(event: Any) -> None:
-        if _anthropic_event_has_content(event):
-            _notify_aux_provider_response()
-        else:
-            _notify_aux_timing_response()
+        has_content = _anthropic_event_has_content(event)
+        _notify_aux_timing_response()
         if _aux_interrupt_cancel_requested():
             raise AuxiliaryExplicitCancellation()
         host_deadline = _current_aux_stream_deadline()
@@ -372,6 +370,8 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
             raise TimeoutError(
                 "Anthropic auxiliary stream timed out at the host compression "
                 f"deadline after {time.monotonic() - started:.0f}s (the caller already stopped waiting)")
+        if has_content:
+            _notify_aux_progress()
 
     return _on_event
 
@@ -1313,12 +1313,13 @@ class _CodexStreamGuard:
         # so a zombie stream dies at the same window as a dead connection.
         # #93650: keep bulk wire-format payload out of the SDK's GIL-holding request transform on auxiliary
         # calls too.
-        if _codex_event_has_content(_event):
+        has_content = _codex_event_has_content(_event)
+        _notify_aux_timing_response()
+        self.check_cancelled()
+        if has_content:
             self.record_progress()
             self.saw_content.set()
-            _notify_aux_provider_response()
-        else:
-            _notify_aux_timing_response()
+            _notify_aux_progress()
         self.check_cancelled()
 
     def finish(self) -> None:

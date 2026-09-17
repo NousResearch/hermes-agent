@@ -4,9 +4,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, beforeAll, test, vi } from 'vitest'
 
 import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+
+// This file shells out to real `git` (init/commit/status) and runs alongside
+// ~800 other files in the full suite. Under that load the 5s project default
+// has proven too tight for individual tests; 30s only widens the ceiling —
+// the tests themselves stay fast in isolation.
+beforeAll(() => {
+  vi.setConfig({ testTimeout: 30_000 })
+})
 
 const tempDirs: string[] = []
 

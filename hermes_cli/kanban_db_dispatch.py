@@ -1350,6 +1350,10 @@ class _CrashSweep:
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    # ``(task_id, run_id, outcome, error_text)`` for reclaimed crashes. Attached
+    # after the reclaim txn commits: the diagnosis integration emits its own
+    # event and opens its own write txn, so it must not run inside this one.
+    diagnosis_requests: list[tuple[str, Optional[int], str, str]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1423,6 +1427,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
                     (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
+                )
+                # Loop-diagnostics: this run was closed two statements above, so
+                # pass its run_id explicitly. Queued for after the txn — the
+                # integration emits an event and opens its own write txn.
+                sweep.diagnosis_requests.append(
+                    (row["id"], run_id, dead.run_outcome, dead.error_text)
                 )
     return sweep
 
@@ -1498,6 +1508,17 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
+    # Loop-diagnostics for reclaimed crashes. Runs here, not inside the reclaim
+    # txn: the integration emits a ``diagnosis`` event and opens its own write
+    # txn, and it must never mask the crash. The reaper closed each run before
+    # returning, so the run_id is passed explicitly.
+    for _tid, _rid, _outcome, _err in sweep.diagnosis_requests:
+        _attach_loop_diagnosis(
+            conn, _tid,
+            run_id=_rid,
+            outcome=_outcome,
+            error=_err,
+        )
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1742,7 +1763,10 @@ def _record_task_failure(
                     outcome=outcome,
                     error=error[:500],
                 )
-            # Timeout/crash path's caller already emitted its own event.
+            # Timeout/crash path: the run was closed by the reaper before this
+            # call, so the diagnosis is attached by the reaper itself (see
+            # ``detect_crashed_workers``) — never here, where it would re-open
+            # an already-closed run.
     return blocked
 
 

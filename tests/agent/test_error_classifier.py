@@ -1841,11 +1841,11 @@ class TestNousWelcomeTier:
         assert result.retryable is False and result.should_fallback is True
         assert result.error_context["welcome_route"] == "anon_on_paid_host"
 
-    def test_named_caller_on_the_welcome_host_keeps_standard_errors(self):
+    def test_named_caller_on_the_welcome_host_is_deterministic(self):
         body = {"status": 400, "message": "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."}
         err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
         result = classify_api_error(err, provider="nous", api_key=make_jwt(account_tier="free"))
-        assert "welcome_route" not in result.error_context
+        assert result.error_context["welcome_route"] == "named_on_welcome_host"
         assert result.retryable is False
 
     def test_dark_tier_403_never_triggers_a_credential_refresh(self):

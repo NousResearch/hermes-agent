@@ -580,11 +580,17 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     400/403 whose message names the wrong host or a dark tier is deterministic for the request.
     The parsed refusal rides ``error_context`` so the terminal copy can say what happened.
     """
-    if not c.anonymous:
-        return None
     from hermes_cli.anon_auth import (
         WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
     status = c.status_code
+    if not c.anonymous:
+        # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
+        # one welcome refusal it does receive is the gateway's mirror 400 on the welcome host; its
+        # reconnect copy stands, only the sign-in card is withheld (``_welcome_surface_kind``).
+        if status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
+            return _v(_R.format_error, retryable=False, should_fallback=True,
+                      error_context={"welcome_route": "named_on_welcome_host"})
+        return None
     if status == 429:
         refusal = parse_welcome_refusal(c.body)
         if refusal is None:

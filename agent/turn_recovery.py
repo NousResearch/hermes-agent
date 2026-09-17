@@ -737,6 +737,9 @@ def _welcome_surface_kind(classified: Any) -> str:
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
     if route == "tier_disabled":
         return "disabled"
+    # A named account on the welcome host has already signed in: no sign-in card, copy only.
+    if route == "named_on_welcome_host":
+        return ""
     return "route" if route else ""
 
 
@@ -890,9 +893,9 @@ def nonretryable_client_error_result(
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
-    if _welcome_hint:
+    if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
-        _stamp_free_tier(result, _welcome_surface_kind(classified),
+        _stamp_free_tier(result, _kind,
                          _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
     return result
 

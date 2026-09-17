@@ -30,12 +30,11 @@ def agent_for(api_key, base_url):
     make_jwt(account_tier="paid", client_id="hermes-cli"), "sk-named", None,
 ], ids=["named-free", "named-paid", "api-key", "unknown"])
 @pytest.mark.parametrize("base_url", [NAMED, WELCOME])
-@pytest.mark.parametrize("case", ["rate_limited", "at_capacity", "admission_closed", "model_not_free", "feature_not_free", "403", "named_route", "503"])
+@pytest.mark.parametrize("case", ["rate_limited", "at_capacity", "admission_closed", "model_not_free", "feature_not_free", "403", "503"])
 def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
     """A shared fairshare body or wrong welcome URL cannot establish anonymous identity."""
-    status = 403 if case in {"403", "named_route"} else 503 if case == "503" else 429
-    message = ("This host serves anonymous Hermes Agent accounts only." if case == "named_route"
-               else "You tried to access something that you don't have permissions for." if case == "403"
+    status = 403 if case == "403" else 503 if case == "503" else 429
+    message = ("You tried to access something that you don't have permissions for." if case == "403"
                else "The service refused this request.")
     body = {"status": status, "message": message, "reason": case, "retry_after": 158}
     error = Exception(message)
@@ -137,3 +136,19 @@ def test_anonymous_claim_does_not_classify_other_providers_as_nous():
     error.body = {"reason": "rate_limited", "retry_after": 600}
     classified = classify_api_error(error, provider="custom", api_key=make_jwt(), base_url=WELCOME)
     assert "welcome_refusal" not in classified.error_context
+
+
+def test_named_account_on_welcome_host_gets_reconnect_copy_without_signin_card():
+    """The gateway's mirror 400 keeps its reconnect copy for a signed-in user; the sign-in card would
+    ask for a sign-in that already happened."""
+    message = "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."
+    error = Exception(message)
+    error.status_code, error.body = 400, {"status": 400, "message": message}
+    agent = agent_for(make_jwt(account_tier="free", client_id="hermes-cli"), WELCOME)
+    classified = classify_api_error(error, provider="nous", model=agent.model, base_url=WELCOME, api_key=agent.api_key)
+    result = nonretryable_client_error_result(
+        agent, error, classified, status_code=400, api_kwargs=None, api_messages=[], messages=[],
+        conversation_history=[], api_call_count=1, approx_tokens=10, provider="nous", base_url=WELCOME, model=agent.model)
+    assert "needs to reconnect" in result["final_response"]
+    assert "free_tier" not in result
+    assert "sign in" not in result["final_response"].lower()

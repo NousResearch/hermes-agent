@@ -7,6 +7,7 @@ to the old name resolves to a profile that no longer exists and floods errors.lo
 identity-migration fix.
 """
 import json
+import sqlite3
 import time
 
 import pytest
@@ -137,3 +138,35 @@ class TestRekeyProfileState:
             "WHERE chat_id = ? AND thread_id = ?", ("chatA", "threadA"))
         assert binding["profile_name"] == "newname"
         assert binding["session_key"] == "agent:newname:telegram:dm:chatA"
+
+class TestRekeyLegacyTopicTables:
+    def test_rekey_migrates_legacy_topic_tables(self, db):
+        """A v1/v2 topic store (no profile_name column) must not fail the rekey
+        with OperationalError: rekey migrates it first (#113757)."""
+        db.create_session(
+            "s1", "feishu", session_key="agent:oldname:abc",
+            profile_name="oldname", chat_id="chatA", chat_type="dm",
+        )
+        conn = sqlite3.connect(db.db_path)
+        conn.execute("DROP TABLE IF EXISTS telegram_dm_topic_mode")
+        conn.execute("DROP TABLE IF EXISTS telegram_dm_topic_bindings")
+        conn.execute(
+            "CREATE TABLE telegram_dm_topic_bindings (chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, session_key TEXT NOT NULL, session_id TEXT NOT NULL, "
+            "managed_mode TEXT NOT NULL DEFAULT 'auto', linked_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "PRIMARY KEY (chat_id, thread_id))")
+        conn.execute(
+            "INSERT INTO telegram_dm_topic_bindings (chat_id, thread_id, user_id, session_key, "
+            "session_id, linked_at, updated_at) "
+            "VALUES ('chatA', '1', 'user1', 'agent:oldname:abc', 's1', 1.0, 2.0)")
+        conn.commit()
+        conn.close()
+
+        db.rekey_profile_state("oldname", "newname")
+
+        conn = sqlite3.connect(db.db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info('telegram_dm_topic_bindings')")}
+        assert "profile_name" in cols
+        row = conn.execute("SELECT profile_name, session_key FROM telegram_dm_topic_bindings").fetchone()
+        conn.close()
+        assert row == ("default", "agent:newname:abc")

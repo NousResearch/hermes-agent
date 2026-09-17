@@ -95,6 +95,53 @@ _UNLINKED_SCOPE_CLAUSES = """                      AND COALESCE(NULLIF(TRIM(s.pr
 """
 
 
+def _migrate_telegram_topic_tables(conn, *, create_missing: bool) -> None:
+    """Shared v1/v2 → v3 topic-table migration body (see ``apply_telegram_topic_migration``)."""
+    present = False
+    for table, columns, ddl in _TOPIC_TABLES:
+        if create_missing:
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
+            present = True
+        else:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+            if exists is None:
+                continue
+            present = True
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+        if "profile_name" in have:
+            continue
+        # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
+        # ON DELETE CASCADE). Legacy rows land in "default" only.
+        legacy_columns = columns.replace("profile_name, ", "", 1)
+        conn.executescript(f"""
+            CREATE TABLE {table}_new ({ddl});
+            INSERT INTO {table}_new ({columns})
+                SELECT 'default', {legacy_columns} FROM {table};
+            DROP TABLE {table};
+            ALTER TABLE {table}_new RENAME TO {table};
+            """)
+    if not present:
+        return
+    # Indexes after any rebuild: the user index needs profile_name. A store may
+    # hold only one of the two tables, so index each table that exists.
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "telegram_dm_topic_bindings" in tables:
+        conn.executescript("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
+            ON telegram_dm_topic_bindings(session_id);
+
+            CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
+            ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
+            """)
+    conn.execute(
+        "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ("telegram_dm_topic_schema_version", "3"),
+    )
+
+
 class SessionTelegramTopicsMixin:
     """Telegram DM topic-mode tables, bindings and lookups. Read paths tolerate absent
     tables (nobody ran ``/topic``) by returning their empty value; only
@@ -117,34 +164,19 @@ class SessionTelegramTopicsMixin:
         See #76423.
         """
         def _do(conn):
-            for table, columns, ddl in _TOPIC_TABLES:
-                conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
-                have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
-                if "profile_name" in have:
-                    continue
-                # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
-                # ON DELETE CASCADE). Legacy rows land in "default" only.
-                legacy_columns = columns.replace("profile_name, ", "", 1)
-                conn.executescript(f"""
-                    CREATE TABLE {table}_new ({ddl});
-                    INSERT INTO {table}_new ({columns})
-                        SELECT 'default', {legacy_columns} FROM {table};
-                    DROP TABLE {table};
-                    ALTER TABLE {table}_new RENAME TO {table};
-                    """)
-            # Indexes after any rebuild: the user index needs profile_name.
-            conn.executescript("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
+            _migrate_telegram_topic_tables(conn, create_missing=True)
+        self._execute_write(_do)
 
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
-                """)
-            conn.execute(
-                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "3"),
-            )
+    def ensure_telegram_topic_profile_columns(self) -> None:
+        """Bring EXISTING Telegram topic tables to the v3 ``profile_name`` shape.
+
+        ``purge_profile_state``/``rekey_profile_state`` predicate on ``profile_name``;
+        without this a v1/v2 store fails with ``OperationalError`` (#113757). Tables
+        that were never created are left alone — creation stays opt-in via /topic.
+        Legacy rows land in ``"default"``, matching the opt-in migration.
+        """
+        def _do(conn):
+            _migrate_telegram_topic_tables(conn, create_missing=False)
         self._execute_write(_do)
 
     def enable_telegram_topic_mode(

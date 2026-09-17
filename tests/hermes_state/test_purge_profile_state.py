@@ -7,6 +7,7 @@ keyed to the deleted name resolves to a profile that no longer exists and floods
 delete-side sibling of the rename rekey in #111926.
 """
 import json
+import sqlite3
 import time
 
 import pytest
@@ -150,3 +151,38 @@ class TestPurgeProfileState:
         routing = db.load_gateway_routing_entries(scope="/root/sessions")
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
+
+class TestPurgeLegacyTopicTables:
+    def test_purge_migrates_legacy_topic_tables(self, db):
+        """A v1/v2 topic store (no profile_name column) must not fail the purge
+        with OperationalError: purge migrates it first, legacy rows landing in
+        "default" (#113757)."""
+        conn = sqlite3.connect(db.db_path)
+        conn.execute("DROP TABLE IF EXISTS telegram_dm_topic_mode")
+        conn.execute("DROP TABLE IF EXISTS telegram_dm_topic_bindings")
+        conn.execute(
+            "CREATE TABLE telegram_dm_topic_mode (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, "
+            "enabled INTEGER NOT NULL DEFAULT 1, activated_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "has_topics_enabled INTEGER, allows_users_to_create_topics INTEGER, "
+            "capability_checked_at REAL, intro_message_id TEXT, pinned_message_id TEXT, "
+            "PRIMARY KEY (chat_id))")
+        conn.execute(
+            "INSERT INTO telegram_dm_topic_mode (chat_id, user_id, activated_at, updated_at) "
+            "VALUES ('chatA', 'user1', 1.0, 2.0)")
+        conn.execute(
+            "CREATE TABLE telegram_dm_topic_bindings (chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, session_key TEXT NOT NULL, session_id TEXT NOT NULL, "
+            "managed_mode TEXT NOT NULL DEFAULT 'auto', linked_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "PRIMARY KEY (chat_id, thread_id))")
+        conn.commit()
+        conn.close()
+
+        counts = db.purge_profile_state("gone")
+
+        conn = sqlite3.connect(db.db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info('telegram_dm_topic_mode')")}
+        assert "profile_name" in cols
+        row = conn.execute("SELECT profile_name FROM telegram_dm_topic_mode").fetchone()
+        conn.close()
+        assert row == ("default",)
+        assert counts.get("telegram_dm_topic_mode", 0) == 0

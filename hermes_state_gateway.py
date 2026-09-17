@@ -552,6 +552,9 @@ class SessionGatewayMixin:
         counts: Dict[str, int] = {}
         if not old or not new or old == new:
             return counts
+        # The rekey predicates on profile_name: bring legacy topic tables to v3 first
+        # or a v1/v2 store fails with OperationalError (#113757).
+        self.ensure_telegram_topic_profile_columns()
         old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
         ns_len = len(old_ns)
 
@@ -681,6 +684,8 @@ class SessionGatewayMixin:
         counts: Dict[str, int] = {}
         if not name:
             return counts
+        # Same v3 precondition as the rekey path above (#113757).
+        self.ensure_telegram_topic_profile_columns()
         ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
 
         def _do(conn):

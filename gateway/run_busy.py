@@ -1060,6 +1060,43 @@ class GatewayBusySessionMixin:
             and (key == prefix or key.startswith(prefix + ":"))
         ]
 
+    def _chat_scoped_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Running-agent keys for ANY session of the same (platform[, scope], chat), regardless of
+        the chat_type/thread/participant slots. Two supported shapes make a /stop key miss a run in
+        the same chat (found via Slack's native stop button, gateway-gateway#286): a top-level
+        channel turn keys ``channel`` while an in-thread /stop normalizes to ``thread``, and
+        rolling-DM configs key without the thread slot the stop carries. "/stop" means "stop what's
+        running in THIS chat", so the handler falls back chat-wide on an exact+sibling miss.
+        Never crosses chat_id; Slack keys are matched with and without the scope_id slot (older
+        sources may lack it). Excludes the pending sentinel and ``own_key``; callers gate on authz.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return []
+        platform = source.platform.value
+        # Derive the namespace from the caller's own key (profile-aware), not a literal.
+        marker = f":{platform}:"
+        namespace = own_key.split(marker, 1)[0] if marker in own_key else "agent:main"
+        scope_id = getattr(source, "scope_id", None)
+        chat_types = {getattr(source, "chat_type", None), "dm", "group", "channel", "thread"}
+        prefixes = []
+        for chat_type in chat_types:
+            if not chat_type:
+                continue
+            base = f"{namespace}:{platform}:{chat_type}"
+            prefixes.append(f"{base}:{chat_id}")
+            if scope_id:
+                prefixes.append(f"{base}:{scope_id}:{chat_id}")
+        return [
+            key
+            for key, agent in self._running_agent_items()
+            if key != own_key
+            and agent is not _AGENT_PENDING_SENTINEL and agent
+            # Exact key or prefix + ":" so a chat id that merely starts with this one never matches.
+            and any(key == prefix or key.startswith(prefix + ":") for prefix in prefixes)
+        ]
+
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """True if this /restart is a Telegram re-delivery we already handled.
 

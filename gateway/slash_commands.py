@@ -446,6 +446,19 @@ class GatewaySlashCommandsMixin(
                         session_key, len(sibling_keys), ", ".join(sibling_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
+        # Exact and thread-sibling misses can still leave a running turn in THIS chat under a
+        # differently-shaped key: a top-level channel turn keys ``channel`` while an in-thread
+        # /stop (incl. Slack's native stop button, gateway-gateway#286) normalizes to ``thread``,
+        # and rolling-DM configs key without the thread slot the stop carries. "/stop" means
+        # "stop what's running in this chat" — fall back chat-wide, gated on authorization.
+        chat_keys = self._chat_scoped_run_keys(source, session_key)
+        if chat_keys and self._is_user_authorized_for_source(source):
+            for chat_key in chat_keys:
+                await _stop(chat_key, "stop_command_chat_scope")
+            logger.info("STOP (chat scope) by %s — interrupted %d run(s) in chat: %s",
+                        session_key, len(chat_keys), ", ".join(chat_keys))
+            return EphemeralReply(t("gateway.stop.stopped"))
+
         # No running agent anywhere for this scope. A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.

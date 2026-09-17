@@ -43,6 +43,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -323,10 +324,32 @@ class OneBotAdapter(BasePlatformAdapter):
         self._chat_interim_overrides: Dict[str, bool] = {}
         # #6 回移：/ocr 用的最近入站图片路径（per chat）
         self._last_image_path: Dict[str, str] = {}
+        # ffmpeg 启动探测只做一次（_check_ffmpeg 的实例级防重复 WARNING flag）
+        self._ffmpeg_checked = False
 
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
+
+    def _check_ffmpeg(self) -> None:
+        """Probe ffmpeg once and warn (once per instance) when missing.
+
+        Voice STT depends on ffmpeg converting silk/amr clips to 16 kHz
+        WAV (_download_audio). Without it voice messages silently degrade
+        to a [语音] marker — only a debug log at conversion time today —
+        so surface that loudly once at connect time instead.
+        """
+        if self._ffmpeg_checked:
+            return
+        self._ffmpeg_checked = True
+        if shutil.which("ffmpeg"):
+            return
+        logger.warning(
+            "[onebot] ffmpeg not found on PATH — voice STT unavailable, "
+            "voice messages will degrade to [语音]. Install ffmpeg "
+            "(e.g. `apt install ffmpeg` or `brew install ffmpeg`) and "
+            "restart Hermes. 语音转文字将不可用：请安装 ffmpeg 后重启。"
+        )
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not AIOHTTP_AVAILABLE:
@@ -347,6 +370,11 @@ class OneBotAdapter(BasePlatformAdapter):
                     )
         except Exception as e:
             logger.debug("[onebot] t2i ink check skipped: %s", e)
+        # ffmpeg 启动探测：缺失时 WARNING 一次（实例级 flag 防重连重复告警），
+        # 不阻塞连接。放在 connect() 而非 __init__：与上方 t2i ink check
+        # 同属"连接期启动自检"惯例，且 __init__ 会被测试/CLI 无谓触发。
+        self._check_ffmpeg()
+
         try:
             if self._mode == "forward":
                 await self._connect_forward_once()

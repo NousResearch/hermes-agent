@@ -33,7 +33,7 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 |---|---|
 | Hermes | gateway with the onebot platform enabled |
 | OneBot 11 bridge | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
-| Optional deps | `ffmpeg` on the Hermes host for voice transcription; an STT backend configured under `stt:` (local faster-whisper, auto-downloaded on first use, or an OpenAI-compatible API); CJK fonts for text-image cards (see below) |
+| Optional deps | `ffmpeg` on the Hermes host for voice transcription (the adapter probes it once at startup and logs a WARNING — voice STT stays off until you install it); an STT backend configured under `stt:` (local faster-whisper, auto-downloaded on first use, or an OpenAI-compatible API); CJK fonts for text-image cards (see below) |
 
 ## Configure Hermes
 
@@ -263,7 +263,7 @@ macOS needs nothing (system Hiragino Sans GB / Songti SC, Menlo and Apple Color 
 - **Inbound voice messages are transcribed**: the adapter downloads the clip and converts it with `ffmpeg` to 16 kHz mono WAV, then hands it to Hermes' STT pipeline. NapCat private voice messages often carry only a file hash (no URL): the adapter calls the OneBot `get_record` action to fetch the base64 audio before the download→ffmpeg→STT pipeline.
 
   STT itself uses the global `stt:` config (same pipeline as other platforms):
-  `provider: local` runs faster-whisper on the Hermes host (model = `stt.local.model`, default `small`, downloaded automatically on first use); `provider: openai` calls an OpenAI-compatible endpoint (configure `stt.openai.*` + API key). Requirements: `ffmpeg` must be installed; without it (or without a working STT backend), voice clips degrade to a `[语音]` marker.
+  `provider: local` runs faster-whisper on the Hermes host (model = `stt.local.model`, default `small`, downloaded automatically on first use); `provider: openai` calls an OpenAI-compatible endpoint (configure `stt.openai.*` + API key). Requirements: `ffmpeg` must be installed; without it (or without a working STT backend), voice clips degrade to a `[语音]` marker. The adapter probes `ffmpeg` once at startup (`shutil.which`) and logs a WARNING with install instructions when it is missing — voice STT stays unavailable until ffmpeg is on PATH.
 
 ## Images
 
@@ -371,7 +371,7 @@ Opt-in via `extra.hot_reload: true` (default **off**, dev only). When enabled, `
 |---|---|
 | Group chat not responding | `require_mention: true` needs an @ or a reply to the bot; reply triggering falls back to mention when the replied-to sender is undeterminable; confirm `bot_qq` was learned from meta events or set it explicitly |
 | Image download 403 | NapCat escapes `&` in URLs to `&amp;` (parsing unescapes automatically); check the media-download log lines if it still fails |
-| Voice shows `[语音]` placeholder | `ffmpeg` unavailable, or `get_record` failed; install ffmpeg and retry |
+| Voice shows `[语音]` placeholder | `ffmpeg` unavailable, or `get_record` failed; install ffmpeg and retry — a missing ffmpeg also triggers a startup WARNING |
 | File message arrives empty | CQ-string bridges may omit the `file` segment name. The adapter marks it `[文件:<name>]` (name falls back to the `file=` attribute); NapCat private files carry only a hash + container path, so the name comes from the `file=` attribute |
 | Chinese tofu boxes in text-image cards | CJK fonts missing: `apt install fonts-noto-cjk` |
 | Loop interim messages not merged | gateway must send `interim: True` in commentary metadata (patched `_send_commentary` in `gateway/stream_consumer.py`); adapter-side merge is only a fallback consumer |

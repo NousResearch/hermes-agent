@@ -2493,3 +2493,39 @@ def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None
         for r in caplog.records
         if r.levelno == logging.WARNING and "not a loopback literal" in r.getMessage()
     ]
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg 启动探测（语音 STT 依赖）
+# ---------------------------------------------------------------------------
+
+
+def test_ffmpeg_check_warns_exactly_once_when_missing(monkeypatch, caplog) -> None:
+    """ffmpeg 缺失时 WARNING 恰好一次（实例级 flag 防重复）。"""
+    adapter = _make_adapter()
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        adapter._check_ffmpeg()
+        adapter._check_ffmpeg()  # 第二次调用必须被 flag 拦住
+    warns = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "ffmpeg" in r.getMessage()
+    ]
+    assert len(warns) == 1
+    # 措辞含可操作指引（安装方式 + 语音 STT 不可用）
+    assert "install" in warns[0] or "Install" in warns[0]
+    assert "STT" in warns[0]
+
+
+def test_ffmpeg_check_silent_when_present(monkeypatch, caplog) -> None:
+    """ffmpeg 在 PATH 上时不打 WARNING（探测本身静默）。"""
+    adapter = _make_adapter()
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        adapter._check_ffmpeg()
+    assert not [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "ffmpeg" in r.getMessage()
+    ]

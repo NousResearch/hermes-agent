@@ -31,7 +31,7 @@ Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.gi
 |---|---|
 | Hermes | 网关启用 onebot 平台 |
 | OneBot 11 桥 | NapCat / Lagrange / LLOneBot / go-cqhttp（反向或正向 WebSocket） |
-| 可选依赖 | Hermes 主机上装 `ffmpeg` 用于语音转写；`stt:` 下配置 STT 后端（本地 faster-whisper 首次使用自动下载，或 OpenAI 兼容 API）；文字图卡片需要 CJK 字体（见下） |
+| 可选依赖 | Hermes 主机上装 `ffmpeg` 用于语音转写（适配器启动时探测一次，缺失即打 WARNING——装上前语音转文字不可用）；`stt:` 下配置 STT 后端（本地 faster-whisper 首次使用自动下载，或 OpenAI 兼容 API）；文字图卡片需要 CJK 字体（见下） |
 
 ## 配置 Hermes
 
@@ -239,7 +239,7 @@ macOS 什么都不用装（系统自带的 Hiragino Sans GB / Songti SC、Menlo 
 - **发送前剥离 Markdown**。QQ 不渲染它，所以 `**粗体**`、标题、列表、表格都转成可读纯文本（标题 → `【…】`、列表 → `•`、表格 → 空格分隔单元格、围栏代码块 → 边框框体）。这发生在分段和文字图渲染之前，图片也是干净的。
 - **入站语音自动转写**：适配器下载语音片段，`ffmpeg` 转 16 kHz 单声道 WAV 后交给 Hermes STT 管线。NapCat 私聊语音常常只有 file hash（无 URL）：适配器先调 OneBot `get_record` 取 base64 音频再走下载→ffmpeg→STT 管线。
 
-  STT 用全局 `stt:` 配置（与其他平台同一管线）：`provider: local` 在 Hermes 主机跑 faster-whisper（模型 = `stt.local.model`，默认 `small`，首次自动下载）；`provider: openai` 调 OpenAI 兼容端点（配 `stt.openai.*` + API key）。要求：装了 `ffmpeg`；没有它（或 STT 后端不可用）语音降级为 `[语音]` 标记。
+  STT 用全局 `stt:` 配置（与其他平台同一管线）：`provider: local` 在 Hermes 主机跑 faster-whisper（模型 = `stt.local.model`，默认 `small`，首次自动下载）；`provider: openai` 调 OpenAI 兼容端点（配 `stt.openai.*` + API key）。要求：装了 `ffmpeg`；没有它（或 STT 后端不可用）语音降级为 `[语音]` 标记。适配器启动时会用 `shutil.which` 探测一次 `ffmpeg`，缺失即打 WARNING 并附安装指引——装上前语音转文字不可用。
 
 ## 图片
 
@@ -347,7 +347,7 @@ HTTP 等价物：适配器本地 API 的 `GET /api/napcat`（action 代理）和
 |---|---|
 | 群聊不响应 | `require_mention: true` 需要 @ 或回复机器人自己；被回复者无法判定时回落为响应；确认 `bot_qq` 已从 meta 事件学到或显式设置 |
 | 图片下载 403 | NapCat 把 URL 里的 `&` 转义成 `&amp;`（解析会自动反转义）；还失败就看媒体下载日志 |
-| 语音显示 `[语音]` 占位 | `ffmpeg` 不可用，或 `get_record` 失败；装 ffmpeg 重试 |
+| 语音显示 `[语音]` 占位 | `ffmpeg` 不可用，或 `get_record` 失败；装 ffmpeg 重试——ffmpeg 缺失时启动日志也会打 WARNING |
 | 文件消息到达为空 | CQ 字符串桥可能省略 `file` 段名。适配器标记为 `[文件:<name>]`（名字回退到 `file=` 属性）；NapCat 私聊文件只有 hash + 容器路径，名字来自 `file=` 属性 |
 | 文字图卡片中文豆腐块 | 缺 CJK 字体：`apt install fonts-noto-cjk` |
 | Loop 中间消息没合并 | 网关必须在评论元数据里发 `interim: True`（`gateway/stream_consumer.py` 里打过补丁的 `_send_commentary`）；适配器侧合并只是回退消费者 |

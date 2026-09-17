@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -203,10 +203,27 @@ provider_kind = options["kind"] == "model-provider"
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": []}
 
 
+class ProbeState:
+    # Registration gets disposable JSON storage, never the runtime's disk-backed state.
+    def __init__(self):
+        self._values = {}
+
+    def get(self, key, default=None):
+        if key not in self._values:
+            return default
+        return json.loads(self._values[key])
+
+    def set(self, key, value):
+        self._values[key] = json.dumps(value)
+
+
 class RecordingContext:
     plugin_config = {}
     profile_name = "default"
     plugin_id = "hermes_validate_probe_plugin"
+
+    def __init__(self):
+        self.state = ProbeState()
 
     def register_tool(self, name, *args, **kwargs):
         recorded["tools"].append(str(name))
@@ -519,15 +536,46 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
 _LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
 
 
+def _dashboard_entrypoint(plugin_dir: Path) -> Optional[str]:
+    """Recognize the legacy dashboard loader without importing its backend or bundle."""
+    dashboard = plugin_dir / "dashboard"
+    try:
+        root = dashboard.resolve()
+        root.relative_to(plugin_dir.resolve())
+        manifest = dashboard / "manifest.json"
+        manifest.resolve().relative_to(root)
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        entry = data.get("entry", "dist/index.js")
+        if (
+            not isinstance(entry, str) or not entry or "\\" in entry
+            or PureWindowsPath(entry).anchor or ".." in Path(entry).parts
+        ):
+            return None
+        target = (dashboard / entry).resolve()
+        target.relative_to(root)
+        if target.is_file():
+            return f"dashboard/{entry}"
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return None
+
+
 def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
     """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
     desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
     repo whose code lives under ``src/`` behind an entry point is the usual shape."""
     present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    if not present:
+        dashboard_entry = _dashboard_entrypoint(plugin_dir)
+        if dashboard_entry:
+            present.append(dashboard_entry)
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json or valid "
+        "dashboard/manifest.json with a contained entry file beside plugin.yaml "
         "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 

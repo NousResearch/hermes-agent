@@ -216,7 +216,14 @@ jobs:
   osv-scanner:
     name: OSV scan
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
+    # Preserve the reusable scanner's SARIF permissions without granting them
+    # to every PR job. Missing caller permissions rejects the entire CI graph.
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     uses: ./.github/workflows/osv-scanner.yml
+
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``

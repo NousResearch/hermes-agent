@@ -106,6 +106,23 @@ def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
     assert len(args["calls"]) == 1
 
 
+def test_normalize_parses_string_envelope_batch():
+    """#114484: a model-emitted JSON-string batch envelope parses like the array form."""
+    calls = [{"name": "session_search", "arguments": {"query": "x"}}]
+    entries, err = normalize_tool_call_entries({"calls": json.dumps(calls)})
+    assert err is None
+    assert entries == calls
+
+
+def test_normalize_parses_string_envelope_single_dict():
+    """#114484: a stringified single dict normalizes to a batch of one."""
+    entries, err = normalize_tool_call_entries(
+        {"calls": json.dumps({"name": "session_search", "arguments": {"query": "x"}})}
+    )
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [
@@ -115,7 +132,7 @@ def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
         ({"calls": [{"name": "tool_search"}]}, "itself a bridge tool"),
         ({"calls": [{"name": "x", "arguments": "not json {"}]}, "not valid JSON"),
         ({"calls": [{"name": "x", "arguments": 42}]}, "must be an object"),
-        ({"calls": "nope"}, "non-empty array"),
+        ({"calls": "nope"}, "not valid JSON"),
     ],
 )
 def test_normalize_rejects_malformed_batches(bad, expected_fragment):

@@ -151,6 +151,13 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if not str(args.get("name") or "").strip():
             return [], "tool_call requires 'calls' (an array of {name, arguments})"
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+    if isinstance(raw_calls, str):
+        # Tolerate the model emitting the batch envelope as a JSON string —
+        # mirror the per-entry `arguments` handling below (#114484).
+        try:
+            raw_calls = json.loads(raw_calls)
+        except json.JSONDecodeError as e:
+            return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

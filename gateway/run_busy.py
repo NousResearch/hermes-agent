@@ -221,6 +221,40 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
+    @staticmethod
+    def _steer_active_subagents(running_agent: Any, text: str) -> int:
+        """Queue *text* into every live child of *running_agent*; returns how many accepted it.
+
+        A parent blocked inside ``delegate_task`` only drains its own steer queue after the tool
+        returns, i.e. after the child finishes — so a steer aimed at a looping child would sit
+        unread for the whole delegation (#112095, Telegram). Children are the parent's own
+        ``_active_children`` (identity-scoped, same snapshot ``interrupt()`` fans out to)."""
+        children = getattr(running_agent, "_active_children", None)
+        if not isinstance(children, (list, tuple, set)) or not children:
+            return 0
+        lock = getattr(running_agent, "_active_children_lock", None)
+        try:
+            with lock if lock is not None else contextlib.nullcontext():
+                snapshot = list(children)
+        except Exception:
+            return 0
+        accepted = 0
+        for child in snapshot:
+            steer = getattr(child, "steer", None)
+            if not callable(steer):
+                continue
+            try:
+                accepted += bool(steer(text))
+            except Exception as exc:
+                logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
+        return accepted
+
+    def _steer_running_agent(self, running_agent: Any, text: str) -> bool:
+        """``running_agent.steer(text)`` plus fan-out to its active subagents (see
+        :meth:`_steer_active_subagents`); True when the parent or any child queued it."""
+        accepted = bool(running_agent.steer(text))
+        return bool(self._steer_active_subagents(running_agent, text)) or accepted
+
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """True when a compression lock is held for this session's id (callers demote interrupt →
         queue, else a follow-up against the pre-rotation parent orphans compression siblings).
@@ -535,6 +569,8 @@ class GatewayBusySessionMixin:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
+            if verb == "steer":
+                return self._steer_running_agent(running_agent, call_text)
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
@@ -615,7 +651,10 @@ class GatewayBusySessionMixin:
             except Exception:
                 pass
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if is_steer_mode and self._agent_has_active_subagents(running_agent):
+            head = "⏩ Steered into current run and its active subagent(s)"
+            tail = ". Your message arrives after their next tool call."
+        elif is_steer_mode:
             head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
         elif is_redirect_mode:
             head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
@@ -939,14 +978,15 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback("No active agent — /steer queued for the next turn.")
         try:
-            accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
+            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
             return "Steer rejected (empty payload)."
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+        target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
+        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't

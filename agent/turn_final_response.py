@@ -142,17 +142,25 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, trailing_continue_intent
+        intent_ack_continuation_mode, promoted_reasoning_announces_action, trailing_continue_intent
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
     # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
+    # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
+    # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
+    # stalled model, and returning it as the answer aborts the tool loop while reporting
+    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
+    _stall_text = agent._strip_think_blocks(final_response or "")
     _stall_continue_intent = (
         bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
         and codex_ack_continuations < 2
-        and trailing_continue_intent(agent._strip_think_blocks(final_response or ""))
+        and (
+            trailing_continue_intent(_stall_text)
+            or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
+        )
     )
     if _stall_continue_intent or (
         _ack_mode != "off"

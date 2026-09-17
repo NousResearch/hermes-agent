@@ -2290,23 +2290,25 @@ def normalize_opencode_base_url(
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
     ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
     the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
-    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported")."""
+    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported").
+    The family heal applies to the BUILT-IN providers only: a custom provider merely named after a
+    family (``opencode-go-bridge``) declared its relay path explicitly in ``providers:`` and keeps it.
+    Only the path is edited, so a port, userinfo, query or fragment round-trips untouched."""
     url = str(base_url or "").strip().rstrip("/")
     family = opencode_provider_family(provider_id)
     if not url or family is None:
         return url
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:
-        parsed = None
-    official = parsed is not None and (parsed.netloc.lower() == "opencode.ai" or parsed.netloc.lower().endswith(".opencode.ai"))
-    if official and re.fullmatch(r"/zen(/go)?(/v1)?", parsed.path):
-        url = f"{parsed.scheme}://{parsed.netloc}{_OPENCODE_FAMILY_PATHS[family]}{'/v1' if parsed.path.endswith('/v1') else ''}"
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    official = host == "opencode.ai" or host.endswith(".opencode.ai")
+    path = parsed.path.rstrip("/")
+    if official and normalize_provider(provider_id) in _OPENCODE_FAMILIES and re.fullmatch(r"/zen(/go)?(/v1)?", path):
+        path = _OPENCODE_FAMILY_PATHS[family] + ("/v1" if path.endswith("/v1") else "")
     if api_mode == "anthropic_messages":
-        return re.sub(r"/v1$", "", url)
-    if url.endswith("/v1"):
-        return url
-    return url + "/v1" if official else url
+        path = re.sub(r"/v1$", "", path)
+    elif official and not path.endswith("/v1"):
+        path += "/v1"
+    return urllib.parse.urlunparse(parsed._replace(path=path))
 
 
 def github_model_reasoning_efforts(

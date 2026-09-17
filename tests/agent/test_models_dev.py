@@ -852,6 +852,87 @@ class TestGetModelCapabilities:
         assert alias is not None and alias.supports_vision is True
         assert pro is None
 
+    def test_metadata_only_override_on_custom_provider_leaves_capabilities_unknown(self):
+        """A custom provider's ``model_overrides`` entry that only corrects ``context_window`` must not
+        synthesize an output cap or capability flags from the unknown-model template (#112649)."""
+        overrides = {"925llm": {"deepseek-v4.1-flash": {"context_window": 1_000_000}}}
+        with patch("agent.models_dev._load_model_overrides", return_value=overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("925llm", "deepseek-v4.1-flash")
+            info = get_model_info("925llm", "deepseek-v4.1-flash")
+
+        assert caps is not None
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens is None
+        assert caps.supports_vision is None
+        assert caps.supports_reasoning is None
+        assert info is not None and info.max_output == 0
+
+
+class TestCatalogProviderAlias:
+    """``providers.<name>.catalog_provider`` lets a custom provider inherit a catalogued vendor's
+    model metadata (#112649)."""
+
+    @staticmethod
+    def _cfg(config):
+        def _cfg_get(*keys, default=None):
+            node = config
+            for key in keys:
+                if not isinstance(node, dict) or key not in node:
+                    return default
+                node = node[key]
+            return node
+        return patch("agent.models_dev._cfg_get", side_effect=_cfg_get)
+
+    def test_alias_reaches_builtin_and_catalog_metadata(self):
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepseek"}}}
+        registry = {"deepseek": {"id": "deepseek", "models": {
+            "deepseek-chat": {"id": "deepseek-chat", "limit": {"context": 128000, "output": 8000},
+                              "tool_call": True, "reasoning": False,
+                              "modalities": {"input": ["text"], "output": ["text"]}}}}}
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            builtin = get_model_capabilities("925llm", "deepseek-v4.1-flash")
+            prefixed = get_model_capabilities("custom:925llm", "deepseek-v4.1-flash")
+            catalog = get_model_capabilities("925llm", "deepseek-chat")
+            ctx = lookup_models_dev_context("925llm", "deepseek-chat")
+            info = get_model_info("925llm", "deepseek-chat")
+
+        assert builtin is not None and builtin.supports_vision is True and builtin.max_output_tokens == 384_000
+        assert prefixed == builtin
+        assert catalog is not None and catalog.supports_vision is False and catalog.max_output_tokens == 8000
+        assert ctx == 128000
+        assert info is not None and info.provider_id == "deepseek" and info.context_window == 128000
+
+    def test_mistyped_alias_warns_once_and_keeps_the_configured_slug(self, caplog):
+        """``catalog_provider: deepsek`` is neither a Hermes provider id nor a models.dev id: warn
+        once (per process, like the unknown-key warning) and keep ``ModelInfo.provider_id`` on the
+        configured slug instead of leaking the typo as a vendor id."""
+        import logging
+
+        import agent.models_dev as md
+
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepsek"}},
+                  "model_overrides": {"925llm": {"deepseek-v4.1-flash": {"context_window": 1000000}}}}
+        md._UNKNOWN_CATALOG_PROVIDER_WARNED.clear()
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
+                caplog.at_level(logging.WARNING, logger="agent.models_dev"):
+            info = get_model_info("925llm", "deepseek-v4.1-flash")
+            assert get_model_capabilities("925llm", "deepseek-v4.1-flash").supports_vision is None
+            get_model_info("925llm", "deepseek-v4.1-flash")
+
+        assert info is not None and info.provider_id == "925llm"
+        warned = [r for r in caplog.records if "catalog_provider" in r.getMessage()]
+        assert len(warned) == 1 and "deepsek" in warned[0].getMessage() and "925llm" in warned[0].getMessage()
+
+    def test_without_alias_custom_provider_stays_unknown(self):
+        """Control: no alias → no vendor inheritance, and a legacy ``custom_providers`` row can alias too."""
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},
+                  "custom_providers": [{"name": "legacy-gw", "base_url": "http://x/v1", "catalog_provider": "deepseek"}]}
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_capabilities("925llm", "deepseek-v4.1-flash") is None
+            legacy = get_model_capabilities("legacy-gw", "deepseek-v4.1-flash")
+        assert legacy is not None and legacy.supports_vision is True
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)
@@ -1223,7 +1304,7 @@ class TestModelOverrides:
         assert info.family == "llava"
         assert info.context_window == 8192
         assert uncapped_info is not None
-        assert info.max_output == uncapped_info.max_output > 0
+        assert info.max_output == uncapped_info.max_output == 0  # unknown model: no synthesized output cap
         assert info.tool_call is True
         assert info.reasoning is False
 
@@ -1344,7 +1425,7 @@ class TestModelOverrides:
             info = get_model_info("custom:my-vllm", "my-model")
         assert info is not None
         assert info.context_window == 200000
-        assert info.max_output == 8192
+        assert info.max_output == 0  # unknown model: output limit is not synthesized
         assert info.tool_call is True
         assert info.reasoning is True
 

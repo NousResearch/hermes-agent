@@ -327,7 +327,13 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
-The background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. If `GITHUB_TOKEN` (or `GH_TOKEN`) is set in the environment the app was launched from, the check spends that token's 5,000/hour budget instead; the token is read from the environment on each request and never stored. Applying an update uses `git`, not the API, and is unaffected.
+The background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
+
+1. `GITHUB_TOKEN`, then `GH_TOKEN`, from the environment the app was launched from — read on each request, never stored.
+2. The [GitHub CLI](https://cli.github.com/)'s own login (`gh auth token`). This is the rung that helps an app started from the Dock, Finder, or a desktop launcher, which inherits a minimal environment without your shell's variables. `gh` is looked up on `PATH` and in the usual install locations (Homebrew, `/usr/local/bin`, `~/.local/bin`, the Windows GitHub CLI installer); the answer is cached until the app restarts, so `gh` runs at most once per session.
+3. Anonymous.
+
+A credential GitHub rejects (HTTP 401 — expired or revoked) is logged once in `desktop.log`, naming its source and never the token, and the request is retried anonymously. Applying an update uses `git`, not the API, and is unaffected.
 
 During a local update, detailed build output streams into the active profile's
 `logs/update.log`, including detached `--gateway` updates. It stays out of the

@@ -46,11 +46,18 @@ vi.mock('@/store/session', () => ({
   setGatewayState: vi.fn()
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+// Reconnect lazily loads this store. Keep the session boundary isolated here
+// too: the real store imports the UI graph and depends on unmocked session atoms.
+vi.mock('@/store/session-states', () => ({
+  reconcileBusyStatesOnReconnect: vi.fn(),
+  resetTileRuntimeBindings: vi.fn()
+}))
 
 const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchPrimaryServerRequest,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile,
@@ -967,5 +974,27 @@ describe('secondary connection timeout (#93454)', () => {
 
     pruneSecondaryGateways(new Set())
     expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+  })
+})
+
+describe('server→client request routing without a registry handler (#112791)', () => {
+  it('answers -32601 when the registry has no onServerRequest, and forwards with the profile when it does', () => {
+    const request = { fail: vi.fn(), id: 'srq-1', method: 'clarify', params: { session_id: 's1' }, respond: vi.fn() }
+
+    // beforeEach configured a registry with onEvent only: nobody can answer,
+    // so the handler declines (false) and the channel answers -32601 now
+    // instead of the backend waiting out its deadline.
+    expect(dispatchPrimaryServerRequest(request as never, 'default')).toBe(false)
+    expect(request.fail).not.toHaveBeenCalled()
+
+    const onServerRequest = vi.fn()
+
+    configureGatewayRegistry({ onEvent: vi.fn(), onServerRequest } as never)
+    expect(dispatchPrimaryServerRequest(request as never, 'work')).toBe(true)
+    expect(request.fail).not.toHaveBeenCalled()
+    expect(onServerRequest).toHaveBeenCalledTimes(1)
+    expect(onServerRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' })
+    )
   })
 })

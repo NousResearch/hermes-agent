@@ -2517,11 +2517,8 @@ def run_one_job(
                     loop=loop,
                     verbose=verbose,
                     extra_prompt=extra_prompt,
-                    fire_claim_lost=(
-                        _CombinedCancelEvent(lost_ownership, cancel_event)
-                        if cancel_event is not None
-                        else lost_ownership
-                    ),
+                    claim_lost=lost_ownership,
+                    transport_cancel=cancel_event,
                     execution_token=execution_token))
     finally:
         with _running_lock:
@@ -2619,11 +2616,26 @@ class _FireClaimLostDuringSideEffect(Exception):
 class _FireOwnership:
     """Fire-claim ownership checks for one run (``owner`` is None when the job carries no claim)."""
 
-    def __init__(self, job: dict, fire_claim_lost: Optional[_CancelEventLike]):
+    def __init__(
+        self, job: dict, claim_lost: Optional[_CancelEventLike] = None,
+        transport_cancel: Optional[_CancelEventLike] = None,
+    ):
         self.job = job
-        self.fire_claim_lost = fire_claim_lost
+        # Two handles: the heartbeat's raw ``lost_ownership`` event and the caller's transport
+        # ``cancel_event``. A sampled miss latches on the raw one only — the combined view's
+        # ``set()`` would propagate into the transport event this run does not own (#105861).
+        self.claim_lost = claim_lost
+        self.transport_cancel = transport_cancel
+        # What ``run_job`` receives as its ``cancel_event``: either source cancels the run.
+        self.cancel_event: Optional[_CancelEventLike] = (
+            _CombinedCancelEvent(claim_lost, transport_cancel)
+            if claim_lost is not None or transport_cancel is not None
+            else None)
         claim = job.get("fire_claim")
         self.owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+
+    def transport_cancelled(self) -> bool:
+        return self.transport_cancel is not None and self.transport_cancel.is_set()
 
     def side_effect_fence(self):
         if self.owner is None:
@@ -2631,7 +2643,7 @@ class _FireOwnership:
         return fire_claim_fence(self.job["id"], expected_owner=self.owner)
 
     def lost(self) -> bool:
-        if self.fire_claim_lost is not None and self.fire_claim_lost.is_set():
+        if self.cancel_event is not None and self.cancel_event.is_set():
             return True
         if self.owner is None:
             return False
@@ -2645,8 +2657,8 @@ class _FireOwnership:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed", self.job["id"], exc_info=True)
             return False
-        if self.fire_claim_lost is not None:
-            self.fire_claim_lost.set()
+        if self.claim_lost is not None:
+            self.claim_lost.set()
         return True
 
 
@@ -2856,10 +2868,11 @@ def _deliver_crash_failure(
 
 def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
-    extra_prompt: Optional[str] = None, fire_claim_lost: Optional[_CancelEventLike] = None,
+    extra_prompt: Optional[str] = None, claim_lost: Optional[_CancelEventLike] = None,
+    transport_cancel: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
 ) -> bool:
-    fence = _FireOwnership(job, fire_claim_lost)
+    fence = _FireOwnership(job, claim_lost, transport_cancel)
     fire_owner = fence.owner
     _side_effect_fence = fence.side_effect_fence
     _fire_claim_ownership_lost = fence.lost
@@ -2943,8 +2956,8 @@ def _run_one_job_body(
             "defer_agent_teardown": _deferred_agents,
             "extra_prompt": extra_prompt,
             "execution_id": execution_id}
-        if fire_claim_lost is not None:
-            _run_kwargs["cancel_event"] = fire_claim_lost
+        if fence.cancel_event is not None:
+            _run_kwargs["cancel_event"] = fence.cancel_event
         try:
             success, output, final_response, error = run_job(job, **_run_kwargs)
         except BaseException:
@@ -2981,7 +2994,8 @@ def _run_one_job_body(
             # Every path must tear down deferred agent(s) so they never leak subprocesses/clients.
             _teardown_deferred()
 
-        if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
+        if d.side_effect_ownership_lost:
+            # The claim died inside a side-effect fence: the side effect did NOT complete.
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
@@ -2989,6 +3003,26 @@ def _run_one_job_body(
         if d.success and not final_response.strip():
             d.success = False
             d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        if _fire_claim_ownership_lost():
+            # #105861: the claim check is one sample; a miss AFTER a completed delivery must not
+            # overwrite the delivered run's terminal status — ok, or a failure whose notice already
+            # left with its real error — so fall through to _finish_completed_run, whose owner-fenced
+            # mark_job_run is authoritative either way. An explicit transport cancel stays fail-closed.
+            transport_cancelled = fence.transport_cancelled()
+            if d.delivery_attempted and not d.delivery_error and not transport_cancelled:
+                logger.warning(
+                    "Job '%s': fire claim ownership lost after completed delivery; "
+                    "recording the delivered run's terminal status",
+                    job["id"])
+            else:
+                if transport_cancelled:
+                    logger.warning(
+                        "Job '%s': transport cancellation arrived before terminal completion; "
+                        "recording the interrupted run",
+                        job["id"])
+                _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+                return True
 
         if _consume_interrupted_flag(job["id"], execution_token):
             _finish_interrupted_run(job, execution_id, delivery_error)
@@ -3232,12 +3266,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
+    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
+    # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    repo_root = Path(__file__).resolve().parent.parent
+    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             process = subprocess.Popen(
                 dispatch.argv,
-                cwd=str(Path(__file__).resolve().parent.parent),
+                cwd=str(repo_root),
                 env=worker_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

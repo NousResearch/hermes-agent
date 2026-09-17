@@ -125,6 +125,8 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             if hosted_task is None or session.get("_hosted_room_task") == hosted_task:
                 session["running"] = False
+                # No turn runs: leave the durable send, but never clear a newer task's adoption row.
+                session.pop("_submit_user_row", None)
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
@@ -138,6 +140,7 @@ def _admit_prompt_turn(
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
+            session.pop("_submit_user_row", None)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
@@ -639,8 +642,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None) -> None:
-    """Wire the streaming callbacks and run the conversation into ``st.result``."""
+    turn_author: dict | None = None, text: Any = None) -> None:
+    """Wire the streaming callbacks and run the conversation into ``st.result``.
+    ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
@@ -688,6 +692,7 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -996,7 +1001,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author)
+                display_metadata, turn_author, text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

@@ -308,7 +308,9 @@ class CLIAgentSetupMixin:
                 continue
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key
-                _fb_kwargs = {"requested": _fb_provider}
+                # target_model: the fallback entry names the model that will be sent; without it the
+                # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
+                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
                 if _fb.get("base_url"):
                     _fb_kwargs["explicit_base_url"] = _fb["base_url"]
                 _fb_api_key = resolve_entry_api_key(_fb)

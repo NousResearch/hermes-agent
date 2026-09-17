@@ -24,20 +24,11 @@ def _restore_stdout():
 
 @pytest.fixture()
 def server():
-    # The sys.modules mocks only need to cover the *initial* import — once
-    # tui_gateway.server is cached, they are inert. Keeping them active for
-    # the whole test poisons any module first imported inside a test body:
-    # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
-    # (a fixed shared path) forever, leaking active-session registry entries
-    # across every later test in the process. Scope the patch to the import.
-    with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
-        "hermes_cli.env_loader": MagicMock(),
-        "hermes_cli.banner": MagicMock(),
-        "hermes_state": MagicMock(),
-    }):
-        import importlib
-        mod = importlib.import_module("tui_gateway.server")
+    # conftest isolates HERMES_HOME before collection and again per test.
+    # Import real modules once: patch.dict(sys.modules) evicts every newly
+    # imported dependency on exit, so each case used to rebuild the server
+    # and leave another idle reaper and atexit callback behind.
+    import tui_gateway.server as mod
 
     # Snapshot the RPC registry: several tests below stub handlers
     # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
@@ -59,6 +50,15 @@ def server():
     from tui_gateway import server_requests
     server_requests.reset_for_tests()
     mod._live_transports.clear()
+
+
+def test_server_fixture_preserves_real_cached_modules(server):
+    assert sys.modules.get("tui_gateway.server") is server
+    assert sys.modules.get("tui_gateway.server_requests") is server._server_requests
+    state = sys.modules.get("hermes_state")
+    assert isinstance(state, types.ModuleType)
+    assert isinstance(state.SessionDB, type)
+    assert server._server_requests._write.__globals__ is vars(server)
 
 
 def test_shared_fixture_cleanup_uses_full_session_teardown(server, monkeypatch):
@@ -390,20 +390,93 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
     assert not server_requests._open
 
 
-def test_server_request_error_response_fails_fast(capture):
-    """A shared-channel client without a handler answers -32601 instead of waiting for the deadline."""
+def _silent_ws():
+    """A WebSocket client build that predates server→client requests: receives the frame, never answers."""
+    from tui_gateway.ws import WSTransport
+
+    class _SilentWS(WSTransport):
+        def __init__(self):
+            self._ws, self._loop, self._peer, self._auth_identity = object(), None, "test", None
+            self.frames: list[dict] = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            pass
+
+    return _SilentWS()
+
+
+def _ws_session(server, sid, peer):
+    server._sessions[sid] = {"session_key": sid, "transport": peer, "history": [], "history_lock": threading.Lock(),
+                             "agent_ready": None}
+
+
+def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server):
+    """A WebSocket client that never sent ``client.capabilities`` cannot answer, so send() returns the
+    error-response shape (None) at once instead of stalling the agent for the deadline (#112548).
+    The frame is never written; nothing is left open for a reconnect replay."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old", peer)
+    t0 = time.monotonic()
+    assert server_requests.send("clarify", "ws-old", {"question": "q?", "choices": None, "multi_select": False},
+                                timeout=5) is None
+    assert time.monotonic() - t0 < 1
+    assert peer.frames == []
+    assert server_requests.open_requests("ws-old") == []
+    settled = []
+    server_requests.send_async("approval", "ws-old", {"request_id": "r1", "command": "rm", "description": "",
+                                                      "pattern_key": "", "pattern_keys": []}, settled.append)
+    assert settled == [None]
+
+
+def test_server_request_waits_for_a_ws_client_that_advertised(server):
+    """``client.capabilities {server_requests: true}`` on the connection marks it answerable: the frame is
+    written and the wait is a real one (here: answered by the response frame)."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-new", peer)
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert "clarify" in response["result"]["server_requests"]
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert peer.frames[-1]["id"] == req.id
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "yes"}
+    # Disconnect forgets the advertisement; the next connection must advertise again.
+    server.unregister_live_transport(peer)
+    assert server_requests.answers_requests(peer) is False
+
+
+def test_server_request_error_response_fails_fast(server):
+    """A client that advertised but has no handler for the method answers -32601: that error frame settles
+    send() to None at once instead of the agent waiting for the deadline."""
     from tui_gateway import server_requests
 
     box = {}
-    thread = threading.Thread(
-        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
-        daemon=True,
-    )
+    thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+                              daemon=True)
     thread.start()
     req = _wait_open(server_requests)
+    t0 = time.monotonic()
     assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
     thread.join(timeout=1)
-    assert not thread.is_alive()
+    assert not thread.is_alive() and time.monotonic() - t0 < 1
     assert box["result"] is None
 
 
@@ -1176,8 +1249,8 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1519,3 +1592,39 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(server, monkeypatch):
+    """The approval wait is owned by ``tools.approval``'s queue, not by ``server_requests``. When the request
+    cannot be sent (the only client predates server→client requests) the queue entry must be withdrawn too,
+    otherwise ``_await_gateway_decision`` idles for the whole approvals.timeout with no prompt anywhere
+    (#112548). The decision is a withdrawal (``cancelled`` cause), never a user deny."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old-approval", peer)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    poll_event = wait_mod._poll_event
+    polled = []
+
+    def poll_already_set(event, *args, **kwargs):
+        # Notification must withdraw the queue entry before polling starts.
+        # Assert that causal guarantee instead of timing unrelated imports.
+        assert event.is_set()
+        polled.append(event)
+        return poll_event(event, *args, **kwargs)
+
+    monkeypatch.setattr(wait_mod, "_poll_event", poll_already_set)
+    approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    try:
+        decision = wait_mod._await_gateway_decision(
+            "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
+    finally:
+        approval_mod.unregister_gateway_notify("ws-old-approval")
+    assert len(polled) == 1
+    assert decision["choice"] is None and decision["cancelled"]
+    assert peer.frames == []
+    assert "ws-old-approval" not in approval_mod._gateway_queues

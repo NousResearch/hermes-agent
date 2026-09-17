@@ -69,6 +69,9 @@ export class JsonRpcGatewayError extends Error {
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
+/** JSON-RPC "internal error" — used when a server→client request handler throws. */
+export const JSON_RPC_INTERNAL_ERROR = -32603
+
 /** Map a raw `error` member of a response frame to the typed error every surface inspects. */
 export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Hermes RPC failed'): JsonRpcGatewayError {
   const err = (raw && typeof raw === 'object' ? raw : {}) as JsonRpcErrorPayload
@@ -102,6 +105,12 @@ export interface JsonRpcRequestChannelOptions {
    * its deadline against a client with no handler.
    */
   onUnhandledRequest?: (request: { id: string; method: string; params: ServerRequestParams }) => void
+  /**
+   * A server→client request handler threw: the owner logs it. The channel has
+   * already answered `-32603` so the backend does not wait out its deadline
+   * against a crashed client (clarify blocks 3600s).
+   */
+  onRequestHandlerError?: (error: Error, request: { id: string; method: string; params: ServerRequestParams }) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -175,9 +184,9 @@ export class JsonRpcRequestChannel {
   private lastLivenessAt = 0
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onUnhandledRequest'>
+    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onUnhandledRequest'>
+    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
@@ -187,6 +196,7 @@ export class JsonRpcRequestChannel {
       heartbeatLiveness: options.heartbeatLiveness ?? 'response',
       onEvent: options.onEvent,
       onHeartbeatFailure: options.onHeartbeatFailure,
+      onRequestHandlerError: options.onRequestHandlerError,
       onUnhandledRequest: options.onUnhandledRequest,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -352,7 +362,25 @@ export class JsonRpcRequestChannel {
     }
 
     for (const handler of this.requestHandlers) {
-      if (handler(request) !== false) {
+      let accepted: boolean | void
+
+      try {
+        accepted = handler(request)
+      } catch (error) {
+        // A crashing handler must not leave the backend waiting out its full
+        // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
+        // guard makes this a no-op if the handler already responded.
+        request.fail(JSON_RPC_INTERNAL_ERROR, `server request handler crashed: ${method}`)
+        this.options.onRequestHandlerError?.(error instanceof Error ? error : new Error(String(error)), {
+          id,
+          method,
+          params
+        })
+
+        return false
+      }
+
+      if (accepted !== false) {
         return true
       }
     }
@@ -440,10 +468,26 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
+      if ((frame.params as GatewayEvent).type === 'gateway.ready') {
+        this.advertiseCapabilities()
+      }
+
       this.options.onEvent?.(frame.params as GatewayEvent)
     }
 
     return frame
+  }
+
+  /**
+   * Tell the backend, once per connection generation, that this client answers
+   * server→client requests (a handler result or `-32601`). Without it a
+   * backend treats a WebSocket client as a build that predates server requests
+   * and fails every clarify/approval/… for it immediately instead of stalling
+   * the agent for the full deadline. An older backend answers `-32601` here;
+   * that is ignored.
+   */
+  private advertiseCapabilities(): void {
+    this.request('client.capabilities', { server_requests: true }).catch(() => undefined)
   }
 
   /**

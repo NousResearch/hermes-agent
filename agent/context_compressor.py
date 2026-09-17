@@ -88,6 +88,22 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     return route
 
 
+# Pinned route that names NO summary model: compress() skips the summary LLM and inserts its deterministic
+# fallback summary instead (``abort_on_summary_failure`` still aborts). The host pins it when the summary
+# route stalls again after a stall-class backoff already burned one idle window (#112420), so a provably
+# unhealthy route degrades once instead of re-entering the same silent stream every turn.
+DETERMINISTIC_SUMMARY_ROUTE: Dict[str, Any] = {"label": "deterministic fallback summary", "deterministic": True}
+
+
+def take_deterministic_summary_pin() -> bool:
+    """Consume the pin when it is the deterministic sentinel; a real route (or no pin) is left in place."""
+    route = _SUMMARY_ROUTE_PIN.get()
+    if not (isinstance(route, dict) and route.get("deterministic") is True):
+        return False
+    _SUMMARY_ROUTE_PIN.set(None)
+    return True
+
+
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
     """Consume the pinned route as explicit ``call_llm`` keyword arguments."""
     route = take_pinned_summary_route() or {}

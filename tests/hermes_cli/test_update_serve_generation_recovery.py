@@ -1036,11 +1036,12 @@ def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monke
     monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
     monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
 
-    def _fake_kill(pid, sig):
-        signalled.append(pid)
-        raise ProcessLookupError
+    def _fake_kill(pids, killed, failed):
+        # This test owns service selection, not host process-tree signalling.
+        signalled.extend(pids)
+        killed.extend(pids)
 
-    monkeypatch.setattr(dashboard_procs.os, "kill", _fake_kill)
+    monkeypatch.setattr(dashboard_procs, "_kill_pids_posix", _fake_kill)
 
     result = dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
 

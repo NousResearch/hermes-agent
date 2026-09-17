@@ -852,6 +852,18 @@ def _desktop_app_present(desktop_dir: Path) -> bool:
         or _m()._desktop_dist_exists(desktop_dir))
 
 
+def _report_installed_desktop_app(desktop_dir: Path) -> None:
+    """Refresh the installed macOS bundle from release/ and print the outcome (#52339)."""
+    from hermes_cli.update_cmd import _m
+    installed, problems = _m()._install_rebuilt_desktop_app(desktop_dir)
+    for app in installed:
+        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+    for problem in problems:
+        print(f"  ⚠ {problem}")
+    if not installed and not problems:
+        print("  ✓ Desktop app up to date")
+
+
 def _rebuild_desktop_after_update(
     desktop_dir: Path, *, had_desktop_app_before_update: bool) -> bool:
     """Rebuild an installed Desktop app when its source or artifact changed. Returns ``False``
@@ -878,7 +890,9 @@ def _rebuild_desktop_after_update(
     except Exception:
         skip_desktop_build = False
     if skip_desktop_build:
-        print("  ✓ Desktop app up to date")
+        # A current release/ can still sit beside a stale /Applications copy (an earlier update
+        # rebuilt but never installed); healing it must not wait for the next source change.
+        _report_installed_desktop_app(desktop_dir)
         return True
 
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
@@ -900,7 +914,7 @@ def _rebuild_desktop_after_update(
         from hermes_constants import display_hermes_home as _dhh
         print(f"  Full build log: {_dhh()}/logs/update.log")
         return False
-    print("  ✓ Desktop app up to date")
+    _report_installed_desktop_app(desktop_dir)
     return True
 
 

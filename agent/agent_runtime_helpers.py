@@ -2933,6 +2933,34 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
+# Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
+# and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
+# reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan
+# ("Let me batch the terminal calls and run them in parallel.", "I need to check the log.") is a
+# stalled model whose turn would otherwise report "complete" with zero tool calls (#111761).
+# Tail-only and anchored on the last sentence, so reasoning that merely mentions a plan before
+# stating its answer ("...Let me check. The answer is 42.") still promotes.
+_PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
+    r"(?:^|[.!?:\u3002\uff01\uff1f\n]\s*|\u2026\s*)"
+    r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
+    r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b)"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def promoted_reasoning_announces_action(text: str) -> bool:
+    """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
+
+    No overall length cap: the reasoning block of a stalled model is often 300-1600 chars of
+    planning monologue; only the tail decides.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
+
+
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}
 _INTENT_ACK_OFF = {"false", "never", "no", "off"}
 

@@ -286,14 +286,104 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 # DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
 # is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
 _POSIX_TERM_GRACE_SECONDS = 10.0
+# Grace for a descendant that outlived the backend's own teardown. It already got the backend's
+# SIGTERM forwarded (or SIGHUP from its PTY master closing); anything still up is wedged, and a
+# wedged ui-tui keeps the deleted state.db-wal inode open until the next start refuses with
+# DeletedWalGenerationError (#112631) — no finite root grace can cover an unbounded teardown.
+_POSIX_DESCENDANT_GRACE_SECONDS = 2.0
+_NO_TTY = ("?", "??", "-")  # Linux / macOS / BSD spellings of "no controlling terminal"
 
 
-def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors."""
-    import signal as _signal
+def _is_detached_session_leader(pid: int, tty: str) -> bool:
+    """True for a process the dashboard launched with ``start_new_session`` (own session, no tty).
+
+    Messaging-gateway bots and profile actions started from ``/api/gateway/*`` are such processes:
+    they are the user's, not the dashboard's, and must survive a dashboard stop. A hosted
+    ``hermes --tui`` child is a session leader too (``pty.fork``) but owns the pts whose master the
+    dashboard held, so its tty column is set and it stays in the sweep.
+
+    Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
+    launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
+    ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
+    their own ppid watchdogs (``compute_host._parent_guard_loop``,
+    ``slash_worker._start_parent_death_watchdog``), not on this sweep. Discriminating by WAL-holder
+    identity (``iter_deleted_sqlite_sidecar_holders``) was deliberately not done in this change.
+    """
+    if tty not in _NO_TTY:
+        return False
+    try:
+        return os.getsid(pid) == pid
+    except OSError:
+        return False
+
+
+def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
+    """``{pid: (root, start_time)}`` of every dashboard-owned descendant of *roots*, snapshotted
+    BEFORE the kill: once the root dies its children are reparented and the PPID link is gone.
+    Detached session leaders (see ``_is_detached_session_leader``) are pruned together with their own
+    subtrees. So is the calling process with its subtree and its ancestor chain: ``hermes dashboard
+    --stop`` / ``hermes update`` run from a shell escape inside the hosted Chat TUI are same-session
+    descendants of the backend, and sweeping them would SIGTERM the caller mid-run (POSIX twin of the
+    Windows #98814 hazard). The start-time fingerprint is the PID-reuse guard (same one
+    ``_kill_pids_windows`` uses). Empty on scan failure → root-only kill, the historical behaviour.
+    """
+    from gateway.status import get_process_start_time
+    try:
+        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    children: dict[int, list[tuple[int, str]]] = {}
+    parent: dict[int, int] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2]))
+            parent[int(parts[0])] = int(parts[1])
+    me = os.getpid()
+    ancestors: set[int] = set()
+    cur = me
+    while (cur := parent.get(cur, 0)) > 1 and cur not in ancestors:
+        ancestors.add(cur)
+    found: dict[int, tuple[int, int | None]] = {}
+    pending = [(root, root) for root in roots]
+    while pending:
+        root, cur = pending.pop()
+        for pid, tty in children.get(cur, ()):
+            if pid in found or pid in roots or pid == me or _is_detached_session_leader(pid, tty):
+                continue
+            if pid not in ancestors:  # an ancestor of the caller is spared, but its other children are not
+                found[pid] = (root, get_process_start_time(pid))
+            pending.append((root, pid))
+    return found
+
+
+def _wait_gone(pids: list[int], seconds: float) -> list[int]:
+    """Poll up to *seconds*; return the PIDs still alive (zombies count as gone)."""
     import time as _time
 
     from gateway.status import _pid_exists
+
+    deadline = _time.monotonic() + seconds
+    alive = list(pids)
+    while alive and _time.monotonic() < deadline:
+        _time.sleep(0.1)
+        alive = [p for p in alive if _pid_exists(p)]  # os.kill(pid, 0) breaks on Windows
+    return alive
+
+
+def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
+    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors, then
+    sweep the dashboard-owned descendants that outlived the root and wait for the tree to be gone.
+
+    *killed* reports the roots only; swept descendants are the roots' own teardown debt. A descendant
+    still alive after its SIGKILL grace is appended to *failed*: the stop must not be declared
+    complete while a wedged ui-tui still holds the deleted state.db-wal inode (#112631).
+    """
+    import signal as _signal
+
+    from gateway.status import get_process_start_time
+
+    descendants = _posix_descendants(pids)
 
     def _send(pid: int, sig) -> None:
         try:
@@ -307,15 +397,22 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     for pid in pids:
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
-    while pending and _time.monotonic() < deadline:
-        _time.sleep(0.1)
-        alive = [p for p in pending if _pid_exists(p)]  # os.kill(pid, 0) breaks on Windows
-        killed.extend(p for p in pending if p not in alive)
-        pending = alive
-    for pid in pending:
+    alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
+    killed.extend(p for p in pending if p not in alive)
+    for pid in alive:
         _send(pid, _signal.SIGKILL)
+
+    # Snapshot identity must still match: a PID recycled during the grace is not ours to signal.
+    survivors = [p for p, (_root, start) in descendants.items()
+                 if start is not None and get_process_start_time(p) == start]
+    for sig in (_signal.SIGTERM, _signal.SIGKILL):
+        for pid in survivors:
+            with contextlib.suppress(OSError):
+                os.kill(pid, sig)
+        survivors = _wait_gone(survivors, _POSIX_DESCENDANT_GRACE_SECONDS)
+    failed.extend((pid, "descendant of the stopped backend still alive after SIGKILL")
+                  for pid in survivors)
 
 
 def _kill_stale_dashboard_processes(
@@ -744,6 +841,7 @@ def _reap_orphaned_desktop_local_serves(
                and _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)]
     if not matched:
         return _empty_result()
+    descendants = _posix_descendants(matched)  # before the kill: the root's death reparents them
     killed: list[int] = []
     failed: list[int] = []
     for pid in matched:
@@ -767,6 +865,15 @@ def _reap_orphaned_desktop_local_serves(
             killed.append(pid)
         except OSError:
             failed.append(pid)
+    # A SIGKILLed backend never ran PTY_REGISTRY.close_all(): its hosted ui-tui / MCP trees would
+    # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
+    # grace, and these trees already lost their Electron and their backend.
+    # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.
+    from gateway.status import get_process_start_time
+    for pid, (root, start) in descendants.items():
+        if root not in failed and start is not None and get_process_start_time(pid) == start:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal_kill)
     with contextlib.suppress(Exception):
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}

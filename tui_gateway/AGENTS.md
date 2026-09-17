@@ -26,7 +26,10 @@ is the facade with the method/event catalog; methods live in `methods_*.py` sibl
 `event_publisher.py` / `event_replay.py`, server→client requests in `server_requests.py` (`send()` blocks
 the agent thread until the response frame with the same `srq-<n>` id arrives; `cancel*` withdraws with a
 `request.cancel` event; `open_requests(sid)` is what `session.resume` / `session.events.since` replay so a
-reconnecting client re-renders the still-open questions). Desktop reaches the same server over WebSocket
+reconnecting client re-renders the still-open questions). A client says once per connection that it
+answers them (`client.capabilities {server_requests: true}`, sent by the shared channel on `gateway.ready`);
+a WebSocket client that never did is an app build older than server→client requests, and `send()` fails
+fast for it instead of stalling the agent for the deadline. Desktop reaches the same server over WebSocket
 via `apps/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
 in an existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
 

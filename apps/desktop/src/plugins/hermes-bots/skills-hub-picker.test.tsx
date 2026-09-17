@@ -26,7 +26,11 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...original,
-    host: { ...original.host, notify: mocks.notify, notifyError: mocks.notifyError, request: mocks.request }
+    host: { ...original.host, notify: mocks.notify, notifyError: mocks.notifyError, request: mocks.request },
+    // A spy that calls through to the real predicate: proves the search
+    // field's IME guard actually routes through the shared helper, not a
+    // parallel hand-rolled isComposing/keyCode-229 check of its own.
+    isSubmitEnter: vi.fn(original.isSubmitEnter)
   }
 })
 
@@ -148,5 +152,39 @@ describe('hub pick messages', () => {
     )
 
     expect(installCalls()).toEqual([])
+  })
+})
+
+// The offline search fallback's own text field: Enter searches, but an IME
+// composition Enter (confirming composed CJK text) must not trigger a search.
+describe('offline search field', () => {
+  function searchCalls() {
+    return mocks.request.mock.calls.filter(([, params]) => params.action === 'search')
+  }
+
+  it('searches on Enter, routed through the shared isSubmitEnter helper', async () => {
+    const sdk = await import('@hermes/plugin-sdk')
+
+    render(<HubSkillsSection forProfile={null} />)
+    const input = screen.getByRole('textbox')
+
+    fireEvent.change(input, { target: { value: 'web research' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(searchCalls()).toEqual([['skills.manage', { action: 'search', query: 'web research' }]])
+    // A duplicated hand-rolled isComposing/keyCode-229 check would pass the
+    // behavioral assertion above too — this is the regression it can't catch.
+    expect(sdk.isSubmitEnter).toHaveBeenCalled()
+  })
+
+  it('swallows an IME composition Enter instead of searching', () => {
+    render(<HubSkillsSection forProfile={null} />)
+    const input = screen.getByRole('textbox')
+
+    fireEvent.change(input, { target: { value: '中文' } })
+    fireEvent.keyDown(input, { isComposing: true, key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+
+    expect(searchCalls()).toEqual([])
   })
 })

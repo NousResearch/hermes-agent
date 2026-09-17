@@ -22,12 +22,19 @@ class _IdleAgent:
         self.interrupts.append(reason)
 
 
-class _UnavailableActivityAgent:
+class _RaisingActivityAgent:
+    """Agent whose activity snapshot read raises (fail-safe case).
+
+    A real AIAgent always carries ``_last_activity_ts``; the snapshot is only
+    missing when the diagnostic read itself fails.  The watchdog must still bound
+    the turn instead of skipping every poll.
+    """
+
     def __init__(self):
         self.interrupts = []
 
     def get_activity_summary(self):
-        return {"seconds_since_activity": None}
+        raise RuntimeError("activity snapshot unavailable")
 
     def interrupt(self, reason):
         self.interrupts.append(reason)
@@ -37,24 +44,12 @@ def _state():
     return threading.Event(), threading.Event(), threading.Lock()
 
 
-def test_thread_watchdog_times_out_when_agent_activity_is_unavailable(monkeypatch):
-    agent = _UnavailableActivityAgent()
-    worker_done, timeout_fired, cleanup_lock = _state()
-    calls = []
-    monkeypatch.setattr(
-        process_registry,
-        "kill_started_since",
-        lambda task_id, baseline, *, source: calls.append(
-            (task_id, baseline, source)
-        )
-        or 0,
-    )
-
+def _run_watchdog(agent_holder, task_id, *, worker_done, timeout_fired, cleanup_lock):
     watchdog = threading.Thread(
         target=_watch_gateway_turn_inactivity,
         kwargs={
-            "agent_holder": [agent],
-            "task_id": "session-without-agent",
+            "agent_holder": agent_holder,
+            "task_id": task_id,
             "process_baseline": frozenset(),
             "timeout": 0.03,
             "worker_done": worker_done,
@@ -64,21 +59,56 @@ def test_thread_watchdog_times_out_when_agent_activity_is_unavailable(monkeypatc
         },
     )
     watchdog.start()
-    watchdog.join(timeout=1)
+    watchdog.join(timeout=2)
     if watchdog.is_alive():
         worker_done.set()
-        watchdog.join(timeout=1)
-
+        watchdog.join(timeout=2)
     assert not watchdog.is_alive()
+    return watchdog
+
+
+def test_thread_watchdog_times_out_before_agent_exists(monkeypatch):
+    """``agent_holder`` is still ``[None]`` while the turn is being set up
+    (``run_turn_runner`` fills it later).  A turn wedged in that window has no
+    activity snapshot, so the watchdog must fall back to elapsed wall-clock time
+    and still reap the turn rather than skip every poll forever."""
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append((task_id, baseline, source)) or 0,
+    )
+
+    _run_watchdog(
+        [None], "session-before-agent",
+        worker_done=worker_done, timeout_fired=timeout_fired, cleanup_lock=cleanup_lock,
+    )
+
+    assert timeout_fired.is_set()
+    assert calls == [("session-before-agent", frozenset(), "gateway_turn_timeout")]
+
+
+def test_thread_watchdog_times_out_when_activity_snapshot_raises(monkeypatch):
+    """Fail-safe: a snapshot read that raises must not disable the watchdog; the
+    wall-clock fallback bounds the turn."""
+    agent = _RaisingActivityAgent()
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append((task_id, baseline, source)) or 0,
+    )
+
+    _run_watchdog(
+        [agent], "session-snapshot-raises",
+        worker_done=worker_done, timeout_fired=timeout_fired, cleanup_lock=cleanup_lock,
+    )
+
     assert timeout_fired.is_set()
     assert agent.interrupts == ["Execution timed out (inactivity)"]
-    assert calls == [
-        (
-            "session-without-agent",
-            frozenset(),
-            "gateway_turn_timeout",
-        )
-    ]
+    assert calls == [("session-snapshot-raises", frozenset(), "gateway_turn_timeout")]
 
 
 def test_thread_watchdog_reaps_only_processes_created_by_timed_out_turn(monkeypatch):

@@ -542,9 +542,8 @@ class OneBotAdapter(BasePlatformAdapter):
         if not self._check_api_auth(request):
             return web.json_response({"status": "error", "error": "unauthorized"}, status=401)
         action = request.query.get("action", "")
-        from plugins.platforms.onebot.tools import NAPCAT_API_WHITELIST
 
-        if action not in NAPCAT_API_WHITELIST:
+        if action not in _load_onebot_utils().NAPCAT_API_WHITELIST:
             return web.json_response(
                 {"status": "error", "error": f"action {action!r} not whitelisted"},
                 status=403,

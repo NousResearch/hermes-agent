@@ -31,23 +31,12 @@ _BASE = os.environ.get("ONEBOT_TOOL_BASE", "http://127.0.0.1:8643").rstrip("/")
 
 # OneBot actions a model may invoke through qq_napcat_api (read-only queries,
 # file URL resolution, uploads, OCR, AI chat) — mirrors dsh-onebot's list.
-NAPCAT_API_WHITELIST = [
-    "get_group_member_list",
-    "get_group_member_info",
-    "get_stranger_info",
-    "get_forward_msg",
-    "get_record",
-    "get_file",
-    "upload_group_file",
-    "upload_private_file",
-    "get_group_root_files",
-    "get_group_files_by_folder",
-    "get_group_file_url",
-    "get_private_file_url",
-    "ocr_image",
-    "get_ai_characters",
-    "send_group_ai_record",
-]
+# 权威定义在 onebot_utils.py；此处双层导入兼容两种加载方式（包内相对导入 /
+# 生产裸模块加载，plugins.platforms.* 不可导入）。
+try:
+    from plugins.platforms.onebot.onebot_utils import NAPCAT_API_WHITELIST
+except ImportError:
+    from onebot_utils import NAPCAT_API_WHITELIST
 
 HTTP_TIMEOUT = 60
 

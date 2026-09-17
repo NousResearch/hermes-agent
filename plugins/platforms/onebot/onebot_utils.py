@@ -64,6 +64,28 @@ def _cq_unescape(s: str) -> str:
 DEFAULT_SPLIT_LENGTH = 100
 _SENTENCE_BOUNDS = "。！？!?；;\n"
 
+# ── NapCat API 白名单 ──────────────────────────────────────────────────
+# 权威定义在此；tools.py 经 fallback 导入本常量（生产网关以裸模块方式
+# 加载插件，plugins.platforms.* 不可导入，tools.py 不能反向依赖 adapter
+# 的加载机制，故用双层导入兜底）。
+NAPCAT_API_WHITELIST = [
+    "get_group_member_list",
+    "get_group_member_info",
+    "get_stranger_info",
+    "get_forward_msg",
+    "get_record",
+    "get_file",
+    "upload_group_file",
+    "upload_private_file",
+    "get_group_root_files",
+    "get_group_files_by_folder",
+    "get_group_file_url",
+    "get_private_file_url",
+    "ocr_image",
+    "get_ai_characters",
+    "send_group_ai_record",
+]
+
 
 def _split_reply(content: str, limit: int = DEFAULT_SPLIT_LENGTH) -> List[str]:
     """Split long content into ≤limit-char chunks at sentence boundaries.

@@ -344,6 +344,24 @@ def _memory_provider_status(row: Dict[str, Any], setup: Dict[str, Any], configur
 
 
 def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
+    """Memory-provider rows for the dashboard, always read under a secret scope.
+
+    A provider whose schema reads a secret — mem0's ``get_config_schema`` resolves
+    ``MEM0_MODE`` via ``_load_config`` — raises ``UnscopedSecretError`` once a secondary
+    profile has flipped ``get_secret`` to fail closed. The dashboard's own profile reaches
+    this scope-less through ``GET /api/memory`` and the plugin hub, so bind its launch-env
+    scope here (exactly what ``_config_profile_scope(None)`` gives every other dashboard
+    route) instead of logging a traceback and reporting the provider as configured.
+    """
+    from agent.secret_scope import current_secret_scope
+    if current_secret_scope() is not None:
+        return _discover_memory_provider_statuses_scoped()
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    with _config_profile_scope(None):
+        return _discover_memory_provider_statuses_scoped()
+
+
+def _discover_memory_provider_statuses_scoped() -> List[Dict[str, Any]]:
     from hermes_cli.config import load_config
     discovered: Dict[str, Dict[str, Any]] = {}
     try:

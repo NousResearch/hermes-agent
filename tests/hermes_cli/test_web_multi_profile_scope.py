@@ -99,3 +99,39 @@ def test_console_send_for_named_profile_does_not_write_process_env(two_homes, mo
     assert seen["loader_sees"] == "b-telegram-token"  # the loader gets B's token through the scope
     assert seen["environ_has"] is False  # and the dashboard process env never learns it
     assert "B_ONLY_TOKEN" not in os.environ
+
+
+def test_memory_provider_discovery_reads_schema_under_launch_secret_scope(two_homes, monkeypatch):
+    """``GET /api/memory`` and the plugin hub reach provider discovery themselves, with no request
+    scope of their own. Once another profile has flipped the process fail-closed, a provider whose
+    schema reads a secret (mem0 resolves ``MEM0_MODE``) must still see the launch profile's value;
+    an unscoped read raised and the schema was dropped with a logged traceback."""
+    from agent import secret_scope
+
+    from hermes_cli import web_server_memory as mem_mod
+
+    monkeypatch.setenv("MEM0_MODE", "oss")
+
+    seen = {}
+
+    class _Provider:
+        def get_config_schema(self):
+            try:
+                seen["mode"] = secret_scope.get_secret("MEM0_MODE")
+            except secret_scope.UnscopedSecretError as exc:  # pragma: no cover - the regression
+                seen["error"] = exc
+                raise
+            return [{"key": "mode", "label": "Mode", "required": True, "default": "platform"}]
+
+    monkeypatch.setattr(mem_mod, "_load_memory_provider", lambda name: _Provider())
+    monkeypatch.setattr(mem_mod, "_memory_provider_setup_info", lambda name: {"dependencies_installed": True})
+    monkeypatch.setattr("plugins.memory.discover_memory_providers", lambda: [("mem0", "Mem0 memory", True)])
+
+    secret_scope.set_secret_scope(None)  # discovery is called with no scope installed...
+    secret_scope.set_multiplex_active(True)  # ...after a secondary profile flipped us fail-closed
+
+    rows = mem_mod._discover_memory_provider_statuses()
+
+    assert "error" not in seen, f"schema read stayed unscoped: {seen.get('error')}"
+    assert seen["mode"] == "oss"
+    assert [row["name"] for row in rows] == ["mem0"]

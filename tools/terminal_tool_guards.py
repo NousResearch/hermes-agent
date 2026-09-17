@@ -227,10 +227,21 @@ def gateway_lifecycle_block(
     guard_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
     )
+    from tools.environments.local import LocalEnvironment
+
+    def _read_remote(path: str) -> Optional[str]:
+        return _read_script_for_guard(env, guard_cwd, path, _MAX_REFERENCED_SCRIPT_BYTES)
+
+    # On a local backend the host read inside _read_script_for_guard is
+    # authoritative: env.execute would re-read the same unopenable path
+    # through the same shell, charging the walk's remote-read budget (and one
+    # subprocess per candidate) until an inert data mention fails the whole
+    # command closed (#113944). Remote backends keep the callback — their
+    # filesystem is reachable only through env.execute.
     if contains_gateway_lifecycle_command_or_referenced_script(
         command,
         cwd=guard_cwd,
-        read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
+        read_remote_script=None if isinstance(env, LocalEnvironment) else _read_remote,
     ):
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "

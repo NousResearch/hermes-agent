@@ -147,11 +147,19 @@ function cancelAllAutoDismiss(sid: string) {
   autoClearTimers.delete(sid)
 }
 
+const subagentState = (status: SubagentProgress['status']): StatusItemState => {
+  if (status === 'running' || status === 'queued') {
+    return 'running'
+  }
+
+  return status === 'completed' ? 'done' : 'failed'
+}
+
 const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   currentTool: s.currentTool,
   id: s.id,
   sessionId: s.sessionId,
-  state: 'running',
+  state: subagentState(s.status),
   title: s.goal,
   type: 'subagent'
 })
@@ -232,7 +240,7 @@ export const $statusItemsBySession = computed(
     }
 
     for (const [sid, list] of Object.entries(subs)) {
-      push(sid, list.filter(s => s.status === 'running' || s.status === 'queued').map(subToItem))
+      push(sid, list.map(subToItem))
     }
 
     for (const [sid, list] of Object.entries(background)) {

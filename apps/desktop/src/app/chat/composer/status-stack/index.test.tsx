@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { resetThreadScroll, setThreadAtBottom } from '@/store/thread-scroll'
 
 import { ComposerStatusStack } from './index'
@@ -22,6 +23,7 @@ describe('ComposerStatusStack scroll treatment', () => {
 
   afterEach(() => {
     cleanup()
+    $subagentsBySession.set({})
     resetThreadScroll('sess-a')
   })
 
@@ -44,5 +46,31 @@ describe('ComposerStatusStack scroll treatment', () => {
     expect(dimmedContent).not.toBe(card)
     expect(card?.contains(dimmedContent)).toBe(true)
     expect(screen.getByText('Sibling task').closest('.opacity-30')).toBeNull()
+  })
+
+  it('surfaces a finished subagent row and lets the user dismiss it', () => {
+    upsertSubagent('sess-a', {
+      goal: 'Finished task',
+      status: 'completed',
+      subagent_id: 'finished',
+      summary: 'Done'
+    })
+
+    render(
+      <MemoryRouter>
+        <I18nProvider configClient={null} initialLocale="en">
+          <ComposerStatusStack queue={null} sessionId="sess-a" />
+        </I18nProvider>
+      </MemoryRouter>
+    )
+
+    const header = screen.getByRole('button', { name: /1 Subagent/ })
+    fireEvent.click(header)
+    expect(screen.getByText('Finished task')).toBeTruthy()
+    expect(screen.getByText('Done')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+
+    expect(screen.queryByText('Finished task')).toBeNull()
   })
 })

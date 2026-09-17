@@ -276,6 +276,27 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
   }
 }
 
+/** Dismiss a terminal subagent row without allowing late events to resurrect it. */
+export function dismissSubagent(sid: string, id: string) {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list) {
+    return
+  }
+
+  const item = list.find(entry => entry.id === id)
+
+  // Running and queued workers must be interrupted through the owner-routed
+  // subagent RPC. This UI action is only for removing finished rows.
+  if (!item || !TERMINAL.has(item.status)) {
+    return
+  }
+
+  const next = list.filter(entry => entry.id !== id)
+  setSessionSubagents(sid, list, next)
+}
+
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 

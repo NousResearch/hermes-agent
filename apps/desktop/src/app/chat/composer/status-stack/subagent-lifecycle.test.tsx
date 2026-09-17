@@ -20,7 +20,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('keeps each worker draft while inspecting siblings and removes settled selection', () => {
+it('keeps each worker draft while inspecting siblings and shows settled rows without controls', () => {
   upsertSubagent('parent', { subagent_id: 'a', goal: 'Worker A' })
   upsertSubagent('parent', { subagent_id: 'b', goal: 'Worker B' })
   render(<SubagentSection sessionId="parent" />)
@@ -32,8 +32,23 @@ it('keeps each worker draft while inspecting siblings and removes settled select
   fireEvent.click(screen.getByRole('button', { name: /Worker A/ }))
   expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('Preserve my instruction')
   act(() => upsertSubagent('parent', { subagent_id: 'a', status: 'completed' }, false, 'subagent.complete'))
-  expect(screen.queryByText('Worker A')).toBeNull()
+  expect(screen.getByText('Worker A')).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
+})
+
+it('dismisses a finished worker row without touching live siblings', () => {
+  upsertSubagent('parent', { subagent_id: 'done', goal: 'Finished worker', status: 'completed' })
+  upsertSubagent('parent', { subagent_id: 'live', goal: 'Live worker', status: 'running' })
+  render(<SubagentSection sessionId="parent" />)
+
+  fireEvent.click(screen.getByRole('button', { name: /2 Subagents/ }))
+  expect(screen.getByText('Finished worker')).toBeTruthy()
+  expect(screen.getByText('Live worker')).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+
+  expect(screen.queryByText('Finished worker')).toBeNull()
+  expect(screen.getByText('Live worker')).toBeTruthy()
 })
 
 it('measures detail elapsed from worker start rather than first inspection', () => {

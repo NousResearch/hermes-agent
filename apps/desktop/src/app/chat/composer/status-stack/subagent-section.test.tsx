@@ -84,7 +84,7 @@ it('collapses a single worker and its selected detail using the caret, preservin
   expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('Keep this draft')
 })
 
-it('retires the live frame only after every child settles, without depending on the parent busy state', () => {
+it('keeps a settled row visible for dismissal, without depending on the parent busy state', () => {
   upsertSubagent('owner', { subagent_id: 'child', goal: 'Live task' })
   render(
     <MemoryRouter>
@@ -94,5 +94,6 @@ it('retires the live frame only after every child settles, without depending on 
   fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   expect(screen.getByText('Live task')).toBeTruthy()
   act(() => upsertSubagent('owner', { subagent_id: 'child', status: 'completed' }, false, 'subagent.complete'))
-  expect(screen.queryByText('Live task')).toBeNull()
+  expect(screen.getByText('Live task')).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
 })

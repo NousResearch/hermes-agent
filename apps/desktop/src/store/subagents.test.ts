@@ -6,6 +6,7 @@ import {
   allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
+  dismissSubagent,
   failedSubagentCount,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
@@ -26,6 +27,32 @@ describe('subagent store', () => {
     const item = listFor('s1')[0]
     expect(item?.status).toBe('completed')
     expect(item?.summary).toBe('done')
+  })
+
+  it('dismisses terminal rows and ignores their late events', () => {
+    upsertSubagent('s1', { goal: 'finished', status: 'completed', subagent_id: 'done', task_index: 0 })
+    upsertSubagent('s1', { goal: 'still working', status: 'running', subagent_id: 'live', task_index: 1 })
+
+    dismissSubagent('s1', 'done')
+    expect(listFor('s1').map(item => item.id)).toEqual(['live'])
+
+    // A delayed progress frame or roster snapshot must not recreate a row the
+    // user explicitly dismissed during the terminal-row linger window.
+    upsertSubagent('s1', { goal: 'finished', status: 'running', subagent_id: 'done', task_index: 0 })
+    reconcileSubagentSnapshot('s1', [
+      { goal: 'finished', status: 'completed', subagent_id: 'done', task_index: 0 },
+      { goal: 'still working', status: 'running', subagent_id: 'live', task_index: 1 }
+    ])
+
+    expect(listFor('s1').map(item => item.id)).toEqual(['live'])
+  })
+
+  it('does not dismiss a live worker through the terminal-row action', () => {
+    upsertSubagent('s1', { goal: 'still working', status: 'running', subagent_id: 'live', task_index: 0 })
+
+    dismissSubagent('s1', 'live')
+
+    expect(listFor('s1').map(item => item.id)).toEqual(['live'])
   })
 
   it('keeps completed children retired across turn pruning, late frames, and roster refreshes', () => {

@@ -386,23 +386,42 @@ class GatewayAgentCacheMixin:
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
 
+    def _routing_authority(self):
+        """The routing store's authority lock, or a no-op when no store is wired.
+
+        A routing transition runs off the event loop (it rewrites the whole routing index), so a
+        generation sampled at the start of that offloaded call and acted on afterwards leaves a
+        window. Every generation bump takes this lock, and the transition samples the generation
+        under it, which closes the window without moving the rewrite onto the loop.
+        """
+        store = getattr(self, "session_store", None)
+        holder = getattr(store, "routing_authority", None)
+        if holder is None:
+            return nullcontext()
+        try:
+            return holder()
+        except Exception:  # a bare test rig: authority coordination is not under test
+            return nullcontext()
+
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result
         from a worker /stop or /new invalidated is recognized and dropped."""
         if not session_key:
             return 0
-        persistent = self._session_state(session_key).persistent
-        # Monotonic by design (#28686): incremented here, NEVER reset.
-        persistent.run_generation = int(persistent.run_generation) + 1
-        return persistent.run_generation
+        with self._routing_authority():
+            persistent = self._session_state(session_key).persistent
+            # Monotonic by design (#28686): incremented here, NEVER reset.
+            persistent.run_generation = int(persistent.run_generation) + 1
+            return persistent.run_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
         """Invalidate any in-flight run token for ``session_key``.
 
         Settles a pending one-shot model override first: the displaced turn's finalizer is
         generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
-        self._restore_pending_one_turn_model_override(session_key)
-        generation = self._begin_session_run_generation(session_key)
+        with self._routing_authority():
+            self._restore_pending_one_turn_model_override(session_key)
+            generation = self._begin_session_run_generation(session_key)
         if reason:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation

@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
-from typing import Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
@@ -1171,27 +1171,12 @@ class SessionStore(
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
-    def switch_session(
-        self, session_key: str, target_session_id: str,
-        expected_session_id: Optional[str] = None,
-    ) -> Optional[SessionEntry]:
+    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
-        reopens the target so resume matches the CLI.
-
-        ``expected_session_id`` makes the repoint conditional: the route only moves while it still
-        points at that session. A caller that resolved its target across an ``await`` passes the
-        session it resolved against, so a route that moved meanwhile (``/new``, a concurrent
-        resume) is not overwritten by the stale resolution. ``None`` means the route moved after
-        the caller's snapshot — the caller must fail closed."""
+        reopens the target so resume matches the CLI."""
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
-                return None
-            if expected_session_id is not None and old_entry.session_id != expected_session_id:
-                logger.info(
-                    "Session switch for %s refused: route moved from %s to %s after the "
-                    "caller's snapshot", session_key, expected_session_id, old_entry.session_id,
-                )
                 return None
             if old_entry.session_id == target_session_id:
                 return old_entry
@@ -1200,20 +1185,74 @@ class SessionStore(
                 display_name=old_entry.display_name,
             )
 
-        if self._db_for_key(session_key) and old_entry.session_id:
+        self.finish_route_switch(session_key, old_entry.session_id, new_entry)
+        return new_entry
+
+    def routing_authority(self) -> "threading.RLock":
+        """Lock coordinating an authority that lives OUTSIDE the store with a routing mutation.
+
+        A routing transition needs a full index rewrite, so it is offloaded off the event loop; the
+        run generation it must respect is bumped on the event loop. Sampling the authority at the
+        start of the offloaded call and mutating afterwards therefore leaves a window. A caller that
+        must not see its authority change between validating it and committing holds this lock
+        across both, and the bump takes it too.
+
+        Reentrant: the bump path is nested (``invalidate`` -> ``begin``), and both sides may hold it.
+        """
+        return self._lazy("_routing_authority_lock", threading.RLock)
+
+    def switch_session_if_current(
+        self, session_key: str, expected_session_id: str, target_session_id: str,
+        *, authorize: Optional[Callable[[], bool]] = None,
+    ) -> Optional[SessionEntry]:
+        """Repoint a routing key only while it still matches ``expected_session_id``.
+
+        ``authorize`` is sampled under :meth:`routing_authority` before the mutation, so a caller
+        with a precondition of its own (the session run generation) binds that proof to the effect
+        instead of observing it earlier and hoping nothing changed in between. Hold the same
+        authority when bumping the precondition. ``None`` means refused: no authorization, or the
+        route moved past the caller's snapshot.
+        """
+        with self.routing_authority():
+            if authorize is not None and not authorize():
+                return None
+            with self._lock:
+                old_entry = self._entry_locked(session_key)
+                if old_entry is None:
+                    return None
+                if not expected_session_id or old_entry.session_id != expected_session_id:
+                    logger.info(
+                        "Session switch for %s refused: route moved from %s to %s after the "
+                        "caller's snapshot", session_key, expected_session_id or "unknown",
+                        old_entry.session_id,
+                    )
+                    return None
+                if old_entry.session_id == target_session_id:
+                    return old_entry
+                new_entry = self._replace_route_locked(
+                    session_key, old_entry, target_session_id, _now(),
+                    display_name=old_entry.display_name,
+                )
+            self.finish_route_switch(session_key, old_entry.session_id, new_entry)
+            return new_entry
+
+    def finish_route_switch(
+        self, session_key: str, previous_session_id: str, entry: SessionEntry,
+    ) -> None:
+        """SQLite side of a routing transition, outside ``_lock``."""
+        if self._db_for_key(session_key) and previous_session_id:
             self._promote_session_reset(
-                session_key, old_entry.session_id, "session_switch",
+                session_key, previous_session_id, "session_switch",
                 log=lambda e: logger.debug("Session DB end_session failed: %s", e),
             )
         if self._db_for_key(session_key):
             self._reopen_session_row(
-                session_key, target_session_id, log_prefix="Session DB reopen_session failed"
+                session_key, entry.session_id, log_prefix="Session DB reopen_session failed"
             )
             self._record_gateway_session_peer(
-                target_session_id, session_key, new_entry.origin,
-                display_name=new_entry.display_name, include_compression_ancestors=True,
+                entry.session_id, session_key, entry.origin,
+                display_name=entry.display_name, include_compression_ancestors=True,
             )
-        return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""

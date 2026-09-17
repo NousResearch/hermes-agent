@@ -8,7 +8,7 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -85,6 +85,9 @@ class TestGatewayPinningFailsClosed:
         runner._session_db = db
         runner.session_store = MagicMock()
         runner.session_store.switch_session = MagicMock(return_value=switched_entry)
+        runner.session_store.switch_session_if_current = MagicMock(
+            return_value=switched_entry
+        )
         runner.session_store.advance_compression_session = MagicMock(
             return_value=switched_entry
         )
@@ -94,6 +97,9 @@ class TestGatewayPinningFailsClosed:
     @staticmethod
     def _assert_no_route_change(runner):
         getattr(runner.session_store, "switch_session").assert_not_called()
+        getattr(
+            runner.session_store, "switch_session_if_current"
+        ).assert_not_called()
         getattr(
             runner.session_store, "advance_compression_session"
         ).assert_not_called()
@@ -113,9 +119,10 @@ class TestGatewayPinningFailsClosed:
         )
 
         assert resolved is pinned
-        getattr(runner.session_store, "switch_session").assert_called_once_with(
-            current.session_key, "sess_live",
-            expected_session_id=current.session_id,
+        getattr(
+            runner.session_store, "switch_session_if_current"
+        ).assert_called_once_with(
+            current.session_key, "sess_current", "sess_live", authorize=ANY,
         )
 
     @pytest.mark.asyncio
@@ -173,7 +180,7 @@ class TestGatewayPinningFailsClosed:
         assert resolved is tip
         getattr(
             runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
+        ).assert_called_once_with(current.session_key, "sess_middle", "sess_tip", authorize=ANY)
 
     @pytest.mark.asyncio
     async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
@@ -206,7 +213,7 @@ class TestGatewayPinningFailsClosed:
         assert resolved is tip
         getattr(
             runner.session_store, "advance_compression_session"
-        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip", authorize=ANY)
 
 
 class TestResetHandlerInterruptsDelegations:

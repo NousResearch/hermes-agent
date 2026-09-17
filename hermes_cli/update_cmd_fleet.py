@@ -150,8 +150,17 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
 def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
     """``(kind, profile)`` identities ``latest.json`` owes a current successor.
 
-    Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
-    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    Empty when the receipt leaves no gateway obligation — either it records no runtimes, or every
+    recorded runtime is a serve/dashboard its own ``runtime_outcomes`` row reports ``restarted``.
+    ``None`` when a recorded runtime is one the gateway matrix cannot vouch for and the receipt
+    cannot prove restarted either: an unknown profile, or a serve/dashboard whose own outcome row
+    is not ``restarted``.
+
+    Serve/dashboard never borrow the gateway's verdict, but their presence is not by itself a
+    veto on the gateway obligations either: the receipt reconciles them in their own vocabulary,
+    keyed per planned runtime **including its PID** (one profile may run two of them, and a
+    restarted sibling must not vouch for an unaccounted one). Without that, a receipt recording
+    the managed dashboard pins the pending-restart warning forever on a provably current fleet.
     """
     from hermes_cli.update_receipt import read_latest_receipt
 
@@ -159,14 +168,23 @@ def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
     plan = receipt.get("plan") or {}
     entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
     entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
+    restarted_ids = {
+        (row.get("kind"), row.get("profile"), row.get("pid"))
+        for row in receipt.get("runtime_outcomes") or []
+        if isinstance(row, dict) and row.get("outcome") == "restarted"
+    }
     owed: set[tuple[str, str]] = set()
     for entry, default_kind in entries:
         if not isinstance(entry, dict):
             return None
         kind = entry.get("kind", default_kind)
         profile = entry.get("profile")
-        if kind != "gateway" or not profile or profile == "unknown":
+        if not profile or profile == "unknown":
             return None
+        if kind != "gateway":
+            if (kind, profile, entry.get("pid")) not in restarted_ids:
+                return None
+            continue
         owed.add((kind, profile))
     return owed
 

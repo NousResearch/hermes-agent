@@ -27,6 +27,7 @@ router = APIRouter()
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
+read_raw_config = late("read_raw_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
@@ -239,7 +240,6 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
         # desktop's debounced PUT /api/config autosave races it, so the whole
         # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
         with config_write_scope(body.profile or profile):
-            cfg = load_config()
             if body.presets:
                 raw = {
                     "default_preset": body.default_preset,
@@ -258,14 +258,20 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             if problems:
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
-            # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
-            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
-            # every other section too, so a Desktop MoA autosave could wipe a chain another
-            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
-            moa_section = dict(cfg.get("moa") or {})
+            # Replace the whole ``moa`` section in the RAW file, rather than merging the payload over it.
+            # A merge cannot express a key REMOVAL: the desktop deletes a preset by PUTting the remaining
+            # ones, and ``_merge_partial_save`` restores the omitted preset from disk (it documents
+            # "Key REMOVALS are not supported here"), so the delete silently no-opped while this route
+            # still answered ``{"ok": true}``. Read-raw → replace-section → write keeps both contracts
+            # this route already protected: keys the payload does not declare but a human hand-edited
+            # (save_traces, trace_dir — #58819) are carried over from the file itself, and no other
+            # section is re-persisted — writing the default-expanded ``load_config()`` snapshot is what
+            # clobbered ``fallback_providers`` (#89184).
+            config = read_raw_config()
+            moa_section = dict(config.get("moa") or {})
             moa_section.update(normalized)
-            save_config({"moa": moa_section}, merge_existing=True)
+            config["moa"] = moa_section
+            save_config(config)
             return {"ok": True, **normalized}
 
 

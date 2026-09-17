@@ -453,19 +453,17 @@ def cron_status():
                 active = get_active_profile_name() or "default"
             except Exception:
                 active = "default"
+            print("\n  To enable automatic execution for this profile:\n"
+                  "    hermes gateway install    # Install as a user service\n"
+                  "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"
+                  "    hermes gateway run        # Or run in foreground")
             if active != "default":
-                print("\n  This is a non-default profile. Automatic scheduling requires an awake machine and either:\n"
-                      "    1) The Desktop app open with this profile included in its scheduler, or\n"
-                      "    2) A running default gateway configured to tick this profile:\n"
-                      "       hermes --profile default config set gateway.multiplex_profiles true\n"
-                      "       hermes --profile default gateway restart\n"
+                print("\n  Alternatives for this named profile:\n"
+                      "    Keep the Desktop app open with this profile included in its scheduler and the machine awake, or\n"
+                      "    configure a running default gateway to tick this profile:\n"
+                      "      hermes --profile default config set gateway.multiplex_profiles true\n"
+                      "      hermes --profile default gateway restart\n"
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
-            else:
-                print("\n  To enable automatic execution:\n"
-                      "    hermes gateway install    # Install as a user service\n"
-                      "    sudo hermes gateway install --system  "
-                      "# Linux servers: boot-time system service\n"
-                      "    hermes gateway            # Or run in foreground")
 
     print()
     _print_active_jobs_summary(list_jobs(include_disabled=False))

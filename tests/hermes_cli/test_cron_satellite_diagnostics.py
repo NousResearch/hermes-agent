@@ -64,7 +64,9 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
         assert "STALLED" in output
     if mode in {"disabled", "excluded"}:
         assert "24/7" not in output
-        assert "awake" in output
+        assert "hermes gateway install" in output
+        assert "sudo hermes gateway install --system" in output
+        assert "hermes gateway run" in output
         assert "hermes --profile default gateway restart" in output
     if mode == "external":
         assert "managed scheduler" in output

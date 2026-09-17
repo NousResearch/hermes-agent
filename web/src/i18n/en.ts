@@ -531,7 +531,6 @@ export const en: Translations = {
     searchPlaceholder: "Search skills and toolsets...",
     loadWhat: "skills",
     browseHub: "Browse skills hub",
-    createSkill: "Create skill",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
@@ -551,7 +550,6 @@ export const en: Translations = {
     currentProfile: "current ({name})",
     managingProfile:
       "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
-    browseHub: "Browse hub",
     learnASkill: "Learn a skill",
     newSkill: "New skill",
   },

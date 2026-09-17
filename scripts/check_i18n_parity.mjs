@@ -244,6 +244,34 @@ function parseObjectLiteral(text) {
     throw new Error(`unexpected token at offset ${i}: ${JSON.stringify(text.slice(i, i + 24))}`)
   }
 
+  /** Skip `as <type>` assertions after a value leaf (e.g. `…} as Record<string,
+   *  string>` — TS casts carry no runtime shape and are irrelevant to parity).
+   *  Handles identifiers, generic angle brackets (including commas inside
+   *  them), and array suffixes like `as const` / `as readonly string[]`. */
+  function skipAsClauses() {
+    for (;;) {
+      ws()
+      if (!(text.startsWith('as', i) && !/[A-Za-z0-9_$]/.test(text[i + 2] ?? ''))) return
+      i += 2
+      ws()
+      while (i < len && /[A-Za-z0-9_$]/.test(text[i])) i++
+      ws()
+      if (text[i] === '<') {
+        let angle = 0
+        while (i < len) {
+          if (text[i] === '<') angle++
+          else if (text[i] === '>') {
+            angle--
+            if (angle === 0) { i++; break }
+          }
+          i++
+        }
+        ws()
+      }
+      while (text[i] === '[') { i++; ws(); if (text[i] === ']') i++; ws() }
+    }
+  }
+
   function parseObj() {
     const out = {}
     i++ // {
@@ -267,6 +295,7 @@ function parseObjectLiteral(text) {
       if (text[i] !== ':') throw new Error(`expected ':' after key ${key} at offset ${i}`)
       i++ // :
       out[key] = parseValue()
+      skipAsClauses()
       ws()
       if (text[i] === ',') { i++; continue }
       if (text[i] === '}') { i++; return out }
@@ -281,6 +310,7 @@ function parseObjectLiteral(text) {
       ws()
       if (text[i] === ']') { i++; return out }
       out.push(parseValue())
+      skipAsClauses()
       ws()
       if (text[i] === ',') { i++; continue }
       if (text[i] === ']') { i++; return out }

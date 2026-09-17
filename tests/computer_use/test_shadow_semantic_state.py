@@ -96,12 +96,52 @@ def test_reordered_list_keeps_identity_through_geometry_change():
 
 def test_twin_unnamed_buttons_surface_ambiguity_instead_of_misbinding():
     # Same evidence key twice (duplicated/ambiguous driver report); the new capture
-    # carries one of them.
+    # carries one of them. Neither candidate is bound — the element is surfaced as
+    # ambiguous and counted as added, never mis-bound at a fabricated confidence.
     old_els = [_el(1, "AXButton", "", (10, 10, 50, 20)), _el(2, "AXButton", "", (10, 10, 50, 20))]
     new_els = [_el(1, "AXButton", "", (10, 10, 50, 20))]
     delta = diff_states(_state(old_els, 1), _state(new_els, 2))
     assert len(delta.ambiguous) == 1  # surfaced, not silently mis-bound
-    assert delta.matched == 1 and len(delta.removed) == 1
+    assert len(delta.ambiguous[0].candidate_keys) == 2  # ALL candidates recorded
+    assert delta.matched == 0  # nothing bound
+    assert len(delta.added) == 1  # unbound new element counted as added
+    assert len(delta.removed) == 2  # both old twins unconsumed
+    assert delta.mean_confidence == 1.0  # no fabricated 0.5 enters the mean
+
+
+def test_identical_evidence_keys_record_every_candidate_key():
+    # Three old twins: the ambiguity record carries one key per candidate.
+    old_els = [_el(i + 1, "AXButton", "", (10, 10, 50, 20)) for i in range(3)]
+    new_els = [_el(1, "AXButton", "", (10, 10, 50, 20))]
+    delta = diff_states(_state(old_els, 1), _state(new_els, 2))
+    assert len(delta.ambiguous) == 1
+    amb = delta.ambiguous[0]
+    assert len(amb.candidate_keys) == 3  # one (role, name, parent) triple per candidate
+    assert len(set(amb.candidate_keys)) == 1  # identical evidence keys, identical triples
+    assert "3" in amb.reason  # the count of competing candidates is surfaced
+
+
+def test_distinct_evidence_keys_still_bind_normally():
+    # Same shape as the twin case, but distinguishable: exact evidence-key hits bind
+    # at confidence 1.0 with no ambiguity recorded.
+    old_els = [_el(1, "AXButton", "", (10, 10, 50, 20)), _el(2, "AXButton", "", (70, 10, 50, 20))]
+    new_els = [_el(1, "AXButton", "", (10, 10, 50, 20)), _el(2, "AXButton", "", (70, 10, 50, 20))]
+    delta = diff_states(_state(old_els, 1), _state(new_els, 2))
+    assert not delta.ambiguous and not delta.added and not delta.removed
+    assert delta.matched == 2 and delta.mean_confidence == 1.0
+
+
+def test_confidence_is_never_fabricated_for_ambiguous_matches():
+    # A mix of clean bindings and one ambiguous element: the ambiguous pair must not
+    # contribute any confidence to the mean, and no changed/confidence record exists
+    # for the unbound element.
+    old_els = (_form_elements()[:3]
+               + [_el(5, "AXButton", "", (10, 10, 50, 20)), _el(6, "AXButton", "", (10, 10, 50, 20))])
+    new_els = _form_elements()[:3] + [_el(5, "AXButton", "", (10, 10, 50, 20))]
+    delta = diff_states(_state(old_els, 1), _state(new_els, 2))
+    assert len(delta.ambiguous) == 1 and delta.matched == 3
+    assert delta.mean_confidence == 1.0  # three real 1.0 bindings, zero fabricated 0.5s
+    assert not delta.changed  # the unbound element carries no confidence record
 
 
 def test_delta_projection_smaller_than_full_observation():

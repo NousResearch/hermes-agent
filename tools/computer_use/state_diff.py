@@ -82,15 +82,16 @@ def diff_states(old: GuiStateV0, new: GuiStateV0) -> StateDelta:
             matched_pairs.append((candidates[0], ne, 1.0))
             continue
         if len(candidates) > 1:
-            # Identical evidence keys (e.g. twin unnamed buttons): bind the first for
-            # continuity but surface the ambiguity so nothing is silently mis-bound.
-            used_old[old_index[id(candidates[0])]] = True
-            matched_pairs.append((candidates[0], ne, 0.5))
+            # Identical evidence keys (e.g. twin unnamed buttons): bind nothing. A
+            # fabricated 0.5 confidence on the first candidate is worse than no binding
+            # — surface every candidate as an ambiguity and count the new element as
+            # added instead (issue section E: surface ambiguity, never mis-bind).
             ambiguous.append(Ambiguity(
                 element=ne,
                 candidate_keys=tuple((c.role, c.name, c.parent) for c in candidates),
                 reason=f"{len(candidates)} old elements share the evidence key",
             ))
+            added.append(ne)
             continue
         # Fuzzy pass: same role AND name required; parent or geometry must also agree.
         fuzzy = [oe for i, oe in enumerate(old.elements)

@@ -27,9 +27,15 @@ def _root() -> Path:
 
 def read_pending(key: str) -> dict | None:
     try:
-        return json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        # Exact-id read: fail closed with the established payload-mismatch
+        # error — never overwrite a malformed receipt, never return it as one
+        # (#114240: a parseable non-dict must not pose as a pending record).
+        raise ValueError("delivery id already belongs to a different payload")
+    return record
 
 
 def _records(root: Path) -> list[tuple[Path, dict]]:
@@ -44,6 +50,15 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
             level = logging.DEBUG if path in _warned_unreadable else logging.ERROR
             _warned_unreadable.add(path)
             logger.log(level, "Unreadable deferred Bot Chat receipt %s: %s", path, exc)
+            continue
+        if not isinstance(record, dict):
+            # Parses but is not a record (42, "oops", [1,2,3] — corruption,
+            # truncated write, foreign tool): same evidence-and-skip handling,
+            # or the sweep wedges on the first subscript (#114240).
+            level = logging.DEBUG if path in _warned_unreadable else logging.ERROR
+            _warned_unreadable.add(path)
+            logger.log(level, "Non-record deferred Bot Chat receipt %s: parsed %s, skipping",
+                       path, type(record).__name__)
             continue
         _warned_unreadable.discard(path)
         records.append((path, record))
@@ -83,11 +98,20 @@ def _drain(root: Path) -> None:
     from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
 
     with _FileLock(root / ".lock"):
-        records = sorted(_records(root), key=lambda item: item[1]["sequence"])
+        # Sequence is advisory here: a record without one sorts first and is
+        # re-validated below, so a malformed receipt can never wedge the sort
+        # (#114240).
+        records = sorted(_records(root), key=lambda item: item[1].get("sequence", 0))
     for path, _ in records:
         with _FileLock(root / ".lock"):
-            record = json.loads(path.read_text(encoding="utf-8"))
-            if record["status"] != "queued":
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            # Re-validate after the claim lock: the file may have changed since
+            # the scan, and a non-dict (or a dict without queued status) is not
+            # ours to run (#114240). Evidence is preserved; peers proceed.
+            if not isinstance(record, dict) or record.get("status") != "queued":
                 continue
             home = Path(record["home"])
             try:

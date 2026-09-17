@@ -459,11 +459,23 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
     from utils import fsync_directory
 
-    intent: dict[str, Any]
+    intent: dict[str, Any] | None
     intent_path = Path(dm_file + ".live.json")
-    if intent_path.exists():
-        intent = json.loads(intent_path.read_text(encoding="utf-8"))
-    else:
+
+    def _load_intent() -> dict[str, Any] | None:
+        try:
+            record = json.loads(intent_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return record if isinstance(record, dict) else None
+
+    intent = _load_intent() if intent_path.exists() else None
+    if intent is None:
+        if intent_path.exists():
+            # A crashed writer left a non-record behind: drop it and rebuild
+            # from the dm file instead of crashing on the first subscript.
+            # The intent file is derived transport state, not evidence (#114240).
+            intent_path.unlink(missing_ok=True)
         assert profile_home is not None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
@@ -474,7 +486,9 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            intent = _load_intent()
+            if intent is None:
+                raise ValueError("live_dm intent unreadable after rival admission")
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(intent, stream)

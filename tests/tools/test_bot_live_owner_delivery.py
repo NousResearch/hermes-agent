@@ -158,3 +158,48 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(PermissionError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
+
+
+@pytest.mark.parametrize("payload", [42, "oops", [1, 2, 3], None])
+def test_non_record_ticket_does_not_wedge_bulk_scans(tmp_path, caplog, payload):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    bad = root / f"{'e' * 32}.json"
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        # Sender side: admission of a fresh id must survive the sequence sweep.
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        # Receiver side: every readable queued ticket must still be claimed, in order.
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert admitted["sequence"] > queued["sequence"]
+    assert json.loads(bad.read_text(encoding="utf-8")) == payload  # preserved as evidence
+    assert any(record.message.startswith(f"bot_live_delivery: skipping non-record ticket {'e' * 32}.json")
+               for record in caplog.records)
+
+
+def test_non_record_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    # A parseable non-record is not absent: exact-id paths must fail closed with
+    # the established payload-mismatch error instead of minting, returning, or
+    # completing a receipt that was never admitted (#114240).
+    with pytest.raises(ValueError, match="different payload"):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(ValueError, match="different payload"):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    with pytest.raises(ValueError, match="different payload"):
+        mailbox.complete_delivery(tmp_path, "e" * 32, status="settled", reply="x")
+    assert json.loads(bad.read_text(encoding="utf-8")) == [1, 2, 3]  # preserved as evidence

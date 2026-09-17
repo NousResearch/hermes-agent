@@ -336,6 +336,15 @@ class TestReapOrphans:
         assert lp.reap_orphaned_lightpanda() == 0
         assert not rec.exists()
 
+    @pytest.mark.parametrize("payload", [42, "oops", [1, 2, 3], None])
+    def test_non_record_is_removed(self, _isolate, payload):
+        """A parseable non-record can never name a live owner: same removal
+        policy as an unreadable state file, never a wedged sweep (#114240)."""
+        rec = _isolate / "lp_bad.json"
+        rec.write_text(json.dumps(payload), encoding="utf-8")
+        assert lp.reap_orphaned_lightpanda() == 0
+        assert not rec.exists()
+
 
 class TestProcessIdentity:
     class _P:

@@ -1123,3 +1123,21 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     assert "Do NOT resend" in result["detail"]
     assert "approval" in result["notification_error"]
     assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"
+
+
+@pytest.mark.parametrize("garbage", [json.dumps([1, 2, 3]), "{not json", "42"])
+def test_corrupt_intent_file_rebuilds_instead_of_crashing(tmp_path, monkeypatch, garbage):
+    """A crashed writer's non-record ``.live.json`` must be rebuilt from the dm
+    file, never crash admission on the first subscript (#114240)."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="s", lease_id="l", live_session_id="v")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    intent_path = tmp_path / "dm.txt.live.json"
+    intent_path.write_text(garbage, encoding="utf-8")
+    record = bot_mode_dm._admit_live_dm(str(tmp_path), str(dm_file))
+    assert record["message"] == "hello"
+    rebuilt = json.loads(intent_path.read_text(encoding="utf-8"))
+    assert rebuilt["message"] == "hello"

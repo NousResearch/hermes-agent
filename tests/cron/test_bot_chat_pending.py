@@ -1,5 +1,6 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -125,3 +126,49 @@ def test_unreadable_deferred_receipt_does_not_block_siblings(tmp_path, monkeypat
     assert [r for r in caplog.records
             if "Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message] and \
         sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("payload", [42, "oops", [1, 2, 3], None])
+def test_non_dict_receipt_does_not_block_siblings(tmp_path, monkeypatch, caplog, payload):
+    """A parseable non-record beside healthy queued work degrades to a logged
+    skip with the file preserved as evidence — never a wedged drain (#114240)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+    assert seen == ["healthy"]
+    assert json.loads(bad.read_text(encoding="utf-8")) == payload  # preserved as evidence
+    assert any("Non-record deferred Bot Chat receipt" in r.message for r in caplog.records)
+
+
+def test_malformed_receipt_fails_closed_on_exact_read(tmp_path, monkeypatch):
+    """Exact-id reads never return or overwrite a malformed receipt: the
+    established payload-mismatch ValueError fires instead (#114240)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue._root().mkdir(parents=True, exist_ok=True)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    with pytest.raises(ValueError, match="different payload"):
+        queue.read_pending("e" * 64)
+    with pytest.raises(ValueError, match="different payload"):
+        queue.defer("e" * 64, {"id": "job"}, "x", "", tmp_path)
+    assert json.loads(bad.read_text(encoding="utf-8")) == [1, 2, 3]  # preserved
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)  # peers unaffected
+    assert queue.read_pending("a" * 64)["status"] == "queued"
+
+
+def test_sequenceless_dict_sorts_first_and_is_skipped(tmp_path, monkeypatch):
+    """A dict without sequence/status can never wedge the admission sort; it is
+    re-validated at claim time and skipped (#114240)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    odd = queue._root() / f"{'e' * 64}.json"
+    odd.write_text(json.dumps({"note": "no sequence here"}), encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    queue.drain()
+    assert seen == ["healthy"]

@@ -93,9 +93,18 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
+            record = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
+            continue
+        if not isinstance(record, dict):
+            # A parseable non-record is never an approvable write: skip it like
+            # an unreadable file (preserved for inspection) instead of wedging
+            # the sort and every downstream subscript (#114240).
+            logger.warning("Skipping non-record pending file: %s (parsed %s)",
+                           p, type(record).__name__)
+            continue
+        records.append(record)
     records.sort(key=lambda r: r.get("created_at", 0))
     return records
 
@@ -106,7 +115,12 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     with suppress(Exception):
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
+        # Never hand a non-record to the approval commands: they treat None as
+        # absent ("no pending write with id"), so a malformed file degrades to
+        # one unapprovable id instead of wedging approve-all — while
+        # discard_pending can still remove it by path (#114240).
+        return record if isinstance(record, dict) else None
     return None
 
 

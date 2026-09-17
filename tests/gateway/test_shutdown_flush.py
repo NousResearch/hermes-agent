@@ -327,3 +327,39 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_recover_skips_non_record_payload_and_continues(tmp_path, monkeypatch, caplog):
+    """A parseable non-record flush file is skipped with a precise log while a
+    healthy sibling still recovers; the bad file is preserved (#114240)."""
+    import logging
+
+    from gateway import shutdown_flush as flush
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    bad = flush_dir / "pending-a.json"
+    bad.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    good = _write_flush_file(flush_dir, "pending-b.json", "sid-good", "second")
+    mock_db = MagicMock()
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(mock_db) == 1
+    assert not good.exists()
+    assert bad.exists()
+    assert any("Skipping non-record flush payload" in r.message for r in caplog.records)
+
+
+def test_drain_transcript_spool_removes_non_record_file(tmp_path, monkeypatch):
+    """A parseable non-record spool file is removed under the structurally
+    invalid cleanup policy while a valid spooled message still replays (#114240)."""
+    from gateway import shutdown_flush as flush
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    bad = flush_dir / "pending-aaa.json"
+    bad.write_text(json.dumps("oops"), encoding="utf-8")
+    replay = MagicMock()
+    replayed, remaining = flush.drain_transcript_spool("sid", replay)
+    assert (replayed, remaining) == (0, 0)
+    assert not bad.exists()
+    assert replay.call_count == 0

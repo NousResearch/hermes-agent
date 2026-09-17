@@ -490,6 +490,10 @@ class BatchRunner:
 
                 try:
                     entry = json.loads(line)
+                    if not isinstance(entry, dict):
+                        print(f"⚠️  Warning: Non-record JSON on line {line_num} "
+                              f"(parsed {type(entry).__name__}), skipping")
+                        continue
                     if 'prompt' not in entry:
                         print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
                         continue
@@ -552,13 +556,15 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            if entry.get("failed", False):
-                                continue
-                            prompt_text = _entry_prompt_text(entry)
-                            if prompt_text:
-                                completed_prompts.add(prompt_text)
                         except json.JSONDecodeError:
                             continue
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("failed", False):
+                            continue
+                        prompt_text = _entry_prompt_text(entry)
+                        if prompt_text:
+                            completed_prompts.add(prompt_text)
             except Exception as e:
                 print(f"  ⚠️  Warning: Error reading {batch_file.name}: {e}")
 
@@ -722,6 +728,10 @@ class BatchRunner:
                         try:
                             data = json.loads(line)
 
+                            if not isinstance(data, dict):
+                                filtered_entries += 1
+                                print(f"   ⚠️  Filtering non-record entry (batch {batch_num})")
+                                continue
                             if data.get("discarded"):
                                 tombstone_entries += 1
                                 continue

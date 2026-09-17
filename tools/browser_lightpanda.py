@@ -319,6 +319,12 @@ def reap_orphaned_lightpanda() -> int:
         except (OSError, ValueError):
             record_path.unlink(missing_ok=True)
             continue
+        if not isinstance(record, dict):
+            # Same cleanup policy as an unreadable state file: a non-record
+            # can never name a live owner, so remove it instead of crashing
+            # the sweep on the first .get (#114240).
+            record_path.unlink(missing_ok=True)
+            continue
         owner_pid = record.get("owner_pid")
         if owner_pid == os.getpid():
             with _servers_lock:

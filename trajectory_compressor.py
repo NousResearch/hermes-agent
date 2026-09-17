@@ -90,6 +90,21 @@ def _write_jsonl(path: Path, entries) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
 
+def _partition_records(all_entries):
+    """Split loaded ``(file_path, idx, entry)`` rows into ``(records, skipped)``.
+
+    JSONL carriers hold records; parseable non-dicts are reported with their
+    origin so the skip is honest accounting, never a silent miscount (#114240).
+    """
+    records, skipped = [], []
+    for row in all_entries:
+        if isinstance(row[2], dict):
+            records.append(row)
+        else:
+            skipped.append(row)
+    return records, skipped
+
+
 # YAML section -> keys; "yaml_key:attr" when the config attribute name differs.
 _YAML_SECTIONS: Dict[str, Tuple[str, ...]] = {
     "tokenizer": ("name:tokenizer_name", "trust_remote_code"),
@@ -572,6 +587,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     async def process_entry_async(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:
         """Compress one JSONL entry's ``conversations``; attach metrics when compressed."""
+        if not isinstance(entry, dict):
+            raise ValueError(f"non-record trajectory entry: parsed {type(entry).__name__}")
         if "conversations" not in entry:
             return entry, TrajectoryMetrics()
         compressed_trajectory, metrics = await self.compress_trajectory_async(entry["conversations"])
@@ -628,6 +645,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             def _warn(line_num, e, file_path=file_path):
                 self.logger.warning("Skipping invalid JSON at %s:%s: %s", file_path, line_num, e)
             all_entries.extend((file_path, idx, entry) for idx, entry in _load_jsonl(file_path, _warn))
+        all_entries, skipped = _partition_records(all_entries)
+        for file_path, idx, entry in skipped:
+            self.logger.warning("Skipping non-record JSONL line at %s:%s (parsed %s)",
+                                file_path, idx, type(entry).__name__)
         total_entries = len(all_entries)
 
         console.print(f"\n{'='*60}")

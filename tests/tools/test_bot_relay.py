@@ -657,3 +657,20 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_ID" not in env
     assert "HERMES_SESSION_PROFILE" not in env
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+
+
+@pytest.mark.parametrize("payload", [42, "oops", [1, 2, 3]])
+def test_malformed_envelope_quarantined_never_delivered(root, payload):
+    """A parseable non-record envelope is atomically claimed out of the outbox
+    (so it can never re-deliver) but never handed downstream (#114240)."""
+    import json
+
+    base = bot_relay._ensure_dirs(root)
+    good = {"id": "b" * 32, "message": "hi"}
+    (base / bot_relay.OUTBOX_DIR / ("b" * 32 + ".json")).write_text(json.dumps(good))
+    bad_path = base / bot_relay.OUTBOX_DIR / ("e" * 32 + ".json")
+    bad_path.write_text(json.dumps(payload))
+    assert bot_relay.claim_pending_envelopes(root) == [good]
+    assert not bad_path.exists()
+    assert (base / bot_relay.CLAIMED_DIR / ("e" * 32 + ".json")).exists()
+    assert bot_relay.claim_pending_envelopes(root) == []

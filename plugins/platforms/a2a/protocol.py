@@ -456,9 +456,15 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     for line in lines:
         if line.strip():
             try:
-                out.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError:
                 pass
+            else:
+                # JSONL carriers hold records only: a parseable non-dict line
+                # is skipped like a corrupt one so the list[dict] contract
+                # holds (#114240).
+                if isinstance(record, dict):
+                    out.append(record)
     return out[-limit:]
 
 

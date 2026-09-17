@@ -149,6 +149,13 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if not isinstance(payload, dict):
+            # Same cleanup policy as a structurally invalid message below: a
+            # parseable non-record can never replay, so remove it instead of
+            # crashing the sweep on the first .get (#114240).
+            logger.warning("Removing structurally invalid transcript spool file %s", path)
+            path.unlink(missing_ok=True)
+            continue
         if (payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
                 or payload.get("session_key") != session_id):
             continue
@@ -224,6 +231,13 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
             # never unlinked, so aborting the pass would re-poison every later boot.
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    # Parse boundary (#114240): a parseable non-record is never
+                    # a recoverable message. Log precisely and keep the file —
+                    # the broad guard below stays as the backstop.
+                    logger.warning("Skipping non-record flush payload in %s: parsed %s",
+                                   path, type(payload).__name__)
+                    continue
                 # Agent-history snapshots are for manual operator recovery, not automatic DB
                 # insertion.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":

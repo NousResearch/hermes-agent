@@ -67,7 +67,9 @@ def manifest_verified(manifest: Path) -> bool:
     """True when an install manifest records a verified_version (missing/damaged -> False)."""
     try:
         return bool(json.loads(manifest.read_text(encoding="utf-8")).get("verified_version"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, AttributeError):
+        # AttributeError: parses but is not a manifest record (42, "oops") —
+        # damaged means unverified, same as missing (#114240).
         return False
 
 

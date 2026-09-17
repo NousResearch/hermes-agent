@@ -494,3 +494,26 @@ class TestCompressionNetSavingsGuard:
         assert sum(tc.count_turn_tokens(compressed)) == before
         tc._generate_summary.assert_not_called()
 
+
+
+def test_process_entry_rejects_non_record():
+    """A parseable non-dict must fail fast with a clear error, never a bare
+    TypeError from the membership test (#114240)."""
+    import asyncio
+
+    from trajectory_compressor import TrajectoryCompressor
+
+    comp = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    for bad in (42, "oops", [1, 2], None):
+        with pytest.raises(ValueError, match="non-record"):
+            asyncio.run(comp.process_entry_async(bad))
+
+
+def test_partition_records_reports_origins():
+    """Loaded rows split into records and honestly-reported skips (#114240)."""
+    from trajectory_compressor import _partition_records
+
+    rows = [("f", 1, {"a": 1}), ("f", 2, 42), ("g", 3, "oops"), ("g", 4, {"b": 2})]
+    records, skipped = _partition_records(rows)
+    assert [idx for _, idx, _ in records] == [1, 4]
+    assert [(f, idx) for f, idx, _ in skipped] == [("f", 2), ("g", 3)]

@@ -410,6 +410,23 @@ class TestPersistence:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert protocol.load_conversation("nope") == []
 
+    def test_load_skips_non_record_lines(self, monkeypatch, tmp_path):
+        """Parseable non-dict JSONL lines are skipped like corrupt ones so the
+        list[dict] contract holds (#114240)."""
+        import json
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        protocol.persist_message("ctx-abc", "user", "hello", "task-1")
+        path = tmp_path / "a2a_conversations" / "ctx-abc.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(42) + "\n")
+            fh.write(json.dumps("oops") + "\n")
+            fh.write("{not json\n")
+        protocol.persist_message("ctx-abc", "agent", "hi back", "task-1")
+        convo = protocol.load_conversation("ctx-abc")
+        assert [m["text"] for m in convo] == ["hello", "hi back"]
+        assert all(isinstance(m, dict) for m in convo)
+
     def test_a2a_history_tool_recalls_conversation(self, monkeypatch, tmp_path):
         """load_conversation is wired to production via the a2a_history tool."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

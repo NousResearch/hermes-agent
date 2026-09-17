@@ -102,11 +102,23 @@ def _locked(home: Path | str):
         yield root
 
 
-def _read(path: Path) -> dict[str, Any] | None:
+def _read_raw(path: Path):
+    """Parse only: returns the parsed JSON value of any shape, None if absent."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+
+
+def _read(path: Path) -> dict[str, Any] | None:
+    record = _read_raw(path)
+    if record is not None and not isinstance(record, dict):
+        # Exact-id read: a parseable non-record must fail closed with the
+        # established payload-mismatch error — never returned as a receipt
+        # (which would TypeError at the first subscript) and never overwritten
+        # (#114240).
+        raise ValueError("delivery id already belongs to a different payload")
+    return record
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the
@@ -125,11 +137,28 @@ def _scan_read(path: Path) -> dict[str, Any] | None:
     licensing an overwrite of a possibly-live receipt.
     """
     try:
-        record = _read(path)
+        record = _read_raw(path)
     except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
         level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
         _warned_unreadable.add(path)
         log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
+        return None
+    if record is not None and not isinstance(record, dict):
+        # Parses but is not a ticket (42, "oops", [...]): same warn-once and
+        # skip — a non-record must never reach sequence math or claim logic
+        # (#114240).
+        level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
+        _warned_unreadable.add(path)
+        log.log(level, "bot_live_delivery: skipping non-record ticket %s (parsed %s)",
+                path.name, type(record).__name__)
+        return None
+    if record is None and path.exists():
+        # Parses as JSON null: present but contentless. Not absent (the file is
+        # really there), not a ticket — same warn-once skip (#114240).
+        level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
+        _warned_unreadable.add(path)
+        log.log(level, "bot_live_delivery: skipping non-record ticket %s (parsed NoneType)",
+                path.name)
         return None
     _warned_unreadable.discard(path)
     return record

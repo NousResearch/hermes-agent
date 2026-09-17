@@ -148,3 +148,17 @@ def test_prune_keeps_n_minus_one(hermes_home):
     downloads.mkdir(exist_ok=True)
     prune_old_tags(["b10290"])
     assert downloads.exists()
+
+
+@pytest.mark.parametrize("payload", [42, "oops", [1, 2, 3], None])
+def test_non_record_manifest_counts_as_unverified(tmp_path, payload):
+    """A parseable non-record manifest is damaged, not verified — same False
+    as a missing file, never an AttributeError (#114240)."""
+    from hermes_cli.local_runtime.binaries import manifest_verified
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    assert manifest_verified(manifest) is False
+    assert manifest.exists()
+    manifest.write_text(json.dumps({"verified_version": "b10290"}), encoding="utf-8")
+    assert manifest_verified(manifest) is True

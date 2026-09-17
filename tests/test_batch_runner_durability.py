@@ -134,3 +134,48 @@ class TestPoolCleanupOnInterruption:
         assert pool.join.call_args_list == [call()], (
             f"pool.join() called with unexpected args: {pool.join.call_args_list}"
         )
+
+
+# =========================================================================
+# Non-record JSONL hardening — parseable non-dicts skip with honest counts (#114240)
+# =========================================================================
+
+def _make_dataset_runner(tmp_path, monkeypatch, lines, run_name="nonrecord-test"):
+    dataset = tmp_path / "dataset.jsonl"
+    dataset.write_text("".join(lines), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    return BatchRunner(
+        dataset_file=str(dataset),
+        batch_size=10,
+        run_name=run_name,
+        num_workers=1,
+    )
+
+
+def test_load_dataset_skips_non_record_lines(tmp_path, monkeypatch):
+    runner = _make_dataset_runner(tmp_path, monkeypatch, [
+        json.dumps({"prompt": "hi"}) + "\n",
+        json.dumps(42) + "\n",
+        "{bad\n",
+        json.dumps("oops") + "\n",
+    ])
+    assert [e["prompt"] for e in runner.dataset] == ["hi"]
+
+
+def test_scan_completed_skips_non_record_lines(tmp_path, monkeypatch):
+    runner = _make_dataset_runner(tmp_path, monkeypatch, [json.dumps({"prompt": "hi"}) + "\n"])
+    # Bad line first: on base this wedges the file scan before the healthy
+    # sibling is ever read; fixed, it degrades to a per-line skip.
+    (runner.output_dir / "batch_0.jsonl").write_text(
+        json.dumps(7) + "\n" + json.dumps({"prompt": "hi"}) + "\n", encoding="utf-8")
+    assert runner._scan_completed_prompts_by_content() == {"hi"}
+
+
+def test_combine_counts_non_record_as_filtered(tmp_path, monkeypatch):
+    runner = _make_dataset_runner(tmp_path, monkeypatch, [json.dumps({"prompt": "hi"}) + "\n"])
+    (runner.output_dir / "batch_0.jsonl").write_text(
+        json.dumps({"prompt": "hi", "conversations": []}) + "\n" + json.dumps([1]) + "\n",
+        encoding="utf-8")
+    assert runner._combine_batch_files() == (1, 1)
+    merged = (runner.output_dir / "trajectories.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(merged) == 1 and json.loads(merged[0])["prompt"] == "hi"

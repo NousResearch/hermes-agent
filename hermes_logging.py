@@ -200,6 +200,32 @@ def _adopt_secondary_home(home: Path) -> bool:
     return enable_profile_log_routing([*sorted(known), resolved])
 
 
+# (filename, level, max_bytes, backup_count) per component mode; mirrors the
+# component entries of setup_logging's handler_specs so a second home adopted
+# with mode="gateway"/"gui" gets the same file it would have on first setup.
+_MODE_HANDLER_SPECS = {
+    "gateway": ("gateway.log", logging.INFO, 5 * 1024 * 1024, 3),
+    "gui": ("gui.log", logging.INFO, 10 * 1024 * 1024, 5),
+}
+
+
+def _ensure_secondary_mode_handler(log_dir: Path, mode: str) -> None:
+    """Create an adopted home's own mode file as a profile router.
+
+    Called only when routing is already on: _add_rotating_handler wraps the
+    new file as a router over the union of homes, and stays idempotent per
+    resolved path (a second setup_logging for the same home adds nothing).
+    """
+    from agent.redact import RedactingFormatter  # lazy: circular at module load
+
+    filename, lvl, size, count = _MODE_HANDLER_SPECS[mode]
+    _add_rotating_handler(
+        log_dir / filename, level=lvl, max_bytes=size, backup_count=count,
+        formatter=RedactingFormatter(_LOG_FORMAT),
+        log_filter=_ComponentFilter(COMPONENT_PREFIXES[mode]),
+    )
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -224,6 +250,12 @@ def setup_logging(
     # profile's records (the handlers carry no home filter), and a duplicate writer on top of
     # an existing router.
     if _adopt_secondary_home(home):
+        # Adoption widens the existing routers to the union of homes, but this
+        # home's own component files were never created — the specs loop below
+        # is skipped. Create the requested mode file now so the second home's
+        # gateway/gui records have a routed writer of their own.
+        if mode in _MODE_HANDLER_SPECS:
+            _ensure_secondary_mode_handler(log_dir, mode)
         return log_dir
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()

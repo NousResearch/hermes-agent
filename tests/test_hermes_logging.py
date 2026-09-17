@@ -262,6 +262,53 @@ class TestSetupLogging:
         assert "gw-a" in a_log and "gw-b" not in a_log
         assert "gw-b" in (profile_home / "logs" / "gateway.log").read_text()
 
+    def test_second_home_with_mode_gets_routed_component_log(self, hermes_home, tmp_path):
+        """setup_logging(mode="gateway") FOR the second home itself: the adopted
+        home's gateway.log must exist as a router over both homes, so each
+        home's gateway records land in its own file."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home, mode="gateway")
+
+        gw_routers = [
+            h for h in hermes_logging._queued_file_handlers
+            if isinstance(h, hermes_logging._ProfileRoutingFileHandler) and h._filename == "gateway.log"
+        ]
+        assert len(gw_routers) == 1
+        assert gw_routers[0]._profile_homes == {hermes_home.resolve(), profile_home.resolve()}
+
+        logger = logging.getLogger("gateway.run.second-home-mode-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("gw-b")
+        finally:
+            reset_hermes_home_override(token)
+        logger.info("gw-a")
+        hermes_logging.flush_log_queue()
+
+        a_log = (hermes_home / "logs" / "gateway.log").read_text()
+        assert "gw-a" in a_log and "gw-b" not in a_log
+        b_log = (profile_home / "logs" / "gateway.log").read_text()
+        assert "gw-b" in b_log and "gw-a" not in b_log
+
+    def test_second_home_with_mode_adds_no_duplicate_writer(self, hermes_home, tmp_path):
+        """Repeating setup_logging for an adopted home with the same mode must
+        not stack a second gateway.log writer on top of the router."""
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home, mode="gateway")
+        hermes_logging.setup_logging(hermes_home=profile_home, mode="gateway")
+
+        gw_writers = [
+            h for h in hermes_logging._queued_file_handlers
+            if "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_writers) == 1
+
 
 
 

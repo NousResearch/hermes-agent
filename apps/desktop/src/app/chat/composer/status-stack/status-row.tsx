@@ -1,10 +1,11 @@
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
-import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
 import { StatusRow } from '@/components/chat/status-row'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
@@ -43,7 +44,12 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
   }
 
   if (item.todoStatus === 'pending') {
-    return <StatusPendingIcon />
+    return (
+      <span
+        aria-hidden
+        className="box-border size-[0.7rem] rounded-full border border-dashed border-muted-foreground/60"
+      />
+    )
   }
 
   if (item.todoStatus && item.todoStatus !== 'in_progress') {
@@ -108,12 +114,34 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
-        depth={Math.min(item.depth ?? 0, 4)}
-        dismiss={action ? { label: action.label, onDismiss: action.onClick } : undefined}
-        leading={leadingGlyph(item, s)}
+        leading={
+          item.depth ? (
+            <span className="flex items-center" style={{ paddingLeft: `${Math.min(item.depth, 4) * 0.8}rem` }}>
+              {leadingGlyph(item, s)}
+            </span>
+          ) : (
+            leadingGlyph(item, s)
+          )
+        }
         onActivate={onActivate}
         trailing={
-          canOpen ? (
+          action ? (
+            <Tip label={action.label}>
+              <Button
+                aria-label={action.label}
+                className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+                onClick={event => {
+                  event.stopPropagation()
+                  action.onClick()
+                }}
+                size="icon-xs"
+                type="button"
+                variant="ghost"
+              >
+                <Codicon name="close" size="0.75rem" />
+              </Button>
+            </Tip>
+          ) : canOpen ? (
             <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
           ) : undefined
         }

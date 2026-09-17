@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2, PawPrint, RefreshCw } from '@/lib/icons'
-import { isSubmitEnter } from '@/lib/ime'
 import { type PetInfo } from '@/store/pet'
 
 import { frameCountForRow } from '../lib/frame-count'
@@ -125,7 +124,7 @@ export function HatchPreview({ pet, adopting, error, onAdopt, onDiscard }: Hatch
         className="w-full"
         onChange={event => setName(event.target.value)}
         onKeyDown={event => {
-          if (isSubmitEnter(event)) {
+          if (event.key === 'Enter') {
             event.preventDefault()
             onAdopt(name)
           }

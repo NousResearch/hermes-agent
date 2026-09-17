@@ -13,7 +13,6 @@
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
-import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -53,7 +52,7 @@ const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
 /** Inline edit composer root — mounted only while a user bubble is being edited. */
-export const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
+const EDIT_COMPOSER_ROOT = '[data-slot="aui_edit-composer-root"]'
 
 /** Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`. */
 const cssEscape = (value: string): string => {
@@ -137,14 +136,6 @@ const targetIsReachable = (target: ComposerTarget): boolean => {
  * voice / soft `/` agree with the keyboard path.
  */
 const resolveActive = (): ComposerTarget => {
-  const owner = $floatingComposerOwner.get()?.target
-
-  if (owner && (activeTarget !== 'edit' || !targetIsReachable('edit'))) {
-    activeTarget = owner
-
-    return owner
-  }
-
   if (targetIsReachable(activeTarget)) {
     return activeTarget
   }
@@ -178,7 +169,7 @@ const dispatchNow = <T>(name: string, detail: T) => {
 }
 
 /** Unique identity for the visible composer surface addressed by a submit. */
-export const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
+const getVisibleComposerSurfaceId = (target: ComposerTarget): string | null => {
   if (typeof document === 'undefined') {
     return null
   }
@@ -251,22 +242,7 @@ export const getActiveComposer = (): ComposerTarget => resolveActive()
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}
-) => {
-  const detail = { target: resolve(target), typeChar }
-  const owner = $floatingComposerOwner.get()
-
-  // A first character must land before subsequent native input events, not
-  // behind a timer that can reorder fast typing or a pane handoff.
-  if (typeChar) {
-    dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
-  } else if (typeof window !== 'undefined') {
-    window.setTimeout(() => {
-      if (!owner || $floatingComposerOwner.get() === owner) {
-        dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
-      }
-    }, 0)
-  }
-}
+) => dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target), typeChar })
 
 export const requestComposerInsert = (
   text: string,
@@ -423,26 +399,14 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   // Also skip when another VISIBLE composer holds the caret — a keep-alive
   // remount must not yank typing. A hidden tab that still has DOM focus must
   // not block the pane the user just switched to.
-  const owner = $floatingComposerOwner.get()
-  const surfaceId = el.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
-
   const focus = () => {
-    if (owner && (owner !== $floatingComposerOwner.get() || (surfaceId && surfaceId !== owner.id))) {
-      return
-    }
-
-    if (!el.isConnected || isElementInHiddenPane(el) || document.activeElement === el) {
+    if (document.activeElement === el) {
       return
     }
 
     const active = document.activeElement
 
-    if (
-      active instanceof HTMLElement &&
-      active.dataset.slot === RICH_INPUT_SLOT &&
-      !isElementInHiddenPane(active) &&
-      (!owner || surfaceId !== owner.id)
-    ) {
+    if (active instanceof HTMLElement && active.dataset.slot === RICH_INPUT_SLOT && !isElementInHiddenPane(active)) {
       return
     }
 

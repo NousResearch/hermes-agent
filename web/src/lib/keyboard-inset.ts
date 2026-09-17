@@ -57,19 +57,15 @@ export function computeKeyboardInset(
   return inset >= KEYBOARD_INSET_MIN_PX ? inset : 0;
 }
 
-/** Pixels to `window.scrollBy` so the composer (xterm host bottom) sits on
- * the visible bottom of the visual viewport — just above the keyboard.
- * Pinning the page to (0, 0) fights iOS and can leave the input line off-screen. */
-export function keyboardRevealScrollDelta(
-  composerBottomPx: number,
-  visual: ViewportGeometry,
-): number {
-  if (
-    !Number.isFinite(composerBottomPx) ||
-    !Number.isFinite(visual.height) ||
-    !Number.isFinite(visual.offsetTop)
-  ) {
-    return 0;
-  }
-  return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
+/**
+ * Whether the page scroll should be pinned back to the top.
+ *
+ * The dashboard shell is a fixed `h-dvh` column and must never scroll, but
+ * iOS Safari auto-scrolls the *page* when a focused input would sit under
+ * the keyboard (xterm's hidden textarea triggers this). Pin whenever a
+ * keyboard is present so the terminal chrome stays put; the terminal's own
+ * scrollback handles content visibility.
+ */
+export function shouldPinScroll(nextInsetPx: number): boolean {
+  return nextInsetPx > 0;
 }

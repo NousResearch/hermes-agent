@@ -17,7 +17,6 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -192,7 +191,7 @@ export function ProjectDialog() {
             disabled={submitting}
             onChange={event => setName(event.target.value)}
             onKeyDown={event => {
-              if (isSubmitEnter(event)) {
+              if (event.key === 'Enter') {
                 event.preventDefault()
                 void submit()
               } else if (event.key === 'Escape') {

@@ -6,7 +6,6 @@ import {
   useRef,
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
-import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -22,7 +21,6 @@ import { PluginSlot } from "@/plugins";
 // structured level token and falls back to word-boundary matching so payload
 // text like "parse_errors=0" can't render an INFO line red.
 import { classifyLine } from "@/lib/log-classify";
-import { errorMessage } from "@/lib/api-error";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -47,19 +45,8 @@ const filterGroupClass =
 const segmentedClass =
   "w-fit max-w-full flex-wrap justify-start self-start";
 
-type LogFile = (typeof FILES)[number];
-
-function isLogFile(value: string | null): value is LogFile {
-  return (FILES as readonly string[]).includes(value ?? "");
-}
-
 export default function LogsPage() {
-  // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
-  const [searchParams] = useSearchParams();
-  const requestedFile = searchParams.get("file");
-  const [file, setFile] = useState<LogFile>(() =>
-    isLogFile(requestedFile) ? requestedFile : "agent",
-  );
+  const [file, setFile] = useState<(typeof FILES)[number]>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] =
     useState<(typeof COMPONENTS)[number]>("all");
@@ -85,7 +72,7 @@ export default function LogsPage() {
           }
         }, 50);
       })
-      .catch((err) => setError(errorMessage(err)))
+      .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
 

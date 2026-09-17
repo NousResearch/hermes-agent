@@ -4,9 +4,8 @@
 // node_modules/ or tsx at runtime.
 //
 // Output:
-//   dist/electron-main.mjs          (MJS bundle — entry point for packaged app)
-//   dist/electron-preload.js        (CJS bundle — loaded via BrowserWindow preload)
-//   dist/preview-guest-preload.js   (CJS bundle — preview <webview> guest preload)
+//   dist/electron-main.mjs    (MJS bundle — entry point for packaged app)
+//   dist/electron-preload.js (CJS bundle — loaded via BrowserWindow preload)
 //
 // `electron` and `node-pty` are external (provided by the runtime / staged
 // separately via stage-native-deps).
@@ -14,14 +13,11 @@ import { build } from 'esbuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
-import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const distDir = resolve(root, 'dist')
 mkdirSync(distDir, { recursive: true })
-// Stage for both --dev and release bundles; non-mac hosts skip this helper.
-buildCommandScreenshotMonitor({ distDir })
 
 const mainEntry = resolve(root, 'electron/main.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
@@ -67,21 +63,3 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
-
-// Bundle preview-guest-preload-entry.ts → dist/preview-guest-preload.js
-// (main.ts hands this path to the preview webview via will-attach-webview)
-const guestPreloadEntry = resolve(root, 'electron/preview-guest-preload-entry.ts')
-const guestPreloadOut = resolve(distDir, 'preview-guest-preload.js')
-
-await build({
-  entryPoints: [guestPreloadEntry],
-  bundle: true,
-  platform: 'node',
-  format: 'cjs',
-  target: 'node20',
-  outfile: guestPreloadOut,
-  external,
-  define,
-  logLevel: 'info',
-})
-console.log(`bundled ${guestPreloadOut}${isDev ? ' (dev)' : ''}`)

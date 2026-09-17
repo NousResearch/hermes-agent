@@ -171,7 +171,7 @@ export interface ResolveVenvHermesCommandDeps {
   isCommandScript: (command: string) => boolean
   fileExists: (filePath: string) => boolean
   directoryExists: (filePath: string) => boolean
-  canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => Promise<boolean>
+  canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => boolean
   getVenvPython: (venvRoot: string) => string
   getVenvSitePackagesEntries: (venvRoot: string) => string[]
   buildDesktopBackendEnv: (opts: {
@@ -205,11 +205,11 @@ export interface ResolveVenvHermesCommandDeps {
  * python doesn't exist, or the import probe fails. Otherwise returns the
  * resolved backend descriptor.
  */
-export async function resolveVenvHermesCommand(
+export function resolveVenvHermesCommand(
   command: string,
   backendArgs: string[],
   deps: ResolveVenvHermesCommandDeps
-): Promise<{
+): {
   label: string
   command: string
   args: string[]
@@ -218,7 +218,7 @@ export async function resolveVenvHermesCommand(
   kind: 'python'
   root: string
   shell: false
-} | null> {
+} | null {
   const {
     isWindows,
     isCommandScript,
@@ -261,13 +261,13 @@ export async function resolveVenvHermesCommand(
   const root = dirname(venvRoot)
 
   if (
-    !(await canImportHermesCli(python, {
+    !canImportHermesCli(python, {
       env: {
         PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
           .filter((entry): entry is string => Boolean(entry))
           .join(path.delimiter)
       }
-    }))
+    })
   ) {
     rememberLog?.(
       `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`

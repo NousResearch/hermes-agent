@@ -16,6 +16,7 @@ import {
   getLocalModelsStatus,
   type HFFileGroup,
   type HFSearchHit,
+  installLocalRuntime,
   listHFRepoFiles,
   quickstartLocalModels,
   searchHFModels,
@@ -40,11 +41,9 @@ import {
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
-  $localRuntimeInstallStarting,
   $localRuntimeJobs,
   runningDownloadFor,
   runningRuntimeInstall,
-  startLocalRuntimeInstall,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
@@ -89,7 +88,6 @@ function fitRank(model: LocalCatalogModel): number {
 export function LocalModelsSettings() {
   const { t } = useI18n()
   const copy = t.settings.localModels
-  const installStarting = useStore($localRuntimeInstallStarting)
   const [status, setStatus] = useState<LocalModelsStatus | null>(null)
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
@@ -97,7 +95,7 @@ export function LocalModelsSettings() {
   const [serverBusy, setServerBusy] = useState(false)
   // Quickstart escape hatch: true once the user asks for the full pane
   // (model list, HF browser) instead of the one-button setup card.
-  const [configure, setConfigure] = useState(() => $localRuntimeInstallStarting.get())
+  const [configure, setConfigure] = useState(false)
   // Jobs live in the app-level store (they must survive this pane
   // unmounting); the pane just renders the slice it cares about.
   const jobs = useStore($localRuntimeJobs)
@@ -164,6 +162,15 @@ export function LocalModelsSettings() {
   useEffect(() => {
     refresh()
   }, [refresh, runningCount])
+
+  async function handleInstallRuntime() {
+    try {
+      await installLocalRuntime()
+      watchLocalRuntimeJobs()
+    } catch (err) {
+      notifyError(err, copy.installFailed)
+    }
+  }
 
   async function handleQuickstart() {
     try {
@@ -302,9 +309,7 @@ export function LocalModelsSettings() {
   const heroModel = catalog.find(c => c.recommended && c.fits) ?? null
   const hasRecommendation = catalog.some(c => c.recommended)
 
-  const failedInstall = jobs.some(job => job.kind === 'runtime-install' && job.status === 'error')
-
-  if (qJob || (needsSetup && !configure && heroModel && !installStarting && !rJob && !failedInstall)) {
+  if (qJob || (needsSetup && !configure && heroModel)) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
@@ -466,7 +471,7 @@ export function LocalModelsSettings() {
         ) : (
           <ListRow
             action={
-              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
+              <Button onClick={() => void handleInstallRuntime()} size="sm">
                 <Download />
                 {copy.installAction}
               </Button>
@@ -479,7 +484,7 @@ export function LocalModelsSettings() {
         {status.update_available && !rJob && (
           <ListRow
             action={
-              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
+              <Button onClick={() => void handleInstallRuntime()} size="sm">
                 <Download />
                 {copy.updateAction}
               </Button>

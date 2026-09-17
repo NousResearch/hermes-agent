@@ -22,9 +22,6 @@ interface renderRosterToolbarProps {
   b: ReturnType<typeof useBots>
   activityToasts: boolean
   activeSourceRoster: RosterRow[]
-  /** Full multi-source roster — the New Group Chat gate counts the same
-   *  selectable set the dialog seats (bots from every registered connection). */
-  roster: RosterRow[]
   setCreateOpen: (value: boolean) => void
   setGroupCreateOpen: (value: boolean) => void
   setSectionDialog: (
@@ -49,7 +46,6 @@ export function renderRosterToolbar({
   b,
   activityToasts,
   activeSourceRoster,
-  roster,
   setCreateOpen,
   setGroupCreateOpen,
   setSectionDialog,
@@ -104,9 +100,7 @@ export function renderRosterToolbar({
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              {/* Same selectable set as CreateGroupChatDialog: one local bot plus a
-                  remote-connection bot is a valid room (#101543). */}
-              <DropdownMenuItem disabled={roster.filter(bot => !bot?.ghost).length < 2} onSelect={() => setGroupCreateOpen(true)}>
+              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setGroupCreateOpen(true)}>
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>

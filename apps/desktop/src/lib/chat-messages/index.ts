@@ -15,12 +15,10 @@ export {
 export type { UnspokenTurnSpeech } from './parts'
 export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
 export {
-  restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
-  toolCallOwnerMessageId,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'

@@ -9,23 +9,17 @@
 
 import { BOTS_LOCALES } from './i18n'
 
-/** The same resolver against another shipped locale, for a test that has to
- *  tell a catalog string from an English literal that happens to match `en`. */
-export function translateBotsIn(locale: keyof typeof BOTS_LOCALES) {
-  return (key: string, ...args: unknown[]): string => {
-    const value = key
-      .split('.')
-      .reduce<unknown>(
-        (node, part) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[part] : undefined),
-        BOTS_LOCALES[locale]
-      )
+export function translateBots(key: string, ...args: unknown[]): string {
+  const value = key
+    .split('.')
+    .reduce<unknown>(
+      (node, part) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[part] : undefined),
+      BOTS_LOCALES.en
+    )
 
-    if (typeof value === 'function') {
-      return String((value as (...params: unknown[]) => string)(...args))
-    }
-
-    return typeof value === 'string' ? value : key
+  if (typeof value === 'function') {
+    return String((value as (...params: unknown[]) => string)(...args))
   }
-}
 
-export const translateBots = translateBotsIn('en')
+  return typeof value === 'string' ? value : key
+}

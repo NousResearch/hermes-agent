@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 
-import { StatusControlRow } from '@/components/chat/status-control-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -19,6 +18,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import {
   runSessionControlAction,
@@ -149,34 +149,36 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
             <StatusSection
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <span className="inline-flex">
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        aria-haspopup="menu"
-                        aria-label={ctrl.heartbeatActions}
-                        className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                        disabled={isBusy}
-                        onClick={event => {
-                          // Radix opens pointer interactions from pointerdown. Keyboard,
-                          // assistive-tech, and programmatic clicks have no pointer sequence.
-                          if (event.detail === 0) {
-                            setMenuOpen(true)
-                          }
-                        }}
-                        onKeyDown={e => {
-                          if (e.key === 'F10' && e.shiftKey) {
-                            e.preventDefault()
-                            setMenuOpen(true)
-                          }
-                        }}
-                        size="icon-xs"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Codicon name="ellipsis" size="0.8rem" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </span>
+                  <Tip label={ctrl.heartbeatActions}>
+                    <span className="inline-flex">
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          aria-haspopup="menu"
+                          aria-label={ctrl.heartbeatActions}
+                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                          disabled={isBusy}
+                          onClick={event => {
+                            // Radix opens pointer interactions from pointerdown. Keyboard,
+                            // assistive-tech, and programmatic clicks have no pointer sequence.
+                            if (event.detail === 0) {
+                              setMenuOpen(true)
+                            }
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'F10' && e.shiftKey) {
+                              e.preventDefault()
+                              setMenuOpen(true)
+                            }
+                          }}
+                          size="icon-xs"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Codicon name="ellipsis" size="0.8rem" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                    </span>
+                  </Tip>
                   <DropdownMenuContent align="end" className="w-44">
                     {renderMenuItems(false)}
                   </DropdownMenuContent>
@@ -186,13 +188,11 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
               icon={<Codicon className={iconClass} name="pulse" size="0.8rem" />}
               label={headerLabel}
             >
-              <div>
-                <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="bell">
-                  {heartbeat.prompt}
-                </StatusControlRow>
-                <StatusControlRow icon="history">
-                  {ctrl.heartbeatFiredCount(heartbeat.fire_count)}
-                </StatusControlRow>
+              <div className="space-y-1 px-1 py-1 text-xs">
+                <div className="text-foreground/92 leading-relaxed break-words">{heartbeat.prompt}</div>
+                <div className="text-[0.7rem] text-muted-foreground/80">
+                  <span>{ctrl.heartbeatFiredCount(heartbeat.fire_count)}</span>
+                </div>
               </div>
             </StatusSection>
           </div>

@@ -23,7 +23,7 @@ export function metaBadges(n: StarmapNode): string[] {
   } else {
     out.push(n.category)
 
-    if (n.createdBy === 'agent' || n.createdBy === 'learn') {
+    if (n.createdBy === 'agent') {
       out.push('learned')
     }
 

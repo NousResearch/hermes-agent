@@ -23,8 +23,7 @@ export async function loadArchivedSessions(): Promise<void> {
 
     $archivedSessions.set(result.sessions)
   } catch {
-    // A background refresh must not turn a usable Archived view into an empty
-    // one when the backend is temporarily unavailable. Keep the last good set.
+    $archivedSessions.set([])
   } finally {
     $archivedSessionsLoading.set(false)
   }

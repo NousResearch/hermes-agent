@@ -2,7 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $composerPopout, $composerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $composerPopoutGesturesEnabled, $composerPopoutZones } from '@/store/composer-popout'
 
 import { useComposerPopout } from './use-composer-popout'
 
@@ -12,10 +12,7 @@ vi.mock('@/components/pane-shell/pane-visibility', () => ({
 }))
 
 vi.mock('@/hooks/use-resize-observer', () => ({ useResizeObserver: () => undefined }))
-vi.mock('@/store/windows', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  isSecondaryWindow: () => false
-}))
+vi.mock('@/store/windows', () => ({ isSecondaryWindow: () => false }))
 
 function PopoutAffordanceHarness() {
   const composerRef = useRef<HTMLFormElement>(null)
@@ -28,13 +25,13 @@ function PopoutAffordanceHarness() {
 
 describe('useComposerPopout', () => {
   beforeEach(() => {
-    $composerPopout.set({ poppedOut: false, position: { bottom: 24, right: 24 } })
+    $composerPopoutZones.set({})
     $composerPopoutGesturesEnabled.set(true)
   })
 
   afterEach(() => {
     cleanup()
-    $composerPopout.set({ poppedOut: false, position: { bottom: 24, right: 24 } })
+    $composerPopoutZones.set({})
     $composerPopoutGesturesEnabled.set(true)
   })
 

@@ -10,8 +10,6 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { publishDesktopTree } from './desktop-plugins-root'
-
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
 
 export interface ResolvedGitUrl {
@@ -382,6 +380,11 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   }
 }
 
+async function copyDesktopTree(sourceDir: string, targetDir: string): Promise<void> {
+  await fsp.mkdir(path.dirname(targetDir), { recursive: true })
+  await fsp.cp(sourceDir, targetDir, { recursive: true, force: true })
+}
+
 export async function installDesktopPluginFromGit(
   gitBin: string,
   identifier: string,
@@ -418,9 +421,7 @@ export async function installDesktopPluginFromGit(
         await fsp.rm(targetDir, { recursive: true, force: true })
       }
 
-      // Staged copy + rename: a failed copy must not leave an empty `targetDir`
-      // that turns every retry into "already exists. Enable force reinstall".
-      await publishDesktopTree(sourceDir, targetDir)
+      await copyDesktopTree(sourceDir, targetDir)
 
       if (!(await pathIsFile(targetPlugin))) {
         return { ok: false, error: `Install completed but ${targetPlugin} is missing.` }

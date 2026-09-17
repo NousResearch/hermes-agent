@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const GESTURES_KEY = 'hermes.desktop.composerPopout.gesturesEnabled'
+const LEGACY_ENABLED_KEY = 'hermes.desktop.composerPopout.enabled'
 const ZONES_KEY = 'hermes.desktop.composerPopout.zones.v1'
 
 const loadStore = () => import('./composer-popout')
@@ -11,26 +12,34 @@ describe('composer pop-out preference', () => {
     vi.resetModules()
   })
 
-  it('docks the shared composer, preserves its placement, and persists the lock', async () => {
+  it('docks every floating zone, preserves positions, and persists the lock', async () => {
     const first = await loadStore()
 
-    first.setComposerPopoutPosition({ bottom: 200, right: 200 })
-    first.setComposerPoppedOut(true)
+    first.setComposerPopoutPosition('left', { bottom: 100, right: 100 })
+    first.setComposerPoppedOut('left', true)
+    first.setComposerPopoutPosition('right', { bottom: 200, right: 200 })
+    first.setComposerPoppedOut('right', true)
 
     first.setComposerPopoutGesturesEnabled(false)
 
     expect(first.$composerPopoutGesturesEnabled.get()).toBe(false)
-    expect(first.$composerPopout.get()).toEqual({
+    expect(first.getComposerPopoutZone('left')).toEqual({
+      poppedOut: false,
+      position: { bottom: 100, right: 100 }
+    })
+    expect(first.getComposerPopoutZone('right')).toEqual({
       poppedOut: false,
       position: { bottom: 200, right: 200 }
     })
     expect(window.localStorage.getItem(GESTURES_KEY)).toBe('false')
+    expect(window.localStorage.getItem(LEGACY_ENABLED_KEY)).toBe('false')
 
     vi.resetModules()
     const reloaded = await loadStore()
 
     expect(reloaded.$composerPopoutGesturesEnabled.get()).toBe(false)
-    expect(reloaded.$composerPopout.get()).toEqual(first.$composerPopout.get())
+    expect(reloaded.getComposerPopoutZone('left').poppedOut).toBe(false)
+    expect(reloaded.getComposerPopoutZone('right').poppedOut).toBe(false)
   })
 
   it('normalizes stale floating zones when the persisted preference is disabled', async () => {
@@ -42,7 +51,7 @@ describe('composer pop-out preference', () => {
 
     const store = await loadStore()
 
-    expect(store.$composerPopout.get()).toEqual({
+    expect(store.getComposerPopoutZone('stale')).toEqual({
       poppedOut: false,
       position: { bottom: 48, right: 64 }
     })

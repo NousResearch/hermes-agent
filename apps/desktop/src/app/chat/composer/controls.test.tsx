@@ -61,28 +61,19 @@ afterEach(() => {
   $hudMode.set(false)
 })
 
-// The HUD is a Spotlight bar a few hundred pixels wide: the voice controls
-// fold into one menu there, and the way out of HUD mode joins the row instead
-// of floating above the bar in a reserved strip. The docked composer keeps the
-// mic inline, with the other voice toggles fanned out of it on hover, and
-// shows no exit.
+// The HUD is a Spotlight bar a few hundred pixels wide: the four voice
+// controls fold into one menu there, and the way out of HUD mode joins the
+// row instead of floating above the bar in a reserved strip. The docked
+// composer keeps every control inline and shows no exit.
 describe('HUD mode', () => {
-  it('keeps the mic inline, fans the toggles on hover, and offers no exit in the docked composer', async () => {
+  it('keeps the voice controls inline and offers no exit in the docked composer', () => {
     renderControls()
 
-    const mic = screen.getByLabelText('Voice dictation')
-
-    expect(mic).toBeTruthy()
-    expect(screen.queryByLabelText('Read replies aloud')).toBeNull()
-
-    fireEvent.pointerEnter(mic.parentElement!)
-
-    expect(await screen.findByLabelText('Read replies aloud')).toBeTruthy()
-    expect(screen.getByLabelText('Wake word "hey hermes"')).toBeTruthy()
+    expect(screen.getByLabelText('Voice dictation')).toBeTruthy()
+    expect(screen.getByLabelText('Read replies aloud')).toBeTruthy()
     expect(screen.queryByLabelText('Exit HUD mode')).toBeNull()
     expect(screen.queryByLabelText('Reset HUD size and position')).toBeNull()
-    // No folded menu trigger — the fan's group shares the "Voice" name.
-    expect(screen.queryByRole('button', { name: 'Voice' })).toBeNull()
+    expect(screen.queryByLabelText('Voice')).toBeNull()
   })
 
   it('folds them into one menu and offers the way out in the HUD', () => {
@@ -171,37 +162,38 @@ describe('wake-word ear visibility', () => {
     resetWakeWordState()
   })
 
-  // The ear lives in the mic's fan now: hover the mic to reach it.
-  const findEar = async () => {
-    fireEvent.pointerEnter(screen.getByLabelText('Voice dictation').parentElement!)
-
-    return screen.findByLabelText('Wake word "hey hermes"')
-  }
-
-  it('stays reachable during a busy agent turn', async () => {
+  it('stays mounted during a busy agent turn', () => {
     applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
     renderControls({ busy: true, busyAction: 'stop' })
 
-    expect((await findEar()).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByLabelText('Wake word: "hey hermes" — listening')).toBeTruthy()
   })
 
-  it('stays reachable (enabled in config) even when a start was refused', async () => {
+  it('stays mounted (enabled in config) even when a start was refused', () => {
     applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey hermes' })
     // Transient refusal marks available false but enabled keeps it mounted.
     applyWakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false })
     renderControls()
 
-    expect((await findEar()).getAttribute('aria-pressed')).toBe('false')
+    expect(screen.getByLabelText('Wake word: "hey hermes" — off')).toBeTruthy()
   })
 
-  it('stays reachable (never hides) even when unavailable and not enabled', async () => {
+  it('stays visible (never hides) even when unavailable and not enabled', () => {
+    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
+    renderControls()
+
+    // The ear ALWAYS shows so the user can click to enable; a failed start
+    // surfaces its reason in the tooltip rather than hiding the control.
+    expect(screen.getByLabelText('Wake word: "hey hermes" — off')).toBeTruthy()
+  })
+
+  it('surfaces the backend refusal reason in the tooltip, still visible', () => {
     applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
     applyWakeStartResult({ hint: 'run `hermes tools` (Voice section)', reason: 'unavailable', started: false })
     renderControls()
 
-    // The ear ALWAYS shows so the user can click to enable; a refused start
-    // never hides the control.
-    expect(((await findEar()) as HTMLButtonElement).disabled).toBe(false)
+    const ear = screen.getByLabelText('Wake word: "hey hermes" — off')
+    expect(ear).toBeTruthy()
   })
 
   it('shows a disabled paused ear inside the voice-conversation pill', () => {

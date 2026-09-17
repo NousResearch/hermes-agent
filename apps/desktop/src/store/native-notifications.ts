@@ -5,16 +5,10 @@ import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
-import {
-  answerApproval,
-  clearApprovalRequest,
-  replayPendingApproval,
-  sessionApprovalRequest,
-  sessionApprovalRequests
-} from './prompts'
+import { clearApprovalRequest } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
-import { storedSessionIdForRuntimeId } from './session-states'
+import { requestForOwnedSession, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -355,9 +349,7 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
 // Resolve a pending approval from a notification button, mirroring the in-app
 // Run/Reject bar. Keyed by session id — a background approval has no local guard.
 export async function respondToApprovalAction(sessionId: null | string, actionId: string): Promise<void> {
-  const [action, ...idParts] = actionId.split(':')
-  const requestId = idParts.length ? idParts.join(':') : sessionApprovalRequest(sessionId).get()?.requestId
-  const choice = action === 'approve' ? 'once' : action === 'reject' ? 'deny' : null
+  const choice = actionId === 'approve' ? 'once' : actionId === 'reject' ? 'deny' : null
 
   if (!choice) {
     return
@@ -374,17 +366,19 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    const parked = sessionApprovalRequests(sessionId)
-      .get()
-      .find(request => request.requestId === requestId)
-
-    await answerApproval(gateway, parked ?? { sessionId, requestId }, choice)
-
-    if (requestId || sessionApprovalRequest(sessionId).get()?.requestId === undefined) {
-      clearApprovalRequest(sessionId, requestId)
-    }
-
-    void replayPendingApproval(gateway, sessionId).catch(() => undefined)
+    // Route through the session's OWNER (tile route → known profile); the
+    // ambient socket follows foreground focus and, for a background approval
+    // raised by a cross-profile session, points at a backend that never held
+    // the approval (#91684 client half). Ambient only when no owner is known.
+    await requestForOwnedSession(
+      sessionId,
+      // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
+      // call shape gateway.request callers assert on.
+      gateway.request.bind(gateway) as typeof gateway.request,
+      'approval.respond',
+      { choice, session_id: sessionId ?? undefined }
+    )
+    clearApprovalRequest(sessionId)
   } catch (error) {
     if (sessionId && isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)

@@ -60,9 +60,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     refreshRoot,
     rootError,
     rootLoading,
-    setNodeOpen,
-    setShowIgnored,
-    showIgnored
+    setNodeOpen
   } = useProjectTree(hasWorkspace ? currentCwd : '')
 
   const cwdName =
@@ -113,9 +111,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
         onRefresh={() => void refreshRoot()}
-        onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
         openState={openState}
-        showIgnored={showIgnored}
       />
     </aside>
   )
@@ -127,8 +123,6 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   hasWorkspace: boolean
   onCollapseAll: () => void
   onRefresh: () => void
-  onToggleShowIgnored: () => void
-  showIgnored: boolean
 }
 
 // Sidebar palette + hover-reveal: header actions stay reachable while moving
@@ -154,9 +148,7 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
-  onToggleShowIgnored,
-  openState,
-  showIgnored
+  openState
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
@@ -173,20 +165,6 @@ function FilesystemTab({
         <div className="flex min-w-0 flex-1">
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </div>
-        <Tip label={showIgnored ? r.hideIgnored : r.showIgnored}>
-          <Button
-            aria-label={showIgnored ? r.hideIgnored : r.showIgnored}
-            aria-pressed={showIgnored}
-            // Stays visible while active: the tree is showing more than the
-            // repo does, and that has to be legible without hovering.
-            className={showIgnored ? HEADER_ACTION_CLASS : HEADER_ACTION_LABEL_REVEAL}
-            onClick={onToggleShowIgnored}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name={showIgnored ? 'eye' : 'eye-closed'} size="0.8125rem" />
-          </Button>
-        </Tip>
         <Tip label={r.refreshTree}>
           <Button
             aria-label={r.refreshTree}

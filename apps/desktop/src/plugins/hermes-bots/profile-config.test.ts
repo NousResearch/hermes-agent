@@ -31,12 +31,11 @@ type AdvancedConfigState = ReturnType<typeof emptyAdvancedState>
 interface ModelSwitchConfirmArgs {
   confirmMessage: string
   finish: () => void
-  model: string
   requestConfirmed: () => Promise<{ applied?: Record<string, boolean> } | undefined>
 }
 
 const { confirmMock, hostMock, invalidateMock } = vi.hoisted(() => ({
-  confirmMock: vi.fn(async (_args: ModelSwitchConfirmArgs) => true),
+  confirmMock: vi.fn((_args: ModelSwitchConfirmArgs) => 'notification-1'),
   hostMock: {
     getGateway: () => 'ambient-gateway',
     request: vi.fn(),

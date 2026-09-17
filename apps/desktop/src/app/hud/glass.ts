@@ -1,6 +1,6 @@
 import { type RefObject, useEffect } from 'react'
 
-/** Match native focus, including window deactivation. */
+/** The caret is in the composer — see the `:has()` rules in styles.css. */
 const TYPING_SELECTOR = '[data-slot="composer-rich-input"]:focus'
 
 /** An open completion list owns the surface; the band falls back behind it. */
@@ -65,22 +65,19 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, backing: boo
     const root = rootRef.current
     const setFrost = window.hermesDesktop?.hud?.setFrost
 
-    if (!root) {
+    if (!root || !setFrost) {
       return
     }
 
     let on: boolean | null = null
 
     const apply = () => {
-      const typing = root.querySelector(TYPING_SELECTOR) !== null
-      const drawer = root.querySelector(DRAWER_SELECTOR) !== null
-      root.toggleAttribute('data-hud-typing', typing)
-      root.toggleAttribute('data-hud-drawer', drawer)
-      const next = backing && !drawer && typing
+      const next =
+        backing && root.querySelector(DRAWER_SELECTOR) === null && root.querySelector(TYPING_SELECTOR) !== null
 
       if (on !== next) {
         on = next
-        void setFrost?.(next)
+        void setFrost(next)
       }
     }
 
@@ -115,9 +112,7 @@ export function useHudGlass(rootRef: RefObject<HTMLElement | null>, backing: boo
     window.addEventListener('focus', schedule)
 
     return () => {
-      void setFrost?.(false)
-      root.removeAttribute('data-hud-typing')
-      root.removeAttribute('data-hud-drawer')
+      void setFrost(false)
       observer.disconnect()
 
       if (frame !== null) {

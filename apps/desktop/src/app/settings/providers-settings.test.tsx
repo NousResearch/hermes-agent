@@ -18,8 +18,7 @@ vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('alpha'),
   $profiles: atom([]),
   refreshProfiles: async () => {},
-  normalizeProfileKey: (p: string | null) => p || 'default',
-  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
+  normalizeProfileKey: (p: string | null) => p || 'default'
 }))
 
 vi.mock('@/hermes', () => ({

@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  activeTimelineIndex,
-  deriveTimelineEntries,
-  sameTimelineEntries,
-  timelineBarWidth,
-  timelinePreview
-} from './timeline-data'
+import { activeTimelineIndex, deriveTimelineEntries, sameTimelineEntries, timelinePreview } from './timeline-data'
 
 describe('timelinePreview', () => {
   it('collapses whitespace to a single line', () => {
@@ -17,20 +11,6 @@ describe('timelinePreview', () => {
     const out = timelinePreview('abcdefghij', 5)
     expect(out).toBe('abcd…')
     expect(out.length).toBe(5)
-  })
-})
-
-describe('timelineBarWidth', () => {
-  it('keeps active maximal and uses the same curve for hover', () => {
-    expect(timelineBarWidth(10, 10, 50)).toBe(1)
-    expect(timelineBarWidth(50, 10, 50)).toBe(1)
-    expect(timelineBarWidth(11, 10, null)).toBe(timelineBarWidth(51, 10, 50))
-  })
-
-  it('does not change bars outside the local focus neighborhood', () => {
-    expect(timelineBarWidth(30, 10, 50)).toBe(0.5)
-    expect(timelineBarWidth(11, 10, null)).toBeGreaterThan(timelineBarWidth(12, 10, null))
-    expect(timelineBarWidth(11, 0, 10.5)).toBe(timelineBarWidth(10, 0, 10.5))
   })
 })
 

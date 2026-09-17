@@ -46,13 +46,9 @@ export interface CanonicalSession {
 }
 
 export interface SessionPreview {
-  /** Stored session id — what `host.openSession` takes. */
-  id?: string
   /** Unix seconds, not milliseconds. */
   last_active?: number
-  message_count?: number
   preview?: string
-  title?: string
 }
 
 export interface FederationRole {
@@ -194,15 +190,8 @@ export interface GroupChat {
   tombstone?: boolean
   /** Local display order, deliberately excluded from the gateway mirror. */
   rosterOrder?: number
-  /** "Pin to top" on the room row (`group-pin.ts`); the outer band of the room order. */
+  /** Read when ordering rooms; no write site in the plugin today. */
   pinned?: boolean
-  /** Which user-made sidebar section this group chat is filed under
-   *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the
-   *  item, but a group's only durable identity is its room record, so the
-   *  field rides the room's plugin-storage persistence — local, like the
-   *  section list itself, and deliberately absent from the bounded gateway
-   *  sync projection, which carries conversations, not sidebar layout. */
-  sectionId?: null | string
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
    *  the gateway-sourced shapes above, a room record is plugin-owned — every
    *  writer (hydrate, server-sync merge, updateGroupChat, room reset) seeds
@@ -239,9 +228,6 @@ export interface GroupPrompt {
   questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
-  /** The thread the blocking question belongs to — part of the mirror key,
-   *  since a member can be blocked in two threads at once. */
-  thread?: string
 }
 
 export type GroupActivityKind =

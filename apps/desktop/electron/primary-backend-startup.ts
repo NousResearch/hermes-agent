@@ -2,7 +2,6 @@ import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
-  assertCurrentAttempt: () => void
   signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
@@ -19,7 +18,6 @@ interface ResolvedPrimaryRemote {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   connectionId?: string
-  headers?: Record<string, string>
   remoteHermesVersion?: string
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
@@ -57,9 +55,6 @@ export function createPrimaryRemoteConnection<State extends object>(
     remoteHermesVersion: remote.remoteHermesVersion,
     ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
     ...(remote.ssh ? { ssh: remote.ssh } : {}),
-    // fetchJsonForBackend reads descriptor.headers for every REST call; the
-    // WebSocket header store is keyed by exact URL and cannot stand in for it.
-    headers: remote.headers,
     token: remote.token,
     wsUrl: remote.wsUrl,
     logs,
@@ -82,7 +77,6 @@ export class FirstRunSetupResetError extends Error {
 // and local backend resolution happen before the setup gate, and a remote Apply
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
-  assertCurrentAttempt,
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
@@ -93,13 +87,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  const step = async <T>(run: () => T | Promise<T>) => {
-    const result = await runBackendStartStep(signal, run)
-    assertCurrentAttempt()
-
-    return result
-  }
-
+  const step = <T>(run: () => T | Promise<T>) => runBackendStartStep(signal, run)
   const savedRemote = await step(resolveRemote)
 
   if (savedRemote) {

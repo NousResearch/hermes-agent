@@ -15,9 +15,7 @@
  * background luminance, so surface-bound UI matches what's on screen.
  */
 
-import { ensureContrast, mix } from '@hermes/shared/color'
-
-import { luminance, normalizeHex, readableInk } from './color'
+import { ensureContrast, luminance, mix, normalizeHex, readableOn } from './color'
 import type { DesktopTerminalPalette, DesktopTheme, DesktopThemeColors } from './types'
 
 // Section headers / sidebar labels render in --theme-primary directly on the
@@ -329,7 +327,7 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
     popover: elevated,
     popoverForeground: foreground,
     primary: accent,
-    primaryForeground: readableInk(accent),
+    primaryForeground: readableOn(accent),
     secondary,
     secondaryForeground: foreground,
     accent: accentSoft,
@@ -338,10 +336,10 @@ export function convertVscodeColorTheme(raw: VscodeColorTheme, opts: ConvertOpti
     input,
     ring: accent,
     midground: accent,
-    midgroundForeground: readableInk(accent),
+    midgroundForeground: readableOn(accent),
     composerRing: accent,
     destructive,
-    destructiveForeground: readableInk(destructive),
+    destructiveForeground: readableOn(destructive),
     sidebarBackground: sidebar,
     sidebarBorder: border,
     userBubble: mix(card, accent, dark ? 0.18 : 0.12),

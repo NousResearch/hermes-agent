@@ -33,11 +33,7 @@ interface MicRecorderHandle {
   cancel: () => void
 }
 
-/** Recorder + live-start mic failures → the same friendly copy: a DOMException
- *  name is mapped, an unrecognized DOMException falls back to the generic start
- *  copy, and anything else keeps its own message (non-mic failures must not be
- *  mislabeled as microphone problems). */
-export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
+function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   const name = error instanceof DOMException ? error.name : ''
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {
@@ -54,10 +50,6 @@ export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
 
   if (name === 'OverconstrainedError') {
     return new Error(copy.microphoneConstraintsUnsupported)
-  }
-
-  if (error instanceof DOMException) {
-    return new Error(copy.microphoneStartFailed)
   }
 
   if (error instanceof Error) {

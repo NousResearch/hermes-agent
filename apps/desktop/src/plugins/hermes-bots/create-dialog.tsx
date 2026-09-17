@@ -48,7 +48,6 @@ import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
-import { setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -57,7 +56,7 @@ import {
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
-import { botProfileIdentity, displayName } from './labels'
+import { displayName, slugify } from './labels'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
@@ -141,7 +140,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
   const [noSkills, setNoSkills] = useState(false)
-  const [mirrorCredentials, setMirrorCredentials] = useState(true)
+  const [shareAuth, setShareAuth] = useState(true)
   const [advTab, setAdvTab] = useState('general')
   // Where the profile is created: '' = the active gateway (unchanged default),
   // else a registry connection id — the profiles.create lands on THAT
@@ -210,7 +209,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
-  const { slug, title: botTitle } = botProfileIdentity(name, title)
+  const slug = slugify(name)
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -274,7 +273,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setProvider('')
     setSoul('')
     setNoSkills(false)
-    setMirrorCredentials(true)
+    setShareAuth(true)
     setAdvTab('general')
     setCreatedForCaps(null)
     setCaps(null)
@@ -379,7 +378,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return null
       }
 
-      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
+      const descriptionText = [title, description].filter(Boolean).join(' — ')
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -389,13 +388,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // the remote box doesn't have.
         clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
-        // Copies the main profile's API keys (.env + auth.json) into the new profile. OAuth
-        // logins are never copied (single-use refresh tokens fork) and never inherited: a
-        // profile only reads its own auth.json, so sign the bot in itself for those.
-        mirror_credentials: mirrorCredentials,
+        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
+        // profile, so refreshes can't invalidate each other. Older gateways
+        // ignore the param and copy — still functional, just forked.
+        share_auth: shareAuth,
         soul: composeSoul({
           name: slug,
-          title: botTitle,
+          title,
           description,
           roster,
           customSoul: soul
@@ -450,7 +449,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
+          title: title.trim(),
           created: Date.now()
         }
 
@@ -478,7 +477,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color: color ?? undefined,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
+          title: title.trim(),
           created: Date.now()
         })
       }
@@ -516,11 +515,11 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         message: remoteTarget
           ? `Bot "${displayName({
               name: slug,
-              title: botTitle
+              title
             })}" created on ${targetLabel}`
           : `Bot "${displayName({
               name: slug,
-              title: botTitle
+              title
             })}" created`
       })
       const wasRemote = remoteTarget
@@ -787,16 +786,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     />
                   )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-                    <Checkbox
-                      checked={mirrorCredentials}
-                      onCheckedChange={value => setMirrorCredentials(Boolean(value))}
-                    />
-                    Copy API keys from the main profile
+                    <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
+                    Share keys & accounts with the main profile
                   </label>
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
-                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous)
-                    are not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with
-                    no credentials.
+                    Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never
+                    invalidate each other. Uncheck for an isolated snapshot copy.
                   </div>
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
@@ -1036,7 +1031,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const groups = knownGroups(meta)
 
   const setMembership = (group: string, enabled: boolean) => {
-    void setGroupMembership(bot, group, enabled)
+    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
     host.notify({
       kind: 'info',
       message: enabled
@@ -1102,12 +1097,10 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <Button
             className="justify-self-start"
             onClick={() =>
-              void (async () => {
-                // Sequential: each toggle patches groups[] from the current meta.
-                for (const group of current) {
-                  await setGroupMembership(bot, group, false)
-                }
-              })()
+              void saveBotMeta(bot, {
+                groups: [],
+                group: null
+              })
             }
             size="sm"
             variant="ghost"

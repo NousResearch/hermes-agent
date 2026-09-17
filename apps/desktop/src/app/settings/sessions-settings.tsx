@@ -239,9 +239,7 @@ function AutoArchiveSetting() {
       setConfig(updated)
 
       try {
-        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
-        // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
+        await saveHermesConfig(updated)
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }

@@ -21,7 +21,6 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
 import { useI18n } from '@/i18n'
-import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
 
@@ -192,7 +191,7 @@ export function PreviewBrowserBar({
             event.currentTarget.select()
           }}
           onKeyDown={event => {
-            if (isSubmitEnter(event)) {
+            if (event.key === 'Enter') {
               commit(event.currentTarget.value)
               event.currentTarget.blur()
             }

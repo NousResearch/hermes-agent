@@ -132,28 +132,25 @@ function hideOwnedBotSessions() {
         }
 
         const persisted = room?.sessionOwners?.[key]
-        // Sessions are keyed per thread (`thread:<id>::<memberKey>`); the
-        // owner lookup is a MEMBER question, so derive from the member half.
-        const memberKey = groupSessionMemberKey(key)
-        const derived = (room?.members || []).find((member: GroupMember) => groupMemberKey(member) === memberKey)
+        const derived = (room?.members || []).find((member: GroupMember) => groupMemberKey(member) === key)
 
         // Bare keys are legacy local rooms. A source-qualified key without its
         // immutable owner is unsafe: never let it fall through ambient routing.
         const owner =
           persisted ||
           derived ||
-          (!memberKey.includes('::')
+          (!key.includes('::')
             ? {
-                name: memberKey
+                name: key
               }
             : null)
 
-        if (memberKey.includes('::')) {
+        if (key.includes('::')) {
           const route = owner?.route
           const sourceMarked = owner?.sourceScoped || owner?.remoteSource
           const routeKey = route?.connectionId && route?.profile ? `${route.connectionId}::${route.profile}` : ''
 
-          if (!sourceMarked || !route?.targetProfile || routeKey !== memberKey) {
+          if (!sourceMarked || !route?.targetProfile || routeKey !== key) {
             return null
           }
         }

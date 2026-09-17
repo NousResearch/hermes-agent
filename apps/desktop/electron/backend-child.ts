@@ -52,8 +52,8 @@ export interface KillableChild extends BackendProcessRoot {
 export interface WaitableChild extends KillableChild {
   exitCode: number | null
   signalCode: string | null
-  once: (event: 'exit' | 'error', listener: () => void) => unknown
-  removeListener: (event: 'exit' | 'error', listener: () => void) => unknown
+  once: (event: 'exit', listener: () => void) => unknown
+  removeListener: (event: 'exit', listener: () => void) => unknown
 }
 
 /** Graceful exit, SIGKILL escalation, then a bounded wait for the escalation. */
@@ -106,16 +106,10 @@ export async function waitForBackendExit(
       child.kill('SIGKILL')
     }
   } catch {
-    // A failed signal may mean the child is gone, but only exit proves it.
+    return
   }
 
   await wait(1000)
-
-  if (!exited()) {
-    throw new Error(
-      `Backend child${child.pid ? ` (PID ${child.pid})` : ''} did not exit after SIGKILL; retaining ownership.`
-    )
-  }
 }
 
 /**

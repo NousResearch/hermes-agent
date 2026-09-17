@@ -33,7 +33,6 @@ import {
   formatModifierToken,
   host,
   Input,
-  isSubmitEnter,
   Loader,
   SearchField,
   Select,
@@ -684,7 +683,7 @@ function NewTaskDialog({
             autoFocus
             onChange={event => setTitle(event.target.value)}
             onKeyDown={event => {
-              if (isSubmitEnter(event)) {
+              if (event.key === 'Enter') {
                 event.preventDefault()
                 void submit()
               }

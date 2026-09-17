@@ -1,5 +1,4 @@
-import { parseColor, THEME_PRESET_PALETTES, type ThemePresetPalette } from "@hermes/shared";
-import type { DashboardTheme, ThemePalette, ThemeTypography, ThemeLayout } from "./types";
+import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 
 /**
  * Built-in dashboard themes.
@@ -10,10 +9,6 @@ import type { DashboardTheme, ThemePalette, ThemeTypography, ThemeLayout } from 
  *
  * Theme names must stay in sync with the backend's
  * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
- *
- * Presets that also ship on the desktop (midnight, ember, mono, cyberpunk)
- * take their colours from `@hermes/shared` `THEME_PRESET_PALETTES` so both
- * surfaces render one palette; only typography/layout/overrides live here.
  */
 
 // ---------------------------------------------------------------------------
@@ -38,28 +33,6 @@ const DEFAULT_LAYOUT: ThemeLayout = {
   radius: "0.5rem",
   density: "comfortable",
 };
-
-/**
- * Project a shared (desktop-shaped) preset palette onto the dashboard's
- * 3-slot model. The dashboard's `midground` is its text + primary-fill
- * colour, which is the desktop's `primary`; its `warmGlow` is the brand
- * accent stroke, which is the desktop's `midground` (falling back to `ring`).
- * `foreground` stays the dashboard's invisible white overlay. Dark palettes
- * are the dashboard's home turf, so a preset shipping `darkColors` is read
- * from that side.
- */
-export function webPresetFromShared(
-  preset: ThemePresetPalette,
-): Omit<ThemePalette, "noiseOpacity"> {
-  const colors = preset.darkColors ?? preset.colors;
-  const [r, g, b] = parseColor(colors.midground ?? colors.ring) ?? [255, 255, 255];
-  return {
-    background: { hex: colors.background, alpha: 1 },
-    midground: { hex: colors.primary, alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: `rgba(${r}, ${g}, ${b}, 0.3)`,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Themes
@@ -86,7 +59,10 @@ export const midnightTheme: DashboardTheme = {
   label: "Midnight",
   description: "Deep blue-violet with cool accents",
   palette: {
-    ...webPresetFromShared(THEME_PRESET_PALETTES.midnight),
+    background: { hex: "#0a0a1f", alpha: 1 },
+    midground: { hex: "#d4c8ff", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(167, 139, 250, 0.32)",
     noiseOpacity: 0.8,
   },
   typography: {
@@ -108,7 +84,10 @@ export const emberTheme: DashboardTheme = {
   label: "Ember",
   description: "Warm crimson and bronze — forge vibes",
   palette: {
-    ...webPresetFromShared(THEME_PRESET_PALETTES.ember),
+    background: { hex: "#1a0a06", alpha: 1 },
+    midground: { hex: "#ffd8b0", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(249, 115, 22, 0.38)",
     noiseOpacity: 1,
   },
   typography: {
@@ -133,7 +112,10 @@ export const monoTheme: DashboardTheme = {
   label: "Mono",
   description: "Clean grayscale — minimal and focused",
   palette: {
-    ...webPresetFromShared(THEME_PRESET_PALETTES.mono),
+    background: { hex: "#0e0e0e", alpha: 1 },
+    midground: { hex: "#eaeaea", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(255, 255, 255, 0.1)",
     noiseOpacity: 0.6,
   },
   typography: {
@@ -154,7 +136,10 @@ export const cyberpunkTheme: DashboardTheme = {
   label: "Cyberpunk",
   description: "Neon green on black — matrix terminal",
   palette: {
-    ...webPresetFromShared(THEME_PRESET_PALETTES.cyberpunk),
+    background: { hex: "#040608", alpha: 1 },
+    midground: { hex: "#9bffcf", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(0, 255, 136, 0.22)",
     noiseOpacity: 1.2,
   },
   typography: {

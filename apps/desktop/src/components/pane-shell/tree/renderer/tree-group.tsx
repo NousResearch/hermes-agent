@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -48,7 +48,6 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
-  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -239,7 +238,8 @@ export function TreeGroup({
   // The scrolling tab list inside the header (the strip also holds the
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
-  const measuredBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
+  const tabsBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
+  const tabsInTitlebar = topEdge && !tabsBelowControls
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
   // STATE, not a ref: the menu items (incl. Close's visibility) are JSX
@@ -258,9 +258,6 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
-  // A count that moves only when a main zone appears or goes — NOT the tree
-  // itself (see the note above `targetPane` on why zones never subscribe to it).
-  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -291,10 +288,6 @@ export function TreeGroup({
 
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
-  const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls)
-  const tabsInTitlebar = topEdge && !tabsBelowControls
-  const pageHeader = paneChrome(active).headerContent
 
   // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
   // Browser tab makes another Browser, even stacked into the chat strip), then
@@ -349,8 +342,7 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown,
-    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
+    shown
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -362,10 +354,8 @@ export function TreeGroup({
   // Every minimized row group becomes a vertical restore rail. A horizontal
   // multi-tab strip cannot fit in the collapsed 28px track.
   const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty
-
   // A minimized group IS its header, so it shows one regardless.
-  const headerVisible =
-    !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible || Boolean(pageHeader))
+  const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
 
   // Keep the activated tab — and, on the last one, the trailing "+" — inside
   // the strip's scroll window. Opening a tab past the right edge otherwise
@@ -522,17 +512,7 @@ export function TreeGroup({
           {topEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
           )}
-          {pageHeader && headerVisible ? (
-            <div
-              className={cn(
-                'flex min-w-0 flex-1 items-stretch overflow-hidden',
-                tabsBelowControls && 'absolute inset-x-0 bottom-0 h-7'
-              )}
-              data-panel-page-header=""
-            >
-              <PaneTab active>{pageHeader()}</PaneTab>
-            </div>
-          ) : headerVisible ? (
+          {headerVisible ? (
             <ZoneMenu {...zoneMenu}>
               <PaneTabStrip
                 className={cn('flex-1', tabsBelowControls && 'absolute inset-x-0 bottom-0')}
@@ -711,23 +691,11 @@ export function TreeGroup({
               </PaneTabStrip>
             </ZoneMenu>
           ) : null}
-          {/* Tabs sharing the titlebar band are all `no-drag` and the strip's
-              list scrolls, so a crowded strip can cover every draggable pixel
-              (#112964). Keep one fixed handle OUTSIDE the list. When the tabs
-              drop below the controls the band above them is free — the handle
-              stays flexible and the whole row moves the window. */}
-          {topEdge && (
+          {topEdge && (!headerVisible || tabsBelowControls) && (
             <div
-              aria-hidden="true"
-              className={cn(
-                'self-start [-webkit-app-region:drag]',
-                headerVisible && tabsInTitlebar ? 'shrink-0' : 'min-w-0 flex-1'
-              )}
+              className="min-w-0 flex-1 self-start [-webkit-app-region:drag]"
               data-window-drag-handle=""
-              style={{
-                height: TITLEBAR_HEIGHT,
-                width: headerVisible && tabsInTitlebar ? TITLEBAR_DRAG_HANDLE_WIDTH : undefined
-              }}
+              style={{ height: TITLEBAR_HEIGHT }}
             />
           )}
           {topEdge && (

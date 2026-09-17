@@ -13,7 +13,6 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
-import { isSubmitEnter } from '@/lib/ime'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
@@ -352,7 +351,7 @@ export function PetSettings() {
             autoFocus
             onChange={event => setRenameValue(event.target.value)}
             onKeyDown={event => {
-              if (isSubmitEnter(event)) {
+              if (event.key === 'Enter') {
                 event.preventDefault()
                 saveRename()
               }

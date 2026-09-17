@@ -1,4 +1,3 @@
-import type { GatewayEvent } from '@hermes/shared'
 // A turn that ends WITHOUT its message.complete (turn crash, reconnect gap,
 // steer race) used to leave its streaming bubble pending:true forever. The
 // next user message then landed after it, stranding a live thinking indicator
@@ -7,6 +6,8 @@ import type { GatewayEvent } from '@hermes/shared'
 // those paths still emit, so it must finalize the bubble.
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
@@ -29,7 +30,7 @@ const flushDeltas = async () => {
   })
 }
 
-const emit = (event: GatewayEvent) => act(() => stream.handleEvent(event))
+const emit = (event: RpcEvent) => act(() => stream.handleEvent(event))
 
 describe('turn end without message.complete (session.info running=false)', () => {
   afterEach(() => {

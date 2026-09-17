@@ -37,7 +37,6 @@ vi.mock('../routes', () => ({
 vi.mock('./latest-actions', () => ({ latestChatActions: () => ({}), latestSidebarActions: () => ({}) }))
 vi.mock('./panes', () => ({ setStatusbarItemGroup: vi.fn(), useStatusbarContributions: () => [] }))
 vi.mock('../shell/model-menu-panel', () => ({ ModelMenuPanel: () => null }))
-vi.mock('../shell/reasoning-menu-panel', () => ({ ReasoningMenuPanel: () => null }))
 
 afterEach(() => {
   cleanup()

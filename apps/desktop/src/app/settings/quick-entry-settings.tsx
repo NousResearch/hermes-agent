@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { isSubmitEnter } from '@/lib/ime'
 import {
   $quickEntry,
   canUseQuickEntry,
@@ -74,7 +73,7 @@ export function QuickEntrySettings() {
             onBlur={commit}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={event => {
-              if (isSubmitEnter(event)) {
+              if (event.key === 'Enter') {
                 event.preventDefault()
                 commit()
               }

@@ -23,18 +23,11 @@ function DialogClose({ ...props }: React.ComponentProps<typeof DialogPrimitive.C
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
 }
 
-function DialogOverlay({
-  className,
-  blur = true,
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay> & {
-  blur?: boolean
-}) {
+function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
-        blur && 'backdrop-blur-[0.125rem]',
+        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
         className
       )}
       data-slot="dialog-overlay"
@@ -75,15 +68,12 @@ function DialogContent({
   children,
   showCloseButton = true,
   fitContent = false,
-  blurBackdrop = true,
   banner,
   bannerTone = 'error',
   onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
-  // Keep the underlying task readable for context-sensitive prompts.
-  blurBackdrop?: boolean
   // Size the dialog to its content (capped at the viewport) instead of the
   // default fixed `max-w-lg`. For content that has no intrinsic width (grids,
   // full-width inputs) pair it with a `min-w-*` in `className`.
@@ -137,7 +127,7 @@ function DialogContent({
   if (banner) {
     return (
       <DialogPortal>
-        <DialogOverlay blur={blurBackdrop} />
+        <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
             // The same split as the plain variant. The shell must not clip,
@@ -188,7 +178,7 @@ function DialogContent({
 
   return (
     <DialogPortal>
-      <DialogOverlay blur={blurBackdrop} />
+      <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
           // The SHELL: position, size, and skin. It has no overflow of its own,

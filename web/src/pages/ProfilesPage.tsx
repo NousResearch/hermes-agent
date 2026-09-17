@@ -45,7 +45,6 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
-import { errorMessage } from "@/lib/api-error";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -301,7 +300,7 @@ export default function ProfilesPage() {
       modelInherit: p.modelInherit ?? "Inherit from clone / default",
       modelLoading: p.modelLoading ?? "Loading models…",
       modelNone:
-        p.modelNone ?? "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
+        p.modelNone ?? "No authenticated providers — set a key first",
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
@@ -400,7 +399,7 @@ export default function ProfilesPage() {
         setProfiles(res.profiles);
         setActiveInfo(active);
       })
-      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e)}`, "error"))
+      .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.status.error]);
 
@@ -464,7 +463,7 @@ export default function ProfilesPage() {
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     } finally {
       setCreating(false);
     }
@@ -489,7 +488,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     }
   };
 
@@ -508,7 +507,7 @@ export default function ProfilesPage() {
         prev ? { ...prev, active } : { active, current: active },
       );
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     } finally {
       setSettingActive(null);
     }
@@ -543,7 +542,7 @@ export default function ProfilesPage() {
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+          showToast(`${t.status.error}: ${e}`, "error");
         }
       }
     },
@@ -558,7 +557,7 @@ export default function ProfilesPage() {
       activeSoulRequest.current = null;
       setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     } finally {
       setSoulSaving(false);
     }
@@ -604,7 +603,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+        showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
       descSavingCount.current -= 1;
@@ -638,7 +637,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+        showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
       describingCount.current -= 1;
@@ -681,7 +680,7 @@ export default function ProfilesPage() {
       );
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     } finally {
       setModelSaving(false);
     }
@@ -708,7 +707,7 @@ export default function ProfilesPage() {
       const res = await api.getProfileSetupCommand(name);
       cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
       return;
     }
     if (await copyTextToClipboard(cmd)) {
@@ -726,7 +725,7 @@ export default function ProfilesPage() {
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {
-          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
+          showToast(`${t.status.error}: ${e}`, "error");
           throw e;
         }
       },

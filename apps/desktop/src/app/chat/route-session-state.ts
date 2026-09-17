@@ -1,13 +1,6 @@
 import { sessionMatchesStoredId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-interface ActiveTranscriptState {
-  activeRuntimeId: null | string
-  contextSwitching: boolean
-  messagesEmpty: boolean
-  transcriptStoredSessionId: null | string
-}
-
 /**
  * Whether the route points at a different conversation than the selected view.
  *
@@ -21,37 +14,17 @@ interface ActiveTranscriptState {
 export function isRouteSessionMismatch(
   routedSessionId: null | string,
   selectedSessionId: null | string,
-  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[],
-  activeTranscript?: ActiveTranscriptState
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
 ): boolean {
-  if (!routedSessionId) {
+  if (!routedSessionId || routedSessionId === selectedSessionId) {
     return false
   }
 
-  const matchesRoute = (storedSessionId: null | string) =>
-    storedSessionId === routedSessionId ||
-    Boolean(
-      storedSessionId &&
-      sessions.some(
-        session => sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, storedSessionId)
-      )
-    )
-
-  // The selected view already owns the routed conversation: a profile or
-  // connection switch must not blank it to the splash.
-  if (matchesRoute(selectedSessionId)) {
-    return false
-  }
-
-  // Only the transcript-retention fallback below must be denied while a
-  // context switch is in flight; the prior context must not be retained.
-  if (activeTranscript?.contextSwitching) {
+  if (!selectedSessionId) {
     return true
   }
 
-  return !(
-    activeTranscript?.activeRuntimeId &&
-    !activeTranscript.messagesEmpty &&
-    matchesRoute(activeTranscript.transcriptStoredSessionId)
+  return !sessions.some(
+    session => sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, selectedSessionId)
   )
 }

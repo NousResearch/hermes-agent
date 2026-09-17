@@ -318,23 +318,6 @@ const FORBIDDEN_REMOTE_HEADER_NAMES = new Set([
   'x-hermes-session-token'
 ])
 
-/**
- * Strip CR/LF from a header VALUE. Clipboard pastes of access-proxy service
- * tokens routinely carry a trailing newline, and a bare CR/LF inside a header
- * value is a request-splitting vector once it reaches setHeader/extraHeaders.
- * Header NAMES are already constrained by REMOTE_HEADER_NAME_RE above, which
- * admits no whitespace, so values are the only gap.
- *
- * Applied at BOTH ends because a safeStorage envelope stores ciphertext: this
- * call sanitizes plaintext on the way in, and decryptRemoteHeaders sanitizes
- * again on the way out so encrypted-at-rest values get the same treatment.
- */
-function sanitizeRemoteHeaderValue(value) {
-  return String(value || '')
-    .replace(/[\r\n]+/g, '')
-    .trim()
-}
-
 function normalizeRemoteHeaders(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return {}
@@ -351,7 +334,7 @@ function normalizeRemoteHeaders(raw) {
     }
 
     if (typeof secret === 'string') {
-      const value = sanitizeRemoteHeaderValue(secret)
+      const value = secret.trim()
 
       if (value) {
         out[headerName] = { encoding: 'plain', value }
@@ -1093,7 +1076,6 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,

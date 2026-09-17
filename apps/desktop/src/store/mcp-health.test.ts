@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => {
@@ -32,16 +31,13 @@ const mocks = vi.hoisted(() => {
     activeProfile: makeAtom('default'),
     gatewayState: makeAtom<'closed' | 'open'>('closed'),
     getHermesConfigRecord: vi.fn(),
-    notify: vi.fn(),
-    setMcpServerEnabled: vi.fn().mockResolvedValue({ ok: true }),
-    testMcpServer: vi.fn()
+    notify: vi.fn()
   }
 })
 
 vi.mock('@/hermes', () => ({
   getHermesConfigRecord: mocks.getHermesConfigRecord,
-  setMcpServerEnabled: mocks.setMcpServerEnabled,
-  testMcpServer: mocks.testMcpServer
+  testMcpServer: vi.fn()
 }))
 
 vi.mock('@/i18n', () => ({
@@ -49,8 +45,7 @@ vi.mock('@/i18n', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
-  notify: mocks.notify,
-  notifyError: vi.fn()
+  notify: mocks.notify
 }))
 
 vi.mock('@/store/profile', () => ({
@@ -62,7 +57,7 @@ vi.mock('@/store/session', () => ({
   $gatewayState: mocks.gatewayState
 }))
 
-const { shouldNotify, startMcpHealthChecker, stopMcpHealthChecker } = await import('./mcp-health')
+const { shouldNotifyOnTransition, startMcpHealthChecker, stopMcpHealthChecker } = await import('./mcp-health')
 
 type Status = 'error' | 'needs-auth' | 'ok'
 
@@ -74,23 +69,15 @@ afterEach(() => {
   mocks.activeProfile.set('default')
   mocks.getHermesConfigRecord.mockReset()
   mocks.notify.mockReset()
-  mocks.testMcpServer.mockReset()
-  mocks.setMcpServerEnabled.mockClear()
 })
 
-type McpHealthModule = Awaited<ReturnType<typeof importMcpHealth>>
-const importMcpHealth = () => import('./mcp-health')
-
-describe('shouldNotify', () => {
-  const DAY = 24 * 60 * 60 * 1000
-  const now = 1_000_000
-
-  // With an active snooze, a fresh session and unchanged bad state stay quiet;
-  // later status transitions still notify. Ok never nudges.
+describe('shouldNotifyOnTransition', () => {
+  // The full previous × next decision table: notify only on a TRANSITION into
+  // a bad state. Rechecks of an already-bad server stay quiet; ok never nudges.
   it.each<[previous: Status | null, next: Status, notify: boolean]>([
     [null, 'ok', false],
-    [null, 'needs-auth', false],
-    [null, 'error', false],
+    [null, 'needs-auth', true],
+    [null, 'error', true],
     ['ok', 'ok', false],
     ['ok', 'needs-auth', true],
     ['ok', 'error', true],
@@ -100,99 +87,9 @@ describe('shouldNotify', () => {
     ['error', 'needs-auth', true],
     ['needs-auth', 'ok', false],
     ['error', 'ok', false]
-  ])('snoozed: previous=%s next=%s → notify=%s', (previous, next, expected) => {
-    expect(shouldNotify(previous, next, now + DAY, now)).toBe(expected)
+  ])('previous=%s next=%s → notify=%s', (previous, next, expected) => {
+    expect(shouldNotifyOnTransition(previous, next)).toBe(expected)
   })
-
-  it('notifies a newly discovered bad server when no snooze has been persisted', () => {
-    expect(shouldNotify(null, 'needs-auth', 0, now)).toBe(true)
-    expect(shouldNotify(null, 'error', 0, now)).toBe(true)
-  })
-
-  it('re-nudges a server that stays broken once the daily snooze lapses, never for ok', () => {
-    expect(shouldNotify('needs-auth', 'needs-auth', now - 1, now)).toBe(true)
-    expect(shouldNotify('error', 'error', now, now)).toBe(true)
-    expect(shouldNotify('ok', 'ok', now - DAY, now)).toBe(false)
-    expect(shouldNotify('needs-auth', 'ok', 0, now)).toBe(false)
-  })
-})
-
-it('shows the toast with Sign in + Disable, then stays quiet for a day and re-nudges after it', async () => {
-  const servers = { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp', auth: 'oauth' } } }
-  mocks.getHermesConfigRecord.mockResolvedValue(servers)
-  mocks.testMcpServer.mockResolvedValue({ ok: false, error: 'OAuth: authorization required', tools: [] })
-  window.localStorage.clear()
-
-  let clock = 1_700_000_000_000
-  const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
-
-  try {
-    startMcpHealthChecker()
-    mocks.gatewayState.set('open')
-    await flush()
-    await flush()
-    expect(mocks.notify).toHaveBeenCalledTimes(1)
-    const toast = mocks.notify.mock.calls[0][0]
-    expect(toast.action.label).toBe('notifications.mcp.signIn')
-    expect(toast.secondaryAction.label).toBe('notifications.mcp.disable')
-
-    // Same day, still broken: a reconnect sweep must not re-pop.
-    clock += 60 * 60 * 1000
-    mocks.gatewayState.set('closed')
-    mocks.gatewayState.set('open')
-    await flush()
-    await flush()
-    expect(mocks.notify).toHaveBeenCalledTimes(1)
-
-    // Next day, still broken: one more nudge.
-    clock += 24 * 60 * 60 * 1000
-    mocks.gatewayState.set('closed')
-    mocks.gatewayState.set('open')
-    await flush()
-    await flush()
-    expect(mocks.notify).toHaveBeenCalledTimes(2)
-
-    // Disable from the toast flips enabled:false on the backend.
-    toast.secondaryAction.onClick()
-    await flush()
-    expect(mocks.setMcpServerEnabled).toHaveBeenCalledWith('linear', false)
-  } finally {
-    nowSpy.mockRestore()
-  }
-})
-
-it('honors a persisted snooze in a fresh module session, then re-notifies after it expires', async () => {
-  const servers = { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp', auth: 'oauth' } } }
-  const key = 'hermes:mcp-health-snooze-until:default::linear'
-  let clock = 1_700_000_000_000
-  const until = clock + 24 * 60 * 60 * 1000
-  const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
-  let freshSession: McpHealthModule | undefined
-
-  try {
-    window.localStorage.setItem(key, String(until))
-    mocks.getHermesConfigRecord.mockResolvedValue(servers)
-    mocks.testMcpServer.mockResolvedValue({ ok: false, error: 'OAuth: authorization required', tools: [] })
-
-    // A fresh import drops in-memory transition state, as a renderer restart does.
-    vi.resetModules()
-    freshSession = await importMcpHealth()
-    freshSession.startMcpHealthChecker()
-    mocks.gatewayState.set('open')
-    await flush()
-    await flush()
-    expect(mocks.notify).not.toHaveBeenCalled()
-
-    clock = until + 1
-    mocks.gatewayState.set('closed')
-    mocks.gatewayState.set('open')
-    await flush()
-    await flush()
-    expect(mocks.notify).toHaveBeenCalledTimes(1)
-  } finally {
-    freshSession?.stopMcpHealthChecker()
-    nowSpy.mockRestore()
-  }
 })
 
 it('coalesces reconnects during a sweep into one fresh follow-up sweep', async () => {

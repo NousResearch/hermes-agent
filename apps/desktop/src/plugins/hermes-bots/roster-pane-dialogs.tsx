@@ -8,7 +8,7 @@ import { disbandGroupChat, openGroupChat } from './group-chat-view'
 import type { useBots } from './i18n'
 import { deleteBot } from './profile-ops'
 import type { GroupMember, RosterRow } from './types'
-import { createBotSection, moveGroupChatsToSection, renameBotSection, type SectionDialogState } from './user-sections'
+import { createBotSection, renameBotSection } from './user-sections'
 import { SectionNameDialog } from './user-sections-ui'
 
 interface renderRosterDialogsProps {
@@ -26,8 +26,10 @@ interface renderRosterDialogsProps {
   setDeletingGroup: (value: { members: GroupMember[]; name: string } | null) => void
   grouping: RosterRow | null
   setGrouping: (value: RosterRow | null) => void
-  sectionDialog: SectionDialogState
-  setSectionDialog: (value: SectionDialogState) => void
+  sectionDialog: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  setSectionDialog: (
+    value: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  ) => void
   roster: RosterRow[]
   activeSourceRoster: RosterRow[]
   refetch: ReturnType<typeof useRoster>['refetch']
@@ -83,11 +85,7 @@ export function renderRosterDialogs({
           if (sectionDialog?.mode === 'rename') {
             renameBotSection(sectionDialog.id, name)
           } else {
-            const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
-
-            if (section && sectionDialog?.group) {
-              moveGroupChatsToSection([sectionDialog.group], section.id)
-            }
+            createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
           }
         }}
         open={Boolean(sectionDialog)}

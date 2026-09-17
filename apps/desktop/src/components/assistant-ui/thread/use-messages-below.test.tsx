@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $threadMessagesBelowBySession, resetThreadScroll } from '@/store/thread-scroll'
+import { $threadMessagesBelow, resetThreadScroll } from '@/store/thread-scroll'
 
 import { countMessagesBelow, useMessagesBelow } from './use-messages-below'
 
@@ -35,7 +35,7 @@ function transcript() {
 
 afterEach(() => {
   cleanup()
-  resetThreadScroll('runtime-a')
+  resetThreadScroll()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -106,36 +106,30 @@ describe('messages below the viewport', () => {
       isAtBottom: false,
       paneVisible: true,
       rows: null,
-      sessionKey: 'stored-a',
-      sessionId: 'runtime-a'
+      sessionKey: 'a'
     }
 
     const { rerender } = renderHook(props => useMessagesBelow(props), { initialProps: options })
     flush()
-    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
-
-    // Another visible pane reaching bottom must not erase this reader's count.
-    const sibling = renderHook(() => useMessagesBelow({ ...options, sessionId: 'runtime-b', isAtBottom: true }))
-    expect($threadMessagesBelowBySession.get()['runtime-a']).toBe(1)
-    sibling.unmount()
+    expect($threadMessagesBelow.get()).toBe(1)
 
     assistantRect.mockReturnValue(rect(200, 500))
     viewport.dispatchEvent(new Event('scroll'))
     flush()
-    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(0)
+    expect($threadMessagesBelow.get()).toBe(0)
 
     assistantRect.mockReturnValue(rect(200, 900))
     resize?.([], {} as ResizeObserver)
     flush()
-    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
+    expect($threadMessagesBelow.get()).toBe(1)
 
     rerender({ ...options, paneVisible: false })
     assistantRect.mockReturnValue(rect(200, 500))
     viewport.dispatchEvent(new Event('scroll'))
     flush()
-    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
+    expect($threadMessagesBelow.get()).toBe(1)
 
     rerender({ ...options, isAtBottom: true })
-    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(0)
+    expect($threadMessagesBelow.get()).toBe(0)
   })
 })

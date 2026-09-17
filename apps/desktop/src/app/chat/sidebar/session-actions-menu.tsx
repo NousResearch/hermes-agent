@@ -34,7 +34,6 @@ import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
@@ -800,7 +799,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (isSubmitEnter(event)) {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

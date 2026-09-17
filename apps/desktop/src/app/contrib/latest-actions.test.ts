@@ -12,6 +12,7 @@ function makeChatActions(): ChatActions {
     onAttachDroppedItems: vi.fn(),
     onAttachImageBlob: vi.fn(),
     onAttachPastedText: vi.fn(),
+    onAttachPrCommentUrl: vi.fn(),
     onBranchInNewChat: vi.fn(),
     onCancel: vi.fn(),
     onDeleteSelectedSession: vi.fn(),

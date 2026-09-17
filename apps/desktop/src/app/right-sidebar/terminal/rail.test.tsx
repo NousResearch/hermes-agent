@@ -19,21 +19,21 @@ describe('TerminalRail', () => {
     $activeTerminalId.set(null)
   })
 
-  it('keeps the terminal hotkey in a portaled bubble facing into the window', async () => {
+  it('keeps a hotkey label in inline flow inside the portaled tooltip decoration', async () => {
     const view = render(<TerminalRail />)
 
     fireEvent.pointerMove(screen.getByRole('tab', { name: '1. PowerShell' }), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = view.baseElement.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
-    const label = content?.querySelector('[data-slot="tooltip-label"]')
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const decoration = content?.firstElementChild
 
     expect(content).not.toBeNull()
     expect(view.container.contains(content)).toBe(false)
-    expect(content?.classList.contains('tooltip-bubble')).toBe(true)
-    expect(content?.getAttribute('data-side')).toBe('left')
-    expect(label?.textContent).toContain('PowerShell')
-    expect(content?.querySelector('[data-slot="tooltip-arrow"]')).not.toBeNull()
+    // No flex box under the decoration: its per-line background only wraps
+    // inline flow, so a flex label would hang its overflow dark-on-dark.
+    expect(decoration?.querySelector('.flex, .inline-flex')).toBeNull()
+    expect(decoration?.textContent).toContain('PowerShell')
   })
 
   it('⌘-click closes the tab; a plain click selects it', () => {

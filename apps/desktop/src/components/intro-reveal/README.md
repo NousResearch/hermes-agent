@@ -10,8 +10,6 @@ Eligibility is `guestOnboardingEnabled && !firstRunSkipped && !hasSeenIntroRevea
 Electron sets the flag from `HERMES_GUEST_ONBOARDING=1` or `--guest-onboarding`.
 The gate queues the guided chat on completion; the chat gate acknowledges the
 free-tier notice as the cinematic starts. With the flag off, neither gate starts.
-`HERMES_SKIP_INTRO=1` turns the film off but keeps the guided chat: the gate
-records the film as watched and queues the guide directly.
 
 | Piece | Path |
 | --- | --- |

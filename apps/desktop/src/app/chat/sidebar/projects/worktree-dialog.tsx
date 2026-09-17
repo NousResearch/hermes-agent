@@ -16,7 +16,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { isSubmitEnter } from '@/lib/ime'
 import { gitRef } from '@/lib/sanitize'
 import { notifyError } from '@/store/notifications'
 import {
@@ -311,7 +310,7 @@ export function WorktreeDialog() {
               autoFocus
               disabled={pending}
               onKeyDown={event => {
-                if (isSubmitEnter(event)) {
+                if (event.key === 'Enter') {
                   event.preventDefault()
                   void submit()
                 } else if (event.key === 'Escape') {

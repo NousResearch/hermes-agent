@@ -86,13 +86,11 @@ export function applyTelegramOnboarding(
   allowedUserIds: string[],
   profile?: null | string
 ): Promise<TelegramOnboardingApplyResponse> {
-  const scope = profileScoped(profile)
-
   return hermesApi<TelegramOnboardingApplyResponse>({
-    ...scope,
+    ...profileScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
     method: 'POST',
-    body: { allowed_user_ids: allowedUserIds, profile: scope.profile }
+    body: { allowed_user_ids: allowedUserIds, ...profileScoped(profile) }
   })
 }
 
@@ -123,26 +121,22 @@ export function approvePairing(
   requestId: string,
   profile?: null | string
 ): Promise<{ ok: boolean; user: PairingUser }> {
-  const scope = profileScoped(profile)
-
   return hermesApi<{ ok: boolean; user: PairingUser }>({
-    ...scope,
+    ...profileScoped(profile),
     path: '/api/pairing/approve',
     method: 'POST',
     // These endpoints read the profile off the body, not the query string —
-    // the request scope alone would approve into the wrong profile's store.
-    body: { platform, request_id: requestId, profile: scope.profile }
+    // `profileScoped()` alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, ...profileScoped(profile) }
   })
 }
 
 export function revokePairing(platform: string, userId: string, profile?: null | string): Promise<{ ok: boolean }> {
-  const scope = profileScoped(profile)
-
   return hermesApi<{ ok: boolean }>({
-    ...scope,
+    ...profileScoped(profile),
     path: '/api/pairing/revoke',
     method: 'POST',
-    body: { platform, user_id: userId, profile: scope.profile }
+    body: { platform, user_id: userId, ...profileScoped(profile) }
   })
 }
 

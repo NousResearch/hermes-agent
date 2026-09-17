@@ -6,16 +6,13 @@ import type { useBots } from './i18n'
 import type { RosterGroupRow } from './roster-pane-derivation'
 import { GatewayKindGlyph, GatewaySectionHeading, RosterSectionHeader } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
-import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
-import type { $botSections, SectionDialogState } from './user-sections'
+import type { BotMeta, GroupMember, RosterRow } from './types'
+import type { $botSections } from './user-sections'
 import {
   deleteBotSection,
-  GROUP_DRAG_PREFIX,
-  groupDragKey,
   groupRowsBySection,
   moveBotSection,
   moveBotsToSection,
-  moveGroupChatsToSection,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 import { SectionDropZone, UserSectionHeader } from './user-sections-ui'
@@ -25,11 +22,12 @@ interface RosterSectionRenderersProps {
   userSections: ReturnType<typeof $botSections.get>
   roster: RosterRow[]
   allMeta: Record<string, BotMeta>
-  groupRooms: Record<string, GroupChat>
   dragging: string | null
   rosterSectionCollapsed: (id: string) => boolean
   toggleRosterSection: (id: string) => void
-  setSectionDialog: (value: SectionDialogState) => void
+  setSectionDialog: (
+    value: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  ) => void
   renderBotRow: (bot: RosterRow, keyPrefix?: string) => ReactNode
   renderGroupRow: (row: { members: GroupMember[]; name: string }) => ReactNode
   sortedGroupRows: RosterGroupRow[]
@@ -40,7 +38,6 @@ export function rosterSectionRenderers({
   userSections,
   roster,
   allMeta,
-  groupRooms,
   dragging,
   rosterSectionCollapsed,
   toggleRosterSection,
@@ -79,7 +76,7 @@ export function rosterSectionRenderers({
     }
 
     const nested = Boolean(keyPrefix)
-    const blocks = groupRowsBySection(rows, userSections, allMeta, groupRooms)
+    const blocks = groupRowsBySection(rows, userSections, allMeta)
 
     return (
       blocks
@@ -98,24 +95,15 @@ export function rosterSectionRenderers({
           return (
             <SectionDropZone
               isSource={
-                Boolean(dragging) &&
-                block.rows.some(row =>
-                  row.kind === 'group' ? groupDragKey(row.name) === dragging : botRosterKey(row.bot) === dragging
-                )
+                Boolean(dragging) && block.rows.some(row => row.kind !== 'group' && botRosterKey(row.bot) === dragging)
               }
               key={key}
               nested={nested}
               onDropBot={rosterKey => {
-                // `block.id` is null for Unassigned, which is exactly the value
-                // both movers want for "clear the assignment".
-                if (rosterKey.startsWith(GROUP_DRAG_PREFIX)) {
-                  moveGroupChatsToSection([rosterKey.slice(GROUP_DRAG_PREFIX.length)], block.id)
-
-                  return
-                }
-
                 const bot = roster.find(row => botRosterKey(row) === rosterKey)
 
+                // `block.id` is null for Unassigned, which is exactly the value
+                // moveBotsToSection wants for "clear the assignment".
                 if (bot) {
                   void moveBotsToSection([bot], block.id)
                 }
@@ -185,9 +173,7 @@ export function rosterSectionRenderers({
           onToggle={() => toggleRosterSection(sectionId)}
           tip={`${sortedGroupRows.length} global group chat${sortedGroupRows.length === 1 ? '' : 's'}`}
         />
-        {collapsed ? null : (
-          <div className="grid min-w-0 gap-0.5">{renderUserSections(sortedGroupRows, 'groups:')}</div>
-        )}
+        {collapsed ? null : <div className="grid min-w-0 gap-0.5">{sortedGroupRows.map(renderGroupRow)}</div>}
       </div>
     )
   }

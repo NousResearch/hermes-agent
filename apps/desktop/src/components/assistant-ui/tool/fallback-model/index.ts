@@ -1,14 +1,9 @@
-import { stripAnsi } from '@hermes/shared/ansi'
-
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
-import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
-import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
+import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
-
-import { skillActivityTitle } from '../skill-activity'
 
 import {
   browserExecStepLabel,
@@ -41,7 +36,7 @@ export * from './types'
 // The transcript's render budget prices a turn by the same classification, so
 // it lives in `@/lib/tool-render-class` where both sides can reach it without
 // pulling this module's formatting/i18n weight into the cost path.
-export { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool }
+export { isCardTool, isFileEditTool, isSilentTool }
 
 export interface DiffLineStats {
   added: number
@@ -662,12 +657,11 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   const extractedError = extractToolErrorMessage(part.result)
 
   if (part.isError) {
-    return (
-      extractedError ||
-      envelopeErrorText(part.toolResultMetadata) ||
-      (typeof part.result === 'string' && part.result.trim()) ||
-      'Tool returned an error.'
-    )
+    return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
+  }
+
+  if (typeof result.error === 'string' && result.error.trim()) {
+    return result.error.trim()
   }
 
   if (extractedError) {
@@ -678,7 +672,7 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || 'Tool returned success=false.'
   }
 
-  if (typeof result.status === 'string' && /^(error|failed|failure|fatal|exception)$/i.test(result.status.trim())) {
+  if (typeof result.status === 'string' && /\b(error|failed|failure)\b/i.test(result.status)) {
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
@@ -701,12 +695,8 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
 }
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
-  if (part.result === undefined && part.completedAt === undefined) {
+  if (part.result === undefined) {
     return 'running'
-  }
-
-  if (part.result === undefined && !part.isError) {
-    return 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -716,21 +706,8 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'success'
   }
 
-  const error = toolErrorText(part, resultRecord)
-
-  if (!error) {
+  if (!toolErrorText(part, resultRecord)) {
     return 'success'
-  }
-
-  // A guessed read path missing is routine exploration, not a broken tool.
-  // Keep the explanation available without a destructive alarm. Writes and
-  // permission failures deliberately do not take this path.
-  if (part.toolName === 'read_file' && /^File not found:/i.test(error)) {
-    return 'notice'
-  }
-
-  if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
-    return 'notice'
   }
 
   // A rejected memory write is a budget negotiation, not a failure: the store
@@ -789,6 +766,10 @@ function toolImageUrl(args: Record<string, unknown>, result: Record<string, unkn
   const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
 
   return isDataImage || isRemoteImage ? candidate : ''
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
 }
 
 export function stripInlineDiffChrome(value: string): string {
@@ -1321,12 +1302,6 @@ function dynamicTitle(
   result: Record<string, unknown>,
   fallback: ToolTitleParts
 ): ToolTitleParts {
-  const skillTitle = skillActivityTitle(part)
-
-  if (skillTitle) {
-    return { title: skillTitle }
-  }
-
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
 
   const titledAction = (action: string, title: string): ToolTitleParts =>
@@ -1436,7 +1411,7 @@ function dynamicTitle(
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = toolResultRecord(part)
+  const resultRecord = parseMaybeObject(part.result)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)
   // Skip residual error-heuristic text once status is success (stale isError
@@ -1459,8 +1434,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
   )
 
-  const unavailable = part.result === undefined && part.completedAt !== undefined
-  const title = unavailable ? translateNow('assistant.tool.resultUnavailable') : titleParts.title
+  const title = titleParts.title
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 
@@ -1522,7 +1496,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     status,
     subtitle,
     title,
-    titleAction: unavailable ? undefined : titleParts.action,
+    titleAction: titleParts.action,
     tone: meta.tone
   }
 }

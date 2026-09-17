@@ -24,54 +24,12 @@ export function latestConnectorPart(messages: ChatMessage[]) {
     .at(-1)
 }
 
-export interface McpTarget {
-  name: string
-  action: 'authorize' | 'enable' | 'install'
-}
-
-const MCP_ACTIONS: readonly McpTarget['action'][] = ['install', 'enable', 'authorize']
-
-/** Reads args so live and settled rows classify alike. */
-export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']): McpTarget[] {
-  if (toolName !== 'manage_connections') {
-    return []
-  }
-
-  const input = recordOf(args)
-  const action = MCP_ACTIONS.find(a => a === input.action) ?? 'install'
-
-  if (!Array.isArray(input.connectors)) {
-    return []
-  }
-
-  return input.connectors.flatMap(entry => {
-    const name = isRecord(entry) && entry.mcp === true ? connectorText(entry.name)?.trim() : undefined
-
-    return name ? [{ action, name: name.toLowerCase() }] : []
-  })
-}
-
-export type ConnectionStatus = 'active' | 'initiated' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'initializing'
-
-const CONNECTION_STATUSES: readonly ConnectionStatus[] = [
-  'active',
-  'initiated',
-  'failed',
-  'expired',
-  'revoked',
-  'inactive',
-  'initializing'
-]
-
-const isConnectionStatus = (value: string): value is ConnectionStatus =>
-  CONNECTION_STATUSES.some(status => status === value)
-
-/** Display-only; these fields never grant access. */
+/** Connector names and statuses from the tool payload, for display only. No field here grants access. */
 export interface ConnectorRow {
   connector: string
   connected?: boolean
   enabled?: boolean
-  connectionStatus?: ConnectionStatus
+  connectionStatus?: string | null
   name?: string
   description?: string
 }
@@ -91,7 +49,7 @@ export const recordOf = (value: ToolCallMessagePart['result']): ToolCallMessageP
     }
   }
 
-  // SAFETY: isRecord excludes arrays and primitives from the JSON payload.
+  // SAFETY: tool payloads arrive as JSON-RPC or stored JSON; the object guard excludes arrays and primitives.
   return isRecord(value) ? (value as ToolCallMessagePart['args']) : {}
 }
 
@@ -188,13 +146,7 @@ export function connectionRows(
       merged.enabled = row.enabled
     }
 
-    const connectionStatus = connectorText(row.connectionStatus)
-
-    if (connectionStatus && isConnectionStatus(connectionStatus)) {
-      merged.connectionStatus = connectionStatus
-    }
-
-    for (const key of ['name', 'description'] as const) {
+    for (const key of ['connectionStatus', 'name', 'description'] as const) {
       const text = connectorText(row[key])
 
       if (text !== undefined) {
@@ -220,7 +172,7 @@ export function connectionRows(
   return [...rows.values()]
 }
 
-/** Authorization URLs may carry tokens; reject non-HTTPS or embedded credentials. */
+/** The connect URL carries an authorization token, so only https with no embedded credentials is returned. */
 export function connectorAuthorizationUrl(value: ToolCallMessagePart['result']): string | null {
   const text = connectorText(value)
 

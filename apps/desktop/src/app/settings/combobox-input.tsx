@@ -4,8 +4,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
-import { useI18n } from '@/i18n'
-import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
 /**
@@ -36,7 +34,6 @@ export function ComboboxInput({
   placeholder?: string
   className?: string
 }) {
-  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -60,7 +57,7 @@ export function ComboboxInput({
             }}
             onFocus={() => setOpen(true)}
             onKeyDown={e => {
-              if (e.key === 'Escape' || e.key === 'Tab' || isSubmitEnter(e)) {
+              if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Tab') {
                 setOpen(false)
               }
             }}
@@ -69,7 +66,7 @@ export function ComboboxInput({
             value={value}
           />
           <button
-            aria-label={t.settings.config.showOptions}
+            aria-label="Show options"
             className="absolute inset-y-0 right-1.5 flex items-center text-muted-foreground"
             onClick={() => {
               setOpen(current => !current)

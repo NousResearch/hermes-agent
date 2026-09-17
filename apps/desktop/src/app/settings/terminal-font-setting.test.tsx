@@ -8,7 +8,6 @@ import { TerminalFontSetting } from './terminal-font-setting'
 
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
-  configUpdatedAt: 1,
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
   profileSwitch: null as null | (() => void),
@@ -42,7 +41,7 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig, dataUpdatedAt: mocks.configUpdatedAt })
+  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -62,7 +61,6 @@ async function flushAutosave() {
 describe('TerminalFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    mocks.configUpdatedAt = 1
     mocks.loadedConfig = {
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: '' }
@@ -89,13 +87,11 @@ describe('TerminalFontSetting', () => {
 
     await flushAutosave()
 
-    // Only the font key goes over the wire (PUT deep-merges); the shared cache
-    // gets the merged record so sibling terminal keys survive.
-    expect(mocks.save).toHaveBeenCalledWith({ terminal: { font_family: 'MesloLGS NF' } })
-    expect(mocks.cache).toHaveBeenCalledWith({
+    expect(mocks.save).toHaveBeenCalledWith({
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: 'MesloLGS NF' }
     })
+    expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])
   })
 
   it('accepts an arbitrary CSS stack and resets to the bundled default', async () => {
@@ -109,8 +105,8 @@ describe('TerminalFontSetting', () => {
     fireEvent.change(input, { target: { value: "'Custom Powerline', monospace" } })
     await flushAutosave()
 
-    expect(mocks.save.mock.calls[0][0]).toEqual({
-      terminal: { font_family: "'Custom Powerline', monospace" }
+    expect(mocks.save.mock.calls[0][0]).toMatchObject({
+      terminal: { backend: 'local', font_family: "'Custom Powerline', monospace" }
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Use default' }))
@@ -118,7 +114,9 @@ describe('TerminalFontSetting', () => {
     expect((screen.getByLabelText('Glyph preview') as HTMLElement).style.fontFamily).toContain('JetBrains Mono')
     await flushAutosave()
 
-    expect(mocks.save.mock.calls[1][0]).toEqual({ terminal: { font_family: '' } })
+    expect(mocks.save.mock.calls[1][0]).toMatchObject({
+      terminal: { backend: 'local', font_family: '' }
+    })
   })
 
   it('rolls back the optimistic font when autosave fails', async () => {
@@ -136,9 +134,8 @@ describe('TerminalFontSetting', () => {
     expect(mocks.notifyError).toHaveBeenCalledWith(expect.any(Error), 'Autosave failed')
   })
 
-  it('drops the prior profile font and reseeds after a refetch reuses its cached record', () => {
-    const sharedConfig = { terminal: { font_family: 'MesloLGS NF' } }
-    mocks.loadedConfig = sharedConfig
+  it('drops the prior profile font and reseeds from the next profile', () => {
+    mocks.loadedConfig = { terminal: { font_family: 'MesloLGS NF' } }
     const view = render(<TerminalFontSetting />)
 
     expect($terminalFontFamily.get()).toBe('MesloLGS NF')
@@ -146,10 +143,10 @@ describe('TerminalFontSetting', () => {
     expect($terminalFontFamily.get()).toBe('')
     expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).disabled).toBe(true)
 
-    mocks.configUpdatedAt = 2
+    mocks.loadedConfig = { terminal: { font_family: 'Hack Nerd Font' } }
     view.rerender(<TerminalFontSetting />)
 
-    expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).value).toBe('MesloLGS NF')
-    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+    expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).value).toBe('Hack Nerd Font')
+    expect($terminalFontFamily.get()).toBe('Hack Nerd Font')
   })
 })

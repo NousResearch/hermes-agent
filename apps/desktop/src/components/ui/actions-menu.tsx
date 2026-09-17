@@ -111,12 +111,6 @@ interface ActionsMenuProps extends Pick<
   onOpenChange?: (open: boolean) => void
 }
 
-// Let the existing presence boundary decide when item construction is needed.
-// Calling `items` in the wrapper builds every closed row menu on each refresh.
-function ActionItems({ items, kit }: { items: ActionsMenuProps['items']; kit: MenuKit }) {
-  return <>{items(kit)}</>
-}
-
 /**
  * A kebab dropdown menu. Pair it with `ActionsContextMenu` using the same
  * `items` render function so the two menus stay identical. No tip on the
@@ -145,7 +139,7 @@ export function ActionsMenu({
         side={side}
         sideOffset={sideOffset}
       >
-        <ActionItems items={items} kit={DROPDOWN_KIT} />
+        {items(DROPDOWN_KIT)}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -183,7 +177,7 @@ export function ActionsContextMenu({
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent aria-label={ariaLabel} className={contentClassName} onCloseAutoFocus={onCloseAutoFocus}>
-        <ActionItems items={items} kit={CONTEXT_KIT} />
+        {items(CONTEXT_KIT)}
       </ContextMenuContent>
     </ContextMenu>
   )

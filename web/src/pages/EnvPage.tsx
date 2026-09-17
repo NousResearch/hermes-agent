@@ -39,7 +39,6 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
-import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -712,7 +711,7 @@ export default function EnvPage() {
       });
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave} ${key}: ${errorMessage(e)}`, "error");
+      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {
       setSaving(null);
     }
@@ -737,7 +736,7 @@ export default function EnvPage() {
           });
           showToast(`${key} ${t.common.removed}`, "success");
         } catch (e) {
-          showToast(`${t.common.failedToRemove} ${key}: ${errorMessage(e)}`, "error");
+          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
           throw e;
         } finally {
           setSaving(null);

@@ -1,6 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
-
-import { createClientSessionState } from '@/lib/chat-runtime'
+import { describe, expect, it } from 'vitest'
 
 import {
   $petActivity,
@@ -14,8 +12,6 @@ import {
   type PetInfo,
   setPetActivity
 } from './pet'
-import { $activeSessionId, $busy } from './session'
-import { clearAllSessionStates, publishSessionState } from './session-states'
 
 describe('derivePetState', () => {
   it('rests at idle by default and uses waiting when awaiting input', () => {
@@ -146,31 +142,5 @@ describe('flashPetActivity', () => {
     expect($petState.get()).toBe('jump')
 
     setPetActivity({})
-  })
-})
-
-describe('$petState reads the active runtime slice, not the $busy mirror (#84434 / #84438)', () => {
-  const runtimeId = 'runtime-live'
-  const slice = (busy: boolean) => ({ ...createClientSessionState(null), busy, storedSessionId: 'stored-live' })
-
-  afterEach(() => {
-    clearAllSessionStates()
-    $activeSessionId.set(null)
-    $busy.set(false)
-    $petActivity.set({})
-  })
-
-  it('follows the active slice, not the $busy mirror: runs while it is busy, idles the moment it settles', () => {
-    $activeSessionId.set(runtimeId)
-    publishSessionState(runtimeId, slice(true))
-    $petActivity.set({ toolRunning: true })
-
-    expect($petState.get()).toBe('run')
-    expect($petAtRest.get()).toBe(false)
-
-    // An interrupted turn flips busy→false without a tool.complete / message.complete.
-    publishSessionState(runtimeId, slice(false))
-    expect($petState.get()).toBe('idle')
-    expect($petAtRest.get()).toBe(true)
   })
 })

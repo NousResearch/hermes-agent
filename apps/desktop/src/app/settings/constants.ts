@@ -1,5 +1,3 @@
-import { REASONING_EFFORTS } from '@hermes/shared'
-
 import {
   Box,
   Brain,
@@ -14,6 +12,7 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
+import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
 
 // Single source of truth for built-in personality names lives in
@@ -552,7 +551,6 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Auto-Compression',
     threshold: 'Compression Threshold',
-    codexGpt55Autoraise: 'Codex Compression Auto-Raise',
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
   },
@@ -622,8 +620,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     engine: 'Strategy for managing long conversations near the context limit.'
   },
   compression: {
-    enabled: 'Summarize older context when conversations get large.',
-    codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
+    enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
     autoTts: 'Automatically speak assistant responses.',
@@ -730,7 +727,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'context.engine',
       'compression.enabled',
       'compression.threshold',
-      'compression.codex_gpt55_autoraise',
       'compression.target_ratio',
       'compression.protect_last_n'
     ]

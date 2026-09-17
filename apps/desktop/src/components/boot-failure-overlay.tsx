@@ -1,9 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
@@ -15,7 +13,6 @@ import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-import { type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -46,30 +43,6 @@ type RecoveryView = 'connect' | 'recovery'
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
-function BootFailureModal({ children, title }: { children: ReactNode; title?: string }) {
-  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
-
-  return (
-    <DialogPrimitive.Root open>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
-          <div
-            className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-            // Masks the whole app on boot failure — must stay filled under window
-            // glass. Contract: `[data-glass-opaque]` in styles.css.
-            data-glass-opaque=""
-          >
-            <DialogPortalContainerContext.Provider value={contentNode}>
-              {title ? <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title> : null}
-              {children}
-            </DialogPortalContainerContext.Provider>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
-  )
-}
-
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -256,13 +229,6 @@ export function BootFailureOverlay() {
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
   const copy = t.boot.failure
 
-  // SSH failures keep their own gloss; every other local failure is classified
-  // into one plain sentence, raw output collapsed underneath (desktop-05).
-  const failureCopy: LocalBootFailureCopy =
-    connectionConfig?.mode === 'ssh'
-      ? { headline: sshFailureMessage(connectionConfig, boot.error, t.settings.gateway), rawDetail: null }
-      : localBootFailureCopy(boot.error, t.boot.causes)
-
   const label = signInLabel(remoteReauth, {
     identityProvider: copy.identityProvider,
     remoteGateway: copy.signInToRemoteGateway,
@@ -376,7 +342,12 @@ export function BootFailureOverlay() {
 
   if (view === 'connect') {
     return (
-      <BootFailureModal title={copy.gatewaySettings}>
+      <div
+        className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
+        // Masks the whole app on boot failure — must stay filled under window
+        // glass. Contract: `[data-glass-opaque]` in styles.css.
+        data-glass-opaque=""
+      >
         <div className="flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
@@ -394,21 +365,24 @@ export function BootFailureOverlay() {
             </Suspense>
           </div>
         </div>
-      </BootFailureModal>
+      </div>
     )
   }
 
   return (
-    <BootFailureModal>
+    <div
+      className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
+      // Masks the whole app on boot failure — must stay filled under window
+      // glass. Contract: `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
+    >
       <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
         <div className="flex items-start gap-3 px-5 py-4">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
-            <DialogPrimitive.Title asChild>
-              <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-                {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
-              </h2>
-            </DialogPrimitive.Title>
+            <h2 className="text-[0.9375rem] font-semibold tracking-tight">
+              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+            </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
               {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
             </p>
@@ -417,18 +391,7 @@ export function BootFailureOverlay() {
 
         <div className="grid gap-4 p-5 pt-0">
           <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {failureCopy.headline}
-            {failureCopy.rawDetail ? (
-              <details className="mt-2 text-muted-foreground">
-                <summary className="cursor-pointer select-none font-medium">{copy.details}</summary>
-                <pre
-                  className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed"
-                  data-selectable-text="true"
-                >
-                  {failureCopy.rawDetail}
-                </pre>
-              </details>
-            ) : null}
+            {sshFailureMessage(connectionConfig, boot.error, t.settings.gateway)}
           </div>
 
           <div className="grid gap-2">
@@ -463,6 +426,6 @@ export function BootFailureOverlay() {
           ) : null}
         </div>
       </div>
-    </BootFailureModal>
+    </div>
   )
 }

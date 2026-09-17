@@ -63,11 +63,10 @@ export function ReorderableList({
 
 export function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
-  const dragHandleProps: React.HTMLAttributes<HTMLElement> = { ...attributes, ...listeners }
 
   return {
     dragging: isDragging,
-    dragHandleProps,
+    dragHandleProps: { ...attributes, ...listeners },
     ref: setNodeRef,
     reorderable: true as const,
     style: {

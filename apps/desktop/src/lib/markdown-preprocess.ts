@@ -10,7 +10,9 @@ import { linkifySessionRefs } from '@/lib/session-refs'
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus the desktop-only
 // `scratchpad`/`analysis` that were already stripped here before the two lists met.
 const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
-const REASONING_BLOCK_RE = new RegExp(`<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*`, 'gi')
+// A run of adjacent closed blocks is one match, so the seam check below sees the
+// prose on either side of the whole run rather than the previous block's `>`.
+const REASONING_BLOCK_RE = new RegExp(`(?:<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*)+`, 'gi')
 // An open tag that starts its own block with no close tag yet. The block-boundary
 // requirement is what lets a real reasoning preamble (always its own block) vanish
 // while prose that merely mentions `<thinking>` mid-sentence survives — the same
@@ -171,13 +173,15 @@ function scrubBacktickNoise(text: string): string {
 // must already be hidden here: otherwise the chain of thought paints as prose
 // until the close tag lands and then the whole span vanishes in one frame
 // (#62774). Removing a closed block between two words keeps one space so `no` +
-// `Hermes` does not fuse into `noHermes`.
+// `Hermes` does not fuse into `noHermes`. The seam check reads the two chars at
+// the match edges rather than slicing the accumulated text, which would copy
+// O(n) per closed block on every flush.
 function stripReasoningBlocks(text: string): string {
   const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
-    const before = whole.slice(0, offset)
-    const after = whole.slice(offset + match.length)
+    const prev = whole[offset - 1]
+    const next = whole[offset + match.length]
 
-    return /\S$/.test(before) && /^\S/.test(after) ? ' ' : ''
+    return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
   })
 
   return closed.replace(OPEN_REASONING_BLOCK_RE, '$1')

@@ -9,6 +9,7 @@ describe('reasoning blocks in streamed markdown', () => {
     expect(preprocessMarkdown('no<thinking>hmm</thinking> Hermes Desktop')).toBe('no Hermes Desktop')
     expect(preprocessMarkdown('backend e o <thinking>x</thinking>useSmoothReveal')).toBe('backend e o useSmoothReveal')
     expect(preprocessMarkdown('<thought>x</thought>\n\nResposta final.')).toBe('Resposta final.')
+    expect(preprocessMarkdown('no<thinking>a</thinking><think>b</think>Hermes')).toBe('no Hermes')
   })
 
   it('hides an unterminated block at a block boundary but keeps a mid-sentence mention', () => {

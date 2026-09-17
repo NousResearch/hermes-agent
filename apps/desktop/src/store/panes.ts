@@ -7,8 +7,12 @@ import { modeLayout } from '@/store/interface-mode'
 export interface PaneStateSnapshot {
   open: boolean
   widthOverride?: number
+  /** True when the current width is a user-owned fixed size during sash drags. */
+  widthLocked?: boolean
   /** Vertical size override (px) for panes that resize on the Y axis (e.g. the bottom-row terminal). */
   heightOverride?: number
+  /** True when the current height is a user-owned fixed size during sash drags. */
+  heightLocked?: boolean
 }
 
 export interface PaneRegisterDefaults {
@@ -30,10 +34,14 @@ function isSnapshot(value: unknown): value is PaneStateSnapshot {
   const widthOk =
     r.widthOverride === undefined || (typeof r.widthOverride === 'number' && Number.isFinite(r.widthOverride))
 
+  const widthLockOk = r.widthLocked === undefined || typeof r.widthLocked === 'boolean'
+
   const heightOk =
     r.heightOverride === undefined || (typeof r.heightOverride === 'number' && Number.isFinite(r.heightOverride))
 
-  return widthOk && heightOk
+  const heightLockOk = r.heightLocked === undefined || typeof r.heightLocked === 'boolean'
+
+  return widthOk && widthLockOk && heightOk && heightLockOk
 }
 
 const paneDefaults: Record<string, PaneStateSnapshot> = {}
@@ -115,6 +123,20 @@ export function setPaneWidthOverride(id: string, width: number | undefined) {
   $paneStates.set({ ...current, [id]: { ...existing, widthOverride: width } })
 }
 
+/** Lock/unlock a pane's current width. A lock is intentionally separate from
+ * the override: unlock leaves the remembered value available to the next lock
+ * but stops treating a flex pane as a fixed track. */
+export function setPaneWidthLocked(id: string, locked: boolean) {
+  const current = $paneStates.get()
+  const existing = current[id] ?? { open: false }
+
+  if (Boolean(existing.widthLocked) === locked) {
+    return
+  }
+
+  $paneStates.set({ ...current, [id]: { ...existing, widthLocked: locked || undefined } })
+}
+
 export function setPaneHeightOverride(id: string, height: number | undefined) {
   const current = $paneStates.get()
   const existing = current[id] ?? { open: false }
@@ -124,6 +146,18 @@ export function setPaneHeightOverride(id: string, height: number | undefined) {
   }
 
   $paneStates.set({ ...current, [id]: { ...existing, heightOverride: height } })
+}
+
+/** See setPaneWidthLocked — the vertical counterpart used by stacked panels. */
+export function setPaneHeightLocked(id: string, locked: boolean) {
+  const current = $paneStates.get()
+  const existing = current[id] ?? { open: false }
+
+  if (Boolean(existing.heightLocked) === locked) {
+    return
+  }
+
+  $paneStates.set({ ...current, [id]: { ...existing, heightLocked: locked || undefined } })
 }
 
 export const clearPaneWidthOverride = (id: string) => setPaneWidthOverride(id, undefined)
@@ -137,7 +171,12 @@ export function clearAllPaneSizeOverrides() {
   const next: Record<string, PaneStateSnapshot> = {}
 
   for (const [id, state] of Object.entries(current)) {
-    if (state.widthOverride !== undefined || state.heightOverride !== undefined) {
+    if (
+      state.widthOverride !== undefined ||
+      state.heightOverride !== undefined ||
+      state.widthLocked ||
+      state.heightLocked
+    ) {
       changed = true
       next[id] = { open: state.open }
     } else {

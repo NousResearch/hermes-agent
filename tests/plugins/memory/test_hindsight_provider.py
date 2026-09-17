@@ -1066,6 +1066,17 @@ class TestTurnAuthor:
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["tags"] == ["session:test-session"]
 
+    def test_null_a2a_tag_disables_tagging(self, provider_with_config):
+        """A blank YAML value (``a2a_tag: null``) disables tagging; it must not ship as
+        the literal "None" tag."""
+        p = provider_with_config(a2a_tag=None)
+
+        p.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+
     def test_a2a_tag_defaults_and_only_fires_for_bots(self, provider):
         assert provider._a2a_tag == "source:bot"
         assert provider._a2a_tag_for_turn(BOT_AUTHOR) == "source:bot"

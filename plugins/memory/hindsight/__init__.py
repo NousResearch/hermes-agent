@@ -785,8 +785,9 @@ class HindsightMemoryProvider(MemoryProvider):
         """Pure-config retain knobs (no env/secret reads; ``{}`` yields the defaults)."""
         self._auto_retain = cfg.get("auto_retain", True)
         # Agent-to-agent turns are tagged, never dropped: the tag keeps a peer's words out
-        # of filtered recall while the turn itself is retained in full. "" disables tagging.
-        self._a2a_tag = str(cfg.get("a2a_tag", _DEFAULT_A2A_TAG))
+        # of filtered recall while the turn itself is retained in full. An empty value
+        # ("" or null) disables tagging.
+        self._a2a_tag = str(cfg.get("a2a_tag", _DEFAULT_A2A_TAG) or "").strip()
         self._retain_every_n_turns = max(1, int(cfg.get("retain_every_n_turns", 1)))
         self._retain_context = cfg.get("retain_context", _RETAIN_CONTEXT_DEFAULT)
         self._retain_async = cfg.get("retain_async", True)
@@ -1064,7 +1065,8 @@ class HindsightMemoryProvider(MemoryProvider):
         common case, is still exactly one job). Every buffered turn already carries the tag
         it got when it arrived, so a later turn's author can never re-tag it, and a mixed
         batch is split rather than mislabelled: a human turn must never ship as
-        agent-to-agent traffic, and a peer bot's turn must not slip through untagged."""
+        agent-to-agent traffic, and a peer bot's turn must not slip through untagged.
+        Grouping keeps within-tag order, not cross-tag interleaving order — fine for retain."""
         grouped: Dict[str, list[str]] = {}
         for turn, source_tag in pending:
             grouped.setdefault(source_tag, []).append(turn)

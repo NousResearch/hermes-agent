@@ -93,7 +93,8 @@ def validate_tool_calls(
         if tc.function.name not in valid_names:
             repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
-                print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
+                              force=True, diagnostic=True)
                 tc.function.name = repaired
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid

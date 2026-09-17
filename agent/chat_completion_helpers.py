@@ -3143,7 +3143,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 return False
             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
-            self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
+            if self.agent._warning_presentation_enabled():
+                self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
@@ -3344,8 +3345,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 _name_str += f", +{len(_partial_names) - 3} more"
             _warn = (f"\n\n⚠ Stream stalled mid tool-call ({_name_str}); the action was not executed. "
                      f"Ask me to retry if you want to continue.")
-            _partial_text = (_partial_text or "") + _warn
-            self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
+            _partial_text = (_partial_text or "") + _warn  # model/result bookkeeping, never gated
+            if self.agent._warning_presentation_enabled():
+                self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)

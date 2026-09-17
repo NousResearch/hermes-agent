@@ -315,7 +315,10 @@ def _goal_followup_after_turn(
         recovery_prompt, recovery_notice = _plan_goal_compression_recovery(
             session, result, status=status, raw=raw)
         if recovery_notice:
-            _emit("status.update", sid, {"kind": "goal", "text": recovery_notice})
+            from gateway.warning_notifications import render_notification
+            render_notification(
+                lambda: _emit("status.update", sid, {"kind": "goal", "text": recovery_notice}),
+                platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
         goal_followup = recovery_prompt or None
     except Exception as _goal_recovery_exc:
         _hook_failure("goal compression recovery", _goal_recovery_exc)

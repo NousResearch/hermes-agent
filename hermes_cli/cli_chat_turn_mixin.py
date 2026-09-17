@@ -529,10 +529,13 @@ class CLIChatTurnMixin:
             _api_calls = turn.result.get("api_calls", 0)
             _max_iter = getattr(self.agent, "max_iterations", 500)
             if _api_calls >= _max_iter:
-                _cprint(
-                    f"\n{_DIM}⚠ Iteration budget reached ({_api_calls}/{_max_iter}) — "
-                    f"response may be incomplete{_RST}"
-                )
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(
+                        f"\n{_DIM}⚠ Iteration budget reached ({_api_calls}/{_max_iter}) — "
+                        f"response may be incomplete{_RST}"
+                    ),
+                    platform="cli", user_config=getattr(self.agent, "_notification_config", None))
 
         # Batch TTS unless streaming TTS already spoke the response.
         if self._voice_tts and response and not turn.use_streaming_tts:

@@ -1872,8 +1872,10 @@ def replay_compression_warning(agent: Any) -> None:
     ``__init__``) is finally wired."""
     msg = getattr(agent, "_compression_warning", None)
     if msg and agent.status_callback:
+        # Replayed as a classified diagnostic so every sink applies its own policy snapshot.
+        from gateway.warning_notifications import DiagnosticText
         with contextlib.suppress(Exception):
-            agent.status_callback("lifecycle", msg)
+            agent.status_callback("lifecycle", DiagnosticText(msg))
 
 
 def conversation_history_after_compression(

@@ -613,14 +613,16 @@ class CLIStreamMixin:
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]")
                     if announce:
-                        _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+                        render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}"),
+                                            platform="cli", user_config=getattr(self.agent, "_notification_config", None))
             except Exception as e:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]")
                 if announce:
-                    _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+                    render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}"),
+                                        platform="cli", user_config=getattr(self.agent, "_notification_config", None))
 
         # Vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""

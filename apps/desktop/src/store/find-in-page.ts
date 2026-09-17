@@ -14,6 +14,16 @@ const EMPTY: FindInPageState = { active: false, query: '', matchOrdinal: 0, matc
 export const $findInPage = atom<FindInPageState>({ ...EMPTY })
 
 /**
+ * Monotonic focus request for the find input.
+ *
+ * Kept OUT of `FindInPageState` deliberately: it is presentation intent, not
+ * search state, and the state object is asserted by value in several tests and
+ * compared for equality elsewhere. A counter that changes on every ⌘F does not
+ * belong in a shape that means "what is currently being searched".
+ */
+export const $findBarFocusRequest = atom(0)
+
+/**
  * Open the find bar and capture the CURRENT VIEW as the search scope.
  *
  * Capturing once at open time (rather than re-resolving on every keystroke)
@@ -25,6 +35,22 @@ export const $findInPage = atom<FindInPageState>({ ...EMPTY })
  * "current view" predicate (#81726).
  */
 export function openFindBar(): void {
+  const current = $findInPage.get()
+
+  // Already open but unfocused (the user clicked into the transcript): bump the
+  // focus request so the input regains the caret, matching Chrome/Safari/VS
+  // Code. Re-initializing here would wipe a query the user already typed.
+  //
+  // The scope is (re)captured either way. Re-capturing is idempotent for a bar
+  // that is genuinely still open on the same view, and callers that flip
+  // `active` themselves before calling still get a live scope to search.
+  if (current.active) {
+    $findBarFocusRequest.set($findBarFocusRequest.get() + 1)
+    captureFindScope()
+
+    return
+  }
+
   $findInPage.set({ ...EMPTY, active: true })
   captureFindScope()
 }

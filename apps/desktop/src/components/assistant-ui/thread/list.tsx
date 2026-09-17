@@ -45,6 +45,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
+import { holdWindowForSelection } from './selection-guard'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
@@ -583,11 +584,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // the point is a small synchronous commit; forcing 8 turns into it would put
   // back exactly the freeze FIRST_PAINT_BUDGET exists to avoid, and the rAF
   // backfill a frame later fills them in anyway.
-  const hiddenCount = firstVisibleGroupIndex(
+  const rawHiddenCount = firstVisibleGroupIndex(
     weightedGroups,
     renderBudget,
     renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0
   )
+
+  // A DOM Selection is anchored to live nodes, so advancing the cut while the
+  // reader holds a highlight unmounts the node they highlighted and silently
+  // destroys the selection mid-copy. Hold the previous cut until they let go:
+  // refusing to hide MORE is enough, and it costs nothing once collapsed.
+  const heldHiddenCount = useRef(rawHiddenCount)
+  const hiddenCount = holdWindowForSelection({
+    next: rawHiddenCount,
+    previous: heldHiddenCount.current,
+    root: scrollRef.current
+  })
+
+  heldHiddenCount.current = hiddenCount
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the

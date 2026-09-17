@@ -9,9 +9,11 @@
 import { $workspaceIsPage } from '@/app/routes'
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
+import { $findInPage } from '@/store/find-in-page'
 import { switcherActive } from '@/store/session-switcher'
 
 import { isEditableTarget, isFocusWithin } from './combo'
+import { findBarOwnsTyping } from './find-bar-focus'
 
 /** `composer.focus` defaults that need the surface/target gate. */
 export const isComposerFocusSoftCombo = (combo: string) => combo === '/' || combo === 'enter'
@@ -156,6 +158,11 @@ export function composerFocusBlockedBySurface(): boolean {
     switcherActive() ||
     $workspaceIsPage.get() ||
     isFocusWithin('[data-terminal]') ||
+    // The find bar is a plain overlay input, not a dialog or a terminal, so it
+    // matched none of the guards above. Typing into Ctrl+F then raced the
+    // composer's focus bus (which retries sync + rAF + timeout) and lost, so
+    // the find field stayed empty and ate every keystroke.
+    findBarOwnsTyping($findInPage.get().active) ||
     Boolean(document.querySelector(BLOCKING_OVERLAY))
   )
 }

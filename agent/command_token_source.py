@@ -16,7 +16,7 @@ import logging
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +146,17 @@ def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
     return CommandTokenSource(command, provider_label) if command else None
+
+
+def normalize_token_source(value: Any) -> Any:
+    """Normalize an api-key override for the wire-client contract (#113976).
+
+    Overrides are either plain strings or callable token sources (``key_cmd`` /
+    Entra ID); strings are stripped, callables pass through untouched (both wire
+    clients invoke them per request), anything else is "no key". Call sites must
+    never ``str()``-coerce here — that sends the callable's repr out as the
+    bearer token and fails auth with no usable error.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    return value if callable(value) else ""

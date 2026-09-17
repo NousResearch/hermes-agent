@@ -299,7 +299,9 @@ def _resolve_codex_usage_credentials(
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
-    explicit_key = str(api_key or "").strip()
+    # A callable token source (key_cmd/Entra runtime key) is not a Codex usage token; its repr
+    # must never become the bearer — drop it and let the native tiers resolve (#113976).
+    explicit_key = "" if callable(api_key) else str(api_key or "").strip()
     if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
     if explicit_key:

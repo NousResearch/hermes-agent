@@ -67,6 +67,14 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    # A supervision session is NOT a dispatched kanban worker. When this file
+    # runs inside one (the real deployment context: HERMES_KANBAN_TASK is set
+    # for every dispatched worker), conversation_loop's kanban no-complete
+    # finalizer injects extra "nudging to finish" api calls into any turn
+    # driven through run_conversation, which corrupts call-count assertions
+    # (test_34) with a variable that has nothing to do with this plugin.
+    # Tests that want the worker context set it back explicitly (test_38).
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     return h
 
 

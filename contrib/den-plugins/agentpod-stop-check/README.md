@@ -346,3 +346,59 @@ the resumed/compacted turn that arrives with an EMPTY user message and must
 fail closed (`test_50`). Note the scope of each claim: `test_42`/`test_44`
 drive the real **hooks** (aggregator + finalizer), while `test_33`/`test_49`
 are the ones that drive the real **loop**. Red-green and the three guard mutations: see the receipt.
+
+## Review round 1 (PR #4 @ 7dd95746cc) — the two blockers
+
+**Blocker 1 — suite green only outside a dispatched worker.** `test_34` asserts
+a raw model-call count (`len(calls) == 2`). Under the real deployment context
+(`HERMES_KANBAN_TASK` set, as it is for every dispatched kanban worker),
+`agent/conversation_loop.py` fires its kanban no-complete finalizer
+("kanban stop-loop nudge issued") and injects two extra api calls, so the
+count is 4 and the test fails. The variable has nothing to do with this
+plugin: a supervision session is not a dispatched kanban worker. Fixed in the
+`home` fixture, which now deletes `HERMES_KANBAN_TASK` alongside
+`HERMES_KANBAN_DB`/`HERMES_KANBAN_BOARD`; `test_38`, which genuinely wants the
+worker context, still sets it back explicitly. Verified both ways:
+
+    HERMES_KANBAN_TASK=t_8c480dce pytest .../test_stop_check.py -q -p no:randomly
+      -> 65 passed                                        (was 1 failed, 64 passed)
+    env -u HERMES_KANBAN_TASK pytest ... -> 65 passed
+
+**Blocker 2 — carved out, NOT dropped.** The unblock asked for a runtime
+integration test proving the unblock/review/request-changes transition cannot
+leave a non-current worker alive or admit a duplicate writer. That enforcement
+does not belong in this plugin and cannot be implemented here: the plugin is an
+opt-in, session-scoped `transform_llm_output`/`pre_verify` observer of ONE
+supervision session; it has no dispatcher authority, and the defect happens in
+core with no supervision turn in flight.
+
+Line-level account of the real defect:
+
+* `hermes_cli/kanban_db.py:request_changes` sets `worker_pid = NULL` on the
+  task row and ends the run, but never calls `_terminate_reclaimed_worker`
+  — unlike `release_stale_claims` (`kanban_db.py:5042`) and
+  `reclaim_task` (`:5142`), which both terminate before releasing, and unlike
+  the ancestor-reopen path, which collects `terminations` and drains them
+  post-commit. `request_review` (`:6607`) has the same NULL-out-without-
+  terminate shape.
+* Consequence: the row loses the only handle to the live process while the
+  process keeps running in the card's workspace, and the task lands back in
+  `ready`, so the next dispatcher tick claims it and spawns a second writer
+  into the same directory. That is exactly the observed `t_f7fad689`
+  regression (run 2007 `changes_requested` at 1789657120, run 2008 claimed at
+  1789657130, same `workspace_path`).
+
+Reproduced on an isolated temporary board with a process the script owns:
+
+    python contrib/den-plugins/agentpod-stop-check/repro_handoff_duplicate_writer.py
+    previous worker pid 67759 alive after handoff: True
+    task row worker_pid after handoff: None
+    task status after handoff:          ready
+    next claim succeeded immediately:   True
+    same workspace for both writers:    True
+    RESULT: DUPLICATE WRITER REPRODUCED          (exit 0)
+
+The fix is a core change to `hermes_cli/kanban_db.py` (terminate-then-release
+in the review transitions, mirroring the reclaim paths) plus its own tests
+under `tests/`; it is carved out as a separate card rather than smuggled into
+this opt-in plugin.

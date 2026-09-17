@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node ../scripts/build/web.mjs",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",

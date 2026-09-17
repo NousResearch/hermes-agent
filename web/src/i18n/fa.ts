@@ -516,6 +516,7 @@ export const fa = defineLocale({
       "پروفایل «{name}» در حال مدیریت است — تغییر وضعیت‌ها روی همان پروفایل اعمال می‌شود، نه داشبورد فعلی.",
     learnASkill: "آموزش مهارت",
     newSkill: "مهارت جدید",
+    createSkill: "ایجاد مهارت",
   },
 
   config: {
@@ -788,6 +789,8 @@ export const fa = defineLocale({
     newSession: "شروع جلسه گفتگوی جدید",
     copyLastTooltip: "کپی آخرین پاسخ دستیار به‌صورت مارک‌داون خام",
     copyLast: "کپی آخرین پاسخ دستیار",
+    copyLastShort: "کپی آخرین پاسخ",
+    copied: "کپی شد",
     showSidePanel: "نمایش پنل کناری گفتگو",
     showSidePanelTitle: "نمایش پنل کناری (مدل + نشست‌ها)",
     collapseSidePanel: "جمع‌کردن پنل کناری گفتگو",

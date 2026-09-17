@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { latchChatActivation } from "./chat-activation";
 
@@ -22,5 +22,26 @@ describe("latchChatActivation", () => {
 
   it("stays activated while the chat tab remains active", () => {
     expect(latchChatActivation(true, true)).toBe(true);
+  });
+});
+
+describe("chatActivationStore", () => {
+  it("activates on demand, notifies subscribers once, and is sticky", async () => {
+    vi.resetModules();
+    const { chatActivationStore } = await import("./chat-activation");
+    expect(chatActivationStore.getSnapshot()).toBe(false);
+    const seen: boolean[] = [];
+    const unsub = chatActivationStore.subscribe(() =>
+      seen.push(chatActivationStore.getSnapshot()),
+    );
+    chatActivationStore.activate();
+    expect(chatActivationStore.getSnapshot()).toBe(true);
+    // Sticky: a second activate() is a no-op and must not re-notify.
+    chatActivationStore.activate();
+    expect(seen).toEqual([true]);
+    // Unsubscribe stops notifications.
+    unsub();
+    chatActivationStore.activate();
+    expect(seen).toEqual([true]);
   });
 });

@@ -3279,22 +3279,6 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     return retry_kwargs if changed else None
 
 
-def _fallback_structured_output_retry_kwargs(
-    fb_err: Exception, fb_kwargs: Dict[str, Any], task: Optional[str], fb_label: str,
-) -> Optional[Dict[str, Any]]:
-    """Fallback candidates get the primary path's structured-output rung: a candidate that rejects
-    ``response_format`` (DeepSeek: "This response_format type is unavailable now") is retried once
-    without it instead of aborting the whole task after the primary provider already failed (#83390)."""
-    if not _is_structured_output_rejection(fb_err):
-        return None
-    retry_kwargs = _without_structured_output_format(fb_kwargs)
-    if retry_kwargs is not None:
-        logger.info("Auxiliary %s: fallback candidate %s rejected the structured-output format field; "
-                    "retrying once without it (schema enforcement degrades to prompt compliance): %s",
-                    task or "call", fb_label, fb_err)
-    return retry_kwargs
-
-
 def _is_reasoning_field_rejection(exc: Exception) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
@@ -4006,11 +3990,6 @@ def _call_fallback_candidate_sync(
     try:
         return _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
-        retry_kwargs = _fallback_structured_output_retry_kwargs(fb_err, fb_kwargs, task, fb_label)
-        if retry_kwargs is not None:
-            resp = _send(fb_client, retry_kwargs, destination)
-            remember_structured_output_rejection(destination.provider, destination.base_url, fb_kwargs, fb_err)
-            return resp
         if not _is_auth_error(fb_err):
             raise
         fb_provider, retry = _plan_fallback_auth_retry(
@@ -4055,11 +4034,6 @@ async def _call_fallback_candidate_async(
     try:
         return await _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
-        retry_kwargs = _fallback_structured_output_retry_kwargs(fb_err, fb_kwargs, task, fb_label)
-        if retry_kwargs is not None:
-            resp = await _send(fb_client, retry_kwargs, destination)
-            remember_structured_output_rejection(destination.provider, destination.base_url, fb_kwargs, fb_err)
-            return resp
         if not _is_auth_error(fb_err):
             raise
         fb_provider, retry = _plan_fallback_auth_retry(

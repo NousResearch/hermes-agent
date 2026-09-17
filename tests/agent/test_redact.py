@@ -93,6 +93,45 @@ class TestKnownPrefixes:
         text = "fw-tooshort fw_tooshort fpk_tooshort"
         assert redact_sensitive_text(text) == text
 
+    def test_dotted_sk_key_masked_past_the_dot(self):
+        """Regression for #113901: the sk- body class lacked ".".
+
+        A dotted vendor key (Alibaba Bailian sk-sp-…) was masked only up to the
+        first dot; everything after it leaked verbatim.
+        """
+        token = "sk-sp-" + "A1b2C3d4E5f6G7h8I9j0" + "." + "k1l2M3n4O5p6Q7r8S9t0_Uv-Wx98"
+        result = redact_sensitive_text(f"api_key: {token}\n")
+        assert token not in result
+        # the post-dot tail must not survive either
+        assert "k1l2M3n4O5p6Q7r8S9t0" not in result
+
+    def test_zhipu_key_masked(self):
+        """Regression for #113901: Zhipu/z.ai keys match no vendor prefix.
+
+        ``{32 lowercase hex}.{secret}`` passes the substring pre-screen gate and
+        every _PREFIX_PATTERNS entry verbatim.
+        """
+        token = "50aaed" + "0f1e2d3c4b5a69788796a5b4c3d2e1"[:26] + "." + "ZpSh99aB"
+        assert len(token.split(".")[0]) == 32
+        for kwargs in ({}, {"file_read": True}):
+            result = redact_sensitive_text(f"b:\n  api_key: {token}\n", **kwargs)
+            assert token not in result, kwargs
+            assert "ZpSh99aB" not in result, kwargs
+
+    def test_zhipu_shape_benign_hashes_unchanged(self):
+        """32-hex md5 filenames with 3-char extensions and bare shas stay readable."""
+        for benign in [
+            "thumb d41d8cd98f00b204e9800998ecf8427e.png saved",
+            "commit 0123456789abcdef0123456789abcdef01234567 merged",
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
+    def test_zhipu_key_requires_full_32_hex_id(self):
+        """31 hex chars are not the Zhipu id shape — no mask."""
+        short = "50aaed" + "0f1e2d3c4b5a69788796a5b4c3d2e"[:25] + ".ZpSh99aB"
+        text = f"id {short} here"
+        assert redact_sensitive_text(text) == text
+
 
 
 

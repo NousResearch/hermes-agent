@@ -133,7 +133,9 @@ def _redact_enabled() -> bool:
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
+    # "." in the body class: Alibaba Bailian keys (sk-sp-…) embed a dot, and the
+    # old class stopped at it — everything past the first dot leaked (#113901).
+    r"sk-[A-Za-z0-9_.\-]{10,}",       # OpenAI / OpenRouter / Anthropic (sk-ant-*)
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -564,6 +566,14 @@ def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
 
+# Zhipu/z.ai API key: ``{32 lowercase hex}.{secret}`` with NO vendor prefix (#113901).
+# It cannot join _PREFIX_PATTERNS: the substring pre-screen gate is derived from each
+# pattern's leading literal, and this format has none — so it is scanned separately,
+# unconditionally (the gate would otherwise drop text carrying only this key shape).
+# The {4,} tail keeps 3-char filename extensions readable (``md5.png``); 4+ char
+# tails (``md5.jpeg``) are over-masked — accepted cost on a stated security boundary.
+_ZHIPU_KEY_RE = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{32}\.[A-Za-z0-9]{4,}")
+
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
     """Mask tokens whose body is split by control/zero-width characters.
@@ -897,14 +907,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     code_file = (code_file or file_read) and not secret_file
 
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
+    _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
     if _has_known_prefix_substring(text):
-        _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
         # Control/zero-width chars (\\n, \\r, ESC, U+200B, …) split a token body so _PREFIX_RE cannot match
         # across them — a secret smuggled as ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+
+    # Zhipu/z.ai keys carry no vendor-prefix literal, so the substring gate above
+    # never admits text that holds only them — scan unconditionally (#113901).
+    text = _ZHIPU_KEY_RE.sub(lambda m: _prefix_sub(m.group(0)), text)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

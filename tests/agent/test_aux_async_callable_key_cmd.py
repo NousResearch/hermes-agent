@@ -7,7 +7,6 @@ fresh short-lived bearer per request. The OpenAI SDK stores such a callable in
 credential at all and every async auxiliary call (vision, compression, titles) failed with
 ``401 Authentication Error, No api key passed in`` against an auth-required endpoint.
 
-This is the async sibling of ``test_aux_callable_key_cmd.py`` (which pins the sync arms).
 The contract asserted: the async client can still PRODUCE a token, not that any particular
 attribute holds it.
 """

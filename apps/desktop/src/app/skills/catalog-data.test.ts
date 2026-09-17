@@ -116,6 +116,20 @@ describe('public catalog data', () => {
     )
   })
 
+  it('only renders plugin images hosted on GitHub so the browser never fans out to third-party hosts', () => {
+    const base = { name: 'x', tier: 'community', repo: 'https://github.com/o/r', sha: 'a'.repeat(40), version: '1.4.0' }
+    const [github, offhost, http] = parseCatalog('plugins', [
+      { ...base, name: 'github', image: 'https://raw.githubusercontent.com/o/r/abc/banner.png' },
+      { ...base, name: 'offhost', image: 'https://cdn.example.com/banner.png' },
+      { ...base, name: 'http', image: 'http://github.com/o/r/banner.png' }
+    ])
+
+    expect(github.imageUrl).toBe('https://raw.githubusercontent.com/o/r/abc/banner.png')
+    expect(github.version).toBe('1.4.0')
+    expect(offhost.imageUrl).toBeNull()
+    expect(http.imageUrl).toBeNull()
+  })
+
   it('rejects a non-catalog response instead of treating an error payload as an empty catalog', () => {
     expect(() => parseCatalog('skills', { error: 'Service unavailable' })).toThrow('Invalid catalog response')
   })

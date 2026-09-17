@@ -4130,10 +4130,13 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
-        bind_quiet_session_key, continue_quiet_notify_completions, quiet_notify_linger_seconds,
+        adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
+        quiet_notify_linger_seconds,
     )
 
     author = take_turn_author_from_env()
+    # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
+    adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
     with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
         try:

@@ -16,6 +16,7 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+_warned_unreadable: set[Path] = set()
 _running: set[Path] = set()
 _running_lock = threading.Lock()
 
@@ -36,10 +37,15 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     for path in root.glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            # Keep damaged receipts as evidence; never replay them or block peers.
-            logger.error("Unreadable deferred Bot Chat receipt %s: %s", path, exc)
+        except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+            # Keep damaged or unreadable receipts as evidence; never replay them or block peers
+            # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
+            # The scheduler drains every tick: ERROR once per receipt per process, DEBUG after.
+            level = logging.DEBUG if path in _warned_unreadable else logging.ERROR
+            _warned_unreadable.add(path)
+            logger.log(level, "Unreadable deferred Bot Chat receipt %s: %s", path, exc)
             continue
+        _warned_unreadable.discard(path)
         records.append((path, record))
     return records
 
@@ -62,10 +68,13 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path) -> dict:
 
 def drain(root: Path | None = None) -> None:
     """Serialize drains across processes without holding the producer lock."""
+    from hermes_cli.backend_retirement import retirement
+
     root = root if root is not None else _root()
-    if root.is_dir():
-        with _FileLock(root / ".drain.lock"):
-            _drain(root)
+    with retirement.work() as admitted:
+        if admitted and root.is_dir():
+            with _FileLock(root / ".drain.lock"):
+                _drain(root)
 
 
 def _drain(root: Path) -> None:
@@ -112,17 +121,27 @@ def drain_in_background() -> None:
     root = home / "cron" / "bot_chat_pending"
     if not root.is_dir():
         return
+    from hermes_cli.backend_retirement import retirement
+
     with _running_lock:
-        if home in _running:
+        if home in _running or not retirement.acquire():
             return
         _running.add(home)
+
+    def release():
+        with _running_lock:
+            _running.discard(home)
+        retirement.release()
 
     def run():
         try:
             drain(root)
         finally:
-            with _running_lock:
-                _running.discard(home)
+            release()
 
-    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
-                     name="cron-bot-chat-drain").start()
+    try:
+        threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
+                         name="cron-bot-chat-drain").start()
+    except BaseException:
+        release()
+        raise

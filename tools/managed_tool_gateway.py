@@ -42,10 +42,8 @@ def _read_nous_provider_state() -> Optional[dict]:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
     attached to a request.
 
-    Resolves through the same profile-then-global-root fallback every other credential reader
-    uses: a profile created with ``share_auth`` has no ``auth.json`` of its own and signs in with
-    the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
-    the connector gate alone, so ``manage_connections`` vanished from its tool list."""
+    Reads the profile's own ``auth.json`` through ``get_provider_auth_state`` like every other
+    credential reader."""
     try:
         from hermes_cli.auth import get_provider_auth_state
 

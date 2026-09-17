@@ -450,7 +450,7 @@ _CODEX_REPLAY_KEYS = (
 
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
-    conversation_history: Any, api_call_count: int,
+    conversation_history: Any, api_call_count: int, response: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
 
@@ -459,8 +459,14 @@ def continue_codex_incomplete(
     overwritten, because the earlier response holds the only native-compaction
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
-    the turn loop, or the terminal ``partial`` result once retries are exhausted."""
+    the turn loop, or the terminal ``partial`` result once retries are exhausted.
+
+    When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
+    whole budget), the next attempt goes out with reasoning off and a doubled output
+    cap — the same one-shot overrides the chat-completions length path uses — because
+    re-sending the identical budget and effort re-burns the budget identically (#90393)."""
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.turn_response_check import _codex_finish_reason
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
@@ -518,6 +524,14 @@ def continue_codex_incomplete(
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+        if not interim_has_content and _codex_finish_reason(response) == "incomplete":
+            agent._ephemeral_reasoning_off = True
+            # No configured cap means the provider's own ceiling was hit: the observed
+            # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
+            usage = getattr(response, "usage", None)
+            observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+            base = agent.max_tokens or int(observed or 0) or 4096
+            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)")
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look

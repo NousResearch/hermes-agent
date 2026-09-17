@@ -475,7 +475,9 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
     steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
     global _comment_poll_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    # Operator notes address the dispatcher-owned worker; a delegate_task child sharing
+    # this process must neither receive them nor advance the shared watermark (#112817).
+    tid = os.environ.get("HERMES_KANBAN_TASK") if _is_dispatcher_owned_worker() else None
     now = time.monotonic()
     if (not tid or agent is None or not hasattr(agent, "steer")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):

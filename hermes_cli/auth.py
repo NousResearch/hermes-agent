@@ -204,6 +204,12 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         "minimax-oauth", "MiniMax (OAuth \u00b7 minimax.io)", "oauth_minimax",
         portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE, inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
         client_id=MINIMAX_OAUTH_CLIENT_ID, scope=MINIMAX_OAUTH_SCOPE,
+        # Credential resolution is OAuth (auth.json) — but when it fails and a
+        # failure hint composes "set <PROVIDER>_API_KEY" from the provider id,
+        # the derived name would be MINIMAX-OAUTH_API_KEY, an env var that
+        # exists nowhere. The literal-key fallback for this provider is the
+        # plain-api-key sibling's MINIMAX_API_KEY (#89516).
+        api_key_env_vars=("MINIMAX_API_KEY",),
         extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
                "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE}),
     # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key despite auth_type="api_key": `claude setup-token`

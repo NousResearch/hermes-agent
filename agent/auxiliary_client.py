@@ -4293,6 +4293,22 @@ def _try_configured_fallback_for_unavailable_client(
     return _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
 
 
+def _missing_credential_env_hint(provider_id: str) -> str:
+    """Env var name for the "set <VAR>_API_KEY" hint when an explicitly
+    configured provider has no credentials. The naive id-derived name is
+    invalid for hyphenated ids (minimax-oauth → MINIMAX-OAUTH_API_KEY);
+    prefer the registry's real name (alibaba → DASHSCOPE_API_KEY)."""
+    hint = f"{provider_id.upper()}_API_KEY"
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if pconfig and pconfig.api_key_env_vars:
+            hint = pconfig.api_key_env_vars[0]
+    except Exception:
+        pass
+    return hint
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key via the secret-scope-aware resolver (no raw os.getenv under multiplexing)."""
     from hermes_cli.fallback_config import resolve_entry_api_key
@@ -7063,7 +7079,7 @@ def _resolve_call_client(
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
                     raise AuxiliaryClientUnavailable(nous_detail or (
                         f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
+                        f"Set the {_missing_credential_env_hint(_explicit)} environment variable, or switch to "
                         f"a different provider with `hermes model`."))
                 client, final_model = fb_client, fb_model
                 if async_mode:

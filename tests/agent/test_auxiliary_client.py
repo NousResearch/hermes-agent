@@ -37,6 +37,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _missing_credential_env_hint,
 )
 
 
@@ -505,6 +506,19 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestMissingCredentialEnvHint:
+    def test_registry_name_wins_over_id_derived_hint(self):
+        # alibaba's real key is DASHSCOPE_API_KEY, not ALIBABA_API_KEY.
+        assert _missing_credential_env_hint("alibaba") == "DASHSCOPE_API_KEY"
+        # Hyphenated OAuth provider: the id-derived MINIMAX-OAUTH_API_KEY
+        # exists nowhere; the literal-key fallback is the plain-api-key
+        # sibling's key (#89516).
+        assert _missing_credential_env_hint("minimax-oauth") == "MINIMAX_API_KEY"
+
+    def test_unknown_provider_falls_back_to_id_derived_hint(self):
+        assert _missing_credential_env_hint("nonexistent-xyz") == "NONEXISTENT-XYZ_API_KEY"
 
 
 class TestReadCodexAccessToken:

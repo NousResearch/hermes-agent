@@ -965,6 +965,14 @@ class TestMinimaxOAuthProvider:
         assert pconfig.auth_type == "oauth_minimax"
         assert pconfig.id == "minimax-oauth"
 
+    def test_minimax_oauth_env_vars(self):
+        """The OAuth provider's literal-key fallback is the plain-api-key
+        sibling's env var (#89516): credential-failure hints compose
+        "<PROVIDER>_API_KEY" from the provider id, which would name the
+        nonexistent MINIMAX-OAUTH_API_KEY."""
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
+
 
     def test_minimax_oauth_aux_model_registered(self):
         # Aux model for the minimax-oauth provider now lives on the

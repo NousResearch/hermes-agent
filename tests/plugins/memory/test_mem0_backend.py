@@ -448,15 +448,25 @@ class TestOSSBackend:
 
     def test_custom_instructions_reject_non_string_values(self, monkeypatch):
         _install_fake_mem0(monkeypatch)
+        reconciliation_calls = []
+        monkeypatch.setattr(
+            OSSBackend,
+            "_recreate_collection_if_dims_changed",
+            staticmethod(lambda *args: reconciliation_calls.append(args)),
+        )
         raw = {
             "llm": {"provider": "ollama", "config": {}},
-            "embedder": {"provider": "ollama", "config": {}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"embedding_dims": 1536},
+            },
             "vector_store": {"provider": "qdrant", "config": {}},
             "custom_instructions": ["not", "a", "prompt"],
         }
 
         with pytest.raises(TypeError, match="custom_instructions must be a string"):
             OSSBackend(raw)
+        assert reconciliation_calls == []
 
     def test_direct_openai_uses_openai_credentials_and_request_shape(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)

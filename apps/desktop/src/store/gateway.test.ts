@@ -363,16 +363,15 @@ describe('server→client request routing without a registry handler (#112791)',
     const request = { fail: vi.fn(), id: 'srq-1', method: 'clarify', params: { session_id: 's1' }, respond: vi.fn() }
 
     // beforeEach configured a registry with onEvent only: nobody can answer,
-    // so the backend must hear -32601 now instead of waiting out its deadline.
-    dispatchPrimaryServerRequest(request as never, 'default')
-    expect(request.fail).toHaveBeenCalledTimes(1)
-    expect(request.fail).toHaveBeenCalledWith(-32601, expect.stringMatching(/registry/))
+    // so the handler declines (false) and the channel answers -32601 now
+    // instead of the backend waiting out its deadline.
+    expect(dispatchPrimaryServerRequest(request as never, 'default')).toBe(false)
+    expect(request.fail).not.toHaveBeenCalled()
 
     const onServerRequest = vi.fn()
 
     configureGatewayRegistry({ onEvent: vi.fn(), onServerRequest } as never)
-    request.fail.mockClear()
-    dispatchPrimaryServerRequest(request as never, 'work')
+    expect(dispatchPrimaryServerRequest(request as never, 'work')).toBe(true)
     expect(request.fail).not.toHaveBeenCalled()
     expect(onServerRequest).toHaveBeenCalledTimes(1)
     expect(onServerRequest).toHaveBeenCalledWith(expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' }))

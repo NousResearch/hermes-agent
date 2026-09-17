@@ -1,7 +1,6 @@
 import {
   type ConnectionState,
   type GatewayEvent,
-  JSON_RPC_METHOD_NOT_FOUND,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -294,21 +293,22 @@ export interface ScopedServerRequest extends ServerRequest {
  * Route a server→client request into the registry handler with its source tags.
  * Fail fast, never swallow: the backend blocks on this answer (clarify waits
  * its full 3600s deadline). Without a registry there is nobody to answer —
- * -32601 tells the tool immediately instead of stalling the turn.
+ * returning `false` lets the channel answer -32601 immediately instead of
+ * stalling the turn (it also fires the client's `onUnhandledRequest` sink).
  */
-function dispatchServerRequest(request: ServerRequest, profile: string, connectionId: null | string): void {
+function dispatchServerRequest(request: ServerRequest, profile: string, connectionId: null | string): boolean {
   if (!g.config?.onServerRequest) {
-    request.fail(JSON_RPC_METHOD_NOT_FOUND, 'Hermes Desktop has no server-request registry yet')
-
-    return
+    return false
   }
 
   g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+
+  return true
 }
 
 /** Fan a primary-socket server request into the registry handler with the active source tags. */
-export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
-  dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
+export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): boolean {
+  return dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {

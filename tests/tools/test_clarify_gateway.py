@@ -234,6 +234,16 @@ class TestClarifyTimeoutResolution:
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
 
 
+    def test_missing_keys_fall_back_to_default(self):
+        """No legacy ``clarify.timeout`` default anywhere: an empty config and
+        an agent section without the key both resolve to 3600 (#113873)."""
+        from tools import clarify_gateway as cm
+
+        assert cm.resolve_clarify_timeout({}) == 3600
+        assert cm.resolve_clarify_timeout({"agent": {}}) == 3600
+        assert cm.resolve_clarify_timeout({"clarify": {}}) == 3600
+
+
     def test_non_positive_preserved_as_unlimited_sentinel(self):
         """<= 0 is passed through verbatim — the waiting loops read it as
         'unlimited', so the resolver must not clamp it to a positive default."""

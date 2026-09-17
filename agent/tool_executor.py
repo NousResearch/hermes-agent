@@ -808,7 +808,10 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # one run).
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
-_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
+# ``clarify`` owns its wait via ``agent.clarify_timeout`` (see the middleware docstring below);
+# listing it here keeps that contract if it ever leaves ``_NEVER_PARALLEL_TOOLS``, which
+# carries the exemption today (#113873).
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections", "clarify"})
 
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:

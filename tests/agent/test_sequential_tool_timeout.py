@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.tool_executor import execute_tool_calls_sequential
+from agent.tool_executor import (
+    _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS,
+    execute_tool_calls_sequential,
+)
 from run_agent import AIAgent
 from tools.clarify_gateway import resolve_clarify_timeout
 
@@ -287,6 +290,13 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
     assert "user interrupt" not in messages[0]["content"]
     assert "PRIVATE_LIFECYCLE_REASON_DO_NOT_COPY" not in terminal_events[0]["error_message"]
     assert terminal_events[0]["error_type"] == "tool_interrupted"
+
+
+def test_clarify_in_sequential_deadline_exempt_set():
+    """The middleware docstring promises interactive tools own their wait via
+    agent.clarify_timeout; the exempt set must say the same (#113873). Defense
+    in depth behind the _NEVER_PARALLEL_TOOLS bypass, which carries it today."""
+    assert "clarify" in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 
 
 @pytest.mark.parametrize(

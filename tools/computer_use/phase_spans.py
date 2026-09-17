@@ -55,6 +55,8 @@ _DIMENSIONS = frozenset({
     "invalidation_reason",
     "element_count",
     "capture_bytes",
+    "token_est",  # text token estimate for this phase's content (token_estimates.py)
+    "image_token_est",  # screenshot tile-grid estimate (token_estimates.py)
     "aux_vision_used",
     "outcome",
 })

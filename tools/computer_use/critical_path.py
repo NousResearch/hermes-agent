@@ -73,6 +73,8 @@ class TaskReport:
     explained_pct: float  # measured / e2e
     phase_totals_ms: Dict[str, float]
     segments: List[Segment] = field(default_factory=list)
+    phase_tokens_est: Dict[str, int] = field(default_factory=dict)  # per-phase, from span token attrs
+    total_tokens_est: int = 0  # sum of phase_tokens_est
 
 
 @dataclass
@@ -83,6 +85,23 @@ class AggregateReport:
     explained_p50_pct: float
     avoidable_idle_total_ms: float
     per_task: List[TaskReport] = field(default_factory=list)
+    total_tokens_est: int = 0  # sum of per-task totals
+
+
+# Span attr keys that carry token estimates (ints, recorded via phase_spans dims).
+_TOKEN_ATTRS = ("token_est", "image_token_est")
+
+
+def _span_tokens(span: Span) -> int:
+    """Token estimate a span carries: text and image estimates are distinct content."""
+    total = 0
+    for key in _TOKEN_ATTRS:
+        value = span.attrs.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            total += int(value)
+    return total
 
 
 def _sweep(spans: Sequence[Span]) -> List[Segment]:
@@ -129,6 +148,13 @@ def build_task_report(spans: Sequence[Span], task_id: str) -> TaskReport:
     starts = [s.start_ms for s in spans]
     ends = [s.end_ms for s in spans]
     e2e = max(ends) - min(starts) if starts and ends else 0.0
+    phase_tokens: Dict[str, int] = {}
+    for s in spans:
+        if s.phase == "total":  # envelope, never on-path work (same skip as _sweep)
+            continue
+        n = _span_tokens(s)
+        if n:
+            phase_tokens[s.phase] = phase_tokens.get(s.phase, 0) + n
     return TaskReport(
         task_id=task_id,
         e2e_ms=e2e,
@@ -138,6 +164,8 @@ def build_task_report(spans: Sequence[Span], task_id: str) -> TaskReport:
         explained_pct=(100.0 * measured / e2e) if e2e > 0 else 0.0,
         phase_totals_ms=phase_totals,
         segments=segments,
+        phase_tokens_est=phase_tokens,
+        total_tokens_est=sum(phase_tokens.values()),
     )
 
 
@@ -160,6 +188,7 @@ def aggregate(reports: Sequence[TaskReport]) -> AggregateReport:
         explained_p50_pct=_percentile([r.explained_pct for r in reports], 50),
         avoidable_idle_total_ms=sum(r.avoidable_idle_ms for r in reports),
         per_task=reports,
+        total_tokens_est=sum(r.total_tokens_est for r in reports),
     )
 
 
@@ -171,13 +200,18 @@ def render(report: TaskReport | AggregateReport) -> str:
             f"  e2e p50={report.e2e_p50_ms:.0f}ms p95={report.e2e_p95_ms:.0f}ms",
             f"  explained p50={report.explained_p50_pct:.1f}% of e2e as measured phases",
             f"  avoidable idle total={report.avoidable_idle_total_ms:.0f}ms",
+            f"  tokens_est total={report.total_tokens_est}",
         ]
         return "\n".join(lines)
     lines = [
         f"task {report.task_id}: e2e={report.e2e_ms:.0f}ms "
         f"measured={report.measured_ms:.0f}ms ({report.explained_pct:.1f}%) "
-        f"idle={report.idle_ms:.0f}ms avoidable={report.avoidable_idle_ms:.0f}ms",
+        f"idle={report.idle_ms:.0f}ms avoidable={report.avoidable_idle_ms:.0f}ms "
+        f"tokens_est={report.total_tokens_est}",
     ]
     for phase, total in sorted(report.phase_totals_ms.items(), key=lambda kv: -kv[1]):
-        lines.append(f"  {phase}: {total:.0f}ms")
+        line = f"  {phase}: {total:.0f}ms"
+        if report.phase_tokens_est.get(phase):
+            line += f" tokens_est={report.phase_tokens_est[phase]}"
+        lines.append(line)
     return "\n".join(lines)

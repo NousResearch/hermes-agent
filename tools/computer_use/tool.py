@@ -26,6 +26,11 @@ from tools.computer_use.execution_revision import (
     CAPTURE_DEPS, INPUT_DEPS, ExecutionRevision, ExecutionState, target_mismatch,
 )
 from tools.computer_use.phase_spans import note_invalidation, phase, record_call, set_dimension
+from tools.computer_use.token_estimates import (
+    METHOD as TOKEN_ESTIMATE_METHOD,
+    estimate_image_tokens,
+    estimate_text_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -730,13 +735,22 @@ def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None
         delta = diff_states(prev, state) if prev else None
         elapsed_ms = (_time.perf_counter() - started) * 1000.0
         _shadow_state_prev[sid] = state
+        delta_b = delta_bytes(delta) if delta else 0
+        full_b = full_observation_bytes(state)
+        image_est = estimate_image_tokens(cap.width, cap.height) \
+            if (cap.png_b64 or cap.png_bytes_len) else 0
+        set_dimension("token_est", estimate_text_tokens(full_b))  # onto the open element_processing span
         _shadow_state_metrics[sid] = {
             "revision": revision,
             "elements": len(state.elements),
             "reconciliation_ms": elapsed_ms,
             "changed_element_ratio": delta.changed_element_ratio if delta else 0.0,
-            "delta_bytes": delta_bytes(delta) if delta else 0,
-            "full_observation_bytes": full_observation_bytes(state),
+            "delta_bytes": delta_b,
+            "full_observation_bytes": full_b,
+            "delta_tokens_est": estimate_text_tokens(delta_b),
+            "full_observation_tokens_est": estimate_text_tokens(full_b),
+            "image_tokens_est": image_est,
+            "token_estimate_method": TOKEN_ESTIMATE_METHOD,
             "identity_retention": delta.identity_retention if delta else 1.0,
             "ambiguous": len(delta.ambiguous) if delta else 0,
             "mean_confidence": delta.mean_confidence if delta else 1.0,
@@ -772,6 +786,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         v = _capture_view(cap, max_elements)
         set_dimension("element_count", v.total)
         set_dimension("capture_bytes", getattr(cap, "png_bytes_len", None))
+        if cap.png_b64 or cap.png_bytes_len:
+            set_dimension("image_token_est", estimate_image_tokens(cap.width, cap.height))
         # Phase 1A shadow measurement only; timed here because it is element work.
         _shadow_state_observe(cap, session_id)
     with phase("response_shape"):

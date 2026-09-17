@@ -22,7 +22,7 @@ approval:
   prompt_smart_deny: "      انتخاب [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ پایان مهلت — دستور رد شد"
+  timeout:         "      ⏱ پایان مهلت پس از {waited} — دستور اجرا نشد. برای تلاش دوباره دوباره بپرسید، یا سقف را بالا ببرید: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ یک‌بار مجاز شد"
   allowed_session: "      ✓ برای این نشست مجاز شد"
   allowed_always:  "      ✓ به فهرست دائمی مجازها اضافه شد"
@@ -156,6 +156,7 @@ gateway:
 
   fast:
     not_supported:         "⚡ /fast فقط برای مدل‌های OpenAI که از Priority Processing پشتیبانی می‌کنند در دسترس است."
+    choice_auto:           "auto — چند ثانیه ابتدای هر نوبت سریع است"
     status:                "⚡ Priority Processing\n\nحالت فعلی: `{mode}`\n\n_کاربرد:_ `/fast <normal|fast|status>`"
     unknown_arg:           "⚠️ آرگومان ناشناخته: `{arg}`\n\n**گزینه‌های معتبر:** normal، fast، status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (در تنظیمات ذخیره شد)\n_(از پیام بعدی اعمال می‌شود)_"
@@ -164,6 +165,7 @@ gateway:
     label_normal:          "معمولی"
     status_fast:           "fast"
     status_normal:         "normal"
+    choice_cold:           "cold — فقط نوبت اول هر نشست سریع است"
     picker_title:          "⚡ **Priority Processing**\n\nحالت فعلی: `{mode}`\n\nیک گزینه انتخاب کنید:"
     choice_fast:           "fast — Priority Processing روشن"
     choice_normal:         "normal — پردازش استاندارد"
@@ -288,6 +290,7 @@ gateway:
     restarting:            "♻ دروازه راه‌اندازی مجدد می‌شود. اگر تا ۶۰ ثانیه خبری نشدید، از کنسول با `hermes gateway restart` راه‌اندازی مجدد کنید."
 
   resume:
+    all_requires_admin:    "_توجه: «--all» (فهرست میان‌گفت‌وگوها) به یک مدیر پیکربندی‌شده نیاز دارد؛ فقط نشست‌های همین گفت‌وگو نشان داده می‌شود._"
     db_unavailable:        "پایگاه داده نشست در دسترس نیست."
     parse_error:           "⚠️ تحلیل آرگومان‌های `/resume` ممکن نشد: {error}.\nبرای عنوان‌های دارای فاصله از گیومه استفاده کنید، مثلاً: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "برای این اتاق Matrix نشست نام‌داری یافت نشد.\nبرای نام‌گذاری نشست فعلی اتاق از `/title My Session`، برای فهرست همه نشست‌های Matrix از `/resume --all`، و برای عبور صریح از مرز اتاق‌ها از `/resume --cross-room <session name>` استفاده کنید."
@@ -348,6 +351,7 @@ gateway:
     model:                 "**مدل:** `{model}`"
     model_provider:        "**مدل:** `{model}` ({provider})"
     context:               "**زمینه:** {used} / {total} ({pct}%)"
+    free_tier:             "Nous · سطح رایگان · nous/welcome · برای ورود /login"
     context_used:          "**زمینه:** حدود {used} توکن"
     tokens:                "**جمع توکن‌های صورت‌حساب:** {tokens} _(اندازه زمینه فعلی شما نیست؛ از `/context` استفاده کنید)_"
     agent_running:         "**عامل در حال اجرا:** {state}"

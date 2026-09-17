@@ -514,7 +514,6 @@ export const fa = defineLocale({
     currentProfile: "فعلی ({name})",
     managingProfile:
       "پروفایل «{name}» در حال مدیریت است — تغییر وضعیت‌ها روی همان پروفایل اعمال می‌شود، نه داشبورد فعلی.",
-    browseHub: "مرور مرکز مهارت‌ها",
     learnASkill: "آموزش مهارت",
     newSkill: "مهارت جدید",
   },

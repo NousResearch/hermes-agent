@@ -49,6 +49,7 @@ export const LOCALE_ENDONYMS = {
   de: 'Deutsch',
   en: 'English',
   es: 'Español',
+  fa: 'فارسی',
   fr: 'Français',
   ga: 'Gaeilge',
   hu: 'Magyar',
@@ -67,7 +68,7 @@ export type EndonymLocale = keyof typeof LOCALE_ENDONYMS
 
 /** Locales whose script flows right-to-left; drives `<html dir>` so Tailwind's
  *  logical utilities (ms-/me-, ps-/pe-) flip. */
-export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar'])
+export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar', 'fa'])
 
 /** Mirror the active locale onto `<html lang dir>`. No-op without a document (SSR, tests). */
 export function applyDocumentLocale(locale: string): void {

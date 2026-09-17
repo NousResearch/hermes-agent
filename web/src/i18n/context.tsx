@@ -1,4 +1,4 @@
-import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
+import { applyDocumentLocale } from "@hermes/shared/i18n";
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
@@ -42,13 +42,6 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
-
-// Display metadata for the language picker — endonyms from @hermes/shared so the
-// desktop and web pickers can never disagree on a language's native name.
-export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
-  SUPPORTED_LOCALES.map((id) => [id, { name: LOCALE_ENDONYMS[id] }]),
-) as Record<Locale, { name: string }>;
-
 const STORAGE_KEY = "hermes-locale";
 
 function isLocale(value: string): value is Locale {
@@ -106,6 +99,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- canonical context+hook pairing; the hook consumes this file's provider, so splitting files would not change fast-refresh behaviour
 export function useI18n() {
   return useContext(I18nContext);
 }

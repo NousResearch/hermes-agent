@@ -4,8 +4,9 @@ T6 序号选择（OneBot 平台文字 picker 的网关配套）：
 
 * 快照存网关 runner（``ModelPickerSnapshotStore``）：TTL 5 分钟 + 容量 256（LRU）
   双内存防护，TTL/容量清理均为显式可测方法。
-* ``/model <纯数字>`` 仅在该 session_key 存在新鲜快照时按序号解释；歧义优先级：
-  精确模型名命中 > 快照内序号（仅快照新鲜且 1≤n≤len）> 报错提示过期/越界。
+* ``/model <纯数字>`` 仅在该 session_key 存在快照时才可能按序号解释；歧义优先级：
+  精确模型名命中（无条件，含过期快照）> 快照内序号（仅快照新鲜且 1≤n≤len）>
+  报错提示过期/越界。
 * 带 --provider / --global / --session / --once 时不做序号解释；
   无快照场景零行为变化（走原有字面切换路径）。
 * ``send_model_picker`` 成功发送后统一落账快照——telegram 等按钮型 picker 的
@@ -146,11 +147,54 @@ async def test_exact_model_name_beats_snapshot_index(_isolated_config):
     assert args.args[2] == ""          # 不带快照里的 provider 改写
 
 
+
+@pytest.mark.asyncio
+async def test_exact_digit_model_name_on_expired_snapshot_switches_literally(_isolated_config):
+    """评审建议 1：快照过期后，纯数字精确模型名仍按字面切换（名字优先无条件）。"""
+    providers = [{"slug": "weird", "name": "Weird", "models": ["42"], "total_models": 1}]
+    runner = _make_runner()
+    now = {"t": 1000.0}
+    store = ModelPickerSnapshotStore(clock=lambda: now["t"])
+    runner._model_picker_snapshots = store
+    session_key = runner._session_key_for_source(_make_event("/model 42").source)
+    store.record(session_key, providers)
+    runner._perform_model_switch = AsyncMock(return_value=(None, "switch-error"))
+
+    now["t"] += 301.0  # TTL 300s 已过
+    reply = await runner._handle_model_command(_make_event("/model 42"))
+
+    assert reply == "switch-error"  # 未报过期，走字面切换
+    args = runner._perform_model_switch.await_args
+    assert args.args[1] == "42"   # 字面模型名，未被拒为过期
+    assert args.args[2] == ""     # 不带快照里的 provider 改写
+    assert len(store) == 0        # 过期条目仍被顺手剔除
+
+
+@pytest.mark.asyncio
+async def test_expired_snapshot_still_rejects_non_matching_number(_isolated_config):
+    """评审建议 1 的另一面：过期后非同名纯数字仍报过期，不落序号解释。"""
+    providers = [{"slug": "weird", "name": "Weird", "models": ["42"], "total_models": 1}]
+    runner = _make_runner()
+    now = {"t": 1000.0}
+    store = ModelPickerSnapshotStore(clock=lambda: now["t"])
+    runner._model_picker_snapshots = store
+    session_key = runner._session_key_for_source(_make_event("/model 1").source)
+    store.record(session_key, providers)  # 序号 1 指向 "42"，但 1 本身不是模型名
+    runner._perform_model_switch = AsyncMock()
+
+    now["t"] += 301.0
+    reply = await runner._handle_model_command(_make_event("/model 1"))
+
+    assert "expired" in reply
+    runner._perform_model_switch.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("args_line,expected_provider", [
     ("2 --session", ""),          # --session 语义不变
     ("2 --global", ""),           # --global 语义不变
     ("2 --provider anthropic", "anthropic"),  # --provider 语义不变
+    ("2 --once", ""),              # --once 语义不变（评审顺带项：补参数化用例）
 ])
 async def test_flags_skip_numeric_interpretation(_isolated_config, args_line, expected_provider):
     """带 flag 时不做序号解释：纯数字按字面模型名走原有路径。"""
@@ -293,6 +337,33 @@ def test_snapshot_store_capacity_eviction_lru():
     assert store.lookup("c")[0] == "fresh"
 
 
+def test_snapshot_store_rerecord_refreshes_lru_position():
+    """评审顺带项：覆盖同 key 旧快照也刷新 LRU 位置（dict 原地赋值不动顺序）。"""
+    store = ModelPickerSnapshotStore(max_entries=2)
+    store.record("a", PROVIDERS)
+    store.record("b", PROVIDERS)
+    store.record("a", PROVIDERS)  # 重写 a → b 成为最旧
+    store.record("c", PROVIDERS)  # 淘汰 b
+
+    assert store.lookup("a")[0] == "fresh"
+    assert store.lookup("b")[0] == "absent"
+    assert store.lookup("c")[0] == "fresh"
+
+
+def test_snapshot_store_expired_lookup_returns_items_for_exact_name():
+    """评审建议 1（存储层）：expired 仍返回 items 供精确名比对，序号使用由调用方拒绝。"""
+    now = {"t": 1000.0}
+    store = ModelPickerSnapshotStore(clock=lambda: now["t"])
+    store.record("k", PROVIDERS)
+
+    now["t"] += 301.0
+    state, items = store.lookup("k")
+    assert state == "expired"
+    assert items is not None and len(items) == 3  # items 仍可用
+    assert len(store) == 0                        # 条目已剔除，不回涨 LRU
+
+
+
 def test_snapshot_store_empty_providers_not_recorded():
     """空列表（无可列项）不落账，并清掉同 key 旧快照，避免脏序号解释。"""
     store = ModelPickerSnapshotStore()
@@ -319,3 +390,101 @@ def test_picker_numbering_matches_onebot_render():
     # 无模型的 provider 行不占序号，但可有分组标题
     assert "【My Endpoint】" not in text
     assert "【OpenAI】" in text
+
+
+# --------------------------------------------------------------------------- #
+# 文档口径：按钮型 picker 平台同样落账快照（评审建议 3 的代码侧行为锁定）
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_button_picker_platform_records_snapshot_for_numeric_resolution(
+        _isolated_config, monkeypatch):
+    """README 口径：按钮型 picker（telegram）也建立快照，/model <序号> 同样生效。"""
+    class _FakePickerResult:
+        success = True
+
+    class _FakePickerAdapter:
+        async def send_model_picker(self, **kwargs):
+            return _FakePickerResult()
+
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    runner._thread_metadata_for_source = lambda *a, **k: None
+    runner._reply_anchor_for_event = lambda *a, **k: None
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers.list_picker_providers", lambda **kw: PROVIDERS)
+
+    event = _make_event("/model", platform=Platform.TELEGRAM)
+    await runner._handle_model_command(event)
+
+    # picker 发送成功后快照落账，与文字型平台同一 flatten 顺序
+    session_key = runner._session_key_for_source(event.source)
+    state, items = runner._model_picker_store.lookup(session_key)
+    assert state == "fresh"
+    assert [model for (_s, _n, model) in items] == ["gpt-4o", "o3", "claude-sonnet-4-5"]
+
+    # 序号解释同样生效
+    runner._perform_model_switch = AsyncMock(return_value=(None, "switch-error"))
+    await runner._handle_model_command(_make_event("/model 2", platform=Platform.TELEGRAM))
+    args = runner._perform_model_switch.await_args
+    assert args.args[1] == "o3"
+    assert args.args[2] == "openai"
+
+
+# --------------------------------------------------------------------------- #
+# housekeeping：picker 快照显式 prune（评审建议 2）
+# --------------------------------------------------------------------------- #
+def test_housekeeping_model_picker_prune_removes_expired():
+    """显式 prune：不再发 /model 的会话的过期快照也能被 housekeeping 回收。"""
+    from types import SimpleNamespace
+    import gateway.run as gateway_run
+
+    now = {"t": 1000.0}
+    store = ModelPickerSnapshotStore(clock=lambda: now["t"])
+    store.record("k1", PROVIDERS)
+    store.record("k2", PROVIDERS)
+    runner = SimpleNamespace(_model_picker_snapshots=store)
+
+    now["t"] += 301.0
+    gateway_run._housekeeping_model_picker_prune(runner)
+
+    assert len(store) == 0
+
+
+def test_housekeeping_model_picker_prune_noop_without_store():
+    """runner 未记录过快照（属性缺省）或 runner 为 None：零开销 no-op，不懒建 store。"""
+    from types import SimpleNamespace
+    import gateway.run as gateway_run
+
+    gateway_run._housekeeping_model_picker_prune(None)
+    runner = SimpleNamespace()
+    gateway_run._housekeeping_model_picker_prune(runner)  # 不抛错即通过
+
+
+class _NTickStopEvent:
+    """让 housekeeping 循环走满 N 个 tick 后停止（chore 按 tick_count % every 触发）。"""
+
+    def __init__(self, ticks):
+        self._ticks = ticks
+
+    def is_set(self):
+        return self._ticks <= 0
+
+    def wait(self, timeout=None):
+        self._ticks -= 1
+        return self._ticks <= 0
+
+
+def test_gateway_housekeeping_runs_the_model_picker_prune():
+    """chore 注册锁定：housekeeping tick 真正调用 picker 快照 prune（每 5 tick 一次）。"""
+    from types import SimpleNamespace
+    import gateway.run as gateway_run
+
+    now = {"t": 1000.0}
+    store = ModelPickerSnapshotStore(clock=lambda: now["t"])
+    store.record("k", PROVIDERS)
+    runner = SimpleNamespace(_model_picker_snapshots=store)
+    now["t"] += 301.0
+
+    gateway_run._start_gateway_housekeeping(_NTickStopEvent(5), interval=0, runner=runner)
+
+    assert len(store) == 0  # 第 5 个 tick 上过期条目被 prune

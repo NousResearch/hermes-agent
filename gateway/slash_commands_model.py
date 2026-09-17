@@ -185,12 +185,15 @@ class ModelPickerSnapshotStore:
             return
         while len(self._entries) >= self._max and session_key not in self._entries:
             self._entries.pop(next(iter(self._entries)))
+        # 先 pop 再赋值：覆盖同 key 旧快照时也刷新 LRU 位置（dict 原地赋值不动顺序）。
+        self._entries.pop(session_key, None)
         self._entries[session_key] = (items, self._clock())
 
     def lookup(self, session_key: str, *, now: Optional[float] = None):
         """返回 ``(state, items)``；state ∈ {"absent", "fresh", "expired"}。
 
-        fresh 命中刷新 LRU 顺序；expired 顺手剔除该条目并返回 ``(state, None)``。
+        fresh 命中刷新 LRU 顺序；expired 顺手剔除该条目，但仍返回 items——精确
+        模型名比对不受 TTL 影响（序号使用由调用方按 state 拒绝）。
         """
         now = self._clock() if now is None else now
         entry = self._entries.get(session_key)
@@ -199,15 +202,17 @@ class ModelPickerSnapshotStore:
         items, recorded_at = entry
         if (now - recorded_at) > self._ttl:
             self._entries.pop(session_key, None)
-            return "expired", None
+            return "expired", items
         self._entries[session_key] = self._entries.pop(session_key)  # LRU touch
         return "fresh", items
 
     def prune(self, *, now: Optional[float] = None) -> int:
         """显式清理：剔除全部过期快照，返回清理条数（可测的内存回收入口）。"""
         now = self._clock() if now is None else now
+        # list() 拷贝：prune 可能被 housekeeping 线程调用，与事件循环线程的
+        # record/lookup 并发——在条目快照上判定，避免迭代中 dict 变更。
         expired = [
-            key for key, (_items, recorded_at) in self._entries.items()
+            key for key, (_items, recorded_at) in list(self._entries.items())
             if (now - recorded_at) > self._ttl
         ]
         for key in expired:
@@ -425,8 +430,6 @@ class GatewayModelCommandsMixin:
         try:  # off-loop: listing can hit a synchronous HTTP fetch on a stale cache
             # Offload blocking provider-listing (can fall through to a synchronous urllib HTTP fetch on a
             # stale cache) off the event loop so the gateway doesn't freeze. See #41289.
-            # Offload blocking provider-listing off the event loop so the gateway doesn't freeze on a
-            # stale-cache HTTP fetch. See #41289.
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
@@ -470,8 +473,9 @@ class GatewayModelCommandsMixin:
     def _resolve_model_picker_number(self, session_key: str, target: str):
         """按最近一次 picker 快照解释纯数字 ``/model`` target（/resume 数字分支先例）。
 
-        歧义优先级（README 同步记载）：精确模型名命中 > 快照内序号（仅快照
-        新鲜且 1≤n≤len）> 报错提示过期/越界。返回：
+        歧义优先级（README 同步记载）：精确模型名命中（无条件优先，快照过期后
+        纯数字模型名仍按字面切换）> 快照内序号（仅快照新鲜且 1≤n≤len）> 报错
+        提示过期/越界。返回：
         - None            —— 不按序号解释（无快照 / 快照里存在同名精确模型），
                              走原有字面切换路径，零行为变化；
         - (model, slug)   —— 序号命中，切换目标改写为该 provider 下的该模型；
@@ -484,15 +488,15 @@ class GatewayModelCommandsMixin:
         state, items = self._model_picker_store.lookup(session_key)
         if state == "absent":
             return None
-        if state == "expired":
-            return t("gateway.model.error_prefix", error=(
-                "the model picker list has expired — run /model again for a fresh list"))
         try:
             index = int(target)
         except ValueError:  # e.g. "²".isdigit() is True but int() rejects it
             return None
         if any(model == target for (_slug, _name, model) in items):
-            return None  # 精确模型名命中优先于序号
+            return None  # 精确模型名命中优先于序号（含过期快照：字面切换）
+        if state == "expired":
+            return t("gateway.model.error_prefix", error=(
+                "the model picker list has expired — run /model again for a fresh list"))
         if not 1 <= index <= len(items):
             return t("gateway.model.error_prefix", error=(
                 f"model number {index} is out of range (1-{len(items)}) — "

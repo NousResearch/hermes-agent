@@ -7729,7 +7729,8 @@ def _aux_recovery_ladder(
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
-        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
+        kwargs.get("timeout"))
     from agent.llm_egress_firewall import EgressBlocked
     if isinstance(first_err, EgressBlocked):
         from agent.auxiliary_egress_recovery import local_fallback_steps

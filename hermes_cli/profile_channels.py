@@ -367,6 +367,15 @@ def _remove_entry(entry: Path) -> None:
     """Remove a state entry without following symlinks (``rmtree`` refuses a symlinked dir and would
     otherwise leave the copied link in place; unlinking the link never touches the source)."""
     import shutil
+    if entry.is_symlink() or not entry.is_dir():
+        entry.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(entry, ignore_errors=True)
+
+
+def strip_channel_settings(profile_dir: Path, *, include_state: bool) -> Dict[str, List[str]]:
+    """Strip channel credentials/identity from a freshly cloned profile. ``include_state`` also
+    drops the runtime state ``--clone-all`` copied. Returns ``{platform|"config"|"state": [what]}``."""
     index = ChannelKeyIndex()
     preserve = set()
     if not _platform_enabled_in_config(profile_dir / "config.yaml", "homeassistant"):

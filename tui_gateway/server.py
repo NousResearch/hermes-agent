@@ -120,6 +120,13 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
+_pending: dict[str, tuple[str, threading.Event]] = {}
+_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
+_answers: dict[str, str] = {}
+# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
+# clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
+# so locked answers survive the deadline.
+_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -2671,7 +2678,11 @@ def _make_agent(
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     if conversation_worktree is None:
         with _sessions_lock:
-            conversation_worktree = (_sessions.get(sid) or {}).get("conversation_worktree")
+            session = _sessions.get(sid)
+            conversation_worktree = (session or {}).get("conversation_worktree")
+    else:
+        with _sessions_lock:
+            session = _sessions.get(sid)
     worktree_note = _conversation_worktree_prompt_fragment(conversation_worktree)
     if worktree_note:
         system_prompt = "\n\n".join(part for part in (system_prompt, worktree_note) if part)

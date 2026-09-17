@@ -33,7 +33,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 
 logger = logging.getLogger(__name__)
 
-from hermes_time import now as _hermes_now
+from hermes_time import get_timezone, now as _hermes_now
 from utils import atomic_replace, atomic_write_text, is_truthy_value
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a

@@ -305,6 +305,17 @@ def async_delegation_display_text(evt: dict) -> str:
     return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
 
 
+class SubagentNotification(str):
+    """Keep queued model text string-compatible, with a separate human preview."""
+
+    display_text: str
+
+    def __new__(cls, text: str, event: dict):
+        instance = super().__new__(cls, text)
+        instance.display_text = async_delegation_display_text(event)
+        return instance
+
+
 PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"
 
 

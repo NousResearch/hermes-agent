@@ -114,3 +114,93 @@ class TestConfirmStep:
         backend._active_pid = backend._active_window_id = None
         confirm_run_step(backend)
         assert (backend.seen_kwargs["pid"], backend.seen_kwargs["window_id"]) == (1234, 5678)
+
+
+class TestPerActionExpect:
+    """The confirmation postcondition follows the executed step's action.
+
+    Red on the old code: every one of these sent the bare ``window.exists``
+    expect regardless of the step.
+    """
+
+    SOM = {1: ("Name", "AXTextField"), 2: ("Submit", "AXButton")}
+
+    def _two(self, first):
+        return [first, _tc("click", coordinate=[1, 1], call_id="b")]
+
+    def test_type_with_som_label_builds_value_predicate(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(
+            self._two(_tc("type", text="hello", element=1, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        )
+        assert backend.seen_kwargs["expect"] == [{
+            "element": {
+                "selector": {"label_contains": "Name", "role": "AXTextField"},
+                "exists": True,
+                "value_equals": "hello",
+            }
+        }]
+
+    def test_type_without_som_labels_falls_back(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(self._two(_tc("type", text="hello", call_id="a")), 0, backend)
+        assert backend.seen_kwargs["expect"] == [{"window": {"exists": True}}]
+
+    def test_click_with_som_label_builds_element_predicate(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(
+            self._two(_tc("click", element=2, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        )
+        assert backend.seen_kwargs["expect"] == [{
+            "element": {
+                "selector": {"label_contains": "Submit", "role": "AXButton"},
+                "exists": True,
+            }
+        }]
+
+    def test_click_without_label_falls_back(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(
+            self._two(_tc("click", element=2, call_id="a")), 0, backend
+        )
+        assert backend.seen_kwargs["expect"] == [{"window": {"exists": True}}]
+
+    def test_drag_falls_back_even_with_som_labels(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(
+            self._two(_tc("drag", from_element=1, to_element=2, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        )
+        assert backend.seen_kwargs["expect"] == [{"window": {"exists": True}}]
+
+    def test_empty_text_fails_open_to_fallback(self):
+        backend = _Backend()
+        guarded_run_readiness_stop(
+            self._two(_tc("type", text="", element=1, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        )
+        assert backend.seen_kwargs["expect"] == [{"window": {"exists": True}}]
+
+    def test_stop_rule_fires_with_sharp_predicate(self):
+        backend = _Backend(status="unsatisfied", detail="driver status: unsatisfied (#0:unsatisfied)")
+        stopped = guarded_run_readiness_stop(
+            self._two(_tc("type", text="hello", element=1, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        )
+        assert stopped is not None and stopped[0] == 2
+        assert "unsatisfied" in stopped[1]
+        assert backend.seen_kwargs["expect"][0]["element"]["value_equals"] == "hello"
+
+    def test_satisfied_sharp_predicate_continues(self):
+        backend = _Backend(status="satisfied")
+        assert guarded_run_readiness_stop(
+            self._two(_tc("type", text="hello", element=1, call_id="a")),
+            0, backend, som_labels=self.SOM,
+        ) is None
+
+    def test_confirm_without_tool_call_stays_fallback(self):
+        backend = _Backend()
+        confirm_run_step(backend)
+        assert backend.seen_kwargs["expect"] == [{"window": {"exists": True}}]

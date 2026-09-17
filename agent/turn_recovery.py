@@ -480,13 +480,21 @@ def _recover_format_errors(
     return False
 
 
+_WELCOME_ROUTE_HEAL_COPY = {
+    "anon_on_paid_host": "Reconnected to the free model's own route.",
+    "named_on_welcome_host": "Reconnected to your Nous account's own route.",
+}
+
+
 def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -> bool:
     """Two one-shot repairs for the Nous free tier, both silent on the wire and named once in chat.
 
     ``model_not_free``: the session asked the welcome host for a model it does not serve; move
     to the first alternate the gateway named (its own model) and retry, instead of failing the
-    turn. ``anon_on_paid_host``: this process is pointed at the paid host with a free-tier
-    identity (a stale route); re-read the credentials, which heals the URL, and retry.
+    turn. ``anon_on_paid_host`` / ``named_on_welcome_host``: this process is pointed at the other
+    identity's host (a stale route); re-read the credentials, which heals the URL, and retry. The
+    refresh reports False when the store yields the same route, so a user-set
+    ``NOUS_INFERENCE_BASE_URL`` falls straight through to the terminal copy.
 
     Reads the CLASSIFIER's context (``classified.error_context``): that is where
     ``_nous_welcome_tier`` parks ``welcome_refusal`` / ``welcome_route``. The turn's other context
@@ -508,14 +516,14 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
             logger.info("%sNous free tier: moved %s -> %s after model_not_free", agent.log_prefix, requested, target)
             return True
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
-    if route == "anon_on_paid_host" and not _retry.welcome_route_heal_attempted:
+    if route in _WELCOME_ROUTE_HEAL_COPY and not _retry.welcome_route_heal_attempted:
         _retry.welcome_route_heal_attempted = True
         try:
             healed = bool(agent._try_refresh_nous_client_credentials(force=True))
         except Exception:
             healed = False
         if healed:
-            _vlines(agent, "🔐 Reconnected to the free model's own route. Retrying request...")
+            _vlines(agent, f"🔐 {_WELCOME_ROUTE_HEAL_COPY[route]} Retrying request...")
             return True
     return False
 

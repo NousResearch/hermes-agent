@@ -758,7 +758,7 @@ def classify_api_error(
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages, str(base_url or ""),
-        is_anonymous_request(provider, api_key),
+        anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}

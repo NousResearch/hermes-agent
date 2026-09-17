@@ -172,6 +172,11 @@ def is_anonymous_request(provider: Any, api_key: Any) -> bool:
     return provider == "nous" and _decode_jwt_claims(api_key).get("account_tier") == ANON_ACCOUNT_TIER
 
 
+def is_anonymous_agent(agent: Any) -> bool:
+    """:func:`is_anonymous_request` for a live agent: read at call time, since the credential rotates."""
+    return is_anonymous_request(getattr(agent, "provider", ""), getattr(agent, "api_key", None))
+
+
 def current_nous_state() -> Optional[Dict[str, Any]]:
     """The profile's ``providers.nous`` state without locking or network (status/picker reads)."""
     from hermes_cli.auth import _load_auth_store, _load_provider_state

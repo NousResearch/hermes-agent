@@ -272,6 +272,7 @@ describe('PluginsTab', () => {
       repo: 'https://github.com/example/plugins-monorepo',
       subdir: 'packages/nested-plugin'
     }
+
     seedCatalog([entry])
     renderPlugins({ profile: null })
 
@@ -301,10 +302,16 @@ describe('PluginsTab catalog UX', () => {
   it('fetches only on Browse, with no extra requests for selection, search, or tab bounce', async () => {
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => [weatherEntry, { ...weatherEntry, name: 'garden-plugin', category: 'garden', description: 'Garden planning' }]
+      json: async () => [
+        weatherEntry,
+        { ...weatherEntry, name: 'garden-plugin', category: 'garden', description: 'Garden planning' }
+      ]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
 
     expect(fetchCatalog).not.toHaveBeenCalled()
     expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
@@ -329,11 +336,15 @@ describe('PluginsTab catalog UX', () => {
   })
 
   it('offers an explicit retry after a catalog failure rather than refetching on tab bounce', async () => {
-    const fetchCatalog = vi.fn()
+    const fetchCatalog = vi
+      .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
+
     vi.stubGlobal('fetch', fetchCatalog)
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
 
     expect(await screen.findByText('Catalog HTTP 503')).toBeTruthy()
@@ -420,7 +431,9 @@ describe('PluginsTab catalog UX', () => {
     ])
 
     seedCatalog([{ ...weatherEntry, name: 'demo-weather' }])
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
     await selectCatalogEntry('demo-weather')
 
     const installed = within(screen.getByRole('main')).getByRole<HTMLButtonElement>('button', { name: 'Installed' })
@@ -446,7 +459,9 @@ describe('PluginsTab catalog UX', () => {
 
     const entry = { ...weatherEntry, name: 'demo-weather', sha: 'b'.repeat(40) }
     seedCatalog([entry])
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
     await selectCatalogEntry(entry.name)
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
 

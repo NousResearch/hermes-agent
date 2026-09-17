@@ -93,6 +93,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     domains and auto-attach. ``snapshot()`` / ``respond_to_dialog()`` / ``evaluate_runtime()``
     are sync, thread-safe bridges onto that loop; all CDP I/O lives on the loop."""
 
+    # Cap consecutive post-attach reconnect failures so a dead endpoint does not spin
+    # forever. Set on the class so it is configurable via subclass if needed.
+    _MAX_POST_ATTACH_FAILURES: int = 10
+
     def __init__(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                  dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
         if dialog_policy not in _VALID_POLICIES:
@@ -122,6 +126,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
+        # Post-attach reconnect failure counter — unbounded retry guard.
+        self._post_attach_failures = 0
+        self._post_attach_failure_logged = False
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -350,8 +357,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
-        A failure before the first successful attach is fatal for ``start()``."""
+        A failure before the first successful attach is fatal for ``start()``.
+        After a successful attach, consecutive reconnect failures are capped
+        (default 10) so a dead endpoint does not spin forever."""
         attempt, last_success_at, backoff = 0, 0.0, 0.5
+        consecutive_post_attach_failures = 0
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
@@ -378,6 +388,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 self._set_active(True)
                 last_success_at = time.time()
                 backoff = 0.5  # reset after a successful attach
+                consecutive_post_attach_failures = 0
+                self._post_attach_failure_logged = False
                 self._ready_event.set()
                 await reader_task
             except BaseException as e:
@@ -398,6 +410,21 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
             if self._stop_requested:
                 return
+
+            # After a successful attach, cap consecutive reconnect failures so a dead
+            # endpoint does not spin forever (logging ~1 MB/day). Log once, then stop.
+            consecutive_post_attach_failures += 1
+            if consecutive_post_attach_failures >= self._MAX_POST_ATTACH_FAILURES:
+                if not self._post_attach_failure_logged:
+                    self._post_attach_failure_logged = True
+                    logger.warning(
+                        "CDP supervisor %s: stopped after %d consecutive post-attach "
+                        "failures (cdp_url dead or task finished)",
+                        self.task_id, consecutive_post_attach_failures,
+                    )
+                self._stop_requested = True
+                return
+
             logger.debug("CDP supervisor %s: reconnecting in %.1fs...", self.task_id, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)

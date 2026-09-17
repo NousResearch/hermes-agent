@@ -82,6 +82,10 @@ ACTION_TIMEOUT = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 MAX_RECONNECT_ATTEMPTS = 100
 
+# 审批台账上限（T5 review）：_requests 永不清理会无限增长，落盘前
+# 淘汰最旧的 processed 记录只保留最近这么多条（pending 永不淘汰）。
+REQUEST_LEDGER_MAX = 200
+
 # Image extensions for the standalone HTTP sender (base.py keeps its own
 # _IMAGE_EXTS as a function-local set, so we declare the plugin copy).
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"})
@@ -894,9 +898,16 @@ class OneBotAdapter(BasePlatformAdapter):
         if not u.poke_cooldown_ok(self._poke_last_reply.get(chat_id, 0.0), now):
             logger.debug("[onebot] poke reply suppressed (cooldown): %s", chat_id)
             return
-        self._poke_last_reply[chat_id] = now
-        # 出站走现有 send 路径（segment 数组），绝不拼 CQ 字符串
-        await self.send(chat_id, u.poke_reply_text())
+        # 出站走现有 send 路径（segment 数组），绝不拼 CQ 字符串。
+        # 冷却仅在发送成功后占用：send 失败（SendResult.success=False 或异常）
+        # 不写冷却，允许用户立即再戳重试。
+        try:
+            result = await self.send(chat_id, u.poke_reply_text())
+        except Exception as e:
+            logger.warning("[onebot] poke reply send failed: %s", e)
+            return
+        if result is not None and result.success:
+            self._poke_last_reply[chat_id] = now
 
     # -- 好友申请/群邀请审批（request 事件；T5） ------------------------
 
@@ -917,8 +928,16 @@ class OneBotAdapter(BasePlatformAdapter):
                 return
             flag = req["flag"]
             pending = self._requests.get(flag)
-            if pending is not None and pending.get("status") == "pending":
-                return  # 幂等：同一 flag 的重复事件不重复通知
+            if pending is not None:
+                if pending.get("status") == "processed":
+                    # 同一 flag 已审批过（NapCat 重放同一 flag 不产生第二次
+                    # 合法申请）→ 静默忽略，不重建记录、不再次通知
+                    logger.debug(
+                        "[onebot] request flag already processed, ignored: %s", flag
+                    )
+                    return
+                # 幂等：同一 flag 待处理期间的重复事件不重复通知
+                return
             self._request_seq += 1
             record = dict(req)
             record["seq"] = self._request_seq
@@ -1059,18 +1078,43 @@ class OneBotAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 pass
 
+
+    def _prune_requests(self) -> None:
+        """台账上限（REQUEST_LEDGER_MAX 条）：超限时淘汰最旧的已处理记录。
+
+        pending 记录永不淘汰（丢了就无法审批）；processed 按 decided_ts
+        （缺省回退 ts）从旧到新剔除，直到回到上限以内。
+        """
+        if len(self._requests) <= REQUEST_LEDGER_MAX:
+            return
+        processed = sorted(
+            (
+                float(r.get("decided_ts") or r.get("ts") or 0.0),
+                flag,
+            )
+            for flag, r in self._requests.items()
+            if r.get("status") == "processed"
+        )
+        excess = len(self._requests) - REQUEST_LEDGER_MAX
+        for _, flag in processed[:excess]:
+            self._requests.pop(flag, None)
+
+
     def _persist_requests(self) -> None:
         try:
+            self._prune_requests()
             path = self._requests_file()
             tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            # 敏感：申请者 QQ + 验证消息，仅本机可读——以 0600 创建，
+            # 避免 umask 宽权限短暂窗口期（open+chmod 有间隙）
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(
                     {"requests": list(self._requests.values())},
                     f,
                     ensure_ascii=False,
                     indent=1,
                 )
-            os.chmod(tmp, 0o600)  # 敏感：申请者 QQ + 验证消息，仅本机可读
             os.replace(tmp, path)
         except Exception as e:
             logger.debug("[onebot] persist requests failed: %s", e)
@@ -1363,6 +1407,10 @@ class OneBotAdapter(BasePlatformAdapter):
             # 入口在 _process_message 的 admin 门之后；此处兜底防非 admin 直调
             if user_id not in self._admin_users:
                 return "❌ 仅管理员可执行审批命令。"
+            if chat_type != "dm":
+                # 群内不执行审批：确认回复含申请人 QQ（台账内容），
+                # 发到群里会泄露；也不调审批 API（防误触他人消息）。
+                return "请在 bot 私聊中执行审批命令。"
             return await self._handle_request_decision(cmd, arg)
         if cmd == "id":
             return f"chat_id: {chat_id}\nuser_id: {user_id}"

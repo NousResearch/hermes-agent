@@ -2884,3 +2884,158 @@ def test_duplicate_request_event_not_notified_twice(monkeypatch, tmp_path) -> No
     )
     assert len(sent1) == 1
     assert sent2 == []
+
+
+# ---------------------------------------------------------------------------
+# T5 回炉收口（独立评审 4 项 🟡 建议的实施测试）
+# ---------------------------------------------------------------------------
+
+
+def test_processed_flag_replay_silently_ignored(monkeypatch, tmp_path) -> None:
+    """已处理 flag 重放（NapCat 重发同一 flag）→ 静默：不通知、不调 API、
+    不重建记录、seq 不回退也不增长。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    _, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve 1")
+    )
+    assert "✅" in reply
+    assert len(actions) == 1  # 审批本身调过一次 API
+    seq_before = adapter._request_seq
+    rec_before = dict(adapter._requests["friend_flag_1"])
+
+    # 重放同一 flag 的 request 事件
+    sent2, actions2 = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    assert sent2 == []  # 不再次通知
+    assert actions2 == []  # 不产生审批 API 调用
+    assert adapter._request_seq == seq_before  # 不重建记录
+    assert adapter._requests["friend_flag_1"] == rec_before  # 台账保持 processed
+
+
+def test_group_approve_prompts_dm_only_no_leak(monkeypatch, tmp_path) -> None:
+    """admin 在群里执行 /approve → 只回复"请在 bot 私聊中执行审批命令"：
+    不调 API、不泄露台账内容（申请人 QQ / flag 均不出现在回复里）。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    asyncio.run(_dispatch_request_and_collect(adapter, _friend_request_frame()))
+    actions = []
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    reply = asyncio.run(
+        adapter._handle_local_command("group:777", "group", "888", "/approve 1")
+    )
+    assert "私聊" in reply
+    assert "12345" not in reply  # 申请人 QQ 不泄露
+    assert "friend_flag_1" not in reply
+    assert actions == []  # 不调审批 API
+    # 台账状态不变，仍可在私聊中正常审批
+    assert adapter._requests["friend_flag_1"]["status"] == "pending"
+
+
+def test_requests_file_created_0600_without_chmod(monkeypatch, tmp_path) -> None:
+    """台账落盘从创建起即 0600：即使 os.chmod 被禁用（抛错），
+    写出的文件权限仍是 0600（证明不依赖事后 chmod 补救）。"""
+    import os as _os
+
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    asyncio.run(_dispatch_request_and_collect(adapter, _friend_request_frame()))
+
+    def _no_chmod(path, mode):
+        raise AssertionError("persist must not rely on post-hoc chmod")
+
+    monkeypatch.setattr(_os, "chmod", _no_chmod)
+    adapter._persist_requests()  # 不抛错即通过
+    persist_path = tmp_path / "onebot_requests.json"
+    assert persist_path.exists()
+    assert (persist_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_requests_ledger_prune_keeps_recent_processed(monkeypatch, tmp_path) -> None:
+    """台账上限：超限时落盘前淘汰最旧的 processed 记录，pending 永不淘汰。"""
+    from plugins.platforms.onebot import adapter as ob_adapter
+
+    monkeypatch.setattr(ob_adapter, "REQUEST_LEDGER_MAX", 3)
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    for i in range(5):
+        adapter._requests[f"flag_{i}"] = {
+            "flag": f"flag_{i}",
+            "seq": i + 1,
+            "status": "processed",
+            "decision": True,
+            "ts": 1000.0 + i,
+            "decided_ts": 2000.0 + i,
+            "kind": "friend",
+            "user_id": str(1000 + i),
+        }
+    adapter._persist_requests()
+    assert set(adapter._requests) == {"flag_2", "flag_3", "flag_4"}  # 最旧两条被淘汰
+
+    # pending 不淘汰：4 条（3 processed + 1 pending）超上限 3 →
+    # 只淘汰最旧的 1 条 processed（flag_2），回到 3 条
+    adapter._requests["flag_pending"] = {
+        "flag": "flag_pending", "seq": 9, "status": "pending", "ts": 999.0,
+    }
+    adapter._persist_requests()
+    assert "flag_pending" in adapter._requests
+    assert set(adapter._requests) == {"flag_3", "flag_4", "flag_pending"}
+
+
+async def _dispatch_notice_raw(adapter: OneBotAdapter, data: dict) -> list:
+    """经 _handle_frame 派发 notice 但不覆盖 adapter.send（供失败路径测试）。"""
+    sent = []
+    adapter._handle_frame(data)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending)
+    return sent
+
+
+def test_poke_send_failure_does_not_consume_cooldown() -> None:
+    """poke 回复 send 失败 → 不占用 60s 冷却，可立即重试成功。"""
+    adapter = _make_adapter(poke_reply=True)
+
+    async def failing_send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=False, error="boom")
+
+    adapter.send = failing_send
+    out = asyncio.run(_dispatch_notice_raw(adapter, _poke_notice()))
+    assert out == []
+    assert adapter._poke_last_reply == {}  # 冷却未被占用
+
+    async def ok_send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id="1")
+
+    adapter.send = ok_send
+    out2 = asyncio.run(_dispatch_notice_raw(adapter, _poke_notice()))
+    assert len(out2) == 0  # raw 派发不捕获出站，只验证不抛错
+    assert "group:777" in adapter._poke_last_reply  # 成功才写冷却
+
+
+def test_poke_send_success_sets_cooldown() -> None:
+    """poke 回复 send 成功 → 写入冷却，冷却期内第二次戳静默（既有语义）。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent1 = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert len(sent1) == 1
+    assert "group:777" in adapter._poke_last_reply
+    sent2 = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert sent2 == []
+
+
+def test_poke_send_exception_does_not_consume_cooldown() -> None:
+    """poke 回复 send 抛异常 → 不占用冷却，也不让异常逃出 notice 处理。"""
+    adapter = _make_adapter(poke_reply=True)
+
+    async def raising_send(chat_id, content, reply_to=None, metadata=None):
+        raise RuntimeError("ws gone")
+
+    adapter.send = raising_send
+    out = asyncio.run(_dispatch_notice_raw(adapter, _poke_notice()))
+    assert out == []  # 异常被 notice 隔离层吞掉，未传播
+    assert adapter._poke_last_reply == {}

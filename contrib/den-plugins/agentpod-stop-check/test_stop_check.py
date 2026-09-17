@@ -2642,6 +2642,19 @@ def test_53_no_documented_identity_or_credential_use_is_an_access_blocker(home):
     f3 = next(f for f in helper_verdict(home, cfg=cfg_author).findings if f.task_id == tid)
     assert f3.kind == "escalation_access_blocker", f3
 
+    # Opacity must be POSITIVELY asserted. An entry that never declares it is
+    # not "probably opaque" — it could be the author identity discharging its
+    # own review gate. Both undeclared shapes must refuse.
+    for caps in ([{"name": "app-review"}], ["app-review"]):
+        cfg_unstated = _escalation_cfg(home, heads={"*": REVIEW_HEAD}, caps=caps)
+        f4 = next(
+            f for f in helper_verdict(home, cfg=cfg_unstated).findings
+            if f.task_id == tid
+        )
+        assert f4.kind == "escalation_access_blocker", (caps, f4)
+        assert "opaque" in f4.detail, (caps, f4)
+        assert "route the scoped review" not in f4.next_action, (caps, f4)
+
 
 def test_54_human_prompt_preserved_for_irreversible_financial_and_unstated(home):
     """(4) Only review gates are routable. Everything else keeps the human."""

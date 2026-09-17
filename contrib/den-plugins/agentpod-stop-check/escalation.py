@@ -18,9 +18,9 @@ the capability are all explicit:
 * the pinned review SHA no longer equals the current head -> the prior review
   is stale, the capability must NOT be used, a fresh independent review at the
   new head is required;
-* no documented identity exists for the named capability, or using it would
-  reveal or mint a credential -> emit the exact access blocker, do not invent a
-  workaround;
+* no documented identity exists for the named capability, the identity does not
+  positively declare ``opaque: true``, or using it would reveal or mint a
+  credential -> emit the exact access blocker, do not invent a workaround;
 * the escalation class is anything other than a review gate (financial,
   irreversible, external policy, or simply unstated) -> the human prompt is
   preserved untouched.
@@ -110,6 +110,11 @@ def documented_capabilities(cfg: dict) -> dict:
     capability fails CLOSED into an access blocker rather than being assumed
     usable. That direction is deliberate — the guard can only ever refuse a
     capability it has not been told about, never silently grant one.
+
+    The bare-string shorthand (``review_capabilities: [app-review]``) is kept
+    for config ergonomics but is **never routable**: it structurally cannot
+    carry ``opaque: true``, and opacity must be positively asserted, so such an
+    entry always yields an access blocker.
     """
     out: dict = {}
     for entry in cfg.get("review_capabilities") or []:
@@ -178,14 +183,23 @@ def classify_escalation(
             f"'{esc.capability}' would reveal or mint a credential. Stop and ask "
             f"the operator; do NOT proceed",
         )
-    if entry.get("opaque") is False:
+    if entry.get("opaque") is not True:
+        # Opacity is the ONE field that must be positively asserted. Absence is
+        # not "probably opaque": an entry that never declares it — including the
+        # bare-string shorthand, which structurally cannot — could be the author
+        # identity discharging its own review gate. reveals_credential /
+        # mints_credential default false in the other direction on purpose
+        # (absence there genuinely means "does not").
+        declared = "is not opaque (it would review as the author)" if (
+            entry.get("opaque") is False
+        ) else "does not declare opaque: true (opacity must be asserted, not assumed)"
         return EscalationVerdict(
             DECISION_ACCESS_BLOCKER,
-            f"documented identity '{esc.capability}' is not opaque (it would "
-            f"review as the author)",
+            f"documented identity '{esc.capability}' {declared}",
             f"ACCESS BLOCKER for {task_id or 'this card'}: '{esc.capability}' is "
-            f"the author identity, so it cannot supply a non-author review. Ask "
-            f"the operator for an authorised opaque identity",
+            f"not a proven non-author identity ({declared}), so it cannot supply "
+            f"a non-author review. Ask the operator to document it with "
+            f"'opaque: true' or supply an authorised opaque identity",
         )
 
     head = str(current_head or "").strip()

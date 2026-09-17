@@ -463,12 +463,13 @@ human-gate branch (so a routable escalation can never be laundered into
 |---|---|---|
 | `route_scoped_review` | `escalation_routable` | `class=review_gate`, documented opaque capability, `review_sha` == current head |
 | `require_fresh_review` | `escalation_stale_review` | head moved, or head unobservable — the pinned review is stale, capability must NOT be used |
-| `access_blocker` | `escalation_access_blocker` | no documented identity, or it is non-opaque / would reveal or mint a credential |
+| `access_blocker` | `escalation_access_blocker` | no documented identity, it does not positively declare `opaque: true`, or it would reveal or mint a credential |
 | `human_required` | *(unchanged)* | any other class, or no class at all |
 
 Fail-closed by construction: only `class=review_gate` is routable, an undeclared
-capability refuses rather than assumes, and an unknown head never matches a
-pinned review. Head resolution prefers a live resolver / operator observation
+capability refuses rather than assumes, opacity must be **positively asserted**
+(`opaque: true`; unstated or the bare-string shorthand is never routable), and an
+unknown head never matches a pinned review. Head resolution prefers a live resolver / operator observation
 over the marker's own `head_sha` — the marker is precisely the thing that goes
 stale.
 
@@ -477,8 +478,10 @@ stale.
 ```yaml
 review_capabilities:
   - name: app-review
-    opaque: true              # false => reviews as the author, blocked
+    opaque: true              # REQUIRED to route; false or unstated => blocked
     reveals_credential: false # true  => blocked
+# The shorthand form `- app-review` is accepted but never routable: it cannot
+# declare opacity, so it always yields an access blocker.
 current_heads: {"*": "<sha>"}  # or head_resolver: callable(task) -> sha
 ```
 

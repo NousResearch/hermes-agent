@@ -4,11 +4,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { beforeAll, test, vi } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const POSIX_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'posix.sh')
 const WINDOWS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'windows.ps1')
+
+// These tests spawn real interpreter processes (pwsh/bash) repeatedly. Under
+// full-suite contention the 5s project default has proven too tight; 30s
+// only widens the ceiling — the tests stay fast in isolation.
+beforeAll(() => {
+  vi.setConfig({ testTimeout: 30_000 })
+})
 
 function sandbox(tag: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-handoff-marker-${tag}-`))

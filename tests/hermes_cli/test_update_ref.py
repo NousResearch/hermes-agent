@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
+import hermes_cli.main_web_build as main_web_build
+import hermes_cli.main_install_repair as main_install_repair
+from hermes_cli import update_cmd
 from hermes_cli.subcommands.update import build_update_parser
 
 
@@ -94,18 +97,17 @@ def _make_ref_side_effect(
 
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
-    """Same surface as test_update_head_moved_gate._patch_update_deps."""
+    """Patch the hermes_cli.main helpers ``_cmd_update_impl`` touches."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main,
         "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
-    import hermes_cli.update_cmd as update_cmd
-
     monkeypatch.setattr(update_cmd, "_is_fork", lambda *a, **k: False)
     monkeypatch.setattr(
         hermes_main, "_stash_local_changes_if_needed", lambda *a, **k: None
@@ -113,6 +115,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
     monkeypatch.setattr(
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -123,39 +128,8 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
-    monkeypatch.setattr(
-        hermes_main, "_refresh_bootstrap_cache_scripts", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_reload_updated_runtime_modules", lambda: None
-    )
-    monkeypatch.setattr(
-        hermes_main,
-        "_install_python_dependencies_with_optional_fallback",
-        lambda *a, **k: None,
-    )
-    monkeypatch.setattr(
-        hermes_main, "_refresh_active_lazy_features", lambda *a, **k: True
-    )
-    monkeypatch.setattr(
-        hermes_main, "_restore_active_tool_dependencies", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_refresh_active_memory_provider_dependencies", lambda: None
-    )
-    monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(
-        hermes_main, "_abort_dependency_sync_if_self_locked", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_capture_active_lazy_features", lambda: []
-    )
-    monkeypatch.setattr(
-        hermes_main, "_capture_active_tool_dependencies", lambda: []
-    )
-
     import hermes_cli.gateway as hermes_gateway
 
     monkeypatch.setattr(
@@ -165,45 +139,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
-    monkeypatch.setattr(
-        update_cmd, "_validate_critical_files_syntax", lambda *_a, **_k: (True, None, None)
-    )
-    monkeypatch.setattr(
-        update_cmd, "_validate_critical_modules_import", lambda *_a, **_k: (True, None, None)
-    )
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
-    monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda *_a, **_k: False)
-    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_print_update_completion", lambda *_a, **_k: None)
-    monkeypatch.setattr(update_cmd, "_reload_config_modules", lambda: None)
-    monkeypatch.setattr(update_cmd, "_run_config_check_fresh", lambda: (1, 1))
-    monkeypatch.setattr(update_cmd, "_read_project_version", lambda: "0.0.0")
-    monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
-    monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
-    monkeypatch.setattr(update_cmd, "_print_fts_optimize_available_notice", lambda: None)
-    monkeypatch.setattr(update_cmd, "_ensure_fhs_path_guard", lambda: None)
-    monkeypatch.setattr(update_cmd, "_ensure_acp_launcher", lambda: None)
-    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: [])
-    monkeypatch.setattr(update_cmd, "_restart_gateway_fleet_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_verify_fleet_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_resume_windows_gateways_and_merge_outcome", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_write_gateway_update_exit_code", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **k: True)
-    monkeypatch.setattr(update_cmd, "_sync_python_dependencies_after_pull", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_editable_install_is_current", lambda *a, **k: True)
-    monkeypatch.setattr(update_cmd, "_refuse_update_if_venv_foreign_owned", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **_k: None)
     monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **_k: None)
     monkeypatch.setattr(
         "tools.skills_sync.sync_skills",
         lambda **_k: {"copied": [], "updated": []},
     )
-    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
     monkeypatch.setattr("shutil.which", lambda name, **_k: None)
 
 

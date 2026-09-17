@@ -3015,14 +3015,12 @@ def _run_one_job_body(
                     "Job '%s': fire claim ownership lost after completed delivery; "
                     "recording the delivered run's terminal status",
                     job["id"])
-            elif transport_cancelled:
-                logger.warning(
-                    "Job '%s': transport cancellation arrived during a successful delivery; "
-                    "keeping the interrupted terminal status",
-                    job["id"])
-                _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
-                return True
             else:
+                if transport_cancelled:
+                    logger.warning(
+                        "Job '%s': transport cancellation arrived before terminal completion; "
+                        "recording the interrupted run",
+                        job["id"])
                 _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
                 return True
 

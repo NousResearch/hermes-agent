@@ -87,6 +87,16 @@ function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
   const platform = options.platform || process.platform
 
   if (platform === 'win32') {
+    // Windows has no POSIX chmod, but a link is still not our secret file.
+    // Keep the no-op contract for missing paths without following symlinks.
+    try {
+      if (fsImpl.lstatSync(filePath).isSymbolicLink()) {
+        return false
+      }
+    } catch {
+      return true
+    }
+
     return true
   }
 

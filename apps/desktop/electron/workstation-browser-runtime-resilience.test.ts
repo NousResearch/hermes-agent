@@ -84,6 +84,7 @@ const electron = vi.hoisted(() => {
       if (source.includes('byRef.get')) {
         return { success: true, x: 50, y: 50 }
       }
+
       if (source.includes('__hermesWorkstationRefs')) {
         return {
           url: this.url,
@@ -94,6 +95,7 @@ const electron = vi.hoisted(() => {
           elements: []
         }
       }
+
       if (source.includes('selectorUsed')) {
         return {
           count: 1,
@@ -171,6 +173,7 @@ const electron = vi.hoisted(() => {
     session: { fromPath: () => browserSession }
   }
 })
+
 vi.mock('electron', () => ({
   app: electron.app,
   BrowserWindow: electron.FakeBrowserWindow,
@@ -376,6 +379,7 @@ test('event projection reads the bounded canonical journal for one task', async 
     assert.equal(snapshot.events[0]?.elapsed_seconds, 1)
   } finally {
     await runtime.destroy()
+
     if (previousHermesHome === undefined) {
       delete process.env.HERMES_HOME
     } else {
@@ -701,6 +705,7 @@ test('browser_type handles clear and append options without errors', async () =>
     task_id: taskId,
     arguments: { ref: '@e1', text: 'cleared text', clear: true, append: false }
   })
+
   assert.equal(typed.success, true)
 
   const appended = await executeControlRequest(runtime, {
@@ -708,6 +713,7 @@ test('browser_type handles clear and append options without errors', async () =>
     task_id: taskId,
     arguments: { ref: '@e1', text: ' more text', clear: false, append: true }
   })
+
   assert.equal(appended.success, true)
   await runtime.destroy()
 })

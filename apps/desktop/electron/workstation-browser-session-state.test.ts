@@ -418,4 +418,3 @@ test('composite state persists and normalizes kanbanCardId and runId identity li
   assert.equal(loaded.browserTasks.tasks[0]?.kanbanCardId, 'card-abc-123')
   assert.equal(loaded.browserTasks.tasks[0]?.runId, 'run-xyz-789')
 })
-

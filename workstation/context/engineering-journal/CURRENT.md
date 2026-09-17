@@ -1,5 +1,28 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-063 — Close Desktop gates before HW-022 promotion (2026-09-17)
+
+Candidate `089704eb00`, main `a977651539`; no tracked dirty work or merge conflicts.
+Windows run 35165832836 failed aggregate gate: runtime error fixture expects old
+details, secret-file symlink rejection is bypassed by Windows early return, and
+session-state test formatting fails. Experiment: align legacy error fixture with
+compatibility metadata, emit typed human-control faults, reject Windows symlinks
+without chmod, format the flagged test, then focused/typecheck and real CI.
+Acceptance: exact structured recovery codes, symlink target untouched on Windows,
+all affected Desktop gates green. Review workflow diff without relaxing guards;
+only apply ci-reviewed after its documented checklist is satisfied.
+
+Observed: four affected Electron files passed 89 tests. Strengthened runtime
+assertion verifies USER_CONTROL_ACTIVE/WAIT_FOR_RELEASE and absence of compatibility
+metadata on typed faults; follow-up two-file run passed 68 tests. Windows symlink
+branch is covered both with real filesystem and injected platform, without chmod.
+Prettier corrected the flagged session-state test; ESLint added six missing blank
+lines in the resilience test. Existing typed error normalizer and BrowserTask lease
+ownership remain canonical. Workflow review: HW-022 adds only three path filters
+and a controlled replay; no permission widening, guard removal, custom eslint fixer
+or composite action changes. Main has no branch protection (API 404); no merge
+performed while the Desktop gate is red. Final typecheck and GitHub gates follow.
+
 ## H-062 — Verified recipes, canary admission and durable planner context (2026-09-16)
 
 Starting HEAD `a977651539dd4b793e26f96c6116bce187677cc9`; only existing

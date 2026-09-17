@@ -182,8 +182,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         self.env = terminal_env
         self.env_type = env_type
         # Never os.getcwd(): that is the HOST path, absent inside container backends.
-        self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
+        init_cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
+        if _is_container_backend(env_type) and _is_unusable_container_cwd(init_cwd):
+            # terminal_env.cwd may already be poisoned here: a workspace override
+            # (register_task_env_overrides/record_session_cwd) can land a raw host
+            # path directly on an already-active env before _get_file_ops() ever
+            # builds this wrapper, so this constructor sees it before any _exec()
+            # call would (#113894). Re-apply the same guard
+            # _create_terminal_env_for_file_ops applies at env-creation time so
+            # self.cwd -- the fallback _exec() trusts once the live cwd is
+            # rejected -- can never be the poisoned value itself.
+            from tools.terminal_tool import _get_env_config
+            init_cwd = _get_env_config()["cwd"]
+        self.cwd = init_cwd
         # Ordinary executables: bool cache (hits AND misses). rg is special — it has
         # an off-PATH resolver and may be installed mid-session — so only successful
         # rg resolutions are cached (see SearchMixin._resolve_command).

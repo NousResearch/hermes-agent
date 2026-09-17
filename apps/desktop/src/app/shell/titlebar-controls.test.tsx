@@ -89,16 +89,16 @@ describe('TitlebarControls fixed clusters', () => {
     expect(pluginTool()).not.toBeNull()
   })
 
-  it('leaves page titles to the workspace header without hiding window controls', () => {
+  it('keeps titleBar.center in the titlebar on a workspace page', () => {
     const disposeTitle = registry.register({
       area: 'titleBar.center',
       id: 'test-page-title',
-      render: () => <span>Board picker</span>
+      render: () => <span>plugin-center</span>
     })
 
     try {
-      renderControls('/kanban')
-      expect(screen.queryByText('Board picker')).toBeNull()
+      renderControls('/skills')
+      expect(screen.getByText('plugin-center')).not.toBeNull()
       expect(windowControls()).not.toBeNull()
       expect(appControls()).not.toBeNull()
     } finally {

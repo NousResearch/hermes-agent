@@ -1771,6 +1771,47 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
+  # Telegram: keep one editable streaming preview across tool calls instead of
+  # starting a new message at each tool boundary. Only takes effect when
+  # streaming is enabled (streaming.enabled / display.platforms.telegram.streaming)
+  # and text tool-progress is quiet (tool_progress: off or log).
+  # Default false. Per-platform override: display.platforms.telegram.streaming_single_message
+  #   true:  One streaming message per turn
+  #   false: New streaming segment after each tool (default)
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         streaming_single_message: true
+  streaming_single_message: false
+
+  # Transient activity overlay inside that single message (only active while the mode
+  # above is on): tool-start lines (default true) and thinking snippets (default false)
+  # render under the evolving preview below a "---" rule; real text replaces them and
+  # the final message never carries them.
+  # Per-platform overrides:
+  #   display.platforms.telegram.streaming_single_message_activity
+  #   display.platforms.telegram.streaming_single_message_thinking
+  streaming_single_message_activity: true
+  streaming_single_message_thinking: false
+
+  # Over-limit split policy for the single message (Telegram's 4096 text limit):
+  #   true:  cut the preview into ≤4096 messages as it fills (several long messages)
+  #   false: default — don't cut mid-turn; page only at turn end when the text really
+  #          overflows (short replies never split)
+  # Per-platform override: display.platforms.telegram.streaming_single_message_4096_split
+  streaming_single_message_4096_split: false
+
+  # Telegram Bot API 10.3 native features (gateway.platforms.telegram.extra.*). Each is
+  # opt-in and falls back to the ordinary path when unsupported:
+  #   stop_button: true          Stop button on DM draft streaming; a press interrupts
+  #                              the turn like /stop (keep_on_stop chooses what remains)
+  #   checklist_emoji: "✅"      Task lists → native checklists (business accounts only;
+  #                              MarkdownV2 fallback elsewhere)
+  #   message_effects: true      Animated effect on the final reply of long turns
+  #                              (message_effect_min_seconds, default 60; private chats)
+  #   ephemeral_messages: true   Group busy-acks whispered to the sender only
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

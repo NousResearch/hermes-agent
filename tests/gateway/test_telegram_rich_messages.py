@@ -20,7 +20,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter, _MESSAGE_EFFECT_IDS
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 
@@ -284,6 +284,28 @@ async def test_transient_rich_error_does_not_legacy_resend(exc):
     assert result.success is False
     adapter._bot.do_api_request.assert_awaited_once()
     adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_send_carries_completion_effect():
+    """metadata['message_effect'] must ride the rich send too (turn-final, DM only)."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", RICH_CONTENT, metadata={"message_effect": "🎉"})
+
+    assert result.success is True
+    payload = _rich_api_kwargs(adapter)
+    assert payload["message_effect_id"] == _MESSAGE_EFFECT_IDS["🎉"]
+
+
+@pytest.mark.asyncio
+async def test_rich_send_without_effect_omits_the_field():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    assert "message_effect_id" not in _rich_api_kwargs(adapter)
 
 
 @pytest.mark.asyncio

@@ -2575,11 +2575,57 @@ class GatewayTurnMixin:
             float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
             if source.platform == Platform.TELEGRAM else 0.0
         )
+        # Preserve the established text↔tool-progress chronology unless progress is quiet.
+        # The gate asks for the mode the display path actually runs with (off|log is the
+        # quiet pair — the same one tool_progress_enabled uses), so the
+        # HERMES_TOOL_PROGRESS_MODE bridge can't leave bubbles on while this mode is set.
+        # Telegram-only: other adapters keep their current segment-boundary semantics.
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        _user_config = _load_gateway_config()
+        _platform_key = _platform_config_key(source.platform)
+        _single_message_per_turn = (
+            source.platform == Platform.TELEGRAM
+            and bool(resolve_display_setting(
+                _user_config, _platform_key, "streaming_single_message", False,
+            ))
+            and resolve_tool_progress(
+                _user_config, _platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
+            )[0] in ("off", "log")
+        )
+        # Transient-overlay sub-switches: tool-start lines (default on — quiet progress
+        # would otherwise show nothing during tool runs) and thinking snippets (opt-in).
+        _single_message_activity = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_activity", True,
+        ))
+        _single_message_thinking = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_thinking", False,
+        ))
+        _single_message_4096_split = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_4096_split", False,
+        ))
+        # Completion message effect (Telegram DM): emoji + minimum turn age (0 = every turn).
+        _message_effects_on = bool(resolve_display_setting(
+            _user_config, _platform_key, "message_effects", False,
+        ))
+        _message_effect = str(resolve_display_setting(
+            _user_config, _platform_key, "message_effect", "🎉") or "") if _message_effects_on else ""
+        try:
+            _message_effect_min = float(resolve_display_setting(
+                _user_config, _platform_key, "message_effect_min_seconds", 60) or 0)
+        except (TypeError, ValueError):
+            _message_effect_min = 60.0
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
+            single_message_per_turn=_single_message_per_turn,
+            single_message_activity=_single_message_activity,
+            single_message_thinking=_single_message_thinking,
+            single_message_4096_split=_single_message_4096_split,
+            message_effect=_message_effect,
+            message_effect_min_seconds=_message_effect_min,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 
@@ -2828,6 +2874,7 @@ class GatewayTurnMixin:
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
+        # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),

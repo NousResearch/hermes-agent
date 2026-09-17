@@ -19,6 +19,21 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Telegram-only opt-in: keep the editable streaming preview across tool boundaries.
+    # Active while text tool-progress is quiet (off/log), preserving existing chronology
+    # otherwise. See #110564.
+    "streaming_single_message": False,
+    # Single-message extras (only when the above is active): transient activity overlay in
+    # the evolving preview — tool-start lines (default on) and thinking snippets (opt-in).
+    "streaming_single_message_activity": True,
+    "streaming_single_message_thinking": False,
+    "streaming_single_message_4096_split": False,
+    # Completion message effect (Telegram DMs only): an animated effect on the final
+    # message of turns lasting at least message_effect_min_seconds. Emoji name keys the
+    # adapter's id table; false/off = disabled.
+    "message_effects": False,
+    "message_effect": "🎉",
+    "message_effect_min_seconds": 60,
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
@@ -173,6 +188,12 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
+    "streaming_single_message": _norm_bool,
+    "streaming_single_message_activity": _norm_bool,
+    "streaming_single_message_thinking": _norm_bool,
+    "streaming_single_message_4096_split": _norm_bool,
+    "message_effects": _norm_bool,
+    "message_effect_min_seconds": _norm_int,
     "interim_assistant_messages": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

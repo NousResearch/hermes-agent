@@ -615,7 +615,12 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     """Attach the plugin's command tree to the host-created parser."""
 
     subcommands = parser.add_subparsers(dest="github_pr_feedback_action", required=True)
-    subcommands.add_parser("scan", help="Read and dispatch newly admitted feedback")
+    scan = subcommands.add_parser("scan", help="Read and dispatch newly admitted feedback")
+    scan.add_argument(
+        "--repository",
+        default=None,
+        help="Limit scan to one configured repository (e.g. mrkillbob/luna-bot)",
+    )
     historical = subcommands.add_parser(
         "historical-merged-scan",
         help="Inventory feedback on confirmed merged PRs without dispatching work",
@@ -797,7 +802,7 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
 def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
     action = getattr(args, "github_pr_feedback_action", None)
     if action == "scan":
-        return _scan(ctx)
+        return _scan(ctx, args)
     if action == "historical-merged-scan":
         return _historical_merged_scan(ctx, args)
     if action == "status":
@@ -1191,7 +1196,7 @@ def _post_comment(ctx: Any, args: argparse.Namespace) -> int:
     return 0
 
 
-def _scan(ctx: Any) -> int:
+def _scan(ctx: Any, args: Any = None) -> int:
     try:
         policy = _load_policy_from_context(ctx)
     except ValueError:
@@ -1200,6 +1205,18 @@ def _scan(ctx: Any) -> int:
     if not policy.enabled:
         print(json.dumps({"created": 0, "skipped": {}, "status": "ok"}, sort_keys=True))
         return 0
+    repository_filter = getattr(args, "repository", None)
+    if repository_filter:
+        if repository_filter not in policy.targets:
+            print(
+                json.dumps(
+                    {"status": "invalid_configuration", "reason": f"repository not configured: {repository_filter}"},
+                    sort_keys=True,
+                )
+            )
+            return 1
+        import dataclasses
+        policy = dataclasses.replace(policy, targets={repository_filter: policy.targets[repository_filter]})
     with _exclusive_scan_lock() as acquired:
         if not acquired:
             print(json.dumps({"status": "scan_in_progress"}, sort_keys=True))
@@ -1312,6 +1329,13 @@ def _run_release_maintenance_scan(
 ) -> dict[str, object]:
     maintenance = maintenance or policy.release_maintenance
     if maintenance is None:
+        return {
+            "status": "disabled",
+            "head_sha": None,
+            "tasks_created": 0,
+            "blockers": [],
+        }
+    if maintenance.repository not in policy.targets:
         return {
             "status": "disabled",
             "head_sha": None,
@@ -2064,6 +2088,8 @@ def _run_merge_scan_for_policy(
             "merged": [],
             "blocked": {"canonical_read": ["github_state_unavailable"]},
         }
+    if merge_policy.repository not in policy.targets:
+        return {"status": "ok", "processed": 0, "merged": [], "blocked": {}}
     source = CanonicalMergeEvidenceSource(policy, github, ledger, merge_policy)
     manifest_path = ci_manifest_path(policy.targets[merge_policy.repository].local_path)
     if not manifest_path.is_file():

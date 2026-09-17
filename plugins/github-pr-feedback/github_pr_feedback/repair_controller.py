@@ -166,6 +166,8 @@ class RepairController:
             if retry_receipt is not None and repository != retry_receipt.repository:
                 continue
             base_refresh_slots_used = 0
+            if repository not in self._policy.targets:
+                continue
             target = self._policy.targets[repository]
             merge_policy = self._policy.merge_policy_for(repository)
             branch_heads: dict[str, str] = {}

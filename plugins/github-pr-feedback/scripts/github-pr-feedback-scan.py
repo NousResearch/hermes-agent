@@ -170,8 +170,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 127
+    scan_cmd = [str(executable), "github-pr-feedback", "scan"]
+    repository_filter = os.environ.get("HERMES_PR_FEEDBACK_REPOSITORY", "").strip()
+    if repository_filter:
+        scan_cmd += ["--repository", repository_filter]
     completed = subprocess.run(
-        [str(executable), "github-pr-feedback", "scan"],
+        scan_cmd,
         check=False,
         capture_output=True,
         text=True,

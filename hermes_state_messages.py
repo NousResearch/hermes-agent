@@ -814,18 +814,21 @@ class SessionMessagesMixin:
                 if (
                     not represented_row_ids
                     and active_ids
-                    and int(watermark) > 0
                 ):
-                    # Empty-tuple poison (round-8 finding): a caller that loaded the
-                    # transcript WITHOUT row ids produces () here, which is not the
-                    # legacy-None fallback. Committing would classify every active
-                    # durable row as unrepresented and re-clone the whole transcript
-                    # byte-exact (secrets stay in SQLite and FTS). Fail closed.
+                    # Empty-tuple poison (round-8 finding; Bugbot 4041436106): a
+                    # caller that loaded the transcript WITHOUT row ids produces ()
+                    # here, which is not the legacy-None fallback. The watermark
+                    # must NOT gate this refusal: prepare_sanitation_commit defaults
+                    # the watermark to max((), default=0)=0, so a watermark>0
+                    # requirement would blind the gate exactly when the snapshot is
+                    # empty. Committing would classify every active durable row as
+                    # unrepresented and re-clone the whole transcript byte-exact
+                    # (secrets stay in SQLite and FTS). Fail closed.
                     raise ValueError(
                         "Invalid sanitation structure: the represented-row snapshot is "
                         f"empty but session {session_id!r} holds {len(active_ids)} active "
-                        "durable row(s) above watermark 0 — the snapshot source omitted "
-                        "row ids; refusing to publish"
+                        "durable row(s) — the snapshot source omitted row ids; "
+                        "refusing to publish"
                     )
                 represented = tuple(
                     row_id

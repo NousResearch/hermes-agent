@@ -132,12 +132,16 @@ def _strip_persistence_marker(messages: Any) -> Any:
     # ``_merged_row_ids`` is repair-provenance bookkeeping (``_rows_to_conversation``), never
     # content: an engine that drops it must not fail structural validation, and the retry
     # transcript comparison must not treat it as part of the content shape.
+    # ``_row_id`` is the same class of host bookkeeping (Bugbot 4041436129): the production
+    # loaders now stamp it on every resume/replay transcript, and an engine candidate that
+    # rebuilds message dicts without echoing it must not fail structural validation or lose
+    # the retained retry to a metadata-only diff.
     return [
         (
             {
                 key: value
                 for key, value in message.items()
-                if key not in (_DB_PERSISTED_MARKER, "_merged_row_ids")
+                if key not in (_DB_PERSISTED_MARKER, "_merged_row_ids", "_row_id")
             }
             if isinstance(message, dict)
             else message
@@ -881,7 +885,7 @@ def prepare_sanitation_commit(
             plan_candidate,
             externalized_payload_loader=externalized_payload_loader,
         ),
-        watermark=max(represented_row_ids, default=0),
+        watermark=(max(represented_row_ids) if represented_row_ids else 0),
         represented_row_ids=represented_row_ids,
         member_row_ids=member_row_ids,
     )

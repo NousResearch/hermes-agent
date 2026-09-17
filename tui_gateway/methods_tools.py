@@ -1774,6 +1774,69 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5024, str(e))
 
 
+@method("code.graph")
+def _(rid, params: dict) -> dict:
+    """Code knowledge graph for one service — nodes (modules/classes/functions)
+    and typed edges (imports/calls) built from the service's declared
+    ``source_files``, in the same ``{source, target, type, class}`` shape
+    ``cron.graph``/``wiki.scan`` use so Portal's renderer is reused.
+
+    Derived on read and content-digest cached, so it tracks the current service
+    definition without riding the changeset log. Fail-open: an unknown service,
+    a service with no readable in-root files, or a graphify hiccup returns a
+    soft error, never a 500 that would sink the surface."""
+    try:
+        service_id = (params or {}).get("service")
+        if not isinstance(service_id, str) or not service_id.strip():
+            return _err(rid, 4029, "code.graph needs a 'service' id")
+        service_id = service_id.strip()
+
+        # Resolve the service the same way cron.graph does — the four concurrent
+        # liveness collectors — then pick the one whose id matches.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from tools.process_registry import process_registry
+        from tools.docker_services import collect_docker_services
+        from tools.nomad_services import collect_nomad_services
+        from tools.launchd_services import collect_launchd_services
+
+        collectors = {
+            "process": process_registry.collect_service_declarations,
+            "docker": collect_docker_services,
+            "nomad": collect_nomad_services,
+            "launchd": collect_launchd_services,
+        }
+        services = []
+        with ThreadPoolExecutor(max_workers=len(collectors)) as executor:
+            pending = {executor.submit(fn): name for name, fn in collectors.items()}
+            for future in as_completed(pending):
+                try:
+                    services.extend(future.result())
+                except Exception:
+                    logger.exception(
+                        "code.graph: %s service overlay unavailable", pending[future]
+                    )
+
+        service = next((s for s in services if s.get("id") == service_id), None)
+        if service is None:
+            return _err(rid, 4030, f"unknown service: {service_id}")
+
+        from cron.jobs import job_source_files
+        from cron.code_graph import build_service_code_graph, CodeGraphUnavailable
+
+        try:
+            graph = build_service_code_graph(
+                service_id,
+                source_files=job_source_files(service),
+                code_control=service.get("code_control"),
+            )
+        except CodeGraphUnavailable as exc:
+            return _err(rid, 4031, f"code graph unavailable: {exc}")
+        return _ok(rid, graph)
+    except Exception as e:
+        logger.exception("code.graph failed")
+        return _err(rid, 5038, str(e))
+
+
 @method("cron.changesets")
 def _(rid, params: dict) -> dict:
     """Recorded history of the cron configuration, newest first.

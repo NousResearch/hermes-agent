@@ -181,7 +181,15 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+# Per-service code knowledge graph — only needed by cron/code_graph.py, which
+# runs graphify's deterministic AST extraction in an isolated subprocess
+# (tools/code_graph_runner.py). Optional so the dependency stays out of every
+# session's install; the builder degrades to "code graph unavailable" when it
+# is absent (a graphify hiccup must never take down the dataflow surface).
+# Operators opt in with `uv sync --extra code-graph`; also folded into `dev`
+# so CI runs the real-graphify integration test in tests/cron/test_code_graph.py.
+code-graph = ["graphifyy==0.9.53"]
+dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0", "graphifyy==0.9.53"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]

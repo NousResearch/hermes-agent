@@ -2351,6 +2351,15 @@ def build_cron_graph(
         code_control = service.get("code_control")
         if isinstance(code_control, dict) and code_control.get("status") == "verified":
             node["code_control"] = code_control
+        # A change-token for the code knowledge graph behind this service: a
+        # cheap digest of its source files (no reads) that flips when the code
+        # changes, so the client knows when to refetch the graph. The graph
+        # itself is built lazily by ``code.graph``; this only references it.
+        from cron.code_graph import service_code_graph_stamp
+
+        stamp = service_code_graph_stamp(node["source_files"])
+        if stamp:
+            node["code_graph"] = {"ref": sid, "digest": stamp}
         nodes.append(node)
         for ref in service.get("inputs") or []:
             if ref.startswith("cron-output:"):

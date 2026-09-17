@@ -223,7 +223,7 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
             "consolidate", source, before=before, after=consolidated_after, actor=actor,
             evidence={"absorbed_into": destination, "archived": True, "archive_location": str(archive_dir),
                       "forwarding": receipt["forwarding"], "rollback_handle": snapshot.name,
-                      "operation_id": operation_id},
+                      "operation_id": operation_id, "transaction_created_dirs": [str(archive_dir)]},
         )
         if ledger_id is None:
             raise RuntimeError("durable consolidation ledger receipt could not be written")

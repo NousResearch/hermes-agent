@@ -269,6 +269,26 @@ def test_public_background_skill_manage_consolidation_has_one_ledger_entry_and_r
     assert consolidation_env["jobs_file"].read_bytes() == original_cron
 
 
+def test_consolidation_rollback_keeps_preexisting_empty_archive_parent(consolidation_env, capsys):
+    """Rollback removes only the transaction-created archive package, not its pre-existing parent."""
+    from hermes_cli import curator as curator_cli
+    from tools import skill_ledger
+
+    archive_root = consolidation_env["skills"] / ".archive"
+    archive_root.mkdir()
+
+    assert curator_cli.cli_main(["consolidate", "source-skill", "destination-skill"]) == 0
+    receipt = json.loads(capsys.readouterr().out.removeprefix("curator: "))
+    archived_package = archive_root / "source-skill"
+    assert archived_package.is_dir()
+
+    ok, message = skill_ledger.rollback_entry(receipt["ledger_entry"])
+
+    assert ok is True, message
+    assert not archived_package.exists()
+    assert archive_root.is_dir(), "rollback must not prune a pre-existing empty archive parent"
+
+
 def test_consolidate_recovers_when_archive_usage_persistence_fails(
     consolidation_env, monkeypatch, capsys,
 ):

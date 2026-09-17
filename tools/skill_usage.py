@@ -599,12 +599,25 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
         except Exception as e:
             return False, f"failed to {action}: {e}"
     archiving = action == "archive"
+    if not set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE):
+        try:
+            dest.rename(src)
+        except OSError:
+            import shutil
+            try:
+                shutil.move(str(dest), str(src))
+            except Exception as e:
+                return False, (f"failed to {action}: lifecycle state could not be persisted; "
+                               f"failed to reverse move: {e}")
+        return False, f"failed to {action}: lifecycle state could not be persisted; move reversed"
     if not archiving or is_bundled(skill_name):  # pruning a built-in only sticks if the re-seeder skips it
         _toggle_suppressed_name(skill_name, add=archiving)
-    set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE)
     with suppress(Exception):
         if _ledger is not None:
-            _ledger.record_mutation(action, skill_name, before=_ledger_before or [], after_root=dest)
+            _ledger.record_mutation(
+                action, skill_name, before=_ledger_before or [], after_root=dest,
+                evidence={"transaction_created_dirs": [str(dest)]},
+            )
     return True, f"{action}d to {dest}"
 
 

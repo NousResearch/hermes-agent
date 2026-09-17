@@ -1,0 +1,19 @@
+name: hermes-speech
+repo: https://github.com/allmodels-io/hermes-speech
+sha: 5b79ebad27b8b2e5616685b92f61e45e1038c2b5
+description: AllModels text-to-speech and speech-to-text setup with native Hermes providers.
+maintainer: moeadham
+tier: community
+category: voice
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/allmodels-io/hermes-speech#readme
+version: "0.3.2"
+image: https://raw.githubusercontent.com/allmodels-io/hermes-speech/5b79ebad27b8b2e5616685b92f61e45e1038c2b5/.github/social-preview.png
+platforms: []
+capabilities:
+  provides_tools:
+    - allmodels_speech_setup
+    - allmodels_speech_manage
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

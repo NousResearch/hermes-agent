@@ -1,6 +1,5 @@
-import { revealEnvVar } from '@/hermes'
+import { deleteEnvVar, revealEnvVar, setEnvVar } from '@/hermes'
 
-export const GEMINI_LIVE_API_KEY_STORAGE = 'hermes_gemini_live_api_key'
 export const GEMINI_LIVE_VOICE_STORAGE = 'hermes_gemini_live_voice'
 export const GEMINI_LIVE_MODEL_STORAGE = 'hermes_gemini_live_model'
 
@@ -20,24 +19,6 @@ export const GEMINI_LIVE_MODELS = [
   { id: 'gemini-3.8-live-extended-thinking', label: 'Gemini 3.8 Live Extended Thinking' },
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' }
 ] as const
-
-export function getStoredGeminiLiveApiKey(): string {
-  try {
-    return localStorage.getItem(GEMINI_LIVE_API_KEY_STORAGE)?.trim() || ''
-  } catch {
-    return ''
-  }
-}
-
-export function setStoredGeminiLiveApiKey(key: string): void {
-  try {
-    if (key.trim()) {
-      localStorage.setItem(GEMINI_LIVE_API_KEY_STORAGE, key.trim())
-    } else {
-      localStorage.removeItem(GEMINI_LIVE_API_KEY_STORAGE)
-    }
-  } catch {}
-}
 
 export function getStoredGeminiLiveVoice(): string {
   try {
@@ -71,13 +52,18 @@ export function setStoredGeminiLiveModel(model: string): void {
   } catch {}
 }
 
+/**
+ * Resolves the Google / Gemini API key from the gateway environment credentials (.env).
+ * Matches the canonical GEMINI_API_KEY (and GOOGLE_API_KEY) configured in Settings -> Keys.
+ * Automatically purges any legacy plaintext localStorage keys.
+ */
 export async function resolveGeminiLiveApiKey(): Promise<string | null> {
-  const localKey = getStoredGeminiLiveApiKey()
-  if (localKey) {
-    return localKey
-  }
+  // Purge any legacy unencrypted plaintext localStorage key
+  try {
+    localStorage.removeItem('hermes_gemini_live_api_key')
+  } catch {}
 
-  // Fallback: probe environment on gateway if reachable
+  // 1. Probe GEMINI_API_KEY in gateway environment (.env)
   try {
     const res = await revealEnvVar('GEMINI_API_KEY')
     if (res?.value?.trim()) {
@@ -85,6 +71,7 @@ export async function resolveGeminiLiveApiKey(): Promise<string | null> {
     }
   } catch {}
 
+  // 2. Probe GOOGLE_API_KEY in gateway environment (.env)
   try {
     const res = await revealEnvVar('GOOGLE_API_KEY')
     if (res?.value?.trim()) {
@@ -93,6 +80,24 @@ export async function resolveGeminiLiveApiKey(): Promise<string | null> {
   } catch {}
 
   return null
+}
+
+/**
+ * Persists or updates the Gemini API key into the gateway environment credentials (.env).
+ * Matches how Settings -> Keys and Settings -> Providers store API keys securely.
+ */
+export async function saveGeminiApiKey(key: string): Promise<{ ok: boolean }> {
+  // Purge any legacy plaintext localStorage key
+  try {
+    localStorage.removeItem('hermes_gemini_live_api_key')
+  } catch {}
+
+  const trimmed = key.trim()
+  if (trimmed) {
+    return setEnvVar('GEMINI_API_KEY', trimmed)
+  } else {
+    return deleteEnvVar('GEMINI_API_KEY')
+  }
 }
 
 export interface LiveTranscriptFragment {

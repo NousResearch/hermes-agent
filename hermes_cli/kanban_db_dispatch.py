@@ -131,7 +131,9 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"prior_worker_alive"`` (a closed run's worker pid is still live — spawn
+    would put two writers on the same card)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1362,22 +1364,46 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _prior_worker_still_alive(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when a closed run for ``task_id`` still has a live worker process.
+
+    ``complete_task`` / ``request_review`` / timeout reclaim wipe
+    ``tasks.worker_pid`` so the card can re-enter ready/review, but the closed
+    ``task_runs`` row keeps the pid for ``reap_terminal_workers``. That reaper
+    waits ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` before signalling, so a
+    dispatch tick inside the grace window would otherwise claim the card and
+    spawn a second writer into the same workspace (dir workspaces share one
+    directory). Defer until the recorded pid is gone.
+    """
+    rows = conn.execute(
+        "SELECT worker_pid, worker_started_at FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL AND worker_pid IS NOT NULL",
+        (task_id,),
+    ).fetchall()
+    for closed in rows:
+        if _worker_alive(closed["worker_pid"], closed["worker_started_at"]):
+            return True
+    return False
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    ``"prior_worker_alive"`` (a closed run's worker is still live — never
+    spawn-alongside), ``"rate_limit_cooldown"`` (latest run ``rate_limited``
+    within the cooldown; checked BEFORE ``blocker_auth`` because the requeue
+    stamps a quota-flavored ``last_failure_error`` that would otherwise park
+    the task forever — that path never increments ``consecutive_failures``),
+    ``"blocker_auth"`` (quota/auth pattern; the breaker still trips eventually),
+    then for the ready lane only ``"recent_success"`` (completed run within the
+    window, unless a re-queue event arrived after it — a deliberate re-run)
+    and ``"active_pr"`` (PR URL in a recent comment; re-spawning risks a
+    duplicate PR). The review lane skips the last two: they are the *inputs*
+    to a review handoff. Stale / dead claim locks are NOT a guard reason —
+    the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1385,6 +1411,9 @@ def check_respawn_guard(
     ).fetchone()
     if row is None:
         return None
+
+    if _prior_worker_still_alive(conn, task_id):
+        return "prior_worker_alive"
 
     now = int(time.time())
 

@@ -126,7 +126,9 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     from hermes_time import get_timezone_name
 
     _tz_name = get_timezone_name()
-    if _tz_name:
+    # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
+    # preserves the OS-configured local timezone for the child process.
+    if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)

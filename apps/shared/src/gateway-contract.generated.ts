@@ -2523,6 +2523,8 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  display_kind?: string | null
+  display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null

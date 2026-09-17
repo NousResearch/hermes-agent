@@ -48,9 +48,25 @@ hermes update
 
 ---
 
+## Screenshot shortcut (macOS)
+
+Enable **Settings → Keyboard Shortcuts → Screenshot shortcut**, then press the
+left and right Command keys together in any app. Hermes captures that app's
+frontmost window and attaches the image to the last-active Hermes composer,
+including split-pane chats. It does not send the draft or capture the whole
+screen. Release both keys before taking another screenshot.
+
+The shortcut is off by default and saved only on this Mac. macOS requires
+**Input Monitoring** and **Screen & System Audio Recording** permission; the
+settings row links to the relevant system pane and offers Retry. If macOS asks
+to restart the app after granting access, do so before retrying. Review the
+attachment before sending, especially when the captured window is sensitive.
+
 ## Requirements
 
 The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+macOS source builds also require Xcode Command Line Tools to compile the native
+shortcut helper. Prebuilt installers include it; no compiler is needed at runtime.
 
 ---
 

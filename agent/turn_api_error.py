@@ -274,8 +274,17 @@ def settle_unrecovered_error(
     # eager fallback already gave up, so retrying only burns paid requests on a depleted
     # balance. Mirrors 401/403.
     is_local_validation_error = _is_local_validation_error(api_error)
+    # ``recover_after_classification`` sets ``image_shrink_retry_attempted`` BEFORE it runs the shrink,
+    # so an image-size rejection reaching this point with the flag set had nothing left to shrink (the
+    # excess is text on a host whose cap is payload-scoped, or an unshrinkable image). Re-sending the
+    # byte-identical body ``max_retries`` times changes nothing: treat it as a client error and try
+    # the fallback chain now, as the format_error verdict these 400s carried before did (#112473).
+    shrink_spent = classified.reason == FailoverReason.image_too_large and bool(
+        getattr(_retry, "image_shrink_retry_attempted", False)
+    )
     is_client_error = (
         is_local_validation_error
+        or shrink_spent
         or (
             not classified.retryable
             and not classified.should_compress
@@ -311,7 +320,7 @@ def settle_unrecovered_error(
         # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
         # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
         _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
-        if classified.should_fallback or _unclassified_local:
+        if classified.should_fallback or _unclassified_local or shrink_spent:
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
             # before a silent abort.
             if agent._has_pending_fallback():

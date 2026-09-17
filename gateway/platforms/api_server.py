@@ -664,7 +664,8 @@ async def _abandon_agent_task(
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
-            request_hard_interrupt(agent, reason)
+            # The abandoning client/server is the issuer, not the user (#112647).
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()
@@ -1172,7 +1173,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
-        # /v1/runs). Read from config.yaml gateway.api_server.max_concurrent_runs; 0 disables the cap.
+        # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
+        # gateway.api_server.max_concurrent_runs; 0 disables the cap.
         # Bounds CPU / memory / upstream-LLM-quota exhaustion from a request flood (#7483).
         self._inflight_agent_runs: int = 0
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
@@ -1207,7 +1209,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         interrupted = 0
         for agent in agents.values():
             try:
-                if request_hard_interrupt(agent, reason):
+                if request_hard_interrupt(agent, reason, tool_reason="gateway shutdown"):
                     interrupted += 1
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
@@ -3125,6 +3127,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
+        # Spending the budget without checking it refused every other caller while never
+        # refusing this route — and a fleet's cross-machine DMs all arrive here.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3147,6 +3155,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err

@@ -489,6 +489,43 @@ class TestSkillManageDispatcher:
         assert "write_file" in err, "must name the escape hatch it is forbidding"
         assert "exact" in err.lower()
 
+    @pytest.mark.parametrize("op, stray_key, destination", [
+        ({"action": "create", "file_content": VALID_SKILL_CONTENT}, "file_content", "'content'"),
+        ({"action": "create", "new_string": VALID_SKILL_CONTENT}, "new_string", "'content'"),
+        ({"action": "patch", "file_content": "body"}, "file_content", "old_string/new_string"),
+    ])
+    def test_misplaced_text_slot_error_names_the_key_it_arrived_in(self, tmp_path, op, stray_key,
+                                                                    destination):
+        """#112677 — a batch op whose SKILL.md text sits in another action's key must be told
+        WHICH key it used and where to move it; the bare "X is required" error made a local
+        model replay the identical payload until the tool-loop guardrail tripped. The batch
+        still rolls back (atomicity unchanged), and a plain missing-content op gets no note."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(skill_manage(action="", name="",
+                                             operations=[{"name": "my-skill", **op}]))
+            bare = json.loads(skill_manage(action="", name="",
+                                           operations=[{"name": "other", "action": "create"}]))
+
+        assert result["success"] is False
+        assert f"'{stray_key}'" in result["error"] and destination in result["error"]
+        assert "rolled back" in result["error"]
+        assert bare["success"] is False and "file_content" not in bare["error"]
+
+    def test_write_file_given_content_names_the_reverse_misplacement(self, tmp_path):
+        """#112677 — the reverse direction: create's `content` sent to write_file. Checked on the
+        legacy flat call shape so both entry points share the one hint chokepoint."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            crossed = json.loads(skill_manage(action="write_file", name="my-skill",
+                                              file_path="references/a.md", content="hello"))
+            ok = json.loads(skill_manage(action="write_file", name="my-skill",
+                                         file_path="references/a.md", file_content="hello"))
+
+        assert crossed["success"] is False
+        assert "'content'" in crossed["error"] and "'file_content'" in crossed["error"]
+        assert ok["success"] is True
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 

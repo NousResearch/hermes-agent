@@ -2455,7 +2455,8 @@ class TestCronDeliveryMirror:
         # Session row created for the thread, then brief mirrored into it.
         store.get_or_create_session.assert_called_once()
         seeded_source = store.get_or_create_session.call_args[0][0]
-        assert seeded_source.chat_type == "thread"
+        # Telegram forum-topic replies key on the parent supergroup's ``group`` slot.
+        assert seeded_source.chat_type == "group"
         assert seeded_source.thread_id == "9001"
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"

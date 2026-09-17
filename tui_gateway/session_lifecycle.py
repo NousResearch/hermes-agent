@@ -88,6 +88,22 @@ def _release_active_session_slot(session: dict | None) -> bool:
     return True
 
 
+def _release_hosted_room_turn_slot(session: dict) -> None:
+    """End-of-turn release for hosted room member sessions (``source=bot_room``) only.
+
+    A hosted room turn is serialized by the room driver's lease, not by this process, so the member
+    profile's ``bot_room`` slot is needed only while a turn is in flight. Holding it for the life of
+    the live session (which no reaper ever ends: room sessions have no client transport) locked every
+    other room worker sharing the home — messaging gateway + Desktop ``serve`` — out of that member
+    with ``Refused active session … already held by pid=…`` until this process exited (#106847).
+    Call under ``history_lock`` next to ``running = False`` so the next admission never observes the
+    stale lease and then runs lease-less; ``_admit_prompt_turn`` re-claims on the following turn.
+    """
+    from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
+    if _session_source(session) == ROOM_SESSION_SOURCE:
+        _release_active_session_slot(session)
+
+
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
     """Snapshot leases still backed by this process's live session records."""
     with _sessions_lock:

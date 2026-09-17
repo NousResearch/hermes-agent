@@ -70,9 +70,15 @@ def _handle(name: str) -> str:
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
+    """(name, dir) for the default profile + every live named profile, sorted. Same identity
+    predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
+    teammates (#99392)."""
+    from hermes_constants import named_profile_is_live
+
     profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
+    named = _swallow(
+        lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if named_profile_is_live(c)] if profiles.is_dir() else [],
+        [])
     return [("default", root), *named]
 
 

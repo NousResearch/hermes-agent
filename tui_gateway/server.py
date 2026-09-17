@@ -23,7 +23,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, profile_name_for_home,
+    get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
@@ -46,7 +46,7 @@ from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, b
 
 logger = logging.getLogger(__name__)
 
-_hermes_home = get_hermes_home()
+_hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
 
@@ -376,16 +376,25 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
+def _launch_state_db_path() -> Path:
+    """Launch profile's ``state.db`` at call time: the patched ``_hermes_home`` when a test changed
+    it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
+    ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
+    that override per profile at startup, and a first touch inside a foreign window would bind this
+    process-wide handle to another profile's ``state.db`` (#102526). Resolving here rather than at
+    import time lets a harness that redirects ``HERMES_HOME`` after import be honoured (#112692)."""
+    home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
+    return Path(home) / "state.db"
+
+
 def _get_db():
     global _db, _db_error
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            # Pin to import-time launch home (#102526). A bare acquire() follows
-            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
-            # overrides per profile at startup — first touch inside a foreign window
-            # permanently binds this process-wide handle to the wrong state.db.
-            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
+            # Launch home, never the context-local override (#102526); resolved at first
+            # use, not import time (#112692). See _launch_state_db_path.
+            _db, _db_error = acquire(_launch_state_db_path()), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -2824,7 +2833,9 @@ def _main_runtime_from_agent(agent) -> dict | None:
     if agent is None:
         return None
     runtime: dict = {}
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+    # ``session_id`` rides along so a session-bound ``llm.oneshot`` (title, approval) on an OpenCode
+    # route sends the conversation's ``x-opencode-session`` like the main turn does (#112717).
+    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "session_id"):
         value = getattr(agent, field, None)
         if isinstance(value, str) and value.strip():
             runtime[field] = value.strip()

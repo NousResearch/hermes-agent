@@ -8,6 +8,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -99,7 +100,13 @@ class GatewayGoalsMixin:
 
     @staticmethod
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
-        """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session."""
+        """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
+
+        The stored source's ``message_id`` is the message that registered the watch; a synthetic
+        prompt is not a reply to it, so it is dropped or every progress bubble and final reply
+        would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        """
+        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
@@ -153,6 +160,8 @@ class GatewayGoalsMixin:
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
         event._heartbeat_execution_started = False
+        # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
+        # non-internal so authorization and the emergency stop still apply.
         event._heartbeat_session_id = session_id
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.

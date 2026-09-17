@@ -18,7 +18,7 @@ _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_paralle
 
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from tools.debug_helpers import DebugSession
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_exists
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
 from tools.web_tools_rescue import _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
@@ -100,13 +100,15 @@ def _probe(provider, method: str, context: str = "") -> Optional[bool]:
 def _get_backend() -> str:
     """Shared web backend name. A stored ``web.backend`` is returned as-is — no availability probe, no
     fallback — so a broken selection surfaces the vendor's honest error rather than silently rerouting.
-    Autodetect runs ONLY when no web selection has ever been stored."""
+    The managed ``use_gateway`` selection also resolves to firecrawl with no ladder. Autodetect runs
+    whenever no SHARED web selection was ever stored: per-capability keys (``web.search_backend``,
+    ``web.extract_backend``) name only their own capability and never reroute the other (#113017)."""
     configured = _configured_backend()
     if configured:
         # "nous" (managed subscription) is serviced by firecrawl, routed through the managed Tool Gateway.
         return "firecrawl" if configured == NOUS_MANAGED_PROVIDER else configured
-    if selection_exists("web"):
-        # Selection exists (use_gateway / per-capability keys) but no shared name: firecrawl, no ladder.
+    if read_selection("web") is not None:
+        # Shared selection exists (use_gateway) but no shared name: firecrawl, no ladder.
         return "firecrawl"
 
     # Never-configured install. Explicit user credentials beat the managed-gateway probe (a Nous OAuth

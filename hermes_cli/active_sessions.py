@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -644,8 +644,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     root = get_default_hermes_root()
     homes = [root]
     try:
-        homes.extend(p for p in (root / "profiles").iterdir()
-                     if p.is_dir() and not p.name.startswith("."))
+        homes.extend(p for p in (root / "profiles").iterdir() if named_profile_is_live(p))
     except OSError:
         pass
 

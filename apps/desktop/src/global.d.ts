@@ -1,6 +1,7 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
@@ -167,6 +168,8 @@ declare global {
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
       }
+      // macOS native screenshot gesture; absent on other platforms.
+      screenshot?: ScreenshotApi
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
@@ -478,10 +481,6 @@ declare global {
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
           prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
-          // A pasted PR review/issue comment URL resolved to its structured
-          // context (author, body, file + line anchor, diff hunk). Null when
-          // gh can't answer — the paste stays a plain URL.
-          fetchPrComment: (repoPath: string, url: string) => Promise<HermesPrComment | null>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -1457,21 +1456,6 @@ export interface HermesRepoPullRequests {
   prs: HermesBranchPullRequest[]
 }
 
-// A PR review/issue comment resolved from a pasted GitHub URL — the composer's
-// review-comment attachment context. `path`/`line`/`diffHunk` are empty for
-// conversation-tab (issue) comments; `line` is null when the comment is
-// outdated and only `original_line` remained.
-export interface HermesPrComment {
-  author: string
-  body: string
-  diffHunk: string
-  kind: 'issue' | 'review'
-  line: null | number
-  path: string
-  prNumber: number
-  startLine: null | number
-  url: string
-}
 // gh availability/auth + the current branch's PR — drives the review pane's PR
 // button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
 export interface HermesReviewShipInfo {

@@ -424,9 +424,12 @@ class GatewayAgentCacheMixin:
             if interrupt_event is not None:
                 interrupt_event._hermes_run_generation = int(generation)
 
-    def _interrupt_running_turn(self, session_key: str, *, interrupt_reason: str, invalidation_reason: str) -> int:
+    def _interrupt_running_turn(
+        self, session_key: str, *, interrupt_reason: str, invalidation_reason: str, tool_reason: str | None = None,
+    ) -> int:
         """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
         agent, invalidate its run generation, and reap the tool processes that turn spawned.
+        ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
         Returns the post-bump generation."""
         from contextvars import copy_context
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
@@ -438,7 +441,7 @@ class GatewayAgentCacheMixin:
             # bump and release below are the cleanup that matters.
             with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
                                  session_key, exc_info=True):
-                request_hard_interrupt(running_agent, interrupt_reason)
+                request_hard_interrupt(running_agent, interrupt_reason, tool_reason=tool_reason)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:

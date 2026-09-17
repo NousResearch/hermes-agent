@@ -267,6 +267,7 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
 
     h = tmp_path / "h"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 0.2)
 
@@ -317,6 +318,7 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
 
     h = tmp_path / "h"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 5.0)
 

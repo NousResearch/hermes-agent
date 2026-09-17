@@ -857,8 +857,14 @@ def _configured_provider_matches(
     if isinstance(user_providers, dict):
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
+    # get_compatible_custom_providers() re-lists every ``providers.<slug>`` row as a ``custom:<name>``
+    # entry stamped with ``provider_key: <slug>``; callers (gateway, TUI, CLI) pass both views, so
+    # that projection is the same endpoint as the row above, not a second declaration (#112788).
+    # Hand-written ``custom_providers:`` rows carry no provider_key and stay separate candidates.
+    projected = {slug for slug, _ in candidates}
     candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+                   if isinstance(e.get("name"), str) and e["name"].strip()
+                   and str(e.get("provider_key") or "").strip() not in projected]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates:

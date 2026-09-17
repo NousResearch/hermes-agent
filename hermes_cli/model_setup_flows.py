@@ -113,14 +113,14 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting: {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -151,11 +151,18 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say(
+        "",
+        f"Default model set to: {selected_name} (via Mixture of Agents)",
+        f"  Preset: {selected_name}",
+        "  Reference models (advise once per user turn):",
+    )
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+    )
 
 
 def _nous_login_args(args) -> argparse.Namespace:

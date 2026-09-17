@@ -146,7 +146,9 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
     psutil = _psutil()
     if not _m()._is_windows() or psutil is None:
         return []
-    venv_prefix = _lower_dir_prefix(_m().PROJECT_ROOT / "venv")
+    from hermes_constants import project_venv_dir
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    venv_prefix = _lower_dir_prefix(venv_dir)
     root_prefix = _lower_dir_prefix(_m().PROJECT_ROOT)
     skip = set(exclude_pids or set()) | _self_and_non_gateway_ancestor_pids(psutil)
     matches: list[tuple[int, str, str]] = []
@@ -298,7 +300,9 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     psutil = _psutil()
     if not _m()._is_windows() or not pids or psutil is None:
         return []
-    venv_prefix = _lower_dir_prefix(_m().PROJECT_ROOT / "venv")
+    from hermes_constants import project_venv_dir
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    venv_prefix = _lower_dir_prefix(venv_dir)
     skip = _self_and_non_gateway_ancestor_pids(psutil) | set(pids)
     found: list[int] = []
     for pid in pids:

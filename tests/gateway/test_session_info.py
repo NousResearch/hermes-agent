@@ -64,6 +64,18 @@ class TestFormatSessionInfo:
         assert "localhost:11434" in info
         assert "8K" in info
 
+    def test_moa_preset_names_the_billed_aggregator(self, runner, tmp_path):
+        """#112359: the preset name hides who pays; /model must name the acting aggregator."""
+        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: review\n  provider: moa\n",
+                                  "review", {"provider": "moa", "base_url": "", "api_key": ""})
+        moa_cfg = {"moa": {"presets": {"review": {
+            "reference_models": [{"provider": "openai", "model": "gpt-5.5"}],
+            "aggregator": {"provider": "nous", "model": "claude-opus-4.8"},
+        }}}}
+        with p1, p2, p3, patch("hermes_cli.config.load_config", return_value=moa_cfg):
+            info = runner._format_session_info()
+        assert "Acting model (billed for the run): nous:claude-opus-4.8" in info
+
     def test_named_custom_provider_keeps_context_pin_without_model_base_url(
         self, runner, tmp_path
     ):

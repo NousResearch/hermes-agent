@@ -28,7 +28,8 @@ const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
-  setWorkspaceScope: vi.fn()
+  setWorkspaceScope: vi.fn(),
+  undismissPane: vi.fn()
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -40,7 +41,8 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...original.host,
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
-      setWorkspaceScope: mocks.setWorkspaceScope
+      setWorkspaceScope: mocks.setWorkspaceScope,
+      undismissPane: mocks.undismissPane
     }
   }
 })
@@ -243,6 +245,43 @@ describe('the Scheduled jobs pane', () => {
 
     expect(harness.unregisters.get('routines')).not.toHaveBeenCalled()
     expect(harness.find('routines')).toBeTruthy()
+
+    harness.dispose()
+  })
+
+  it('drops a remembered Close only on entering Bot Mode, not on every ownership regain', async () => {
+    const store = paneStores()
+    const harness = recordingContext()
+
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    store(`hermes-bots:pane`).set(true)
+    plugin.register(harness.ctx)
+    await settle()
+
+    // Boot straight into a bot chat: the pane arrives and a Close from a past
+    // launch is dropped once (#102224).
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(1)
+    expect(mocks.undismissPane).toHaveBeenCalledWith('hermes-bots:routines')
+
+    // The user ✕-es the pane, opens a group room (the tile must not sit
+    // beside a group chat) and comes back to the bot chat — all inside one
+    // Bots session. Re-registration must not undo their Close.
+    const { $groupChatWorkspace } = await import('./group-chat')
+    mocks.botChatOwnsWorkspace.mockReturnValue(false)
+    $groupChatWorkspace.set({ id: 'room' } as never)
+    expect(harness.find('routines')).toBeUndefined()
+
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    $groupChatWorkspace.set(null)
+    expect(harness.find('routines')).toBeTruthy()
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(1)
+
+    // Leaving Bot Mode and coming back is the ask for the bot's chrome again.
+    mocks.botChatOwnsWorkspace.mockReturnValue(false)
+    store(`hermes-bots:pane`).set(false)
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    store(`hermes-bots:pane`).set(true)
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(2)
 
     harness.dispose()
   })

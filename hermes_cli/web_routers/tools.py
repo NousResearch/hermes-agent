@@ -149,22 +149,24 @@ def _resolve_toolset_model_plugin(ts_key: str, provider_row: dict) -> Optional[s
     """Map a provider picker row to its model-catalog plugin name.
 
     Plugin-backed rows carry ``image_gen_plugin_name`` / ``video_gen_plugin_name``;
-    the managed "Nous Subscription" image row instead carries the legacy
-    ``imagegen_backend: "fal"`` marker (same underlying FAL catalog).
+    a managed image row's ``imagegen_backend`` names its catalog plugin.
     """
     if ts_key == "image_gen":
-        return provider_row.get("image_gen_plugin_name") or (
-            "fal" if provider_row.get("imagegen_backend") else None)
+        return provider_row.get("image_gen_plugin_name") or provider_row.get("imagegen_backend")
     if ts_key == "video_gen":
         return provider_row.get("video_gen_plugin_name")
     return None
 
 
-def _toolset_model_catalog(ts_key: str, plugin_name: str):
-    """Return ``(catalog_dict, default_model)`` for a toolset's plugin backend."""
-    from hermes_cli.tools_config import _plugin_image_gen_catalog, _plugin_video_gen_catalog
+def _toolset_model_catalog(ts_key: str, plugin_name: str, config: dict):
+    """Return ``(catalog_dict, default_model)`` for a toolset's plugin backend or, for an image row's
+    ``imagegen_backend`` (``fal``, the managed ``nous`` union), that backend's catalog."""
+    from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog
 
     if ts_key == "image_gen":
+        backend = IMAGEGEN_BACKENDS.get(plugin_name)
+        if backend:
+            return backend["catalog_fn"](config)
         return _plugin_image_gen_catalog(plugin_name)
     return _plugin_video_gen_catalog(plugin_name)
 
@@ -422,7 +424,7 @@ async def get_toolset_models(
             if not plugin:
                 return None
 
-            catalog, default_model = _toolset_model_catalog(name, plugin)
+            catalog, default_model = _toolset_model_catalog(name, plugin, config)
             section_cfg = config.get(section)
             current = None
             if isinstance(section_cfg, dict):
@@ -464,7 +466,7 @@ async def select_toolset_model(
             if not plugin:
                 raise _bad_request(f"No model-capable backend is active for {name}")
 
-            catalog, _default = _toolset_model_catalog(name, plugin)
+            catalog, _default = _toolset_model_catalog(name, plugin, config)
             if model_id not in catalog:
                 raise _bad_request(f"Unknown model {model_id!r} for backend {plugin!r}")
 

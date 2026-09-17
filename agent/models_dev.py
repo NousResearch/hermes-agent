@@ -99,8 +99,8 @@ class ProviderInfo:
 class ModelCapabilities:
     """Structured capability metadata for a model from models.dev."""
     supports_tools: bool = True
-    supports_vision: bool = False
-    supports_reasoning: bool = False
+    supports_vision: Optional[bool] = None
+    supports_reasoning: Optional[bool] = None
     context_window: int = 200000
     max_output_tokens: int = 8192
     model_family: str = ""
@@ -565,8 +565,8 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
 # Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
-# Safe defaults for models absent from the catalog (tools on, vision/reasoning off, 200K context);
-# shared by get_model_capabilities and get_model_info so the two unknown-model paths agree.
+# Safe defaults for models absent from the catalog (tools on, 200K context). Capability fields stay
+# absent so get_model_capabilities can preserve their unknown/fail-open semantics.
 _UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 8192}, "tool_call": True}
 
 # Account-gated models may be usable before models.dev has indexed them.  Keep
@@ -719,11 +719,16 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
     return merged
 
 
+def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
+    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
+    return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+
+
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
-    builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    builtin = _builtin_model_metadata(provider, model)
     base = entry if entry is not None else builtin
     override = _override_for(provider, model, catalog_hit=base is not None)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
@@ -748,13 +753,18 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     """
     models = _get_provider_models(provider, allow_network=allow_network)
     entry = _find_model_entry(models, model, provider) if models is not None else None
+    unknown_base = entry is None and _builtin_model_metadata(provider, model) is None
     raw = _apply_overrides(provider, model, entry)
     if raw is None:
         return None
     return ModelCapabilities(
         supports_tools=bool(raw.get("tool_call", False)),
-        supports_vision=_entry_supports_vision(raw),
-        supports_reasoning=bool(raw.get("reasoning", False)),
+        supports_vision=(
+            None
+            if unknown_base and "attachment" not in raw and "modalities" not in raw
+            else _entry_supports_vision(raw)
+        ),
+        supports_reasoning=None if unknown_base and "reasoning" not in raw else bool(raw.get("reasoning", False)),
         context_window=_extract_limit(raw, "context") or 200000,
         max_output_tokens=_extract_limit(raw, "output") or 8192,
         model_family=raw.get("family", "") or "",

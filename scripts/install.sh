@@ -281,10 +281,36 @@ discard_update_lockfile_churn() {
     [ -n "$dirty_diff" ] || return 0
 
     local dirty_package_dirs=""
+    local root_lock_protected=0
     while IFS= read -r path; do
         case "$path" in
             *package.json)
-                dirty_package_dirs="${dirty_package_dirs}$(dirname "$path")"$'\n'
+                local pkg_dir
+                pkg_dir=$(dirname "$path")
+                dirty_package_dirs="${dirty_package_dirs}${pkg_dir}"$'\n'
+                # The single root lockfile records every workspace's specs (root
+                # package.json "workspaces" globs), so a dirty workspace manifest
+                # such as apps/desktop/package.json protects it; reverting it there
+                # desyncs spec and lock and every later npm ci fails (#112378). A
+                # manifest outside the graph (website/) has its own lockfile.
+                if [ "$pkg_dir" = "." ]; then
+                    root_lock_protected=1
+                else
+                    # Read the globs line by line: an unquoted $(...) would pathname-expand
+                    # them against the caller's CWD before `case` ever sees the pattern.
+                    # `case` globs match across "/", so a manifest nested under a workspace
+                    # also protects the root lock (fail-safe; Python matches one level).
+                    local ws_glob
+                    while IFS= read -r ws_glob; do
+                        [ -n "$ws_glob" ] || continue
+                        case "$pkg_dir" in
+                            $ws_glob) root_lock_protected=1 ;;
+                        esac
+                    done <<WS_EOF
+$(sed -n '/"workspaces"[[:space:]]*:/,/\]/p' "$repo/package.json" 2>/dev/null \
+        | grep -o '"[^"]*"' | tr -d '"' | grep -v -e '^workspaces$' -e '^packages$')
+WS_EOF
+                fi
                 ;;
         esac
     done <<EOF
@@ -298,9 +324,13 @@ EOF
             *package-lock.json)
                 local lock_dir
                 lock_dir=$(dirname "$path")
-                case $'\n'"$dirty_package_dirs" in
-                    *$'\n'"$lock_dir"$'\n'*) continue ;;
-                esac
+                if [ "$lock_dir" = "." ]; then
+                    [ "$root_lock_protected" -eq 0 ] || continue
+                else
+                    case $'\n'"$dirty_package_dirs" in
+                        *$'\n'"$lock_dir"$'\n'*) continue ;;
+                    esac
+                fi
                 dirty_locks="${dirty_locks}${path}"$'\n'
                 dirty_count=$((dirty_count + 1))
                 ;;

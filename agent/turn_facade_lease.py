@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
 
+# ``tool_reason`` for a lost session turn lease: attributes the stop to the lease, not the user (#112647).
+_REASON_LEASE_LOST = "session turn lease lost"
+
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
 
@@ -117,10 +120,11 @@ class DurableTurnLease:
                 return
             self.interrupt_message = message
             try:
-                self.agent.interrupt(message, hard_cancel=True)
+                self.agent.interrupt(message, hard_cancel=True, tool_reason=_REASON_LEASE_LOST)
             except Exception:
                 self.agent._interrupt_requested = True
                 self.agent._interrupt_message = message
+                self.agent._tool_interrupt_reason = _REASON_LEASE_LOST
 
     def commit_liveness_abort(self, snapshot, message: str) -> bool:
         """Commit point for the watchdog's stall observation.
@@ -142,7 +146,8 @@ class DurableTurnLease:
                 return False
         try:
             published = agent.interrupt(
-                message, hard_cancel=True, require_generation=current_generation
+                message, hard_cancel=True, tool_reason="turn liveness watchdog",
+                require_generation=current_generation,
             )
         except Exception:
             logger.debug("Turn liveness abort interrupt raised; declining the abort", exc_info=True)

@@ -1116,6 +1116,7 @@ class TestPythonpathSelectiveStrip:
         physical_root = physical_home / "hermes-agent"
         physical_root.mkdir(parents=True)
         (physical_home / "profiles" / "coder").mkdir(parents=True)
+        (physical_home / "profiles" / "coder" / "config.yaml").write_text("{}\n")  # identity marker
         configured_home = tmp_path / "configured-home"
         try:
             _make_directory_link(configured_home, physical_home)

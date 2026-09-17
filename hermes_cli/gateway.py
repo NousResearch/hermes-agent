@@ -1696,6 +1696,12 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     for pid in orphans:
         with contextlib.suppress(Exception):
             write_planned_stop_marker(pid)
+        # ``os.kill(..., SIGTERM)`` maps to TerminateProcess on Windows, so it
+        # would kill the gateway before its marker watcher can drain and close
+        # state cleanly. Let the bounded survivor wait below escalate instead.
+        if is_windows():
+            reaped = True
+            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1787,7 +1793,8 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
     kill = kill or os.kill
     for pid in survivors:
         logger.warning(
-            "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
+            "Gateway PID %s did not exit within %.0fs of the stop request (SIGTERM, or the planned-stop "
+            "marker on Windows) — sending "
             "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
             "the next start will run an integrity check.",
             pid, _ORPHAN_EXIT_GRACE_SECONDS,
@@ -1826,14 +1833,31 @@ def stop_profile_gateway() -> bool:
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
 
-    _mark_planned_stop(pid)
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass  # Already gone
-    except PermissionError:
-        print(f"⚠ Permission denied to kill PID {pid}")
-        return False
+    if is_windows():
+        # Windows maps SIGTERM to TerminateProcess. The marker watcher is the
+        # gateway's graceful-stop IPC, so wait for it before force-killing a
+        # wedged process.
+        from gateway.status import get_process_start_time
+        from hermes_cli.gateway_windows import (
+            _drain_gateway_pid,
+            _force_terminate_known_gateway_pids,
+            _windows_stop_drain_timeout,
+        )
+
+        # Capture identity BEFORE the drain (as _escalate_wedged_gateway does): if the PID is
+        # recycled during the wait, terminate_pid's start-time mismatch refuses the taskkill.
+        expected_start_time = get_process_start_time(pid)
+        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
+            _force_terminate_known_gateway_pids({pid: expected_start_time})
+    else:
+        _mark_planned_stop(pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # Already gone
+        except PermissionError:
+            print(f"⚠ Permission denied to kill PID {pid}")
+            return False
 
     # ``_pid_exists``, NOT ``os.kill(pid, 0)`` (TerminateProcess on Windows).
     from gateway.status import _pid_exists
@@ -2463,6 +2487,32 @@ def print_systemd_scope_conflict_warning() -> None:
     print_info("    sudo hermes gateway uninstall --system")
 
 
+def refuses_container_user_scope_install(system: bool) -> bool:
+    """True (after printing the guidance) when a fresh USER-scope unit was requested inside a container.
+
+    A systemd container passes ``supports_systemd_services()`` on purpose so ``--system`` keeps working,
+    but a user unit there is not container-scoped: the unit file and its ``default.target.wants`` symlink
+    land in ``~/.config/systemd/user`` — commonly the host's own home bind-mounted in — so the host's
+    ``systemd --user`` enables it too and a second gateway polls the same bot token outside the container.
+    Callers decide between ``sys.exit(1)`` (CLI) and skipping the install (wizard)."""
+    if system or not is_container():
+        return False
+    print_error("Refusing to install a user-scope systemd gateway service inside a container.")
+    _print_info_lines(
+        "The unit file and its enable symlink would be written to the home directory, which is",
+        "commonly the host's own home bind-mounted in — the host's user manager then enables and",
+        "starts the same unit, so a second gateway polls the same bot token outside the container",
+        "(Telegram: 'Conflict: terminated by other getUpdates request').",
+        "",
+        "  hermes gateway run                                # run as the container's main process",
+        "  docker run --restart unless-stopped ...           # container restart policy",
+        "",
+        "If systemd manages this container (systemd as PID 1), install an isolated system service instead:",
+        "  sudo hermes gateway install --system --run-as-user <user>",
+    )
+    return True
+
+
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
         raise SystemScopeRequiresRootError(f"System gateway {action} requires root. Re-run with sudo.", action)
@@ -2548,6 +2598,8 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
         systemd_install(force=force, system=True, run_as_user=run_as_user, enable_on_startup=enable_on_startup)
         return scope, True
 
+    if refuses_container_user_scope_install(system=False):
+        return scope, False
     systemd_install(force=force, system=False, enable_on_startup=enable_on_startup)
     return scope, True
 
@@ -6211,6 +6263,8 @@ def _cmd_install(args):
         _no_backend_exit("install", "termux")
     backend = _service_backend()
     if backend == "systemd":
+        if refuses_container_user_scope_install(system):
+            sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
         launchd_install(force)

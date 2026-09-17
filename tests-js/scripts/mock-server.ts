@@ -34,6 +34,9 @@ export interface MockServerOptions {
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
+  /** Extra ids listed by GET /v1/models beside `mock-model` (a pickable second model). */
+  extraModels?: string[]
+
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -54,6 +57,8 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  /** The `model` field of every chat completion request, in arrival order. */
+  receivedModels: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -437,6 +442,7 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    const receivedModels: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -469,14 +475,12 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         res.end(
           JSON.stringify({
             object: 'list',
-            data: [
-              {
-                id: 'mock-model',
-                object: 'model',
-                created: 0,
-                owned_by: 'mock',
-              },
-            ],
+            data: ['mock-model', ...(options.extraModels ?? [])].map(id => ({
+              id,
+              object: 'model',
+              created: 0,
+              owned_by: 'mock',
+            })),
           }),
         )
 
@@ -510,6 +514,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          receivedModels.push(model)
 
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
@@ -754,6 +759,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        receivedModels,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

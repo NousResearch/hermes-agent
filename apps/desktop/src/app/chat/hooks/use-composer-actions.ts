@@ -7,7 +7,6 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
-import { desktopGit } from '@/lib/desktop-git'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
@@ -395,51 +394,6 @@ export function useComposerActions({
     [attachToMain]
   )
 
-  // A pasted GitHub PR-comment deep link → structured `review` attachment.
-  // Optimistic: the card lands immediately with the URL as its ref, then the
-  // background gh resolve fills in author/anchor (label + detail). If gh can't
-  // answer — offline, unauthenticated, foreign repo, remote gateway — the card
-  // downgrades to a plain `url` attachment so the paste is never lost.
-  const attachPrCommentUrl = useCallback(
-    (url: string): boolean => {
-      const id = attachmentId('review', url)
-      const refText = `@url:${formatRefValue(url)}`
-
-      attachToMain({
-        id,
-        kind: 'review',
-        label: url.replace(/^https:\/\/github\.com\//, '').replace(/#.*$/, ''),
-        refText,
-        uploadState: 'uploading'
-      })
-
-      void (async () => {
-        const comment = currentCwd
-          ? await (desktopGit()
-              ?.review.fetchPrComment(currentCwd, url)
-              .catch(() => null) ?? null)
-          : null
-
-        if (comment) {
-          scope.update({
-            id,
-            kind: 'review',
-            label: comment.path
-              ? `${pathLabel(comment.path)}${comment.line ? `:${comment.line}` : ''} — @${comment.author}`
-              : `PR #${comment.prNumber} — @${comment.author}`,
-            detail: JSON.stringify(comment),
-            refText
-          })
-        } else {
-          scope.update({ id, kind: 'url', label: pathLabel(url), refText })
-        }
-      })()
-
-      return true
-    },
-    [attachToMain, currentCwd, scope]
-  )
-
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
       const paths = await selectDesktopPaths({
@@ -552,8 +506,8 @@ export function useComposerActions({
   )
 
   const attachImageBlob = useCallback(
-    async (blob: Blob) => {
-      if (blob.size === 0) {
+    async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      if (blob.size === 0 || !isCurrent()) {
         return false
       }
 
@@ -563,6 +517,11 @@ export function useComposerActions({
 
       try {
         const buffer = await blob.arrayBuffer()
+
+        if (!isCurrent()) {
+          return false
+        }
+
         const data = new Uint8Array(buffer)
         const name = blob instanceof File ? blob.name : undefined
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
@@ -573,7 +532,7 @@ export function useComposerActions({
           return false
         }
 
-        return attachImagePath(savedPath)
+        return isCurrent() ? attachImagePath(savedPath) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -820,7 +779,6 @@ export function useComposerActions({
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
-    attachPrCommentUrl,
     attachPastedText,
     insertContextPathInlineRef,
     pasteClipboardImage,

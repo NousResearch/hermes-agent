@@ -1308,6 +1308,9 @@ fn option_env_string(key: &str) -> Option<String> {
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
+    // Same UI boundary as bootstrap.rs's emit_event: the update flow's log
+    // lines also reach the plain-text Live output pane (#112675).
+    let event = event.sanitized_for_ui();
     if let Err(e) = app.emit(BootstrapEvent::CHANNEL, &event) {
         tracing::warn!(?e, "failed to emit update event");
     }

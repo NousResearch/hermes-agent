@@ -20,6 +20,7 @@ export {
   sealOpenToolParts,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
+  toolCallOwnerMessageId,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'

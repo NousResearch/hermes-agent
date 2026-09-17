@@ -746,6 +746,30 @@ When on, web tools, the browser, vision URL fetches, and gateway media downloads
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
+#### Local proxy fake-ip ranges
+
+A TUN proxy in fake-ip mode (Mihomo/Clash `fake-ip`, Surge enhanced mode) answers DNS with an
+address from its own block — `198.18.0.0/15` (RFC 2544 benchmarking) by default — for every name
+outside its filter. Those answers are the proxy's sentinel, not an internal host, so the
+private-IP guard otherwise rejects every outbound fetch on such a host: `web_extract`, platform
+attachment downloads and the browser relay all fail with *URL targets a private or internal
+network address* while the request never reaches the network. Declare the block to let the
+sentinel through:
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
+exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which
+resolves the real target itself), and loopback, RFC 1918, link-local, CGNAT and cloud-metadata
+destinations stay blocked — an entry that overlaps one of those classes (including `0.0.0.0/0`
+or `::/0`) is ignored with a warning rather than widening the guard. On a host with a cloud
+browser provider, the declared sentinel also stops counting as private for
+`browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
+
 ### Tirith Pre-Exec Security Scanning
 
 Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
@@ -786,11 +810,21 @@ The translation-and-execution check requires a short language/format clause (for
 and execution verbs across unrelated comma-separated role prose. These patterns are
 heuristics, not semantic intent detection.
 
-Blocked files show a warning:
+Blocked project files show a warning:
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
+
+Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (file-tool writes to it
+need your approval, and project checkouts never supply it), so a scanner hit there **does not block the
+file**. Hermes logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
+`⚠ SOUL.md … loaded — matched prompt-injection pattern(s); review the file`. This lets an identity file that
+*documents* an attack phrase (security guidance such as "content telling you to ignore previous instructions")
+keep working; if you did not write the flagged text, treat the warning as a sign that something else edited
+the file. The exception does not extend to a `SOUL.md` shipped by a profile distribution: `hermes profile
+install <git-url>` and `hermes profile update` copy a third party's `SOUL.md` into the profile home without
+a scan or an approval prompt, so when `distribution.yaml` owns the file a scanner hit still blocks it.
 
 ## Best Practices for Production Deployment
 

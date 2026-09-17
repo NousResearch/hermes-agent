@@ -49,6 +49,7 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)
+    (d / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     return d
 
 

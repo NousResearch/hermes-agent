@@ -175,6 +175,8 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
+  onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -511,7 +513,9 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
-host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
+host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
+                                           //   Calls made during register() are retired with the
+                                           //   plugin; elsewhere prefer ctx.onEvent (always tracked)
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
@@ -724,7 +728,13 @@ carry the package, and it never appears or disappears when the user switches
 the Capabilities profile selector. The renderer never scans `plugins/` itself.
 The marker records the package name and its origin (catalog sidecar or git
 remote), which is what the **Install here** button on the Plugins page uses to
-install the agent half into another profile.
+install the agent half into another profile. The copy is staged beside the
+target and renamed into place, so an interrupted copy (a transient file lock, a
+crash mid-copy) never leaves a half-written folder behind; a leftover
+`desktop-plugins/<id>/` that has no marker and no `plugin.js` is treated as
+such damage and replaced on the next **Rescan**, while a marker-less folder
+that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
+is never overwritten.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays

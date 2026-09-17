@@ -1063,6 +1063,35 @@ class TestModelOverrides:
         assert caps.supports_reasoning is False
         assert caps.supports_tools is True
 
+    def test_context_only_override_keeps_unknown_capabilities_unknown(self):
+        """A metadata-only custom-provider override must not claim text-only.
+
+        Unknown is fail-open for the vision and reasoning callers; only an
+        explicit capability override may turn either verdict into ``False``.
+        """
+        overrides = {
+            "custom-gateway": {
+                "upstream-model": {"context_window": 1_000_000},
+                "text-model": {
+                    "context_window": 1_000_000,
+                    "supports_vision": False,
+                    "supports_reasoning": False,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            unknown = get_model_capabilities("custom-gateway", "upstream-model")
+            explicit_false = get_model_capabilities("custom-gateway", "text-model")
+
+        assert unknown is not None
+        assert unknown.context_window == 1_000_000
+        assert unknown.supports_vision is None
+        assert unknown.supports_reasoning is None
+        assert explicit_false is not None
+        assert explicit_false.supports_vision is False
+        assert explicit_false.supports_reasoning is False
+
     def test_caps_override_patches_existing_catalog_entry(self):
         """Explicit override patches specific fields on a known entry (#84482)."""
         overrides = {

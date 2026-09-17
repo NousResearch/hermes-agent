@@ -20,8 +20,9 @@ import pytest
 def pooled_served_process(tmp_path, monkeypatch):
     """Process whose HERMES_HOME is a served named profile; the default home records a live multiplexer."""
     root = tmp_path / "hermes"
-    (root / "profiles" / "alpha").mkdir(parents=True)
-    (root / "profiles" / "solo").mkdir(parents=True)
+    for name in ("alpha", "solo"):
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n")
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     (root / "gateway_state.json").write_text(json.dumps({

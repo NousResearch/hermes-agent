@@ -871,6 +871,29 @@ export const ar = defineLocale({
       imported: 'تم استيراد الإعدادات',
       invalidJson: 'JSON غير صالح'
     },
+    screenshot: {
+      enabledTitle: 'اختصار لقطة الشاشة',
+      enabledDesc:
+        'اضغط مفتاحَي Command معًا من أي تطبيق لالتقاط النافذة الأمامية وإرفاقها بمسودة Hermes الحالية. لا يُرسل أي شيء تلقائيًا. معطّل افتراضيًا ويُطبَّق على جهاز Mac هذا فقط. قد تتضمن النافذة محتوى حساسًا، لذا راجع المرفق قبل الإرسال.',
+      statusTitle: 'حالة اختصار لقطة الشاشة',
+      checking: 'جارٍ التحقق من اختصار لقطة الشاشة…',
+      disabled: 'اختصار لقطة الشاشة معطّل.',
+      starting: 'جارٍ بدء رصد الاختصار. لم يصبح جاهزًا بعد.',
+      ready: 'الاختصار جاهز. تُرفق اللقطات بالمسودة الحالية دون إرسالها.',
+      inputPermission:
+        'يتيح إذن مراقبة الإدخال لـ Hermes رصد مفتاحَي Command أثناء استخدام تطبيق آخر. اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← مراقبة الإدخال، ثم عُد إلى هنا وأعد المحاولة.',
+      screenPermission:
+        'يتيح إذن تسجيل الشاشة لـ Hermes التقاط نافذة التطبيق الأمامية عند استخدام هذا الاختصار. اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← تسجيل الشاشة، ثم عُد إلى هنا وأعد المحاولة. أعد تشغيل Hermes إذا طلب macOS ذلك.',
+      openSettings: 'فتح إعدادات النظام',
+      retry: 'إعادة المحاولة',
+      unavailable: 'اختصار لقطة الشاشة غير متاح. أعد المحاولة أو عطّله.',
+      errorTitle: 'خطأ في اختصار لقطة الشاشة',
+      loadFailed: 'تعذّرت قراءة حالة الاختصار. أعد المحاولة للتحقق من إعداده الحالي.',
+      saveFailed: 'تعذّر تأكيد تغيير الاختصار. أعد المحاولة للتحقق من إعداده الحالي.',
+      permissionFailed: 'تعذّر فتح إعدادات النظام. افتح الخصوصية والأمان يدويًا، ثم أعد المحاولة.',
+      captureFailed: 'تعذّر التقاط النافذة الأمامية. لم يُرفق أو يُرسل أي شيء.',
+      contextChanged: 'تغيّرت المسودة الحالية أثناء الالتقاط. لم تُرفق اللقطة أو تُرسل.'
+    },
     quickEntry: {
       enabledTitle: 'الإدخال السريع',
       enabledDesc: 'استدعِ محرّرا صغيرا من أي مكان باختصار عام وأرسل طلبا دون فتح Hermes.',
@@ -2019,6 +2042,7 @@ export const ar = defineLocale({
       enter: label => `فتح ${label}`,
       reorder: label => `إعادة ترتيب ${label}`,
       toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
+      showAllCount: count => `إظهار كل الجلسات (${count})`,
       back: 'كل المشاريع'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,
@@ -3204,7 +3228,13 @@ export const ar = defineLocale({
     cwdChangeFailed: 'فشل تغيير مجلد العمل',
     cwdStagedTitle: 'تم تجهيز مجلد العمل',
     cwdStagedMessage: 'سيطبق مجلد العمل على الرسالة التالية.',
+    modelSwitchConfirmBody: 'يتطلب تبديل النموذج هذا تأكيدًا.',
+    modelSwitchConfirmLabel: 'التبديل على أي حال',
+    modelSwitchConfirmTitle: (model: string) => `التبديل إلى ${model}؟`,
+    modelSwitchConfirmTitleFallback: 'تبديل النموذج؟',
     modelSwitchFailed: 'فشل تبديل النموذج',
+    modelSwitchKeepLabel: 'الاحتفاظ بالنموذج الحالي',
+    modelSwitchStaleNotice: 'تغيّر الاختيار — لم يتم تطبيق تبديل النموذج.',
     hydrationSyncing: (profile: string) => `جارٍ مزامنة ${profile}\u2026`,
     sessionExported: 'تم تصدير الجلسة',
     sessionExportFailed: 'فشل تصدير الجلسة',

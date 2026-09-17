@@ -400,7 +400,7 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     agent._session_turn_lease_refresh_interval = 0.01
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message
@@ -450,7 +450,7 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     agent._session_turn_lease_refresh_interval = 0.01
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message
@@ -499,7 +499,7 @@ def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypat
     interrupt_started = threading.Event()
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         interrupt_started.set()
         release_refresh.wait(timeout=2.0)
@@ -553,7 +553,7 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     released = threading.Event()
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message

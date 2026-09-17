@@ -216,9 +216,32 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                self._report_hook_failure(hook_name, cb, kwargs, exc)
         return results
+
+    def _report_hook_failure(
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: Exception, *, surface: str = "Hook"
+    ) -> None:
+        """One WARNING per distinct (hook, callback, error); identical repeats at DEBUG.
+
+        A callback whose signature names a parameter the hook never sends (``tool_data`` instead
+        of ``tool_name``/``args``) fails identically on every tool call — ~1700 WARNING lines an
+        hour that bury real signals (#111922). The first report names the fields the hook does
+        provide so the plugin author can fix the signature. The key names the callback by
+        module/qualname (not ``id()``, which CPython recycles across plugin reloads) and
+        truncates the message so a hook that embeds tool args in its error cannot grow the set
+        per call; the set is cleared on unload alongside the timeout-suppression map.
+        """
+        callback_name = getattr(cb, "__name__", repr(cb))
+        key = (hook_name, getattr(cb, "__module__", ""), getattr(cb, "__qualname__", callback_name),
+               type(exc).__name__, str(exc)[:200])
+        if key in self._hook_failures_reported:
+            logger.debug("%s '%s' callback %s raised again: %s", surface, hook_name, callback_name, exc)
+            return
+        self._hook_failures_reported.add(key)
+        logger.warning(
+            "%s '%s' callback %s raised: %s (%s provides: %s; identical failures are logged at DEBUG from now on)",
+            surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
@@ -502,6 +525,6 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Middleware '%s' callback %s raised: %s", kind, getattr(cb, "__name__", repr(cb)), exc)
+                # Runs once per tool call like a hook, so a mis-declared callback floods identically.
+                self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
         return results

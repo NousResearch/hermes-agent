@@ -91,8 +91,9 @@ def _plugin_reference_items(pfx: str, qval: str) -> list[dict] | None:
             ac = asyncio.run(coro)
         else:  # already inside a running loop: run the coroutine on a side thread
             import concurrent.futures
+            import contextvars
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                ac = pool.submit(asyncio.run, coro).result()
+                ac = pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
         return [{"text": f"@{pfx}:{it.text}", "display": it.display, "meta": it.meta} for it in ac]
     except Exception:
         return None
@@ -147,32 +148,70 @@ def _at_root_items() -> list[dict]:
     return items
 
 
-def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool) -> list[dict]:
+def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple[str, bool]]:
+    """``(name, is_dir)`` entries of one directory inside the active non-local terminal backend.
+
+    Runs in the session's own backend (``task_id`` = session key), so relative paths and ``~`` resolve
+    where the agent's commands do. Completion is advisory: an unreachable backend yields nothing —
+    falling back to the gateway host would show a plausible but wrong tree (#112963).
+    """
+    import json
+    import shlex
+
+    script = (
+        'd=$1; case $d in "~") d=$HOME;; "~/"*) d=$HOME${d#?};; esac; [ -d "$d" ] || exit 0; '
+        'for p in "$d"/* "$d"/.[!.]* "$d"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
+        'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
+    )
+    try:
+        from tools.terminal_tool import terminal_tool
+        result = json.loads(terminal_tool(
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3))
+    except Exception:
+        return []
+    if result.get("error") or result.get("exit_code") not in (0, None):
+        return []
+    entries = [(line.rstrip("/"), line.endswith("/")) for line in str(result.get("output") or "").splitlines()]
+    return sorted((name, is_dir) for name, is_dir in entries if name and "/" not in name)
+
+
+def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
+                       session_key: str | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
-    expanded = _normalize_completion_path(path_part) if path_part else "."
+    import posixpath
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
+    # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
+    pth = os.path if local else posixpath
+    expanded = (_normalize_completion_path(path_part) if local else path_part) if path_part else "."
     if expanded == "." or not expanded or expanded.endswith("/"):
         search_dir, match = (expanded or "."), ""
     else:
-        search_dir, match = os.path.dirname(expanded) or ".", os.path.basename(expanded)
-    search_dir = search_dir if os.path.isabs(search_dir) else os.path.join(root, search_dir)
+        search_dir, match = pth.dirname(expanded) or ".", pth.basename(expanded)
+    if not (pth.isabs(search_dir) or search_dir.startswith("~")):
+        search_dir = pth.join(root, search_dir)
+    search_dir = pth.normpath(search_dir)
     items: list[dict] = []
-    if not os.path.isdir(search_dir):
-        return items
-    for entry in sorted(os.listdir(search_dir)):
+    if local:
+        if not os.path.isdir(search_dir):
+            return items
+        entries = [(entry, os.path.isdir(os.path.join(search_dir, entry))) for entry in sorted(os.listdir(search_dir))]
+    else:
+        entries = _backend_dir_entries(search_dir, session_key)
+    for entry, is_dir in entries:
         if match and not entry.lower().startswith(match.lower()):
             continue
         if is_context and (entry in _FUZZY_FALLBACK_EXCLUDES or (not prefix_tag and entry.startswith("."))):
             continue
-        full = os.path.join(search_dir, entry)
-        is_dir = os.path.isdir(full)
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
-        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        full = pth.join(search_dir, entry)
+        rel = pth.relpath(full, root).replace(os.sep, "/")
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
         elif word.startswith("~"):
-            text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
+            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))
@@ -187,7 +226,12 @@ def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
         return _ok(rid, {"items": []})
-    root = _completion_cwd(params)
+    session = _sessions.get(params.get("session_id", ""))
+    local = _effective_terminal_backend() == "local"
+    # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
+    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
@@ -204,15 +248,16 @@ def _(rid, params: dict) -> dict:
         prefix_tag, path_part = "", query
     # `@/foo` usually means "foo, from here": absolute only when that prefix exists,
     # else resolve relative to cwd (`@/Desktop` must not dead-end; `@/usr/local` still resolves).
+    # Host probes (this one and the fuzzy repo walk) say nothing about a non-local backend's tree.
     if (
         is_context and path_part.startswith("/") and not path_part.startswith("//")
-        and not _abs_completion_prefix_exists(path_part)):
+        and local and not _abs_completion_prefix_exists(path_part)):
         path_part = path_part.lstrip("/")
     bare_word = is_context and path_part and "/" not in path_part
-    if bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
+    if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
-        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context)
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
     # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):

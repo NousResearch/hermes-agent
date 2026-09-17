@@ -78,6 +78,13 @@ The catalog is designed so you know exactly what you're installing:
 - **Exact SHA pins.** Entries pin a specific commit, not a branch. A plugin
   author pushing new code to their repo does **not** change what the catalog
   installs — updating the pin requires another reviewed PR.
+- **Scanned at admission, trusted at install.** Admission CI runs the same
+  security scanner the installer runs (`hermes plugins validate` includes a
+  `security scan` check): a `dangerous` verdict fails the entry, `caution`
+  findings are listed for the reviewer. Because the reviewer saw them, a
+  catalog install checked out at exactly the pinned SHA does not stop to ask
+  about `caution` again; `dangerous` still blocks, and anything installed from
+  a raw URL or at another revision gets the normal prompt.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.

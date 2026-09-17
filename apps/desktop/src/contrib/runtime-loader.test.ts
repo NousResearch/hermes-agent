@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
 
+import { emitGatewayEvent } from './events'
 import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
-import { discoverRuntimePlugins, loadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
+import { discoverRuntimePlugins, loadRuntimePlugin, unloadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
 // remote mode. The disk scanner must NOT derive the plugin root from it (#66899).
@@ -347,6 +348,39 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
     } finally {
       restore()
       delete (globalThis as unknown as { __smallRegister?: unknown }).__smallRegister
+    }
+  })
+
+  it('disposes runtime host event subscriptions before a hot reload (#112366)', async () => {
+    const restore = blobToDataUrl()
+    const marker = '__runtimeEventReloadCount'
+    const counters = globalThis as unknown as Record<string, number | undefined>
+    counters[marker] = 0
+
+    try {
+      const source = `
+        import { host } from '@hermes/plugin-sdk'
+        export default {
+          id: 'runtime-event-reload',
+          register() {
+            host.onEvent('bot_relay.outbox.pending', () => { globalThis.${marker}++ })
+          }
+        }
+      `
+
+      await loadRuntimePlugin(source, 'first runtime event registration')
+      await loadRuntimePlugin(source, 'second runtime event registration')
+
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters[marker]).toBe(1)
+
+      unloadRuntimePlugin('runtime-event-reload')
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters[marker]).toBe(1)
+    } finally {
+      unloadRuntimePlugin('runtime-event-reload')
+      delete counters[marker]
+      restore()
     }
   })
 })

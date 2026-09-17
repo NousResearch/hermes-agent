@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -105,6 +106,23 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('Open in external browser')).toBeTruthy()
     expect(screen.getByText('Copy URL')).toBeTruthy()
     expect(screen.queryByText('Copy resolved URL')).toBeNull()
+  })
+
+  // The url chip used to be a `<button>`: `resolveDomTarget` only knows
+  // `a[href]`, so the right-click fell through to the shell fallback menu.
+  it('offers the link verbs on a message url chip right-click', async () => {
+    installBridge()
+    mountMenu()
+    // The coordinator binds to window in the capture phase, so a second
+    // render alongside the menu is fine — same as a real transcript.
+    render(<DirectiveContent text="@url:`https://example.com/pr/1`" />)
+    const chip = document.querySelector('[data-slot="aui_directive-chip"]')!
+
+    fireEvent.contextMenu(chip)
+
+    expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
+    expect(screen.getByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
   })
 
   it('opens the in-app browser from the link menu', async () => {

@@ -31,6 +31,7 @@ import {
 } from '@/store/keybinds'
 
 import { SettingsContent } from './primitives'
+import { ScreenshotSettings } from './screenshot-settings'
 
 export function KeybindSettings() {
   const { t } = useI18n()
@@ -113,6 +114,10 @@ export function KeybindSettings() {
           {k.resetAll}
         </button>
       </div>
+
+      {(!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
+        <ScreenshotSettings />
+      )}
 
       <div className="pb-3">
         <SearchField

@@ -11,8 +11,9 @@ was never injected as a follow-up.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
-from typing import Any, Callable
+from typing import Any, Callable, MutableMapping
 
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
@@ -91,3 +92,43 @@ def continue_quiet_notify_completions(
         if not texts:
             return last
     return last
+
+
+def adopt_unanswered_turn(cli: Any, query: Any, environ: MutableMapping[str, str] = os.environ) -> bool:
+    """A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already
+    persisted instead of appending it again. Returns True when the tail row was adopted.
+
+    The failed attempt's turn-start persist left the DM as the transcript's unanswered tail row. A
+    fresh process cannot know that by itself (``_DB_PERSISTED_MARKER`` is in-process only), and
+    inferring it from an identical tail alone would swallow a person's deliberate re-send — so the
+    dispatcher must say so with ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``, consumed (popped) here
+    before the turn so tool subprocesses never inherit it. The row is re-staged as the pending CLI
+    dict already stamped durable: ``_stage_turn_user_message`` reuses it as this turn's user message and
+    the flush writes no second row.
+
+    The DM is not always the literal tail: a turn that died mid-way (HTTP 503 on the call after a tool
+    round) persisted its tool scaffolding — assistant ``tool_calls`` rows and their ``tool`` results —
+    behind the DM before ``agent.turn_recovery`` built the failure text, and the dispatcher retries that
+    too. The DM is still unanswered while nothing after it is a plain assistant reply, so it is adopted
+    and the failed attempt's scaffolding leaves the in-memory transcript: the re-run starts the turn
+    over from the DM (the rows stay in the DB as the record of the failed attempt; the re-run's answer
+    lands after them as a valid continuation)."""
+    from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
+
+    if environ.pop(RESUME_UNANSWERED_TURN_ENV, None) != "1":
+        return False
+    history = getattr(cli, "conversation_history", None) or []
+    idx = next((i for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], dict) and history[i].get("role") == "user"), None)
+    if idx is None or history[idx].get("content") != query:
+        return False
+    if not all(isinstance(row, dict) and (row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")))
+               for row in history[idx + 1:]):
+        return False
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    tail = history[idx]
+    del history[idx:]
+    tail[_DB_PERSISTED_MARKER] = True
+    cli.agent._pending_cli_user_message = tail
+    return True

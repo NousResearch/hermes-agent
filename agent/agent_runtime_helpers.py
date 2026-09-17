@@ -843,6 +843,9 @@ def recover_with_credential_pool(
                 from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
+        model = getattr(agent, "model", None)
+        if isinstance(model, str) and model.strip():
+            kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
@@ -1039,7 +1042,8 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
         if not matches_primary(pool):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
-        next_at = getattr(pool, "next_available_at", lambda: None)()
+        primary_model = str(rt.get("model") or "").strip()
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
         if next_at is not None and next_at > time.time():
             if not getattr(agent, "_restore_wait_logged", False):
                 agent._restore_wait_logged = True
@@ -1064,7 +1068,7 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
-def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
     401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
@@ -1083,7 +1087,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
-    entry = pool.select() if pool is not None and pool.has_available() else None
+    entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
@@ -1170,7 +1174,7 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
         )
         _rebind_primary_credential_pool(
-            agent, primary_provider, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
@@ -1892,15 +1896,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
-        from agent.moa_loop import build_moa_facade
+        from agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
-        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
-        # client.responses.create against the facade (matches agent_init.py).
-        agent.api_mode = "chat_completions"
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
+        # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
+        # client.responses.create against the facade (same pins as agent_init / fallback).
+        bind_moa_runtime(agent, agent.model, api_key)
         return
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
@@ -1914,7 +1914,9 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
-        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
+        effective_key = api_key or agent.api_key or (
+            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+        ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
         if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:

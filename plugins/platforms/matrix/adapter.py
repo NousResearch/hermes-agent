@@ -1413,6 +1413,23 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
+        no create-thread API: a thread is the events whose ``m.relates_to``/``rel_type: m.thread``
+        point at a root event (Slack-style), and ``_apply_relation_metadata`` already threads later
+        sends off a supplied ``thread_id``. ``None`` when disconnected or the seed send failed.
+
+        In-thread replies keep the ROOM's chat_type (``dm``/``group``) in the session key — the
+        handoff watcher and the cron seeder mirror that shape rather than the shared ``thread`` slot."""
+        if self._client is None:
+            return None
+        result = await self.send(parent_chat_id, (name or "").strip() or "Hermes session")
+        root = result.message_id if result.success else None
+        if not root:
+            return None
+        self._threads.mark(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        return str(root)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
         return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}

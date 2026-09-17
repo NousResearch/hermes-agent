@@ -74,7 +74,7 @@ Each session is tagged with its source platform:
 
 | Source | Description |
 |--------|-------------|
-| `cli` | Interactive CLI (`hermes` or `hermes chat`) |
+| `cli` | Interactive CLI (`hermes` or `hermes chat`), and one-shot runs (`hermes chat -q`, `hermes -z`). A one-shot child launched from inside a TUI or Desktop session is still tagged `cli`, not `tui`/`desktop` — it is not that conversation, so it never shows up in the TUI/WebUI picker as a resumable chat. Pass `--source tool` to keep one-shot integration runs out of session lists entirely. |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -231,7 +231,8 @@ What happens:
    - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
-   - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
+   - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
+   - **WhatsApp / Signal / SMS** — no native threads, falls back to the home channel directly.
 4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
 5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
 
@@ -251,7 +252,7 @@ What happens:
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 
-**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
+**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack / Matrix — by far the common case — so most setups never hit this.
 
 ## Session Naming
 

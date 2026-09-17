@@ -156,6 +156,31 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
 
 
+def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(capsys):
+    """#112359: the aggregator is the acting model billed for the run; when it sits on a
+    different provider than the main model, ``hermes moa list``/``configure`` say so."""
+    from hermes_cli import moa_cmd
+
+    moa_cmd._print_config({"model": {"provider": "openai-codex"}})
+
+    out = capsys.readouterr().out
+    assert "acting model — runs every step" in out
+    assert "advise once per user turn" in out
+    # Default preset's aggregator is on openrouter → the notice names both providers.
+    assert "Aggregator is on openrouter; the whole tool loop will be billed there, not to openai-codex." in out
+
+
+@pytest.mark.parametrize("cfg", [{"model": {"provider": "openrouter"}}, {}])
+def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys):
+    from hermes_cli import moa_cmd
+
+    moa_cmd._print_config(cfg)
+
+    out = capsys.readouterr().out
+    assert "acting model — runs every step" in out
+    assert "Aggregator is on" not in out
+
+
 # ── Per-slot max_tokens ────────────────────────────────────────────────────
 
 

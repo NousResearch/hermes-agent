@@ -22,8 +22,9 @@ import pytest
 @pytest.fixture
 def served_root(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
-    (root / "profiles" / "coder").mkdir(parents=True)
-    (root / "profiles" / "other").mkdir(parents=True)
+    for name in ("coder", "other"):
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     (root / "config.yaml").write_text("model: {default: x}\n")  # NO multiplex flag: env-only opt-in
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     (root / "gateway_state.json").write_text(json.dumps(

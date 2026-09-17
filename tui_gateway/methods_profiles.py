@@ -91,6 +91,12 @@ def _read_profile_yaml(profile_dir) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _yaml_scalar_to_json(value):
+    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
 def _clean_revisions(raw: dict) -> dict:
     """Normalise a ``_ui_meta_revisions`` map: str keys, non-bool ints clamped at 0."""
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
@@ -232,7 +238,9 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
     row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
     if isinstance(ui_meta, dict) and ui_meta:
-        row["ui_meta"] = ui_meta
+        # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+        # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+        row["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -306,9 +314,20 @@ def _inherit_launch_model(path) -> bool:
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
+    launch_cfg = load_config_readonly() or {}
+    model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
+    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
+    # rejects a provider it has not been told about ("Unknown provider").
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    if custom:
+        from hermes_cli.config import load_config, save_config
+        with _hermes_home_scope(path):
+            cfg = load_config()
+            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
+            save_config(cfg)
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 

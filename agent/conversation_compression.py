@@ -234,6 +234,35 @@ def _compressor_attempt_is_current(compressor: Any, generation: int) -> bool:
         return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
 
 
+def _mark_compressor_working_attempt(compressor: Any, generation: int) -> None:
+    """Publish the generation of the attempt that is ACTUALLY running summary work.
+
+    The entry claim is taken before the breaker gates and the per-session lock, so no-op
+    entries (lock sit-outs, transient gates) bump ``_compression_attempt_generation``
+    without doing any work. Candidate supersession must key on this separate marker,
+    published only when the summary dispatch begins, or those no-op claims discard a
+    completed candidate and compression livelocks. Slotted/frozen compressors that
+    cannot hold the attribute keep the entry-generation check as a conservative fallback.
+    """
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        with contextlib.suppress(Exception):
+            compressor._compression_working_attempt_generation = generation
+
+
+def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
+    """True when *generation* is still the last attempt that began summary work.
+
+    Without a published marker (attribute-less compressor, or the attempt never reached
+    dispatch) supersession falls back to the entry-generation ownership check."""
+    if not generation:
+        return True
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        marker = getattr(compressor, "_compression_working_attempt_generation", None)
+        if marker is None:
+            return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
+        return int(marker) == int(generation)
+
+
 def _install_compression_cancelled_check(compressor: Any, check: Any, generation: int) -> None:
     """Install the F4 cancellation consult, stamped with its owner attempt."""
     with _COMPRESSOR_ATTEMPT_LOCK:
@@ -998,6 +1027,7 @@ def run_compress_context_with_progress_timeout(
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None, telemetry_agent: Any = None, stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    fallback_worker: Optional[Callable[[CompressionCommitFence], Tuple[list, str]]] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
@@ -1110,7 +1140,7 @@ def run_compress_context_with_progress_timeout(
         # the summary-failure cooldown, which would no-op the retry's summary call.
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
-                worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
+                worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
             )
@@ -2710,6 +2740,10 @@ def _run_summary_dispatch(
                 aux_progress_hook(_progress_hook), aux_stream_deadline(_host_stream_deadline),
                 aux_interrupt_protection(cancel_check=_compression_cancel_requested),
             ):
+                # This attempt is now doing real summary work: publish it as the working attempt so later
+                # no-op entry claims (lock sit-outs, gates, the cancelled-fence skip above) cannot supersede
+                # the candidate this run produces (#112482).
+                _mark_compressor_working_attempt(agent.context_compressor, attempt_generation)
                 compressed = compress_fn(messages, **compress_kwargs)
                 # Freeze a hard stop that arrived after the last provider attempt but before session state rotates.
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
@@ -2829,11 +2863,15 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     else:
         new_system_prompt = agent._cached_system_prompt = rebuilt_system_prompt
         if cached_system_prompt is not None:
-            logger.info(
+            # The rebuild itself stays mandatory; only the first drift per session is INFO — a long session
+            # compacting many times logged this on every compact (19x/day in #112420).
+            log = logger.debug if getattr(agent, "_compaction_prompt_drift_logged", False) is True else logger.info
+            log(
                 "Compaction rebuilt a drifted system prompt (session=%s, %d -> %d chars): builder output changed "
                 "since the stored snapshot (update, config change, or memory/skills growth)",
                 agent.session_id or "none", len(cached_system_prompt), len(new_system_prompt),
             )
+            agent._compaction_prompt_drift_logged = True
     return new_system_prompt
 
 
@@ -3213,13 +3251,20 @@ def _candidate_rejected(
             )
         return True
 
-    # A newer attempt claiming this compressor supersedes us; discard the late
-    # candidate. Fence poison alone misses a successor that minted its own fence.
-    if not _compressor_attempt_is_current(agent.context_compressor, attempt_generation):
+    # A newer WORKING attempt supersedes us; discard the late candidate. No-op
+    # entry claims (sit-outs that never ran a summary) do not: keying on them
+    # discards a completed candidate and livelocks compression. Without a
+    # published working marker, fence poison alone misses a successor that
+    # minted its own fence — fall back to the entry-generation check.
+    if not _working_attempt_is_current(agent.context_compressor, attempt_generation):
+        _working_gen = getattr(
+            agent.context_compressor, "_compression_working_attempt_generation", None
+        )
         logger.warning(
             "Discarding late compression candidate: attempt generation "
-            "%s was superseded by a newer attempt (current: %s) (session=%s).", attempt_generation,
-            getattr(agent.context_compressor, "_compression_attempt_generation", None),
+            "%s was superseded by a newer working attempt (current working: %s) (session=%s).",
+            attempt_generation,
+            _working_gen,
             agent.session_id or "none",
         )
         _restore_messages_snapshot(messages, messages_before_compression)

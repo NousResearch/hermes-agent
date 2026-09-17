@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 
 import logging
 import os
@@ -224,6 +225,10 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # A provider may rate-limit one model while the same credential remains
+    # usable for its sibling models.  Keep that observation separate from the
+    # credential-wide status used for auth and billing failures.
+    model_cooldowns: Optional[Dict[str, float]] = None
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -713,7 +718,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -743,7 +748,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self) -> bool:
+    def has_available(self, *, model: Optional[str] = None) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
@@ -751,10 +756,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         like every other caller or a probe can race a concurrent rotation.
         """
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             return bool(available)
 
-    def next_available_at(self) -> Optional[float]:
+    def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
         ``None`` when an entry is available now, or when no exhausted entry
@@ -763,7 +768,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         Runs under ``self._lock`` for the same reason as ``has_available``.
         """
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             if available:
                 return None
             # Mirror _available_entries: a sole credential's transient throttle
@@ -779,6 +784,13 @@ class CredentialPool(CredentialPoolAdminMixin):
                 )
                 if until is not None
             ]
+            candidates.extend(
+                until
+                for entry in self._entries
+                if entry.last_status != STATUS_DEAD
+                for until in (model_cooldown_until(entry, model),)
+                if until is not None
+            )
             return min(candidates) if candidates else None
 
     def entries(self) -> List[PooledCredential]:
@@ -1438,7 +1450,11 @@ class CredentialPool(CredentialPoolAdminMixin):
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
             if getattr(auth_mod, terminal_fn_name)(exc):
-                logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
+                # WARNING, not debug: this is the moment a login is lost. At the default log level a
+                # silent quarantine looked like "I logged in once and Hermes keeps failing" (#113023).
+                logger.warning(
+                    "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
+                    "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
                 return None
@@ -1457,7 +1473,9 @@ class CredentialPool(CredentialPoolAdminMixin):
                 logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
                 return entry
             if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                logger.warning(
+                    "Nous refresh token is terminally invalid (%s); clearing local token state. "
+                    "Re-run 'hermes auth add nous' to sign in again.", exc)
                 self._clear_terminal_nous_state(entry, exc)
                 self._quarantine_sources(
                     entry,
@@ -1558,20 +1576,20 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     # ---- selection ---------------------------------------------------------
 
-    def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
-                entry, _ = self._select_under_lock()
+                entry, _ = self._select_under_lock(model=model)
         if entry is not None:
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    def _select_under_lock(self, *, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
     def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -1599,7 +1617,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
-        self, *, clear_expired: bool = False, refresh: bool = False,
+        self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -1645,6 +1663,8 @@ class CredentialPool(CredentialPoolAdminMixin):
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
+            if model_cooldown_until(entry, model) is not None:
+                continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
@@ -1689,14 +1709,14 @@ class CredentialPool(CredentialPoolAdminMixin):
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
     def _select_unlocked(
-        self, *, refresh: bool = True, count: bool = True,
+        self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
     ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -1814,6 +1834,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -1827,6 +1848,14 @@ class CredentialPool(CredentialPoolAdminMixin):
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if self._is_model_scoped_rate_limit(status_code, model, failure_reason):
+                # A generic Anthropic 429 is a per-model rate limit: bench this
+                # model only, the credential stays available for its siblings.
+                self._cool_down_model(entry, model, error_context)
+                logger.info("credential pool: %s rate-limited for model %s; other models stay available", _label, model)
+                self._current_id = None
+                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
             # several entries (an explicit entry plus a ``model_config`` row

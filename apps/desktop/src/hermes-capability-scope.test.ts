@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getAuxiliaryModels, getGlobalModelInfo } from './api/models'
 import {
   getHermesConfigRecord,
   getMcpCatalog,
@@ -82,11 +83,21 @@ describe('capability helpers are connection-scoped', () => {
 
     void getSkills('coder')
     expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    // The Model page fires these alongside the config record for the same
+    // scope; an untagged sibling would queue as background work again.
+    void getGlobalModelInfo('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getAuxiliaryModels('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
   })
 
   it('keeps ambient config reads unprioritized for background hydration', () => {
     getHermesConfigRecord()
+    expect(last()).not.toHaveProperty('priority')
 
+    void getGlobalModelInfo()
     expect(last()).not.toHaveProperty('priority')
   })
 

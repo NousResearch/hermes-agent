@@ -158,6 +158,11 @@ class TestLookupSupportsVisionOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
+    def test_models_dev_unknown_capability_stays_fail_open(self):
+        fake_caps = type("Caps", (), {"supports_vision": None})()
+        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert _lookup_supports_vision("custom-gateway", "upstream-model", {}) is None
+
 
     def test_ollama_probe_when_models_dev_missing(self):
         cfg = {"model": {"base_url": "http://localhost:11434/v1"}}

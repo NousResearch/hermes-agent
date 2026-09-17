@@ -219,6 +219,60 @@ class TestConfigGetUnset:
         assert "Unset platforms.teams.extra.access_token" in capsys.readouterr().out
 
 
+class TestConfigGetPhantomKeyNotice:
+    """``config get`` must not echo a schema-unknown nested key as if it were live: the value comes
+    from the file, but nothing reads it. The notice goes to stderr so stdout stays parseable, and
+    custom top-level keys / open-subkey sections stay unflagged (both are supported).
+    """
+
+    def test_unknown_nested_key_flags_on_stderr_and_keeps_stdout_parseable(
+        self, _isolated_hermes_home, capsys
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "compression:\n  compressor:\n    enabled: true\n"
+        )
+
+        args = argparse.Namespace(config_command="get", key="compression.compressor.enabled", json=True)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) is True  # stdout stays parseable: notice is stderr-only
+        assert "not a recognized config key" in captured.err
+
+    def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
+        self, _isolated_hermes_home, capsys
+    ):
+        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
+        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
+
+        config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "local"
+        assert "may not read it" in captured.err
+        assert "does not read it" not in captured.err
+
+    @pytest.mark.parametrize(
+        "key, body",
+        [
+            ("terminal.timeout", "terminal:\n  timeout: 120\n"),
+            ("my_custom_setting", "my_custom_setting: hello\n"),
+            ("mcp_servers.local.url", "mcp_servers:\n  local:\n    url: http://127.0.0.1:1\n"),
+        ],
+    )
+    def test_recognized_and_custom_keys_are_not_flagged(
+        self, _isolated_hermes_home, capsys, key, body
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(body)
+
+        args = argparse.Namespace(config_command="get", key=key, json=False)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert captured.out.strip()
+        assert "not a recognized config key" not in captured.err
+
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
 # ---------------------------------------------------------------------------

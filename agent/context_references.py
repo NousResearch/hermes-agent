@@ -178,8 +178,11 @@ def preprocess_context_references(
     except RuntimeError:
         return asyncio.run(coro)
     import concurrent.futures
+    import contextvars
+    # The side thread starts with an empty Context: without the caller's copy the served profile's
+    # HERMES_HOME override is lost and the credential-path guard checks the launch profile's .env.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 async def preprocess_context_references_async(

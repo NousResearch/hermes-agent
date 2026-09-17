@@ -313,6 +313,70 @@ def test_server_request_round_trip_uses_response_frame(capture):
         assert not server_requests._open
 
 
+@pytest.mark.parametrize("method, qids, settle, expected", [
+    ("sudo", None,
+     lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
+     {"value": "yes"}),
+    # Batch clarify's lock-based resolution follows the same first-settlement rule.
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+])
+def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
+    """A response and cancellation may race; the first settlement owns the result."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert settle(server_requests, req)
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == expected
+    assert req.event.is_set()
+
+
+def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, monkeypatch):
+    """An answer accepted by resolve_response is never reported as a timeout (#112548): the
+    response frame can land after event.wait() gave up and before send() withdraws the request,
+    and the renderer must not get a bogus request.cancel for a card the user just answered."""
+    from tui_gateway import server_requests
+
+    cancels: list[dict] = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
+
+    real_wait = server_requests.threading.Event.wait
+
+    def answered_during_the_gap(event, timeout=None):
+        # Deadline expires, then the response frame lands before send() re-enters the lock.
+        expired = real_wait(event, timeout)
+        rid = next(iter(server_requests._open))
+        assert server_requests.resolve_response({"id": rid, "result": {"value": "yes"}})
+        return expired
+
+    monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
+
+    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert cancels == []
+    assert not server_requests._open
+
+
+def test_server_request_error_response_fails_fast(capture):
+    """A shared-channel client without a handler answers -32601 instead of waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+        daemon=True,
+    )
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert box["result"] is None
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests

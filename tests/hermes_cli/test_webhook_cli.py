@@ -70,6 +70,7 @@ class TestSubscribe:
     def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys):
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
 
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", route_profile="compta"

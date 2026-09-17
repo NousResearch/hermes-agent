@@ -19,7 +19,7 @@ class _FakePool:
         # The pool still holds entries...
         return True
 
-    def has_available(self) -> bool:
+    def has_available(self, **_kwargs) -> bool:
         # ...but none of them are usable when exhausted/dead.
         return self._available
 

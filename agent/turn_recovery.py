@@ -768,6 +768,8 @@ def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
+    # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
+    FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }
 
 

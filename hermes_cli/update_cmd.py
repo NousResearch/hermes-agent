@@ -18,7 +18,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import get_default_hermes_root, venv_python_path
+from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -613,11 +613,11 @@ def _repair_venv_on_current_checkout(
     from hermes_cli.managed_uv import ensure_uv
     repair_uv = ensure_uv()
     # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
-    venv_python_missing = not (
-        venv_python_path(_m().PROJECT_ROOT / "venv", windows=_m()._is_windows())).exists()
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    venv_python_missing = not venv_python_path(venv_dir, windows=_m()._is_windows()).exists()
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
-        subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
+        subprocess.run([repair_uv, "venv", venv_dir.name], cwd=_m().PROJECT_ROOT, check=False)
     repair_prefix, repair_env = _pip_install_prefix(repair_uv)
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
@@ -655,7 +655,7 @@ def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
         # See #83914.
         from hermes_cli.managed_uv import managed_python_env
         env = managed_python_env()
-        env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
+        env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 
@@ -671,7 +671,7 @@ def _repair_current_checkout(
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
     runtime_repairs = []
     update_managed_uv(repair_observer=runtime_repairs.append)
-    ensure_uv(repair_observer=runtime_repairs.append)
+    repair_uv = ensure_uv(repair_observer=runtime_repairs.append)
     runtime_repaired = next((result for result in runtime_repairs if result.repaired), None)
 
     # A current checkout does NOT imply a healthy install (a prior sync may have died
@@ -695,6 +695,23 @@ def _repair_current_checkout(
             active_tool_dependencies=active_tool_dependencies,
             _windows_gateway_resume=_windows_gateway_resume)
     else:
+        if runtime_repaired is not None:
+            # A successful SQLite repair swaps in a venv built from uv.lock alone, so core
+            # imports pass while lazily-installed backends and ``hermes tools`` dependencies
+            # are gone (#112571). Restore the pre-cutover snapshots exactly as the pull path
+            # and the unhealthy-venv repair do; the healthy core set needs no reinstall.
+            repair_prefix, repair_env = _pip_install_prefix(repair_uv)
+            # Same marker discipline as the pull path: an interrupted or failed lazy restore
+            # must leave the breadcrumb so the next `hermes` run finishes the repair.
+            _write_lazy_refresh_incomplete_marker()
+            if _m()._refresh_active_lazy_features(
+                    repair_prefix, env=repair_env, features=active_lazy_features):
+                _m()._clear_lazy_refresh_incomplete_marker()
+            else:
+                print("  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
+                      "to finish import-based venv repair.")
+            _m()._restore_active_tool_dependencies(
+                active_tool_dependencies, repair_prefix, env=repair_env)
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,

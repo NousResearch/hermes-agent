@@ -522,8 +522,15 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
 
-export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
-  const generation = ++projectSessionsRefreshGeneration
+// A drill-in only wants the LATEST request (an older one resolving late would
+// paint the wrong project), so those are `supersedable` and resolve null when
+// overtaken. A per-row "Show all" expansion is not: two rows expanding at once,
+// or a drill-in elsewhere, must not silently leave the first row collapsed.
+export async function fetchProjectSessions(
+  projectId: string,
+  { supersedable = true }: { supersedable?: boolean } = {}
+): Promise<SidebarProjectTree | null> {
+  const generation = supersedable ? ++projectSessionsRefreshGeneration : null
   const profile = projectProfile()
 
   if (!profile) {
@@ -541,14 +548,14 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       projectParams({ project_id: projectId }, context.profile)
     )
 
-    if (generation !== projectSessionsRefreshGeneration || !stillOnProjectsContext(context)) {
+    if ((generation !== null && generation !== projectSessionsRefreshGeneration) || !stillOnProjectsContext(context)) {
       return null
     }
 
     return res.project ?? null
   } catch (error) {
     if (
-      generation !== projectSessionsRefreshGeneration ||
+      (generation !== null && generation !== projectSessionsRefreshGeneration) ||
       profile !== projectProfile() ||
       (context && !stillOnProjectsContext(context))
     ) {

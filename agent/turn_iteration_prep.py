@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
+from agent.interrupt_control import interrupt_issuer
 from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -329,7 +330,8 @@ def begin_iteration(
 
     if agent._interrupt_requested:
         interrupted = True
-        _turn_exit_reason = "interrupted_by_user"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = f"interrupted_by_system({_issuer})" if _issuer else "interrupted_by_user"
         if not agent.quiet_mode:
             agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
         return _verdict("break")
@@ -437,7 +439,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _turn_exit_reason = "interrupted_during_api_call"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = (
+            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
+        )
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:

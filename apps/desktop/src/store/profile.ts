@@ -15,6 +15,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import {
   $gateway,
@@ -490,6 +491,10 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
+function registryConnectionKind(connectionId: string): string | undefined {
+  return $connectionsRegistry.get()?.connections.find(entry => entry.id === connectionId)?.kind
+}
+
 export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)
   const connection = (connectionId ?? '').trim() || null
@@ -499,6 +504,14 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     key === normalizeProfileKey($activeGatewayProfile.get()) &&
     (!connection || connection === activeGatewayConnectionId())
   ) {
+    return
+  }
+
+  // SSH sources are connect-on-demand (#89756): dialing one bootstraps the
+  // tunnel and spawns `hermes -p <profile> serve --isolated` on the remote
+  // box, so a hover sweep across the roster spawned one isolated backend per
+  // bot and knocked the primary chat over. Only an explicit open may dial SSH.
+  if (connection && registryConnectionKind(connection) === 'ssh') {
     return
   }
 

@@ -578,12 +578,22 @@ def _run_tool_activity_heartbeat(
     stop_event: threading.Event,
     label: str,
     interval: float = _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+    worker_tid: int | None = None,
 ) -> None:
     """Daemon thread stamping ``agent._touch_activity`` every ``interval`` seconds until
     ``stop_event`` is set, so the gateway inactivity watchdog never abandons a turn whose
-    tool runs silently. Wedged tools stay bounded by the tool layer's own timeouts."""
+    tool runs silently. Wedged tools stay bounded by the tool layer's own timeouts and by the
+    executor deadline — but a worker the executor gave up on never reaches its ``stop_event``,
+    so the heartbeat also exits once ``worker_tid`` carries the interrupt bit the abandoning
+    executor raises (``_interrupt_worker_tids``). Otherwise a tool wedged in a kernel probe
+    keeps reporting "activity" for the rest of the run and the inactivity watchdog, the second
+    line of defense, can never fire (#111922)."""
+    from tools.interrupt import is_thread_interrupted
+
     try:
         while not stop_event.wait(interval):
+            if is_thread_interrupted(worker_tid):
+                return
             agent._touch_activity(label)
     except Exception:
         pass  # a heartbeat must never break the agent loop
@@ -599,7 +609,7 @@ def _run_with_activity_heartbeat(agent, function_name: str, fn):
         # here, so a single heartbeat covers every tool.
         target=_run_tool_activity_heartbeat,
         args=(agent, stop, f"tool running: {function_name}"),
-        kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
+        kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S, "worker_tid": threading.current_thread().ident},
         daemon=True,
         name=f"tool-activity-hb-{function_name[:24]}",
     )

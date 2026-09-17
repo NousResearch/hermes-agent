@@ -635,6 +635,23 @@ class TestStatusSurfacesDeadScheduler:
         assert "OVERDUE" not in out
         assert "Scheduler last ticked" not in out
 
+    def test_overdue_within_doctor_grace_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
+        # status shares `cron doctor`'s 15-minute grace (_OVERDUE_GRACE_SECONDS): a job only
+        # a few minutes behind the ticker's own cadence is not an outage yet, and status must
+        # not flash OVERDUE while doctor calls the same job healthy.
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch)
+        within_grace = datetime.now(timezone.utc) - timedelta(minutes=5)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job["id"])]["next_run_at"] = within_grace.isoformat()
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "Next run:" in out
+        assert "OVERDUE" not in out
+
 
 class TestSlashCronRunSkipped:
     """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another

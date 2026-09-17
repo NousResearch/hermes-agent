@@ -506,9 +506,11 @@ def _print_active_jobs_summary(jobs) -> None:
     if next_runs:
         earliest = min(next_runs, key=lambda run: run[0])[1]
         overdue_by = _next_run_overdue_seconds(earliest)
-        if overdue_by is not None and overdue_by > 0:
+        if overdue_by is not None and overdue_by > _OVERDUE_GRACE_SECONDS:
             # #114309: a dead scheduler leaves next_run_at stranded in the past; presenting it
-            # as an upcoming "Next run" hides the outage.
+            # as an upcoming "Next run" hides the outage. Same 15m grace as `cron doctor`
+            # (_OVERDUE_GRACE_SECONDS) so a job a few minutes behind the ticker's own
+            # cadence doesn't flash OVERDUE here while doctor still calls it healthy.
             print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
                         f"{_format_lateness(overdue_by)} ago but the job has not fired "
                         "(is the scheduler running?)", Colors.YELLOW))
@@ -552,19 +554,16 @@ def _script_health_issue(script: str) -> Optional[str]:
 
 # A busy tick can push dispatch a few minutes late; only a next_run_at parked well in the past
 # means the job is silently not firing (ticker dead, gateway down, wedged fire-claim).
+# `cron status`'s OVERDUE line shares this grace so status, list, and doctor tell one
+# consistent story about when a job counts as overdue.
 _OVERDUE_GRACE_SECONDS = 15 * 60
 
 
 def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     """Issue string when ``next_run_at`` is parked in the past."""
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
-    except ValueError:
+    overdue_s = _next_run_overdue_seconds(next_run)
+    if overdue_s is None:
         return f"next_run_at is not a valid timestamp: {next_run!r}"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    overdue_s = (datetime.now(timezone.utc) - dt).total_seconds()
     if overdue_s <= _OVERDUE_GRACE_SECONDS:
         return None
     amount = f"{overdue_s / 3600:.1f}h" if overdue_s >= 3600 else f"{overdue_s / 60:.0f}m"

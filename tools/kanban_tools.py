@@ -852,6 +852,40 @@ def _handle_attachments(args: dict, **kw) -> str:
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
 
 
+def _resolve_create_body(args: dict, self_task: Any, triage: bool) -> tuple[Optional[str], bool]:
+    """Worker-tool body guard for kanban_create (the DB layer stays permissive —
+    CLI/dashboard title-only drafts are legitimate).
+
+    Returns ``(body, inherited)``. Rules:
+
+    - An explicit non-blank ``body`` always wins (never inherited).
+    - Dispatcher-owned workers omitting ``body`` inherit their own task's body
+      with a provenance note, so a fanned-out child never lands body-less (the
+      83-stub / 275-crashed-runs defect class — a worker card with no spec is
+      undispatchable work).
+    - ``triage=true`` is the explicit "someone will flesh this out later" path:
+      body may stay empty (a specifier profile fills it before promotion).
+    - Everyone else (orchestrator session, cron, opt-in CLI caller) omitting the
+      body gets a clear tool error instead of a junk card.
+    """
+    body = args.get("body")
+    if body is not None and str(body).strip():
+        return (str(body), False)
+    if triage:
+        return (None, False)
+    if self_task is not None and self_task.body and self_task.body.strip():
+        return (
+            f"> Inherited from {self_task.id} ({self_task.title!r}) by kanban_create "
+            f"provenance auto-fill; the creator sent no body.\n\n{self_task.body.strip()}",
+            True,
+        )
+    raise _Reject(
+        "body is required: a task card with no spec burns a full worker run "
+        "(spawn → investigate → placeholder-close). Send the full spec in 'body', "
+        "or pass triage=true to park a body-less card for a specifier to flesh out."
+    )
+
+
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -885,8 +919,9 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+        body, body_inherited = _resolve_create_body(args, self_task, triage)
         new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+            conn, title=str(title).strip(), body=body, assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
@@ -905,7 +940,7 @@ def _handle_create(args: dict, **kw) -> str:
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
+        return _ok(task_id=new_tid, body_inherited=body_inherited, **landed, **gate,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 

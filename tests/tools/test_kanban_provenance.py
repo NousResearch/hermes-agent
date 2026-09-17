@@ -14,7 +14,7 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     kb.init_db()
     with kbc.connect_closing() as conn:
-        owner = kb.create_task(conn, title="owner", session_id="durable")
+        owner = kb.create_task(conn, title="owner", body="origin spec", session_id="durable")
         kn.add_notify_sub(conn, task_id=owner, platform="discord", chat_id="chat",
                           user_id="user", notifier_profile="default", delivery_mode="notify",
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
@@ -51,7 +51,8 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
     tokens = set_session_vars(platform="discord", chat_id="thread", chat_type="thread",
                              scope_id="guild", parent_chat_id="forum", profile="default")
     try:
-        result = json.loads(kt._handle_create(dict(title="direct", assignee="default")))
+        result = json.loads(kt._handle_create(dict(title="direct", assignee="default",
+                                                   body="spec for the anchor probe")))
     finally:
         clear_session_vars(tokens)
     assert result["ok"], result

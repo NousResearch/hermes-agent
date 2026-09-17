@@ -453,6 +453,7 @@ def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
+        "body": "happy-path child spec",
         "assignee": "peer",
         "parents": [worker_env],
     })
@@ -493,7 +494,8 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     def create(**extra):
         result = json.loads(kt._handle_create(
-            {"board": "target", "title": "card", "assignee": "peer", **extra}))
+            {"board": "target", "title": "card", "assignee": "peer",
+             "body": "scratch-policy probe", **extra}))
         assert result["ok"] is True
         return result["workspace_kind"], result["project_id"]
 
@@ -597,6 +599,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     # 4. spawn a child task for follow-up
     child_out = json.loads(kt._handle_create({
         "title": "write integration test",
+        "body": "QA follow-up: integration test for the lifecycle path.",
         "assignee": "qa",
         "parents": [worker_env],
     }))
@@ -948,6 +951,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
+        "body": "auto-subscribe gateway probe",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -982,6 +986,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub tui",
+        "body": "auto-subscribe tui probe",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1008,6 +1013,7 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "no sub cli",
+        "body": "cli no-subscribe probe",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1037,6 +1043,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "no sub gated",
+        "body": "gated no-subscribe probe",
         "assignee": "peer",
     })
     d = json.loads(out)
@@ -1065,6 +1072,7 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 
     out = kt._handle_create({
         "title": "auto-sub tolerates add_notify_sub failure",
+        "body": "add_notify_sub failure probe",
         "assignee": "peer",
     })
     d = json.loads(out)

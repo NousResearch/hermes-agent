@@ -170,6 +170,9 @@ def cmd_monitoring(args):
 def cmd_skills(args):
     from hermes_cli.main import _require_tty
     action = getattr(args, "skills_action", None)
+    if action == "import":
+        from hermes_cli.skills_import import import_command
+        return import_command(args)
     if action == "config":
         _require_tty("skills config")
         from hermes_cli.skills_config import skills_command as skills_config_command

@@ -151,6 +151,10 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_export.add_argument("names", nargs="+", help="Directory paths relative to this profile's skills directory")
     skills_export.add_argument("-o", "--output", required=True, help="New archive path outside the skills directory")
 
+    skills_import = skills_subparsers.add_parser("import", help="Import a portable skill content archive")
+    skills_import.add_argument("archive", help="Archive created by skills export")
+    _flag(skills_import, "--dry-run", help="Check archive integrity without installing")
+
     skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
     skills_publish.add_argument("skill_path", help="Path to skill directory")
     skills_publish.add_argument(

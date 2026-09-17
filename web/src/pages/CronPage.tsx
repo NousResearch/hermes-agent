@@ -20,10 +20,12 @@ import type {
 } from "@/lib/api";
 import {
   buildCronJobPayload,
+  cronJobBaseUrlDisplay,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
   cronLastResult,
   focusCronField,
+  cronJobModelDisplay,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -493,13 +495,6 @@ function getJobMode(job: CronJob): string {
   if (job.no_agent) return "no_agent";
   if (job.script) return "script+agent";
   return "agent";
-}
-
-function getModelDisplay(job: CronJob): string {
-  const provider = asText(job.provider);
-  const model = asText(job.model);
-  if (provider && model) return `${provider}/${model}`;
-  return model || provider;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -1117,7 +1112,8 @@ export default function CronPage() {
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
-          const modelDisplay = getModelDisplay(job);
+          const modelDisplay = cronJobModelDisplay(job);
+          const baseUrlDisplay = cronJobBaseUrlDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
@@ -1157,9 +1153,16 @@ export default function CronPage() {
                     {mode !== "agent" && (
                       <Badge tone="outline">{mode}</Badge>
                     )}
-                    {modelDisplay && (
-                      <Badge tone="outline" title={modelDisplay}>
-                        model
+                    <Badge tone="outline" title={`Model: ${modelDisplay}`}>
+                      model: {modelDisplay}
+                    </Badge>
+                    {baseUrlDisplay && (
+                      <Badge
+                        tone="outline"
+                        className="max-w-80 truncate"
+                        title={`Base URL: ${baseUrlDisplay}`}
+                      >
+                        endpoint: {baseUrlDisplay}
                       </Badge>
                     )}
                     {toolsets.length > 0 && (

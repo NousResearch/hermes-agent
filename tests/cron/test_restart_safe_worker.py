@@ -194,6 +194,67 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_ack_publish_never_leaves_the_temp_file_behind(tmp_path, monkeypatch):
+    """Regression for #114270: the ack write goes to a private temp file and is
+    published via os.link(), so the temp is always cleaned up (success or failure)
+    and the final ack_path never exists in a partially-written state."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-2.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-2", "execution_id": "exec-2"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        Mock(return_value={"id": "exec-2", "status": "running"}),
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", Mock(return_value=True))
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert ack.exists()
+    # The complete, valid payload is present the instant the file exists — no window
+    # where a concurrent reader could observe it at 0 bytes (the original race).
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-2"
+    leftover_tmp = list(tmp_path.glob(f"{ack.name}.tmp.*"))
+    assert leftover_tmp == []
+
+
+def test_ack_publish_refuses_a_duplicate_worker(tmp_path, monkeypatch):
+    """The old O_EXCL-on-ack_path open refused a second worker outright; os.link()
+    must preserve that exclusivity even though the write now goes through a temp
+    file first (#114270)."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-3.ready"
+    ack.write_text(json.dumps({"pid": 1, "execution_id": "exec-3"}), encoding="utf-8")
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-3", "execution_id": "exec-3"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        Mock(return_value={"id": "exec-3", "status": "running"}),
+    )
+    run = Mock(return_value=True)
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is False
+
+    run.assert_not_called()
+    # The pre-existing ack is untouched, not clobbered by the failed publish attempt.
+    assert json.loads(ack.read_text(encoding="utf-8"))["pid"] == 1
+
+
 def test_external_worker_refuses_to_run_without_durable_ownership(
     tmp_path, monkeypatch
 ):

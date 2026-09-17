@@ -5,6 +5,7 @@ import { getTerminalBackends, selectTerminalBackend } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { TerminalBackendInfo, TerminalBackendsResponse } from '@/types/hermes'
 
@@ -43,7 +44,10 @@ function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
  * (Docker daemon reachable, SSH host configured, Modal/Daytona credentials
  * present) so users see Ready / Needs-setup guidance instead of a bare
  * dropdown. Selecting a needs-setup backend is allowed — the row shows what's
- * missing rather than blocking, matching the CLI configurator.
+ * missing rather than blocking, matching the CLI configurator — but it is
+ * persisted immediately and every session that re-reads the config afterward
+ * inherits a backend that can't run anything, so we gate it behind an
+ * explicit confirm() first.
  */
 export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPanelProps) {
   const { t } = useI18n()
@@ -71,6 +75,20 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   async function handleSelect(backend: TerminalBackendInfo) {
     if (backend.active || selecting) {
       return
+    }
+
+    if (backend.status === 'needs_setup') {
+      const proceed = await confirm({
+        title: copy.needsSetupConfirmTitle(backend.label),
+        description: backend.detail
+          ? copy.needsSetupConfirmDescription(backend.detail)
+          : copy.needsSetupConfirmDescriptionGeneric,
+        confirmLabel: copy.needsSetupConfirmAction
+      })
+
+      if (!proceed) {
+        return
+      }
     }
 
     setSelecting(backend.name)

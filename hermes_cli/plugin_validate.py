@@ -198,6 +198,9 @@ options = json.loads(sys.argv[3])
 # Public method names of the real PluginContext, computed by the parent so the
 # stub's attribute surface cannot drift from the class plugins run against.
 context_methods = set(options["context_methods"])
+# Non-callable public attributes (properties, cached_properties) — return None
+# so plugins that do `_state = ctx.state` in register() can guard with `if _state is not None`.
+context_attrs = set(options.get("context_attrs", []))
 provider_kind = options["kind"] == "model-provider"
 
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": []}
@@ -240,6 +243,10 @@ class RecordingContext:
                 return None
 
             return _noop
+        # Non-callable public attributes (e.g. @cached_property like ctx.state)
+        # return None so plugins that guard with `if ctx.state is not None` work.
+        if name in context_attrs:
+            return None
         raise AttributeError(name)
 
 
@@ -305,12 +312,12 @@ emit(recorded)
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
 
+    public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(
-            n for n in dir(PluginContext)
-            if not n.startswith("_") and callable(getattr(PluginContext, n))
-        ),
+        "context_methods": sorted(n for n in public if callable(getattr(PluginContext, n))),
+        # Non-callable public attrs (properties, cached_properties) — returned as None in probe
+        "context_attrs": sorted(n for n in public if not callable(getattr(PluginContext, n))),
     }
 
 

@@ -343,9 +343,9 @@ class TestDrainWatcher:
             runner, GatewayRunner
         )
         runner._persist_active_agents = MagicMock()
-        (home / ".drain_release.lock").write_text("")
-        (home / ".drain_release_ack.json").write_text("{}")
-        (home / ".drain_release_claim.json").write_text("{}")
+        (home / ".drain_release.lock").write_text("", encoding="utf-8")
+        (home / ".drain_release_ack.json").write_text("{}", encoding="utf-8")
+        (home / ".drain_release_claim.json").write_text("{}", encoding="utf-8")
         task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
         await asyncio.sleep(0.03)
         assert runner._external_drain_active is False

@@ -1062,6 +1062,7 @@ ClawRouter 需要在 Base 或 Solana 上有 USDC 充值的钱包用于支付。�
 | 提供商 | 基础 URL | 说明 |
 |----------|----------|-------|
 | [Together AI](https://together.ai) | `https://api.together.xyz/v1` | 云托管开源模型 |
+| [ai&](https://aiand.com) | `https://api.aiand.com/v1` | 开源权重模型；在 [console.aiand.com](https://console.aiand.com) 获取 API key |
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | 超快推理 |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek 模型 |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | 快速开源模型托管 |

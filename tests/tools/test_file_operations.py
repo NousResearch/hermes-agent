@@ -533,6 +533,20 @@ class TestShellFileOpsWriteDenied:
         assert result.error is not None
         assert "denied" in result.error.lower()
 
+    def test_write_file_rejects_vault_redaction_marker(self, file_ops, mock_env):
+        result = file_ops.write_file("/tmp/test/.env", "DB_PASS=«redacted-vault-secret»\n")
+        assert result.error is not None
+        assert "«redacted-vault-secret»" in result.error
+        mock_env.execute.assert_not_called()
+
+    def test_patch_replace_rejects_vault_redaction_marker(self, file_ops, mock_env):
+        result = file_ops.patch_replace(
+            "/tmp/test/.env", "DB_PASS=old", "DB_PASS=«redacted-vault-secret»"
+        )
+        assert result.error is not None
+        assert "«redacted-vault-secret»" in result.error
+        mock_env.execute.assert_not_called()
+
 
     def test_move_file_failure_path(self, mock_env):
         mock_env.execute.return_value = {"output": "No such file or directory", "returncode": 1}
@@ -540,6 +554,109 @@ class TestShellFileOpsWriteDenied:
         result = ops.move_file("/tmp/nonexistent.txt", "/tmp/dest.txt")
         assert result.error is not None
         assert "Failed to move" in result.error
+
+
+class TestRedactedPlaceholderGuard:
+    """#30962: write_file / patch_replace / patch_v4a refuse redacted-secret
+    placeholders copied from redacted read output, before touching the env."""
+
+    SENTINEL = "OPENAI_API_KEY=«redacted:sk-…»"  # file_read=True prefix mask
+    ASCII_MASK = "OPENAI_API_KEY=sk-pro...wxyz"  # shell/log prefix mask
+    CONNSTRING = "DATABASE_URL=postgres://app:***@db:5432/prod"
+    JWT_MASK = "token = eyJhbG...sw5c"  # file_read=True JWT mask
+
+    @staticmethod
+    def _assert_refused(result, mock_env):
+        assert result.error is not None
+        assert result.error.startswith("Refusing ")
+        mock_env.execute.assert_not_called()
+
+    def test_patch_replace_rejects_sentinel_in_old_string(self, file_ops, mock_env):
+        result = file_ops.patch_replace("/tmp/test/.env", self.SENTINEL, "OPENAI_API_KEY=new")
+        self._assert_refused(result, mock_env)
+        assert "old_string" in result.error
+
+    def test_patch_replace_rejects_ascii_mask_in_old_string(self, file_ops, mock_env):
+        result = file_ops.patch_replace("/tmp/test/.env", self.ASCII_MASK, "OPENAI_API_KEY=new")
+        self._assert_refused(result, mock_env)
+        assert "old_string" in result.error
+
+    def test_patch_replace_rejects_connstring_mask_in_new_string(self, file_ops, mock_env):
+        result = file_ops.patch_replace("/tmp/test/.env", "DATABASE_URL=old", self.CONNSTRING)
+        self._assert_refused(result, mock_env)
+        assert "new_string" in result.error
+
+    def test_patch_replace_rejects_placeholder_with_replace_all(self, file_ops, mock_env):
+        result = file_ops.patch_replace(
+            "/tmp/test/.env", self.SENTINEL, "OPENAI_API_KEY=new", replace_all=True
+        )
+        self._assert_refused(result, mock_env)
+
+    def test_patch_v4a_rejects_placeholder_in_update_file(self, file_ops, mock_env):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/test/.env\n"
+            "@@\n"
+            f"-{self.SENTINEL}\n"
+            "+OPENAI_API_KEY=new\n"
+            "*** End Patch\n"
+        )
+        self._assert_refused(file_ops.patch_v4a(patch), mock_env)
+
+    def test_patch_v4a_rejects_placeholder_in_add_file(self, file_ops, mock_env):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: /tmp/test/new.env\n"
+            f"+{self.CONNSTRING}\n"
+            "*** End Patch\n"
+        )
+        self._assert_refused(file_ops.patch_v4a(patch), mock_env)
+
+    def test_patch_v4a_rejects_multi_file_patch_when_one_file_is_dirty(self, file_ops, mock_env):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/test/README.md\n"
+            "@@\n"
+            "-old heading\n"
+            "+new heading\n"
+            "*** Update File: /tmp/test/.env\n"
+            "@@\n"
+            f"-{self.ASCII_MASK}\n"
+            "+OPENAI_API_KEY=new\n"
+            "*** End Patch\n"
+        )
+        self._assert_refused(file_ops.patch_v4a(patch), mock_env)
+
+    def test_write_file_rejects_jwt_mask(self, file_ops, mock_env):
+        result = file_ops.write_file("/tmp/test/config.py", f"{self.JWT_MASK}\n")
+        self._assert_refused(result, mock_env)
+
+    @pytest.mark.parametrize(
+        "path, content",
+        [
+            ("/tmp/test/.env.example", "OPENAI_API_KEY=***\n"),
+            ("/tmp/test/README.md", "This is ***bold italic*** text.\n"),
+        ],
+        ids=["env_example_bare_triple_star", "markdown_bold_italic"],
+    )
+    def test_write_file_allows_documentation_placeholders(self, file_ops, mock_env, path, content):
+        result = file_ops.write_file(path, content)
+        assert result.error is None or not result.error.startswith("Refusing ")
+        mock_env.execute.assert_called()
+
+    def test_vault_marker_error_does_not_suggest_redact_secrets_flag(self, file_ops, mock_env):
+        result = file_ops.patch_replace(
+            "/tmp/test/.env", "DB_PASS=old", "DB_PASS=«redacted-vault-secret»"
+        )
+        self._assert_refused(result, mock_env)
+        assert "set `security.redact_secrets: false`" not in result.error
+        assert "regardless of `security.redact_secrets`" in result.error
+        assert "ask the user" in result.error
+
+    def test_non_vault_placeholder_error_keeps_redact_secrets_hint(self, file_ops, mock_env):
+        result = file_ops.write_file("/tmp/test/.env", f"{self.SENTINEL}\n")
+        self._assert_refused(result, mock_env)
+        assert "set `security.redact_secrets: false` and restart Hermes" in result.error
 
 
 class TestPatchReplacePostWriteVerification:

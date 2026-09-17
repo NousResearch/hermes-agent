@@ -12,7 +12,10 @@ stale value and its ``echo $HERMES_SESSION_ID`` reported a FOREIGN session's id
 
 The fix strips the per-session bridged vars (HERMES_SESSION_* / UI /
 CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
-``tools/environments/base.py``; they are re-injected fresh on every command.
+``tools/environments/base_session_env.py``; they are re-injected fresh on every
+command. The same dump must drop the scope markers a delegate_task child / cron
+run stamps per command (HERMES_DELEGATED_CHILD_CONTEXT, HERMES_CRON_SESSION), or
+the parent's next command is misread as that child (#90782, #71941).
 """
 
 import os
@@ -34,10 +37,11 @@ from tools.environments.base_session_env import (
 
 def test_regex_matches_bridged_session_vars():
     rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
-    # Every var the gateway bridges must be excluded.
+    # Every var the gateway bridges, and the delegate_task marker, must be excluded.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from gateway.session_context import _VAR_MAP
 
-    for name in _VAR_MAP:
+    for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER):
         line = f'declare -x {name}="whatever"'
         assert rx.search(line), f"{name} should be excluded from the snapshot"
 
@@ -134,11 +138,12 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
-def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path, monkeypatch):
+def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path):
+    """A snapshot re-dumped during a delegated child's command must not re-export
+    the marker into the parent's next ``source`` (#90782)."""
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
     from tools.environments.local import LocalEnvironment
 
-    monkeypatch.delenv(DELEGATED_CHILD_ENV_MARKER, raising=False)
     probe = f'printf "[${{{DELEGATED_CHILD_ENV_MARKER}+set}}]"'
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
     try:

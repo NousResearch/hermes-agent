@@ -4779,6 +4779,56 @@ class TestCustomEndpointApiKeyInheritance:
         assert captured.get("api_key") == "no-key-required"
 
 
+class TestKeyCmdExplicitApiKeyPassthrough:
+    """Issue #113976: a provider configured with ``key_cmd`` hands the resolver a
+    ``CommandTokenSource`` (a lazy callable), not a ``str``. The custom,
+    named-custom, and registry branches called ``.strip()`` on it and raised
+    ``AttributeError: 'CommandTokenSource' object has no attribute 'strip'``.
+    Strings are stripped; callables pass through untouched (the wire clients
+    accept a callable API key, and Azure Entra bearer providers are
+    legitimately callable).
+    """
+
+    @staticmethod
+    def _callable_key():
+        from agent.command_token_source import CommandTokenSource
+        return CommandTokenSource("security find-generic-password -s svc -a acct -w", "myprovider")
+
+    def test_strip_if_str(self):
+        """Unit: strings are stripped, callables and None pass through as-is."""
+        import agent.auxiliary_client as ac
+
+        assert ac._strip_if_str("  sk-abc  ") == "sk-abc"
+        source = self._callable_key()
+        assert ac._strip_if_str(source) is source
+        assert ac._strip_if_str("") == ""
+
+    def test_custom_branch_passes_callable_explicit_key_through(self, monkeypatch):
+        """RED→GREEN: resolve_provider_client(\"custom\", explicit_api_key=<CommandTokenSource>)
+        must not raise AttributeError; the callable reaches the wire client."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        source = self._callable_key()
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=source,
+            )
+
+        assert captured.get("api_key") is source, (
+            "key_cmd CommandTokenSource must pass through to the wire client, got: "
+            + repr(captured.get("api_key"))
+        )
+
 class TestMoaAggregatorStreamingBypass:
     def test_moa_aggregator_stream_bypasses_relay_for_codex_auxiliary_client(self, monkeypatch):
         """The MoA facade owns the streaming contract. For Codex Responses-shim

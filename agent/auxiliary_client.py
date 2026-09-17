@@ -4761,6 +4761,12 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _strip_if_str(value: Any) -> Any:
+    # Strings are stripped; callables (key_cmd CommandTokenSource, Azure Entra
+    # bearer providers) pass through untouched (#113976).
+    return value.strip() if isinstance(value, str) else value
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -4773,7 +4779,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (
-            (req.explicit_api_key or "").strip()
+            _strip_if_str(req.explicit_api_key or "")
             or _scoped_key_env("OPENAI_API_KEY")
             or _read_main_api_key_if_same_host(custom_base)
             or "no-key-required"  # local servers don't need auth
@@ -4851,7 +4857,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    custom_key = _strip_if_str(req.explicit_api_key or "") or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -4943,7 +4949,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
     if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+        api_key = _strip_if_str(req.explicit_api_key or "") or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")

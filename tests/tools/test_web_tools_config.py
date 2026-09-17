@@ -402,12 +402,20 @@ class TestParallelClientConfig:
         fake_parallel.Parallel = Parallel
         fake_parallel.AsyncParallel = AsyncParallel
         sys.modules["parallel"] = fake_parallel
+        # The fake parallel module above answers every SDK touch; the real
+        # lazy-dep gate (a version-pinned metadata check) must not refuse first
+        # on an install without the parallel extra.
+        self._lazy_gate_patch = patch(
+            "tools.lazy_deps.ensure", lambda *args, **kwargs: None
+        )
+        self._lazy_gate_patch.start()
 
     def teardown_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
         sys.modules.pop("parallel", None)
+        self._lazy_gate_patch.stop()
 
     def test_creates_client_with_key(self):
         """PARALLEL_API_KEY set → creates Parallel client."""

@@ -37,6 +37,13 @@ Fragments retain their explicit whitespace; normalization adds no intra-field se
 Main-stream and Relay recording retain the existing paragraph breaks between complete
 bold reasoning headings. Reasoning stays separate from the visible answer.
 
+`delta.reasoning_details` is a list of opaque provider records. Both the main
+stream and Relay recording append these records in arrival order without
+flattening, merging, or rewriting their contents. Providers can emit complete
+records on the final delta or across multiple deltas; omit the field on chunks
+without new records. The collected records pass through response normalization
+and assistant-message storage into session replay, including nested signed payloads.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:
@@ -211,7 +218,7 @@ Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or le
 
 Fallback behavior is exercised across several suites:
 
-- `tests/agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
+- `tests/run_agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
 - `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
 - `tests/gateway/test_fallback_eviction.py` — gateway eviction of failed providers
 

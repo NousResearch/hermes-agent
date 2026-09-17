@@ -1701,11 +1701,17 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             # SIGTERM is TerminateProcess on Windows. Give the gateway's
             # planned-stop watcher the full drain window before escalating.
             reaped = True
-            _force_kill_survivors([
-                survivor for survivor in _await_gateway_exit([pid], pid_exists=_pid_exists)
+            survivors = [
+                survivor
+                for survivor in _await_gateway_exit([pid], pid_exists=_pid_exists)
                 if survivor in orphan_identity
-                and get_process_start_time(survivor) == orphan_identity[survivor]
-            ])
+            ]
+            _force_kill_survivors(
+                survivors,
+                expected_start_times={
+                    survivor: orphan_identity[survivor] for survivor in survivors
+                },
+            )
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -1719,10 +1725,15 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # Wait, then force-kill survivors so the replacement can bind the port cleanly.
     # Fail-closed: SIGKILL only a PID that still names the process fingerprinted at scan time.
     if not windows:
-        _force_kill_survivors([
-            pid for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
-            if pid in orphan_identity and get_process_start_time(pid) == orphan_identity[pid]
-        ])
+        survivors = [
+            pid
+            for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
+            if pid in orphan_identity
+        ]
+        _force_kill_survivors(
+            survivors,
+            expected_start_times={pid: orphan_identity[pid] for pid in survivors},
+        )
     return reaped
 
 
@@ -1793,9 +1804,14 @@ def _await_gateway_exit(
     return survivors
 
 
-def _force_kill_survivors(survivors, *, kill=None) -> None:
+def _force_kill_survivors(
+    survivors, *, kill=None, expected_start_times: dict[int, int] | None = None
+) -> None:
     """SIGKILL processes that outlasted the grace period, loudly — a force-kill can tear the store, so
     it must leave a trace."""
+    terminate_pid = None
+    if kill is None and expected_start_times is not None:
+        from gateway.status import terminate_pid
     kill = kill or os.kill
     for pid in survivors:
         logger.warning(
@@ -1806,7 +1822,15 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
             pid, _ORPHAN_EXIT_GRACE_SECONDS,
         )
         with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
-            kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            expected_start_time = (
+                expected_start_times.get(pid) if expected_start_times is not None else None
+            )
+            if terminate_pid is not None:
+                if expected_start_time is None:
+                    continue
+                terminate_pid(pid, force=True, expected_start_time=expected_start_time)
+            else:
+                kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def _mark_planned_stop(pid: int | None = None) -> None:

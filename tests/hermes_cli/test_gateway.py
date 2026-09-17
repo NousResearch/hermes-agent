@@ -823,6 +823,21 @@ class TestStopProfileGateway:
             ("force", identities),
         ]
 
+    def test_orphan_force_kill_preserves_scanned_process_identity(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "gateway.status.terminate_pid",
+            lambda pid, force, expected_start_time: calls.append(
+                (pid, force, expected_start_time)
+            ),
+        )
+
+        gateway._force_kill_survivors(
+            [12345], expected_start_times={12345: 77}
+        )
+
+        assert calls == [(12345, True, 77)]
+
 
 class TestReapUnsupervisedGatewayOrphansMacOS:
     """Tests that the orphan reaper excludes launchd-managed PIDs on macOS.
@@ -988,15 +1003,17 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         monkeypatch.setattr(
             gateway,
             "_force_kill_survivors",
-            lambda survivors, **_: events.append(("force", survivors)),
+            lambda survivors, **kwargs: events.append(
+                ("force", survivors, kwargs["expected_start_times"])
+            ),
         )
 
         assert gateway._reap_unsupervised_gateway_orphans() is True
         assert events == [
             ("marker", orphan_pids[0]),
-            ("force", [orphan_pids[0]]),
+            ("force", [orphan_pids[0]], {orphan_pids[0]: orphan_pids[0] + 77}),
             ("marker", orphan_pids[1]),
-            ("force", [orphan_pids[1]]),
+            ("force", [orphan_pids[1]], {orphan_pids[1]: orphan_pids[1] + 77}),
         ]
 
     def test_windows_no_orphans_when_only_recorded_gateway_running(self, monkeypatch):

@@ -471,7 +471,9 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        _chain_len = len(getattr(agent, "_fallback_chain", []) or [])
+        _rebuilt_limit = max(max_retries, _chain_len + 1)
+        if restart_count > _rebuilt_limit:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).
@@ -479,7 +481,7 @@ def apply_retry_restarts(
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                _rebuilt_limit,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

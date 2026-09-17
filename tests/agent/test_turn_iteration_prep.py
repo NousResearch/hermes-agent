@@ -64,3 +64,17 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_rebuilt_restart_allows_full_fallback_chain():
+    """A fallback chain with more entries than MAX_RETRIES must not be cut short at MAX_RETRIES."""
+    agent = _agent()
+    agent._fallback_chain = [{"provider": f"p{i}", "model": f"m{i}"} for i in range(5)]
+    chain_len = len(agent._fallback_chain)
+    restart_count, verdicts = 0, []
+    while len(verdicts) < chain_len + 5 and (not verdicts or verdicts[-1].action != "break"):
+        verdicts.append(_apply(agent, "restart_with_rebuilt_messages", restart_count))
+        restart_count = verdicts[-1].restart_count
+    # All 5 fallbacks are allowed to continue before breaking on chain_len + 1
+    assert [v.action for v in verdicts] == ["continue"] * (chain_len + 1) + ["break"]
+    assert verdicts[-1]._turn_exit_reason == "rebuilt_restart_limit_exceeded"

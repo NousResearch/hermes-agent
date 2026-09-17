@@ -1,6 +1,7 @@
 """Tests for Discord free-response defaults and mention gating."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -251,8 +252,14 @@ async def test_unmentioned_bot_chunks_join_recent_tag_batch(adapter, monkeypatch
     third = make_message(channel=channel, content="third chunk")
     third.id = 125
     third.author.bot = True
+    # Fake clock: chunk 3 lands past the tag's own 2s window and is admitted only because
+    # chunk 2 re-armed it (Discord paces bot sends at ~1/s, so real bursts look like this).
+    clock = [1000.0]
+    monkeypatch.setattr(discord_platform, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
     assert await adapter._dispatch_discord_message(tagged) is True
+    clock[0] += 1.5
     assert await adapter._dispatch_discord_message(second) is True
+    clock[0] += 1.5
     assert await adapter._dispatch_discord_message(third) is True
     await asyncio.wait_for(
         asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=5.0,

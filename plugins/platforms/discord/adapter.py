@@ -4789,37 +4789,36 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             f"{getattr(getattr(message, 'author', None), 'id', '')}"
         )
 
+    def _bot_tag_window_seconds(self) -> float:
+        return max(self._text_batch_delay_seconds, self._text_batch_split_delay_seconds)
+
     def _record_bot_tag_debounce(self, message: Any) -> None:
         """Open a short continuation window after a bot-authored tag."""
         if (
             self._text_batch_delay_seconds <= 0
-            or not getattr(getattr(message, "author", None), "bot", False)
+            or not getattr(message.author, "bot", False)
             or not self._self_is_explicitly_mentioned(message)
         ):
             return
-        window = max(
-            self._text_batch_delay_seconds,
-            self._text_batch_split_delay_seconds,
-        )
         self._bot_tag_debounce_until[self._bot_tag_debounce_key(message)] = (
-            time.monotonic() + window
+            time.monotonic() + self._bot_tag_window_seconds()
         )
 
     def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
-        """Return whether an unmentioned chunk belongs to a recent bot tag."""
-        if (
-            getattr(self, "_text_batch_delay_seconds", 0) <= 0
-            or not getattr(getattr(message, "author", None), "bot", False)
-        ):
+        """Return whether an unmentioned chunk belongs to a recent bot tag.
+
+        A hit re-arms the window: Discord paces a bot's sends at roughly one per
+        second, so chunk N of a long handoff lands well after the tag itself; each
+        admitted chunk therefore vouches for the next one. The gateway bot loop
+        guard bounds a bot that never stops talking."""
+        if self._text_batch_delay_seconds <= 0 or not getattr(message.author, "bot", False):
             return False
         key = self._bot_tag_debounce_key(message)
-        debounce_until = getattr(self, "_bot_tag_debounce_until", None)
-        if not debounce_until:
+        now = time.monotonic()
+        if self._bot_tag_debounce_until.get(key, 0.0) <= now:
+            self._bot_tag_debounce_until.pop(key, None)
             return False
-        deadline = debounce_until.get(key, 0.0)
-        if deadline <= time.monotonic():
-            debounce_until.pop(key, None)
-            return False
+        self._bot_tag_debounce_until[key] = now + self._bot_tag_window_seconds()
         return True
 
     def _discord_free_response_channels(self) -> set:

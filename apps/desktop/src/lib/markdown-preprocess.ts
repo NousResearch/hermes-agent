@@ -7,8 +7,8 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
-// Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus the desktop-only
-// `scratchpad`/`analysis` that were already stripped here before the two lists met.
+// Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
+// `scratchpad`/`analysis`.
 const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
 // A run of adjacent closed blocks is one match, so the seam check below sees the
 // prose on either side of the whole run rather than the previous block's `>`.

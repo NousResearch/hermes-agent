@@ -337,21 +337,41 @@ export class GeminiLiveSession {
       }
     }
 
+    if (this.finalized) {
+      return
+    }
+
     // Initialize Local Playback AudioContext (24kHz) and resume if suspended
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext
     if (AudioContextCtor) {
-      this.playbackAudioCtx = new AudioContextCtor({ sampleRate: 24000 })
-      if (this.playbackAudioCtx.state === 'suspended') {
-        await this.playbackAudioCtx.resume()
+      const playbackCtx = new AudioContextCtor({ sampleRate: 24000 })
+      if (playbackCtx.state === 'suspended') {
+        await playbackCtx.resume()
       }
+      if (this.finalized) {
+        void playbackCtx.close().catch(() => undefined)
+        return
+      }
+      this.playbackAudioCtx = playbackCtx
+    }
+
+    if (this.finalized) {
+      return
     }
 
     // Initialize Local Microphone Capture
     await this.startMicrophoneCapture()
+    if (this.finalized) {
+      return
+    }
     this.started = true
   }
 
   private async startMicrophoneCapture(): Promise<void> {
+    if (this.finalized) {
+      return
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -360,6 +380,15 @@ export class GeminiLiveSession {
         autoGainControl: true
       }
     })
+
+    if (this.finalized) {
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop()
+        } catch {}
+      }
+      return
+    }
     this.micStream = stream
 
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext
@@ -370,11 +399,32 @@ export class GeminiLiveSession {
     } catch {
       inputCtx = new AudioContextCtor()
     }
-    this.inputAudioCtx = inputCtx
+
+    if (this.finalized) {
+      void inputCtx.close().catch(() => undefined)
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop()
+        } catch {}
+      }
+      this.micStream = null
+      return
+    }
 
     if (inputCtx.state === 'suspended') {
       await inputCtx.resume()
+      if (this.finalized) {
+        void inputCtx.close().catch(() => undefined)
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop()
+          } catch {}
+        }
+        this.micStream = null
+        return
+      }
     }
+    this.inputAudioCtx = inputCtx
 
     const source = inputCtx.createMediaStreamSource(stream)
     this.micSource = source
@@ -617,7 +667,7 @@ export class GeminiLiveSession {
   /**
    * Sends the result of an 'ask_hermes' tool delegation back to Gemini Live.
    */
-  sendToolResponse(callId: string, result: string): boolean {
+  sendToolResponse(callId: string, result: string, name = 'ask_hermes'): boolean {
     if (!this.connected || !this.ws) {
       return false
     }
@@ -626,12 +676,13 @@ export class GeminiLiveSession {
       toolResponse: {
         functionResponses: [
           {
+            id: callId,
+            name,
             response: {
               output: {
                 result
               }
-            },
-            id: callId
+            }
           }
         ]
       }

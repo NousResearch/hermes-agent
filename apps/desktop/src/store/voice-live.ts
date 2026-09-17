@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { fetchVoiceLiveStatus, type VoiceLiveStatus } from '@/lib/voice-live'
 import { activeGateway } from '@/store/gateway'
 
+import { profileScopeKey } from '@/hermes'
 import { resolveGeminiLiveApiKey } from '@/lib/gemini-live'
 
 /**
@@ -49,14 +50,32 @@ export async function refreshVoiceLiveStatus(): Promise<null | VoiceLiveStatus> 
 }
 
 export type DesktopVoiceChatMode = 'chained' | 'gpt-live' | 'gemini-live'
-export const HERMES_DESKTOP_VOICE_MODE_STORAGE = 'hermes_desktop_voice_mode'
+export const HERMES_DESKTOP_GEMINI_LIVE_STORAGE_PREFIX = 'hermes_desktop_gemini_live:'
 
-/** Selected mode. Falls back to local desktop preference or backend status. */
-export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): DesktopVoiceChatMode {
+function getScopedGeminiLiveStorageKey(): string {
   try {
-    const local = localStorage.getItem(HERMES_DESKTOP_VOICE_MODE_STORAGE)
-    if (local === 'gemini-live' || local === 'gpt-live' || local === 'chained') {
-      return local
+    const scope = profileScopeKey()
+    return `${HERMES_DESKTOP_GEMINI_LIVE_STORAGE_PREFIX}${scope}`
+  } catch {
+    return `${HERMES_DESKTOP_GEMINI_LIVE_STORAGE_PREFIX}default`
+  }
+}
+
+/**
+ * Returns the active voice chat mode.
+ * Backend-owned modes ('chained', 'gpt-live') remain authoritative from status.mode.
+ * The desktop-only 'gemini-live' engine is scoped to the active connection/profile.
+ */
+export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): DesktopVoiceChatMode {
+  // Purge any legacy unscoped voice mode key
+  try {
+    localStorage.removeItem('hermes_desktop_voice_mode')
+  } catch {}
+
+  try {
+    const key = getScopedGeminiLiveStorageKey()
+    if (localStorage.getItem(key) === '1') {
+      return 'gemini-live'
     }
   } catch {}
 
@@ -64,22 +83,27 @@ export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiv
 }
 
 /**
- * Persist voice chat mode. Stored in client localStorage so desktop-only
- * modes like gemini-live work without error even if the remote VPS gateway
- * has an older schema or rejects the config key.
+ * Persist voice chat mode.
+ * Selecting 'gemini-live' sets the desktop-only preference for the active profile scope.
+ * Selecting 'chained' or 'gpt-live' clears the desktop override and synchronizes with the gateway.
  */
 export async function setVoiceChatMode(mode: DesktopVoiceChatMode): Promise<null | VoiceLiveStatus> {
-  try {
-    localStorage.setItem(HERMES_DESKTOP_VOICE_MODE_STORAGE, mode)
-  } catch {}
+  const scopedKey = getScopedGeminiLiveStorageKey()
 
-  // Also sync to remote gateway if it's one of the gateway-supported modes
+  // Sync backend-supported modes to the active gateway, propagating any connection/config errors
   if (mode === 'chained' || mode === 'gpt-live') {
+    const gateway = activeGateway()
+    if (!gateway) {
+      throw new Error('gateway not connected')
+    }
+    await gateway.request('config.set', { key: 'voice.voice_chat_mode', value: mode })
+
     try {
-      const gateway = activeGateway()
-      if (gateway) {
-        await gateway.request('config.set', { key: 'voice.voice_chat_mode', value: mode })
-      }
+      localStorage.removeItem(scopedKey)
+    } catch {}
+  } else if (mode === 'gemini-live') {
+    try {
+      localStorage.setItem(scopedKey, '1')
     } catch {}
   }
 

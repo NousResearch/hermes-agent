@@ -20,6 +20,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -403,6 +404,7 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
     """Copy auth state; returns None on success, else WHY the file could not be snapshotted.
     A DB that cannot be backed up consistently within the deadline is refused, never raw-copied."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+    tmp_file: str | None = None
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
             deadline = time.monotonic() + _AUTH_BACKUP_DEADLINE_S
@@ -420,13 +422,29 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
                                            "while still making progress")
                     raise TimeoutError(_AUTH_DB_LOCKED)
 
-            # SQLite must coordinate both ends: immutable ignores committed source WAL,
-            # while replacing only the destination file can replay its abandoned WAL.
-            # Connection busy timeouts do not bound backup's retry loop; its callback does.
+            # Chrome owns the source WAL and may hold its normal read locks. Immutable mode
+            # opens the checkpointed database without negotiating with that live instance.
+            # Back up into a new sibling, never the old snapshot path: it can have stale
+            # WAL/lock state from a previous Hermes browser. Replacing the finished file is
+            # atomic on the local profile filesystem.
+            fd, tmp_file = tempfile.mkstemp(
+                dir=os.path.dirname(dst_file),
+                prefix=f".{os.path.basename(dst_file)}.",
+                suffix=".snapshot",
+            )
+            os.close(fd)
             with contextlib.closing(sqlite3.connect(
-                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
-                with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
+                    Path(src_file).resolve().as_uri() + "?mode=ro&immutable=1",
+                    uri=True, timeout=0.0)) as source:
+                with contextlib.closing(sqlite3.connect(tmp_file, timeout=0.0)) as out:
                     source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
+            # The old snapshot may have been left with a WAL by an interrupted
+            # launch. It belongs to the file we are replacing, not this backup.
+            for sidecar in ("-journal", "-wal", "-shm"):
+                with contextlib.suppress(OSError):
+                    os.unlink(dst_file + sidecar)
+            os.replace(tmp_file, dst_file)
+            tmp_file = None
         else:
             shutil.copy2(src_file, dst_file)
         return None
@@ -434,6 +452,10 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
         # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
         return str(e) or type(e).__name__
+    finally:
+        if tmp_file:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_file)
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:

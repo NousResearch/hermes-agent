@@ -93,6 +93,38 @@ beforeEach(() => {
 })
 
 describe('the registry row wins, always', () => {
+  it('opens each bot\u2019s chat with tab intent so multiple bots stay open side by side', async () => {
+    respondWith((method, params) => {
+      if (method === 'session.list') {
+        return {
+          sessions: [
+            { id: `chat-${params?.profile}`, message_count: 10, title: 'Bot Chat' }
+          ]
+        }
+      }
+
+      return {}
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+    await openBotCanonicalChat('ops')
+    await openBotCanonicalChat('hotel-dev')
+
+    expect(hostMock.openSession).toHaveBeenCalledTimes(2)
+
+    const [opsId, opsOptions] = hostMock.openSession.mock.calls[0]
+    const [hotelId, hotelOptions] = hostMock.openSession.mock.calls[1]
+
+    expect(opsId).toBe('chat-ops')
+    expect(hotelId).toBe('chat-hotel-dev')
+    // Tab intent is what lets each bot keep its own tile; the workspace scope
+    // keeps those tiles owned by their bots.
+    expect(opsOptions.intent).toBe('tab')
+    expect(hotelOptions.intent).toBe('tab')
+    expect(opsOptions.workspaceOwnerKey).toBe('bot:ops')
+    expect(hotelOptions.workspaceOwnerKey).toBe('bot:hotel-dev')
+  })
+
   it('resolves the profile\u2019s "Bot Chat" row by exact title and opens it', async () => {
     const calls = respondWith(method => {
       if (method === 'session.list') {
@@ -123,10 +155,10 @@ describe('the registry row wins, always', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'bot:ops'
     })
-    // Same intent a session row click uses. `tab` stacked a fresh tile on every
-    // miss, so bot chats piled up beside each other and beside the untouched
-    // "New session" draft.
-    expect(options.intent).toBe('in-place')
+    // Each bot's chat opens as its own tile so multiple bots can be open side
+    // by side; openSession('tab') fronts an already-open tile (dedup by
+    // session id) instead of stacking a duplicate.
+    expect(options.intent).toBe('tab')
 
     const list = calls.find(call => call.method === 'session.list')
 

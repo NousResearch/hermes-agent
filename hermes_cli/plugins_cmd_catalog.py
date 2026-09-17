@@ -106,7 +106,7 @@ def removed_annotation(name: str, dir_path) -> Optional[str]:
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
-                          allow_removed: bool = False, scan_decision_cb=None) -> tuple:
+                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
     Returns the core's ``(target, manifest, installed_name)``."""
     from hermes_cli.plugins_cmd import _install_plugin_core
@@ -114,7 +114,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha)
+        reviewed_pin=entry.sha, python_deps=python_deps)
     write_catalog_sidecar(target, entry)
     return target, manifest, installed_name
 
@@ -147,6 +147,9 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
         raise SystemExit(1)
     verb = "updated to" if changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] {verb} {sha[:8]}.")
+    if changed:
+        from hermes_cli.plugins_cmd import _install_python_dependencies
+        _install_python_dependencies(target, console)
 
 
 # ── search / browse / info / validate ────────────────────────────────────────

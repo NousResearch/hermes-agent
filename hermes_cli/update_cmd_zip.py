@@ -354,6 +354,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
     # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
     _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
 
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:

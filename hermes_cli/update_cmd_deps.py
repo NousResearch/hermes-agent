@@ -388,6 +388,41 @@ def _refresh_active_memory_provider_dependencies() -> None:
         print(f"  ⚠ {provider} dependencies failed to refresh: {exc}")
 
 
+def _reapply_plugin_python_dependencies() -> None:
+    """Re-install every enabled user plugin's declared Python deps after the venv was rebuilt (a
+    ``uv sync``/reinstall strips anything Hermes' own lock does not know). Non-memory plugins whose
+    deps no longer resolve are disabled loudly, memory providers last. Never raises."""
+    from hermes_cli.plugin_python_deps import reapply_all
+    from hermes_cli.update_cmd import _m
+
+    def _disable(home, name: str) -> None:
+        # Write through the real config writer (comments/defaults preserved), scoped to *home*.
+        from hermes_cli.config import load_config, save_config
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+        try:
+            config = load_config()
+            plugins = config.setdefault("plugins", {})
+            plugins["enabled"] = sorted(set(plugins.get("enabled") or []) - {name})
+            plugins["disabled"] = sorted(set(plugins.get("disabled") or []) | {name})
+            save_config(config, merge_existing=True)
+        finally:
+            reset_hermes_home_override(token)
+
+    try:
+        report = reapply_all(project_root=_m().PROJECT_ROOT, disable=_disable)
+    except Exception as exc:  # the update must finish even if the plugin step blows up
+        print(f"  ⚠ Plugin Python dependencies not re-applied: {exc}")
+        return
+    if report.installed:
+        print(f"  ✓ Plugin Python dependencies re-applied: {', '.join(report.installed)}")
+    for name, reason in report.dropped:
+        print(f"  ✗ Plugin '{name}' DISABLED: {reason}. Fix the plugin's declared dependencies, "
+              f"then `hermes plugins enable {name}`.")
+    if report.failed:
+        print(f"  ⚠ Plugin Python dependencies not re-applied: {report.failed}")
+
+
 def _is_android_python() -> bool:
     from hermes_cli.update_cmd import _m
     return _m().sys.platform == "android"
@@ -1046,6 +1081,7 @@ def _sync_python_dependencies_after_pull(
 
     # Heal memory-provider bridge packages last — the steps above may have stripped them.
     _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
 
     # Remaining import failures are real breakage. Warn only — never roll back: `cannot import
     # name X` is also the stale-bytecode signature, which self-heals next launch.

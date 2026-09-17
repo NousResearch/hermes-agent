@@ -58,6 +58,16 @@ class StreamingWaitMonitor:
         _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
+            if self._call_done.is_set():
+                # The worker finished (cleanly or via its own in-loop interrupt
+                # handling, see the SSE loop's `_interrupt_requested` check)
+                # while this wait was asleep. Racing our own interrupt-abort
+                # below against a worker that already unwound double-aborts
+                # the request client: the worker's own close/abort already
+                # landed, and firing here too is at best redundant, at worst a
+                # second abort chasing a client the worker already closed and
+                # cached/rebuilt for the next request.
+                return
             _hb_now = time.time()
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue

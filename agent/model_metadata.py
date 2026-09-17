@@ -583,6 +583,9 @@ _ENDPOINT_SCOPED_CONTEXT = (
     # matches them on NAME and hands back the vendor's window. Listed here are only the ids where
     # that disagrees with the window the gateway declares; the rest of its catalog already resolves
     # correctly.
+    # Source: the gateway's own authenticated GET https://api.cheaperinference.com/v1/models, read
+    # 2026-09-17 (pricing_version sha256:6d2520b9). The windows are copied by hand, so they go stale
+    # when the gateway adds models or changes a window; all 28 ids below still matched that reading.
     ("api.cheaperinference.com", {"/v1"}, {"deepseek-v4-flash-0731", "deepseek-v4-pro-0813", "deepseek-v4.1-flash", "glm-5.3-flash"}, 1_048_576),
     ("api.cheaperinference.com", {"/v1"}, {"gemini-3-5-flash", "gemini-3.1-pro-preview", "glm-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.5-pro", "kimi-k3", "qwen-3-8-max"}, 1_000_000),
     ("api.cheaperinference.com", {"/v1"}, {"qwen-3-8-27b", "qwen3-6-35b-a3b"}, 262_144),

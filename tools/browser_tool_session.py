@@ -109,17 +109,35 @@ def _agent_browser_argv(browser_cmd: str) -> list:
     return [browser_cmd]
 
 
-def _shim_safe_eval_args(argv0: str, command: str, args: List[str]) -> List[str]:
-    """``eval`` scripts that reach a ``.cmd``/``.bat`` shim (``npx.cmd``, npm's ``agent-browser.cmd``
-    on Windows) go through cmd.exe, which re-parses the child command line: a newline ends the
-    argument and ``%VAR%`` expands even inside quotes, so a multi-line script arrives as its first
-    line only (``SyntaxError: Unexpected end of input``). Send the script base64-encoded
-    (``agent-browser eval -b``, present since the 0.26 floor) so it arrives byte-identical;
-    every other spawn target gets the raw argv."""
-    if command != "eval" or not args or not argv0.lower().endswith((".cmd", ".bat")):
-        return args
-    script, *rest = args
-    return ["--base64", base64.b64encode(script.encode("utf-8")).decode("ascii"), *rest]
+def _shim_safe_args(argv0: str, command: str, args: List[str]) -> "tuple[str, List[str], Optional[bytes]]":
+    """``(spawn_command, spawn_args, stdin_payload)`` for one CLI command. Arguments that reach a
+    ``.cmd``/``.bat`` shim (``npx.cmd``, npm's ``agent-browser.cmd`` on Windows) go through cmd.exe,
+    which re-parses the child command line: a newline ends the argument and ``%VAR%`` expands even
+    inside quotes, so a multi-line ``eval`` script arrives as its first line only (``SyntaxError:
+    Unexpected end of input``) and multi-line ``fill`` text is truncated the same way. ``eval``
+    scripts are sent base64-encoded (``agent-browser eval -b``); any other command whose argv carries
+    a newline or ``%`` is wrapped as ``batch`` with the command as a JSON array on stdin — cmd.exe
+    never sees the text (both forms present since the 0.26 floor). Every other spawn gets the raw
+    argv and no stdin."""
+    if not args or not argv0.lower().endswith((".cmd", ".bat")):
+        return command, args, None
+    if command == "eval":
+        script, *rest = args
+        return command, ["--base64", base64.b64encode(script.encode("utf-8")).decode("ascii"), *rest], None
+    if command == "batch" or not any(ch in arg for arg in args for ch in "\r\n%"):
+        return command, args, None
+    return "batch", [], json.dumps([[command, *args]]).encode("utf-8")
+
+
+def _unwrap_batch_result(result: Any, command: str) -> Dict[str, Any]:
+    """``batch --json`` prints ``[{command, success, result, error}]``; reshape the single entry
+    into the ``{success, data, error}`` dict every other command returns. Error dicts pass through."""
+    if not isinstance(result, list):
+        return result
+    if len(result) != 1 or not isinstance(result[0], dict):
+        return {"success": False, "error": f"Unexpected batch output for '{command}': {json.dumps(result)[:300]}"}
+    entry = result[0]
+    return {"success": bool(entry.get("success")), "data": entry.get("result"), "error": entry.get("error")}
 
 
 def _prepare_session_socket_dir(session_name: str) -> str:
@@ -144,8 +162,10 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     return env
 
 
-def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str) -> "subprocess.Popen":
-    """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``.
+def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
+                         stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
+    """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
+    ``stdin_payload`` (a ``batch`` JSON body) is served from ``_stdin_<tag>`` the same way.
 
     Temp files, not pipes: the CLI forks a daemon that inherits its fds, so pipes never
     see EOF until the timeout. Windows: CREATE_NO_WINDOW only (CREATE_NEW_PROCESS_GROUP
@@ -154,13 +174,20 @@ def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, 
     """
     fds = [os.open(os.path.join(socket_dir, f"_{slot}_{tag}"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
            for slot in ("stdout", "stderr")]
+    stdin: Any = subprocess.DEVNULL
+    if stdin_payload is not None:
+        stdin_path = os.path.join(socket_dir, f"_stdin_{tag}")
+        with open(stdin_path, "wb") as f:
+            f.write(stdin_payload)
+        fds.append(os.open(stdin_path, os.O_RDONLY))
+        stdin = fds[-1]
     try:
         _popen_extra: dict = {}
         if os.name == "nt":
             _si = subprocess.STARTUPINFO()
             _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
             _popen_extra = {"creationflags": windows_hide_flags(), "close_fds": True, "startupinfo": _si}
-        return subprocess.Popen(argv, stdout=fds[0], stderr=fds[1], stdin=subprocess.DEVNULL, env=env, **_popen_extra)
+        return subprocess.Popen(argv, stdout=fds[0], stderr=fds[1], stdin=stdin, env=env, **_popen_extra)
     finally:
         for fd in fds:
             os.close(fd)
@@ -520,7 +547,7 @@ def _browser_command_preflight() -> Dict[str, Any]:
 
 def _spawn_and_collect(
     task_id: str, session_info: Dict[str, Any], cmd_parts: List[str],
-    command: str, engine: str, timeout: int,
+    command: str, engine: str, timeout: int, stdin_payload: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """Run the prepared agent-browser argv once and interpret its output (handles timeout)."""
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
@@ -541,7 +568,7 @@ def _spawn_and_collect(
 
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
-    proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command)
+    proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
     try:
         proc.wait(timeout=timeout)
@@ -607,10 +634,12 @@ def _run_browser_command(
             backend_args += ["--engine", engine]
 
     argv = _agent_browser_argv(browser_cmd)
-    cmd_parts = argv + backend_args + ["--json", command] + _shim_safe_eval_args(argv[0], command, args)
+    spawn_command, spawn_args, stdin_payload = _shim_safe_args(argv[0], command, args)
+    cmd_parts = argv + backend_args + ["--json", spawn_command] + spawn_args
 
     try:
-        result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+        result = _unwrap_batch_result(
+            _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout, stdin_payload), command)
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}

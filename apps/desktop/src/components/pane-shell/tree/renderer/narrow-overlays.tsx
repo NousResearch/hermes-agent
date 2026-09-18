@@ -181,9 +181,8 @@ export function NarrowOverlays() {
                     }
                   }}
                 >
-                  <PaneTabLabel>
+                  <PaneTabLabel trailing={<SessionTabStamp className="ml-1" paneId={pane.id} />}>
                     {pane.title ?? pane.id}
-                    <SessionTabStamp paneId={pane.id} />
                   </PaneTabLabel>
                 </PaneTab>
               ))}

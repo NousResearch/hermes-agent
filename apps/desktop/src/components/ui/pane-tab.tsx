@@ -204,13 +204,19 @@ interface PaneTabLabelProps extends React.ComponentProps<'button'> {
   /** `button` when the label is the activation target (preview rail);
    *  default `span` defers to the shell (zone drag/activate). */
   as?: 'button' | 'span'
+  /** Rendered OUTSIDE the truncating span, at the label's end: the slot keeps
+   *  its full width and the title truncates first (session stamp chips). */
+  trailing?: React.ReactNode
 }
 
 /** Truncating label inside a `PaneTab`. `className` merges into the text span
  *  (e.g. `normal-case tracking-normal` for filenames). On a closeable tab the
- *  text clips instead of ellipsizing, so the hover mask can fade its right edge. */
+ *  text clips instead of ellipsizing, so the hover mask can fade its right edge.
+ *  `trailing` renders outside that span, pinned at the label's end — the slot
+ *  never shrinks, so the title truncates first and stamp chips keep their full
+ *  width. */
 export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(function PaneTabLabel(
-  { as = 'span', className, children, ...props },
+  { as = 'span', className, children, trailing, ...props },
   ref
 ) {
   const Comp = as as React.ElementType
@@ -229,6 +235,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
       >
         {children}
       </span>
+      {trailing ? <span className="flex shrink-0 items-center">{trailing}</span> : null}
     </Comp>
   )
 })

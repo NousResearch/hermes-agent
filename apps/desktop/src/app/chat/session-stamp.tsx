@@ -7,8 +7,8 @@
  * at a glance; a label the app has never seen still renders, in the theme accent.
  *
  * A session can carry up to three labels (store/session-stamp owns that list);
- * the group renders them in order and clips rather than pushing the title off
- * the row.
+ * the group renders them in order; the row's title truncates first, so a chip
+ * is never the thing that gets clipped.
  */
 
 import { useStore } from '@nanostores/react'
@@ -49,10 +49,11 @@ const STAMP_HUES: Record<string, string> = {
 const STAMP_CHIP =
   'inline-flex max-w-28 shrink-0 items-center truncate rounded-[3px] bg-[color-mix(in_srgb,currentColor_14%,transparent)] px-1 text-[0.5625rem] font-medium leading-[1.6] tracking-[0.01em] normal-case'
 
-// The group owning the room the chips may take. `min-w-0` lets it shrink beside a
-// long title and `overflow-hidden` clips the tail of a third label instead of
-// letting stamps crowd out the title they annotate.
-const STAMP_GROUP = 'inline-flex min-w-0 max-w-40 shrink-0 items-center gap-0.5 overflow-hidden'
+// The group owning the room the chips may take. No width cap of its own: wherever
+// stamps share a row with a title (sidebar rows, session tabs, the ⌘ switcher) the
+// TITLE yields first, so a chip is never clipped by the surface around it — only the
+// chip's own max-width rails against an absurd custom label.
+const STAMP_GROUP = 'inline-flex min-w-0 shrink-0 items-center gap-0.5'
 
 export function SessionStamp({ className, stamp }: { className?: string; stamp: null | string | undefined }) {
   // Hooks precede the early return: an unstamped row still calls the store.

@@ -503,9 +503,8 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>
+                    <PaneTabLabel trailing={<SessionTabStamp className="ml-1" paneId={paneId} />}>
                       {tabLabel(paneId)}
-                      <SessionTabStamp paneId={paneId} />
                     </PaneTabLabel>
                   </PaneTab>
                 )
@@ -680,9 +679,8 @@ export function TreeGroup({
                           </TabKeyHint>
                         </span>
                       ) : null}
-                      <PaneTabLabel>
+                      <PaneTabLabel trailing={<SessionTabStamp className="ml-1" paneId={paneId} />}>
                         {tabLabel(paneId)}
-                        <SessionTabStamp paneId={paneId} />
                       </PaneTabLabel>
                     </PaneTab>
                   )

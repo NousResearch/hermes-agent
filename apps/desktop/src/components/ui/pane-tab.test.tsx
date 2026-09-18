@@ -203,3 +203,24 @@ describe('PaneTab hover close button', () => {
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 })
+
+describe('PaneTabLabel trailing slot', () => {
+  it('renders the trailing slot OUTSIDE the truncating text span, so the clip can never eat it', () => {
+    render(
+      <PaneTab>
+        <PaneTabLabel trailing={<span data-testid="stamp">WIP</span>}>a long title</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const text = screen.getByText('a long title')
+    const stamp = screen.getByTestId('stamp')
+
+    // The title owns the clip...
+    expect(text.className).toContain('truncate')
+    expect(text.contains(stamp)).toBe(false)
+    // ...while the trailing slot is a SIBLING under the same label comp, and
+    // held at full width, so the title truncates first and never eats it.
+    expect(text.parentElement!.contains(stamp)).toBe(true)
+    expect(stamp.parentElement!.className).toContain('shrink-0')
+  })
+})

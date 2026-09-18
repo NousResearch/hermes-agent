@@ -1434,6 +1434,13 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "bedrock": _bedrock_catalog}
 
 
+# ``-free`` slugs the relay still LISTS but no longer serves (or that are keyed twins, not
+# anonymous-servable). The keyless free-tier catalog is gone, but the live-first keyed Zen/Go
+# pickers still filter through this so a stale live listing can never route into a 400/403
+# (#111749). Kept as the extension point for future relay delistings.
+_OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
+
+
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
 

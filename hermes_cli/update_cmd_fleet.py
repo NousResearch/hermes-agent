@@ -147,11 +147,21 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
+# ``plan.runtimes`` kinds the gateway fleet matrix (``collect_fleet_versions``) never
+# reports: it vouches for gateways only, so a serve/dashboard row in a receipt is
+# outside its evidence, not evidence against the gateways it does cover (#115090).
+_NON_GATEWAY_RUNTIME_KINDS = frozenset({"serve", "dashboard"})
+
+
 def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
     """``(kind, profile)`` identities ``latest.json`` owes a current successor.
 
-    Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
-    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    Empty when the receipt records no runtimes; ``None`` when a recorded runtime is one
+    the gateway matrix cannot vouch for (malformed entry, unrecognized kind, or a
+    gateway without an identifiable profile). Known non-gateway rows (serve/dashboard)
+    are skipped instead: a host running a dashboard has one in every receipt, and the
+    blanket veto made the fleet-restart warning permanently undischargeable there
+    (#115090) — the matrix can still vouch for every gateway the receipt names.
     """
     from hermes_cli.update_receipt import read_latest_receipt
 
@@ -165,6 +175,8 @@ def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
             return None
         kind = entry.get("kind", default_kind)
         profile = entry.get("profile")
+        if kind in _NON_GATEWAY_RUNTIME_KINDS:
+            continue
         if kind != "gateway" or not profile or profile == "unknown":
             return None
         owed.add((kind, profile))

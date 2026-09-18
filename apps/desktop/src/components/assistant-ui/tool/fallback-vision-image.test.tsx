@@ -96,4 +96,15 @@ describe('vision_analyze activity image', () => {
     )
     expect(readFileDataUrl).not.toHaveBeenCalled()
   })
+
+  it('says so when the image cannot be read instead of silently dropping the preview', async () => {
+    $connection.set({ mode: 'local' } as never)
+    readFileDataUrl.mockRejectedValueOnce(new Error('ENOENT'))
+    renderVisionRow()
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    expect(await screen.findByText(/Couldn't load/)).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
+  })
 })

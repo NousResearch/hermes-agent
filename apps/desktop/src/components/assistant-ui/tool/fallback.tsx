@@ -19,6 +19,7 @@ import {
 
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
+import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -31,7 +32,6 @@ import {
   SCAFFOLD_META_CLASS,
   ScaffoldRow
 } from '@/components/chat/scaffold-row'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -44,7 +44,6 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
-import { resolveMediaDisplaySrc } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -112,41 +111,6 @@ const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0
 
 // Raw args/result dump — reference material, so a notch smaller than a body.
 const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.65rem] leading-relaxed')
-
-function ToolActivityImage({ alt, src }: { alt: string; src: string }) {
-  const [resolvedSrc, setResolvedSrc] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-
-    setResolvedSrc('')
-    void resolveMediaDisplaySrc(src)
-      .then(value => {
-        if (!cancelled) {
-          setResolvedSrc(value)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setResolvedSrc('')
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [src])
-
-  if (!resolvedSrc) {
-    return null
-  }
-
-  return (
-    <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-      <ZoomableImage alt={alt} className="h-auto w-full object-cover" src={resolvedSrc} />
-    </div>
-  )
-}
 
 /**
  * Technical-mode raw payload, behind a chevron disclosure.
@@ -660,7 +624,11 @@ function ToolEntry({ part }: ToolEntryProps) {
           {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
             <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
           )}
-          {view.imageUrl && <ToolActivityImage alt={copy.outputAlt} src={view.imageUrl} />}
+          {view.imageUrl && (
+            <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+              <MarkdownImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
+            </div>
+          )}
           {hasSearchHits && view.searchHits && (
             <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
               {view.searchQuery && (

@@ -1567,10 +1567,7 @@ def cmd_gui_install(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
     try:
-        app_data = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        start_menu = app_data / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        desktop = Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop"
-        paths = (start_menu / "Hermes.lnk", desktop / "Hermes.lnk")
+        paths = _windows_shortcut_locations()
 
         for shortcut_path in paths:
             shortcut_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1590,6 +1587,60 @@ def cmd_gui_install(args: argparse.Namespace) -> None:
     print("Hermes Desktop is ready to open from the Windows Desktop or Start Menu.")
 
 
+_KNOWN_FOLDER_IDS = {
+    "desktop": "B4BFCC3A-DB2C-424C-B029-7FE99A87C641",
+    "programs": "62AB5D82-FDC1-4DC3-A9DD-070D1D495D97",
+}
+
+
+def _resolve_windows_known_folder(folder_id: str, *, api=None) -> Path:
+    """Resolve a per-user Windows Known Folder without environment assumptions.
+
+    ``api`` is an injectable ``folder_id -> path`` seam for tests and for hosts that
+    provide a compatible shell API.  The native implementation deliberately does
+    not fall back to ``USERPROFILE``: a missing shell API must be visible to the
+    caller instead of silently creating a shortcut in the wrong place.
+    """
+    if folder_id not in _KNOWN_FOLDER_IDS:
+        raise ValueError(f"unknown Windows Known Folder: {folder_id}")
+    if api is not None:
+        return Path(api(folder_id))
+    if sys.platform != "win32":
+        raise OSError("Windows Known Folder API is unavailable on this platform")
+
+    import ctypes
+    import uuid
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", ctypes.c_uint32), ("Data2", ctypes.c_uint16),
+                    ("Data3", ctypes.c_uint16), ("Data4", ctypes.c_ubyte * 8)]
+
+    parsed = uuid.UUID(_KNOWN_FOLDER_IDS[folder_id])
+    guid = GUID(parsed.time_low, parsed.time_mid, parsed.time_hi_version,
+                (ctypes.c_ubyte * 8).from_buffer_copy(parsed.bytes[8:]))
+    result = ctypes.c_wchar_p()
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), ctypes.c_uint32,
+                                             ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result))
+    if hr:
+        raise OSError(f"SHGetKnownFolderPath failed for {folder_id}: 0x{hr & 0xffffffff:08x}")
+    try:
+        return Path(result.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(result)
+
+
+def _windows_shortcut_locations(resolver=None) -> tuple[Path, Path]:
+    """Return Start Menu and Desktop destinations from native Known Folders."""
+    resolver = resolver or _resolve_windows_known_folder
+    return (
+        resolver("programs") / "Hermes.lnk",
+        resolver("desktop") / "Hermes.lnk",
+    )
+
+
 def _create_windows_shortcut(shortcut_path: Path, target_path: Path, working_directory: Path) -> None:
     """Create a Windows ``.lnk`` through the built-in Windows Script Host."""
     def ps_quote(value: Path) -> str:
@@ -1601,7 +1652,25 @@ def _create_windows_shortcut(shortcut_path: Path, target_path: Path, working_dir
         f"$shortcut.TargetPath = {ps_quote(target_path)}; "
         f"$shortcut.WorkingDirectory = {ps_quote(working_directory)}; "
         f"$shortcut.IconLocation = {ps_quote(target_path)},0; "
-        "$shortcut.Description = 'Hermes Desktop'; $shortcut.Save()"
+        "$shortcut.Description = 'Hermes Desktop'; $shortcut.Save(); "
+        # WScript.Shell does not expose the property store.  The small, built-in
+        # PowerShell helper sets the same property used by packaged Electron apps.
+        "$aumid = 'com.nousresearch.hermes'; $propertyName = 'System.AppUserModel.ID'; "
+        "Add-Type -TypeDefinition @'\n"
+        "using System; using System.Runtime.InteropServices; "
+        "[StructLayout(LayoutKind.Sequential, Pack=4)] public struct HermesKey { public Guid fmtid; public uint pid; } "
+        "[StructLayout(LayoutKind.Explicit)] public struct HermesVariant { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr value; } "
+        "[ComImport, Guid(\"886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] "
+        "public interface HermesStore { int GetCount(out uint count); int GetAt(uint index, out HermesKey key); int GetValue(ref HermesKey key, out HermesVariant value); int SetValue(ref HermesKey key, ref HermesVariant value); int Commit(); } "
+        "[ComImport, Guid(\"0000010B-0000-0000-C000-000000000046\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] "
+        "public interface HermesPersist { void GetClassID(out Guid clsid); void IsDirty(); void Load([MarshalAs(UnmanagedType.LPWStr)] string file, uint mode); void Save([MarshalAs(UnmanagedType.LPWStr)] string file, bool remember); void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string file); void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string file); } "
+        "public static class HermesShortcut { public static void SetAppUserModelId(string file, string id) { "
+        "var link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid(\"00021401-0000-0000-C000-000000000046\"))); "
+        "((HermesPersist)link).Load(file, 0); var store = (HermesStore)link; "
+        "var key = new HermesKey { fmtid = new Guid(\"9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3\"), pid = 5 }; "
+        "var value = new HermesVariant { vt = 31, value = Marshal.StringToCoTaskMemUni(id) }; "
+        "try { store.SetValue(ref key, ref value); store.Commit(); } finally { Marshal.FreeCoTaskMem(value.value); Marshal.ReleaseComObject(link); } } } "
+        "'\n; [HermesShortcut]::SetAppUserModelId(" + ps_quote(shortcut_path) + ", $aumid)"
     )
     subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],

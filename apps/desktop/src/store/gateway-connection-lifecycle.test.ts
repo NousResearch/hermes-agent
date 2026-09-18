@@ -859,13 +859,15 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
   })
 })
 
-
 describe('rejected secondary authentication', () => {
   it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
     vi.useFakeTimers()
+
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+      ...descriptorFor(connectionId, profile),
+      authMode: 'oauth'
     }))
+
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
     await ensureGatewayForAgent('cloud', 'default')
@@ -893,7 +895,8 @@ describe('rejected secondary authentication', () => {
     vi.useFakeTimers()
 
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+      ...descriptorFor(connectionId, profile),
+      authMode: 'oauth'
     }))
 
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
@@ -915,12 +918,14 @@ describe('rejected secondary authentication', () => {
   })
 })
 
-
 it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    ...descriptorFor(connectionId, profile),
+    authMode: 'oauth'
   }))
+
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
@@ -939,14 +944,18 @@ it('keeps background auth rejection after socket disposal until recovery or conn
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(3)
 })
 
-
 it('does not let a removed connection repopulate the auth rejection', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    ...descriptorFor(connectionId, profile),
+    authMode: 'oauth'
   }))
+
   let rejectTicket!: (error: Error) => void
-  const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
+  const ticket = new Promise<never>((_resolve, reject) => {
+    rejectTicket = reject
+  })
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   const pending = requestGatewayForAgent('cloud', 'default', 'session.list')

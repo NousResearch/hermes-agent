@@ -52,9 +52,12 @@ describe('TimelineRail', () => {
   })
 
   it('resets every bar on pointer leave even while an item keeps focus', async () => {
-    const { container, rerender } = render(<TimelineRail activeIndex={0} entries={entries} loadingId={null} onJump={vi.fn()} />)
+    const { container, rerender } = render(
+      <TimelineRail activeIndex={0} entries={entries} loadingId={null} onJump={vi.fn()} />
+    )
     const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')!
-    const widths = () => Array.from(rail.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]'), bar => bar.style.width)
+    const widths = () =>
+      Array.from(rail.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]'), bar => bar.style.width)
 
     expect(new Set(widths())).toEqual(new Set(['0.5rem']))
     fireEvent(rail, new MouseEvent('pointermove', { bubbles: true, clientY: 70 }))

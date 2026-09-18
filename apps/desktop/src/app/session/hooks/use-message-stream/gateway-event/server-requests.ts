@@ -455,7 +455,10 @@ export function handleServerRequest(
       // publishes its binding synchronously between this replay and the next
       // turn. A second miss deliberately stays silent for another window.
       setTimeout(() => {
-        if (previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) === 'run') {
+        if (
+          previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
+          'run'
+        ) {
           handler({ deps, request, sessionId, isActiveSession: true })
         }
       }, 0)

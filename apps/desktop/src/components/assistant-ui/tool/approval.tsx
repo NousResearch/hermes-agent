@@ -146,7 +146,9 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
               }
               open={false}
             >
-              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
+              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>
+                {summary || t.assistant.approval.jumpToApproval}
+              </span>
             </ScaffoldRow>
           </div>
         </motion.div>

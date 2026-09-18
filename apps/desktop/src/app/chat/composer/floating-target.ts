@@ -60,7 +60,7 @@ function selectionOutsideComposer(): boolean {
   }
 
   const { anchorNode } = selection
-  const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null
+  const anchorEl = anchorNode instanceof Element ? anchorNode : (anchorNode?.parentElement ?? null)
 
   return !anchorEl?.closest('[data-slot="composer-rich-input"]')
 }

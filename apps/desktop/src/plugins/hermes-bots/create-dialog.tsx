@@ -794,9 +794,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     Copy API keys from the main profile
                   </label>
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
-                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous)
-                    are not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with
-                    no credentials.
+                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous) are
+                    not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with no
+                    credentials.
                   </div>
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
@@ -1347,7 +1347,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!canCreate} onClick={create}>{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+          <Button
+            disabled={!canCreate}
+            onClick={create}
+          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

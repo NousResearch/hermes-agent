@@ -61,23 +61,25 @@ test('auth expiry retries with a fresh ticket without reload churn; cleanup canc
   assert.equal(x.timers.size,0,'no orphan retry after unmount');
 });
 
-test('empty columns hide, watched columns remain and new tasks restore columns', async () => {
+test('stock columns remain present when empty, populated or filtered', async () => {
   const x=harness(), page=x.mount(x.Page);
   page.render(); await x.flush();
   const boardNode=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
   assert.ok(boardNode);
   const board=x.mount(boardNode.type,boardNode.props);
   const columns=tree=>x.nodes(tree).filter(n=>n.type?.name==='Column');
-  assert.deepEqual(columns(board.render()).map(n=>n.props.column.name),['running','blocked']);
+  assert.deepEqual(columns(board.render()).map(n=>n.props.column.name),['ready','running','blocked','done']);
   for (const node of columns(board.render())) {
     const tree=x.mount(node.type,node.props).render();
-    assert.equal(x.nodes(tree).find(n=>n.props?.className==='hermes-kanban-column-count').props.children[0],'—');
+    assert.equal(x.nodes(tree).find(n=>n.props?.className==='hermes-kanban-column-count').props.children[0],0);
   }
   const populated={...boardNode.props,board:{...boardNode.props.board,columns:boardNode.props.board.columns.map(c=>c.name==='ready'?{...c,tasks:[{id:'new'}]}:c)}};
-  assert.deepEqual(columns(board.render(populated)).map(n=>n.props.column.name),['ready','running','blocked']);
+  assert.deepEqual(columns(board.render(populated)).map(n=>n.props.column.name),['ready','running','blocked','done']);
+  const filtered={...populated,board:{...populated.board,columns:populated.board.columns.map(c=>({...c,tasks:[]}))}};
+  assert.deepEqual(columns(board.render(filtered)).map(n=>n.props.column.name),['ready','running','blocked','done']);
 });
 
-test('Done defaults to a count stub, expands and persists the toggle', async () => {
+test('Done renders its cards without a persistent collapse control', async () => {
   const x=harness(), page=x.mount(x.Page);
   x.setData({columns:[{name:'done',tasks:[{id:'done1',status:'done'}]}],tenants:[],assignees:[]});
   page.render(); await x.flush();
@@ -85,18 +87,17 @@ test('Done defaults to a count stub, expands and persists the toggle', async () 
   const board=x.mount(node.type,node.props);
   let tree=board.render();
   const toggle=()=>x.nodes(tree).find(n=>n.type==='button' && n.props['aria-expanded'] !== undefined);
-  assert.ok(toggle(),'Done has an accessible toggle');
-  assert.equal(toggle().props['aria-expanded'],false);
-  assert.match(toggle().props.children.join(''),/Done · 1/);
-  assert.equal(x.nodes(tree).filter(n=>n.type?.name==='Column').length,0);
-  toggle().props.onClick(); tree=board.render();
+  assert.equal(toggle(),undefined);
   assert.equal(x.nodes(tree).filter(n=>n.type?.name==='Column').length,1);
+  const column=x.nodes(tree).find(n=>n.type?.name==='Column');
+  assert.equal(x.nodes(x.mount(column.type,column.props).render()).filter(n=>n.type?.name==='TaskCard').length,1);
+  assert.equal(x.storage.size,0);
   board.unmount();
   const remount=x.mount(node.type,node.props);
   assert.equal(x.nodes(remount.render()).filter(n=>n.type?.name==='Column').length,1,'expanded preference survives remount');
 });
 
-test('blocked cards expose kind and truncated reason/failure as plain text with full titles', async () => {
+test('stock card face does not expose block reasons or worker failure', async () => {
   const x=harness(), page=x.mount(x.Page);
   const reason='<img src=x onerror=alert(1)> '+ 'long '.repeat(30);
   x.setData({columns:[{name:'blocked',tasks:[{id:'blocked1',status:'blocked',block_kind:'capability',block_reason:reason,last_failure_error:reason}]}],tenants:[],assignees:[]});
@@ -105,13 +106,12 @@ test('blocked cards expose kind and truncated reason/failure as plain text with 
   const cn=x.nodes(x.mount(bn.type,bn.props).render()).find(n=>n.type?.name==='Column');
   const card=x.nodes(x.mount(cn.type,cn.props).render()).find(n=>n.type?.name==='TaskCard');
   const nodes=x.nodes(x.mount(card.type,card.props).render());
-  assert.ok(nodes.some(n=>n.props.children.includes('⛔ capability')));
+  assert.equal(nodes.some(n=>n.props.children.includes('⛔ capability')),false);
   const details=nodes.filter(n=>n.props.title===reason);
-  assert.equal(details.length,2);
-  details.forEach(n=>{assert.equal(n.props.children[0],reason.slice(0,90)+'…'); assert.equal(n.props.dangerouslySetInnerHTML,undefined);});
+  assert.equal(details.length,0);
 });
 
-test('drag restores empty Ready and collapsed Done using desktop and touch single/bulk moves', async () => {
+test('stock destinations support desktop and touch single/bulk moves and cleanup', async () => {
   for (const touch of [false,true]) for (const bulk of [false,true]) for (const destination of ['ready','done']) {
     const x=harness(), page=x.mount(x.Page);
     x.setData({columns:[{name:'ready',tasks:[]},{name:'running',tasks:[{id:'r1',status:'running'},{id:'r2',status:'running'}]},{name:'blocked',tasks:[]},{name:'done',tasks:[{id:'d1',status:'done'}]}],tenants:[],assignees:[]});
@@ -152,7 +152,7 @@ test('drag restores empty Ready and collapsed Done using desktop and touch singl
     const ended=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
     assert.equal(ended.props.draggingTaskId,null);
     tree=board.render({...props,draggingTaskId:ended.props.draggingTaskId});
-    assert.equal(x.nodes(tree).some(n=>n.type?.name==='Column' && ['ready','done'].includes(n.props.column.name)),false);
+    assert.equal(x.nodes(tree).filter(n=>n.type?.name==='Column' && ['ready','done'].includes(n.props.column.name)).length,2);
     assert.equal(x.storage.get('hermes.kanban.doneExpanded'),undefined,'drag does not persist expansion');
     page.unmount(); board.unmount();
   }

@@ -79,8 +79,7 @@
 }
 
 .hermes-kanban-column {
-  flex: 1 1 0;
-  min-width: 220px;
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -90,34 +89,6 @@
   min-height: 200px;
   max-height: calc(100vh - 220px);
   transition: border-color 120ms ease, background-color 120ms ease;
-}
-
-.hermes-kanban-column--collapsed {
-  flex: 0 0 auto;
-  min-width: 0;
-  min-height: 0;
-}
-
-.hermes-kanban-card-reason {
-  font-size: 0.75rem;
-  color: var(--color-muted-foreground);
-  overflow-wrap: anywhere;
-  margin: 0.25rem 0;
-}
-
-.hermes-kanban-block-kind {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.hermes-kanban-done-toggle {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--color-foreground);
-  font: inherit;
-  cursor: pointer;
-  white-space: nowrap;
 }
 
 .hermes-kanban-column--drop {

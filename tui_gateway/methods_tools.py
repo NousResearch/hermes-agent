@@ -512,7 +512,10 @@ def _plugin_command_handler(name: str):
 
 
 def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+    plugins = _tools_mod("hermes_cli.plugins")
+    return str(plugins.resolve_plugin_command_result(
+        plugins.call_plugin_command_handler(handler, arg, command_context=None)
+    ) or "")
 
 
 @contextlib.contextmanager

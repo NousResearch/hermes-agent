@@ -80,6 +80,24 @@ class PluginToolOverrideError(PermissionError):
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class PluginCommandContext:
+    """Sanitized provenance for a plugin slash-command invocation."""
+
+    platform: str
+    user_id: Optional[str]
+    user_name: Optional[str]
+    chat_id: Optional[str]
+    chat_name: Optional[str]
+    chat_type: Optional[str]
+    thread_id: Optional[str]
+    guild_id: Optional[str]
+    session_id: Optional[str]
+    message_id: Optional[str]
+    authorized: bool
+
+
 # ``HERMES_PLUGINS_DEBUG=1`` tees verbose discovery logs to stderr in addition to agent.log. Read
 # once at import; tests flip it mid-process via ``_install_plugin_debug_handler(force=True)``.
 _PLUGINS_DEBUG = env_var_enabled("HERMES_PLUGINS_DEBUG")
@@ -665,7 +683,9 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
+        (sync or async). Gateway-aware handlers may opt in with a keyword parameter
+        ``command_context: PluginCommandContext | None``; CLI/TUI callers supply None.
+        ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
         field; without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -2005,6 +2025,43 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def _plugin_command_accepts_context(handler: Callable) -> bool:
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+
+    parameter = signature.parameters.get("command_context")
+    if parameter is None:
+        return False
+    return parameter.kind in {
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+
+
+def call_plugin_command_handler(
+    handler: Callable,
+    raw_args: str,
+    *,
+    command_context: Optional[PluginCommandContext] = None,
+) -> Any:
+    """Call a plugin slash-command handler with optional gateway provenance.
+
+    Legacy handlers keep receiving exactly ``handler(raw_args)``. Handlers that
+    opt in with a ``command_context`` parameter receive a frozen context object
+    on gateway surfaces, or ``None`` on surfaces that have no authenticated
+    gateway origin such as CLI/TUI dispatch.
+    """
+    if _plugin_command_accepts_context(handler):
+        return handler(raw_args, command_context=command_context)
+    return handler(raw_args)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

@@ -22,7 +22,7 @@ def _runner(command):
     async def _canonical(event, source, qk, canonical):
         return False, None
 
-    async def _quick(event, source, cmd):
+    async def _quick(event, source, cmd, qk):
         return False, None, cmd
 
     runner._hm_resolve_command = _resolve

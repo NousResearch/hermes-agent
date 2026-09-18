@@ -225,3 +225,140 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_plugin_command_receives_authenticated_context(monkeypatch):
+    """Gateway plugin slash commands receive immutable source metadata after auth."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin slash command leaked to the agent")
+    )
+    runner.session_store.peek_session_id.return_value = "sess-1"
+
+    received_contexts = []
+
+    def _handler(raw_args, *, command_context=None):
+        received_contexts.append(command_context)
+        return (
+            f"{raw_args}:"
+            f"{command_context.platform}:"
+            f"{command_context.user_id}:"
+            f"{command_context.user_name}:"
+            f"{command_context.chat_id}:"
+            f"{command_context.chat_type}:"
+            f"{command_context.message_id}:"
+            f"{command_context.authorized}"
+        )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"audit": {"description": "Audit command"}},
+    )
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: _handler if name == "audit" else None,
+    )
+
+    event = _make_event("/audit approve")
+    result = await runner._handle_message(event)
+
+    assert result == "approve:telegram:u1:tester:c1:dm:m1:True"
+    assert received_contexts
+    assert received_contexts[0].session_id == "sess-1"
+    runner.session_store.peek_session_id.assert_called_once_with(
+        build_session_key(event.source)
+    )
+    runner.session_store.get_or_create_session.assert_not_called()
+    from dataclasses import FrozenInstanceError
+
+    with pytest.raises(FrozenInstanceError):
+        received_contexts[0].user_id = "mutated"
+
+
+@pytest.fixture
+def discovered_command(tmp_path, monkeypatch):
+    """Load an external plugin through the real profile-scoped discovery path."""
+    from hermes_cli import plugins
+    from gateway.session import SessionStore
+
+    home = tmp_path / "home"
+    plugin_dir = home / "plugins" / "context-probe"
+    plugin_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled: [context-probe]\n", encoding="utf-8"
+    )
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: context-probe\nversion: 0.1.0\n", encoding="utf-8"
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "received = []\n"
+        "async def command(raw_args, *, command_context):\n"
+        "    received.append((raw_args, command_context))\n"
+        "    return 'plugin ran'\n"
+        "def register(ctx):\n"
+        "    ctx.register_command('context-probe', command)\n",
+        encoding="utf-8",
+    )
+    manager = plugins.PluginManager()
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manager.discover_and_load()
+    handler = plugins.get_plugin_command_handler("context-probe")
+    assert handler is not None
+    runner = _make_runner()
+    runner.session_store = SessionStore(home / "sessions", runner.config)
+    runner._run_agent = AsyncMock(side_effect=AssertionError("plugin leaked to agent"))
+    yield runner, handler.__globals__["received"]
+    runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_discovered_plugin_context_uses_existing_session_only(discovered_command, existing):
+    runner, received = discovered_command
+    event = _make_event("/context_probe preserve  these args")
+    event.source.chat_name = "Test chat"
+    event.source.thread_id = "topic-1"
+    event.source.guild_id = "guild-1"
+    event.source.message_id = "source-message"
+    entry = runner.session_store.get_or_create_session(event.source) if existing else None
+    runner.session_store.get_or_create_session = MagicMock(
+        side_effect=AssertionError("plugin command must not create or touch a session")
+    )
+
+    assert await runner._handle_message(event) == "plugin ran"
+    assert len(received) == 1
+    raw_args, context = received[0]
+    assert raw_args == "preserve  these args"
+    assert context.session_id == (entry.session_id if entry else None)
+    assert (context.platform, context.user_id, context.chat_id) == ("telegram", "u1", "c1")
+    assert (context.chat_name, context.thread_id, context.guild_id) == ("Test chat", "topic-1", "guild-1")
+    assert context.message_id == "source-message"
+    assert context.authorized is True
+    runner.session_store.get_or_create_session.assert_not_called()
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["sender", "slash"])
+async def test_discovered_plugin_not_invoked_before_authorization(discovered_command, denial):
+    runner, received = discovered_command
+    if denial == "sender":
+        runner._is_user_authorized = lambda _source: False
+    else:
+        runner.config.platforms[Platform.TELEGRAM].extra.update(
+            allow_admin_from=["admin"], user_allowed_commands=[]
+        )
+    await runner._handle_message(_make_event("/context_probe status"))
+    assert received == []
+    runner._run_agent.assert_not_called()

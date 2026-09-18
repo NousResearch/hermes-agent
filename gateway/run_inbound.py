@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -37,6 +38,34 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _build_plugin_command_context(event: Any, *, session_id: Optional[str] = None):
+    """Build immutable plugin slash-command provenance from a gateway event."""
+    from hermes_cli.plugins import PluginCommandContext
+
+    source = getattr(event, "source", None)
+    platform_obj = getattr(source, "platform", None)
+    platform = getattr(platform_obj, "value", None)
+    if platform is None and platform_obj is not None:
+        platform = str(platform_obj)
+
+    return PluginCommandContext(
+        platform=platform or "",
+        user_id=getattr(source, "user_id", None),
+        user_name=getattr(source, "user_name", None),
+        chat_id=getattr(source, "chat_id", None),
+        chat_name=getattr(source, "chat_name", None),
+        chat_type=getattr(source, "chat_type", None),
+        thread_id=getattr(source, "thread_id", None),
+        guild_id=getattr(source, "guild_id", None),
+        session_id=session_id,
+        message_id=(
+            getattr(source, "message_id", None)
+            or getattr(event, "message_id", None)
+        ),
+        authorized=True,
+    )
 
 
 class GatewayInboundMixin:
@@ -1013,7 +1042,7 @@ class GatewayInboundMixin:
             return f"Quick command error: {e}"
 
     async def _hm_dispatch_quick_and_plugin_commands(
-        self, event: "MessageEvent", source: SessionSource, command: Optional[str]
+        self, event: "MessageEvent", source: SessionSource, command: Optional[str], _quick_key: str
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
@@ -1048,11 +1077,23 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                from hermes_cli.plugins import call_plugin_command_handler, get_plugin_command_handler
+                plugin_name = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_name)
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
+                    # Re-check at the sink: Telegram spelling and hook rewrites may
+                    # bypass the early known-command gate.
+                    denied = self._check_slash_access(source, plugin_name)
+                    if denied is not None:
+                        return True, denied, command
+                    session_id = await asyncio.to_thread(
+                        self.session_store.peek_session_id, _quick_key
+                    )
+                    result = call_plugin_command_handler(
+                        plugin_handler, event.get_command_args().strip(),
+                        command_context=_build_plugin_command_context(event, session_id=session_id),
+                    )
+                    if inspect.isawaitable(result):
                         result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
@@ -1205,7 +1246,7 @@ class GatewayInboundMixin:
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
         if not _handled:
-            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
+            _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command, _quick_key)
         if not _handled:
             # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
             # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a

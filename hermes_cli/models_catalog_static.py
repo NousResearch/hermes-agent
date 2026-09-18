@@ -347,14 +347,24 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# Auth classes whose picker selection needs bespoke UX (OAuth device flows, vendor CLIs) are
+# skipped; external_process providers are admitted because their picker row is honest —
+# `_provider_has_credentials` routes through auth.get_external_process_provider_status, which
+# reports configured only when the subprocess binary resolves, and selection rides the standard
+# model_switch pipeline.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+_BESPOKE_UX_AUTH_TYPES = {"oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex"}
+
+
+def _plugin_provider_enters_picker(pp) -> bool:
+    """Picker admission for a plugin model-provider profile."""
+    return pp.name not in _canonical_slugs and pp.auth_type not in _BESPOKE_UX_AUTH_TYPES
+
+
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
-        }:
+        if not _plugin_provider_enters_picker(_pp):
             continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))

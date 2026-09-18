@@ -491,3 +491,121 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
     )
 
     assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]
+
+
+# --- concurrent sessions on a shared client ---------------------------------
+#
+# Aux clients are cached per provider config and served to every concurrent
+# caller, so one CopilotACPClient can run several ACP sessions at once. Each
+# session must reap ITS OWN child on exit: reaping whatever most recently
+# claimed shared state kills a sibling's live process and leaks the session's
+# own.
+
+
+_FAKE_ACP_SERVER = """import json
+import sys
+import time
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {"sessionId": "s1"}
+    elif method == "session/prompt":
+        time.sleep(0.4)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "done"}},
+        }}), flush=True)
+        result = {"stopReason": "end_turn"}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
+
+
+def _recording_client(tmp_path, spawned):
+    server = tmp_path / "fake_copilot_acp.py"
+    server.write_text(_FAKE_ACP_SERVER, encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    real_spawn = client._spawn
+
+    def record_spawn():
+        proc = real_spawn()
+        spawned.append(proc)
+        return proc
+
+    client._spawn = record_spawn
+    return client
+
+
+def test_overlapping_sessions_reap_their_own_process(tmp_path):
+    spawned = []
+    client = _recording_client(tmp_path, spawned)
+
+    session_a = client._session(30)
+    session_b = client._session(30)
+    session_a.__enter__()
+    session_b.__enter__()
+
+    proc_a, proc_b = spawned
+    session_a.__exit__(None, None, None)
+
+    leaked = proc_a.poll() is None
+    killed = proc_b.poll() is not None
+    assert not leaked and not killed, (
+        f"session A teardown: own child leaked={leaked}, sibling process killed={killed}"
+    )
+
+    session_b.__exit__(None, None, None)
+    assert proc_b.poll() is not None
+
+
+def test_close_terminates_every_live_session_process(tmp_path):
+    spawned = []
+    client = _recording_client(tmp_path, spawned)
+
+    session_a = client._session(30)
+    session_b = client._session(30)
+    session_a.__enter__()
+    session_b.__enter__()
+
+    client.close()
+
+    assert all(proc.poll() is not None for proc in spawned)
+
+
+def test_concurrent_completions_both_succeed_and_reap(tmp_path):
+    import threading
+
+    spawned = []
+    client = _recording_client(tmp_path, spawned)
+    gate = threading.Barrier(2)
+    record_spawn = client._spawn
+
+    def gated_spawn():
+        proc = record_spawn()
+        gate.wait(timeout=10)
+        return proc
+
+    client._spawn = gated_spawn
+    errors = []
+
+    def call():
+        try:
+            client._create_chat_completion(
+                model="copilot-acp", messages=[{"role": "user", "content": "hi"}]
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors
+    assert len(spawned) == 2
+    assert all(proc.poll() is not None for proc in spawned), "spawned child leaked"

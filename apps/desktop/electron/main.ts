@@ -1965,6 +1965,15 @@ function openExternalUrl(rawUrl) {
           return
         }
 
+        // `showItemInFolder` silently no-ops on a path that is not on this computer — a
+        // remote session's files never are — so only fall back to it for a file that exists
+        // here; otherwise the failure is the whole story and the log says so.
+        if (!fs.existsSync(localPath)) {
+          rememberLog(`[file] openPath failed: ${error}; nothing at ${localPath} on this computer`)
+
+          return
+        }
+
         rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
 
         try {

@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
 import {
@@ -95,14 +96,20 @@ function useProjectActions({
         }
       ]
 
+  // Reveal needs the local filesystem; a remote gateway's project paths are on that machine, so
+  // the item is not offered there — the same rule the Files pane menus apply.
   const pathItems: ActionItemSpec[] = [
-    {
-      disabled: !project.path,
-      icon: 'folder-opened',
-      key: 'reveal',
-      label: p.reveal,
-      onSelect: () => void revealPath(project.path)
-    },
+    ...(isDesktopFsRemoteMode()
+      ? []
+      : [
+          {
+            disabled: !project.path,
+            icon: 'folder-opened',
+            key: 'reveal',
+            label: p.reveal,
+            onSelect: () => void revealPath(project.path)
+          } satisfies ActionItemSpec
+        ]),
     {
       disabled: !project.path,
       icon: 'copy',

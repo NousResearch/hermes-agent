@@ -167,7 +167,8 @@ export const en: Translations = {
     renameLabel: 'New name',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied'
+    pathCopied: 'Path copied',
+    revealUnavailable: 'That path is not on this computer — the file lives on the backend machine. Use “Reveal in filetree”.'
   },
 
   boot: {

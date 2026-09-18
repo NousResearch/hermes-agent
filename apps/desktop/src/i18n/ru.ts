@@ -155,7 +155,8 @@ export const ru = defineLocale({
     renameLabel: 'Новое имя',
     deleteTitle: name => `Удалить ${name}?`,
     deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
-    pathCopied: 'Путь скопирован'
+    pathCopied: 'Путь скопирован',
+    revealUnavailable: 'Этого пути нет на этом компьютере — файл находится на машине бэкенда. Используйте «Показать в дереве файлов».'
   },
   boot: {
     ready: 'Hermes Desktop готов',

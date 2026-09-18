@@ -63,6 +63,31 @@ function stubBridge() {
   })
 }
 
+describe('revealDesktopPath', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    [true, false],
+    [false, true],
+    [undefined, false]
+  ])('door answers %s -> throws %s', async (answer, throws) => {
+    // `false` is the door saying nothing on this computer was shown — the remote-backend
+    // case — and silence there left the user with a click that did nothing. An older door
+    // that answers nothing at all is not treated as a failure.
+    vi.stubGlobal('window', { hermesDesktop: { revealPath: vi.fn(async () => answer) } })
+
+    const { revealDesktopPath } = await import('./desktop-fs')
+
+    if (throws) {
+      await expect(revealDesktopPath('/backend/project/report.zip')).rejects.toThrow(/not on this computer/)
+    } else {
+      await expect(revealDesktopPath('/backend/project/report.zip')).resolves.toBeUndefined()
+    }
+  })
+})
+
 describe('desktop filesystem facade', () => {
   beforeEach(() => {
     stubBridge()

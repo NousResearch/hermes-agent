@@ -34,7 +34,7 @@ import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usa
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
-import { copyFilePath, revealFile } from '@/store/file-actions'
+import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
@@ -211,6 +211,16 @@ export function useStatusbarItems({
     const row = sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
 
     return row?.cwd?.trim() || ''
+  })
+
+  // Which backend the focused row runs on: a Connections-tagged row names its gateway; an
+  // untagged one is the window's primary. Decides whether the OS file manager can show it.
+  const focusedRowConnectionId = useStoreSelector($sessions, sessions => {
+    if (!focusedStoredSessionId) {
+      return ''
+    }
+
+    return sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
   })
 
   // Live runtime cwd is authoritative once it belongs to the focused chat
@@ -521,12 +531,16 @@ export function useStatusbarItems({
                 onSelect: () => void copyFilePath(currentCwd),
                 title: displayPath(currentCwd)
               },
-              {
-                id: 'reveal-workspace-finder',
-                label: fileMenu.revealFileManager,
-                onSelect: () => void revealFile(currentCwd),
-                title: displayPath(currentCwd)
-              },
+              ...(shouldOfferLocalReveal(primaryFocused ? '' : focusedRowConnectionId, connection?.mode === 'remote')
+                ? [
+                    {
+                      id: 'reveal-workspace-finder',
+                      label: fileMenu.revealFileManager,
+                      onSelect: () => void revealFile(currentCwd),
+                      title: displayPath(currentCwd)
+                    }
+                  ]
+                : []),
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
@@ -589,9 +603,12 @@ export function useStatusbarItems({
       copy,
       currentCwd,
       freeTierCopy,
+      connection?.mode,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
+      focusedRowConnectionId,
+      primaryFocused,
       freeTier?.available,
       freeTier?.model,
       guideOwnsSignIn,

@@ -161,7 +161,8 @@ export const zh = defineLocale({
     renameLabel: '新名称',
     deleteTitle: name => `删除 ${name}？`,
     deleteBody: '将移至废纸篓，你可以从那里恢复。',
-    pathCopied: '已复制路径'
+    pathCopied: '已复制路径',
+    revealUnavailable: '此路径不在本机上——文件位于后端机器。请使用“在文件树中显示”。'
   },
 
   boot: {

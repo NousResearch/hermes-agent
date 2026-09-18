@@ -234,6 +234,54 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     return _callback
 
 
+def _attach_live_stream_callbacks(
+    self, run_id: str, agent, loop: "asyncio.AbstractEventLoop", *, _api_server,
+) -> None:
+    """Project the agent's live reasoning, status, and notices onto the run SSE stream."""
+    redact_sensitive_text = _api_server.redact_sensitive_text
+
+    def _emit(name: str, **fields: Any) -> None:
+        if run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(
+                _put_run_event, self, run_id, _run_event(run_id, name, **fields))
+
+    def _reasoning(text: Optional[str]) -> None:
+        # Match message.delta: chunk-wise redaction would corrupt split secrets and text.
+        if text:
+            _emit("reasoning.delta", text=text)
+
+    def _status(kind: str, message: str) -> None:
+        if message:
+            _emit(
+                "status",
+                kind=str(kind or "lifecycle"),
+                text=redact_sensitive_text(str(message), force=True),
+            )
+
+    def _notice(notice: Any) -> None:
+        text = notice if isinstance(notice, str) else getattr(notice, "text", None)
+        if text:
+            _emit(
+                "notice",
+                text=redact_sensitive_text(str(text), force=True),
+                level=getattr(notice, "level", "info"),
+                key=getattr(notice, "key", None),
+            )
+
+    agent.reasoning_callback = _reasoning
+    agent.status_callback = _status
+    agent.notice_callback = _notice
+
+
+def _put_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
+    """Enqueue on the event loop if the live run transport still exists."""
+    queue = self._run_streams.get(run_id)
+    if queue is not None:
+        queue.put_nowait(event)
+
+
 def _room_permission_for(request: "web.Request") -> str:
     if request.path.endswith("/stop"):
         return "stop"
@@ -843,6 +891,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+        _attach_live_stream_callbacks(self, run_id, agent, loop, _api_server=_api_server)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await loop.run_in_executor(

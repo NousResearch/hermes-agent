@@ -137,6 +137,7 @@ from gateway.browser_control_broker import (
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.tcp_site import start_tcp_site
 
 
 logger = logging.getLogger(__name__)
@@ -4019,24 +4020,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
-            # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).
             # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
             # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
-            # up to ~60s. SO_REUSEADDR is platform-dependent (same rationale as the webhook adapter,
-            # #65482): - macOS (BSD semantics): two sockets with SO_REUSEADDR can silently split traffic
-            # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
-            # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
-            # (enabled) for instant restart rebinds.
+            # up to ~60s. Platform-dependent SO_REUSEADDR and the macOS TIME_WAIT rebind live in
+            # start_tcp_site; the loop below covers a predecessor still holding the port for a moment.
             try:
-                # A restart's predecessor may still hold the port for a moment after its PID is gone.
                 # aiohttp registers a site with its runner before binding, so a failed start leaves the
                 # site registered: rebuild the runner per attempt rather than reach into its internals.
                 for attempt in range(_BIND_ATTEMPTS):
-                    self._site = web.TCPSite(
-                        self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
                     try:
-                        await self._site.start()
+                        self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
                         break
                     except OSError as exc:
                         if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:

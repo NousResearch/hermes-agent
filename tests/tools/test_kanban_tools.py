@@ -262,6 +262,38 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         conn2.close()
 
 
+def test_complete_goal_mode_unreachable_judge_fails_open(monkeypatch, tmp_path):
+    """A judge that never answered is not a negative verdict.
+
+    ``judge_goal`` swallows its own transport errors and reports them as
+    ``verdict="continue"`` with ``transport_failed=True``. Treating that as a
+    rejection wedges a finished card forever: the gate has no strike limit, so
+    the only exit left is ``kanban_block``. The gate must consume the flag and
+    let the handoff through instead.
+    """
+    import json
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    goal_task_id = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+
+    def unreachable_judge(goal, last_response, *, timeout=30.0, subgoals=None):
+        return "continue", "judge error: NotFoundError", False, None, True
+
+    monkeypatch.setattr("tools.kanban_tools.judge_goal", unreachable_judge)
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
+
+    d = json.loads(kt._handle_complete({"summary": "X achieved, evidence attached"}))
+    assert "error" not in d, f"an unreachable judge must not reject the completion: {d}"
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, goal_task_id).status == "done"
+    finally:
+        conn.close()
+
+
 def test_block_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})

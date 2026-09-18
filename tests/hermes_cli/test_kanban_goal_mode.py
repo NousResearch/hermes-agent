@@ -146,7 +146,8 @@ class TestCLIJudgeGate:
     """
 
     def _run(self, monkeypatch, *, goal_mode=True, judge_available=True,
-             verdict="done", reason="", complete_ok=True, summary="done"):
+             verdict="done", reason="", complete_ok=True, summary="done",
+             transport_failed=False):
         import argparse
         import types
         from unittest.mock import MagicMock
@@ -185,7 +186,7 @@ class TestCLIJudgeGate:
         # (verdict, reason, parse_failed, wait_directive, transport_failed)
         monkeypatch.setattr(
             "hermes_cli.goals.judge_goal",
-            lambda **kw: (verdict, reason, False, None, False),
+            lambda **kw: (verdict, reason, False, None, transport_failed),
         )
 
         args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)
@@ -200,6 +201,19 @@ class TestCLIJudgeGate:
             "complete_task must NOT be invoked when the judge rejects"
         )
 
+
+    def test_unreachable_judge_fails_open(self, monkeypatch):
+        """A transport failure is not a verdict — see the tool-side gate test.
+
+        ``judge_goal`` reports its own transport errors as ``continue`` plus
+        ``transport_failed=True``; rejecting on that wedges a finished card.
+        """
+        rc, complete_calls = self._run(
+            monkeypatch, verdict="continue", reason="judge error: NotFoundError",
+            transport_failed=True,
+        )
+        assert rc == 0, "an unreachable judge must not reject the completion"
+        assert complete_calls == ["t1"]
 
     def test_non_goal_mode_task_skips_gate(self, monkeypatch):
         """Plain (non-goal_mode) tasks are never sent to the judge."""

@@ -400,13 +400,21 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     if not task or not task.goal_mode or not _goal_judge_available():
         return
     try:
-        verdict, reason, _, _, _ = judge_goal(
+        verdict, reason, _, _, transport_failed = judge_goal(
             goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
         return
     if verdict == "done":
+        return
+    if transport_failed:
+        # ``judge_goal`` absorbs its own transport errors and reports them as ``continue``,
+        # which is a verdict shape, not a verdict. Rejecting on it wedges the card: the gate
+        # has no strike limit, so a judge pinned to an unserved model leaves ``kanban_block``
+        # as the only exit. An absent judge means the gate does not apply, same as
+        # ``_goal_judge_available() == False``.
+        logger.warning("goal judge unreachable (%s), allowing %s handoff", reason, tool_name)
         return
     key = "blocked" if verdict == "blocked" else "continue"
     raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))

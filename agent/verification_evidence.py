@@ -23,10 +23,8 @@ _MAX_OUTPUT_SUMMARY_CHARS = 2000
 _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
-# macOS `mktemp -t hermes-verify` yields "hermes-verify.XXXX" (DOT separator) while GNU
-# mktemp and the agent-facing guidance use "hermes-verify-XXXX" (hyphen). Matching only the
-# hyphen form silently records no evidence on macOS, so the agent is nudged to verify again
-# forever. Accept both separators.
+# BSD `mktemp -t hermes-verify` yields "hermes-verify.XXXX" (dot) where GNU mktemp yields
+# "hermes-verify-XXXX"; matching only the hyphen form silently records no evidence on macOS.
 _AD_HOC_SCRIPT_NAME_PREFIXES = (
     "hermes-verify-", "hermes-verify.",
     "hermes-ad-hoc-", "hermes-ad-hoc.",

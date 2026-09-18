@@ -970,7 +970,7 @@ def try_recover_primary_transport(
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
-            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True,
+            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True, diagnostic=True,
         )
         time.sleep(wait_time)
         return True
@@ -1195,7 +1195,7 @@ def restore_primary_runtime(agent) -> bool:
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
-                agent._emit_status(
+                agent._emit_diagnostic_status(
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
@@ -1777,14 +1777,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
-    # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>". Key on the keyless
-    # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
-    # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
-    # empty pool to rotate (#110831).
-    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
@@ -2931,6 +2923,34 @@ def trailing_continue_intent(text: str) -> bool:
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+
+
+# Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
+# and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
+# reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan
+# ("Let me batch the terminal calls and run them in parallel.", "I need to check the log.") is a
+# stalled model whose turn would otherwise report "complete" with zero tool calls (#111761).
+# Tail-only and anchored on the last sentence, so reasoning that merely mentions a plan before
+# stating its answer ("...Let me check. The answer is 42.") still promotes.
+_PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
+    r"(?:^|[.!?:\u3002\uff01\uff1f\n]\s*|\u2026\s*)"
+    r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
+    r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b)"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def promoted_reasoning_announces_action(text: str) -> bool:
+    """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
+
+    No overall length cap: the reasoning block of a stalled model is often 300-1600 chars of
+    planning monologue; only the tail decides.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

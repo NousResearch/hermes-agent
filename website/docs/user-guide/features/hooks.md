@@ -1064,9 +1064,9 @@ def my_callback(session_key: str, platform: str, reason: str, invalidation_reaso
 | `session_key` | `str` | The session whose run was interrupted. |
 | `platform` | `str` | The messaging platform name (`"telegram"`, `"discord"`, etc.); empty string if unknown. |
 | `reason` | `str` | Why the agent was interrupted (e.g. `"user_stop"`, the reset/new reason). |
-| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"reset_command"`). |
+| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"stop_command_chat_scope"`, `"reset_command"`). |
 
-**Fires:** In `gateway/run.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
+**Fires:** In `gateway/run_agent_cache.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
 
 **Return value:** Ignored.
 

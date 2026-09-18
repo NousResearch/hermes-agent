@@ -230,9 +230,6 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     # Qwen 3.7: Anthropic Messages under /v1/messages). Keep the base at /v1; api_mode is per-model.
     ("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1", ("OPENCODE_GO_API_KEY",),
      "OPENCODE_GO_BASE_URL"),
-    # Deliberately NO api_key_env_vars: the free tier is served anonymously (any unrecognized bearer
-    # is a 401), so there is no secret to configure. Select via `hermes model` / `/model free`.
-    ("opencode-free", "OpenCode Free", "https://opencode.ai/zen/v1", ()),
     ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
     ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),
     ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", ("XIAOMI_API_KEY",), "XIAOMI_BASE_URL"),
@@ -1110,6 +1107,11 @@ def deactivate_provider() -> None:
 
 def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
     """Return a helpful hint string when provider resolution fails."""
+    if str(provider_name or "").strip().lower() in {"opencode-free", "free", "opencode_free"}:
+        return ("OpenCode discontinued anonymous free-tier access outside its own client "
+                "(relay 403s FreeTierError), so the keyless 'opencode-free' provider was removed. "
+                "Switch to 'opencode-zen' (pay-as-you-go, OPENCODE_ZEN_API_KEY) or 'opencode-go' "
+                "($10/mo subscription, OPENCODE_GO_API_KEY) via 'hermes model'.")
     try:
         from hermes_cli.config import validate_config_structure
         issues = validate_config_structure()
@@ -1172,7 +1174,6 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
     "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     "opencode": "opencode-zen", "zen": "opencode-zen",
-    "free": "opencode-free", "opencode_free": "opencode-free",
     "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
     "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
     "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
@@ -1740,28 +1741,11 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
     return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
 
 
-def _provider_is_keyless(provider_id: str) -> bool:
-    """HermesOverlay keyless flag — the same source the provider catalog and GUI contract tests use."""
-    try:
-        from hermes_cli.providers import HERMES_OVERLAYS
-        return bool(getattr(HERMES_OVERLAYS.get(provider_id), "keyless", False))
-    except Exception:
-        return False
-
-
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
-    status = {
-        "configured": True, "provider": provider_id, "name": pconfig.name, "key_source": "keyless",
-        "base_url": pconfig.inference_base_url, "logged_in": True}
-    if _provider_is_keyless(provider_id):
-        # Keyless providers (opencode-free) are served anonymously: every install counts as
-        # configured.
-        return status
-
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
     env_url = _provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
@@ -1773,10 +1757,10 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = normalize_actual_base_url(base_url)
         actual_local_noauth = not api_key and is_actual_local_base_url(base_url)
     configured = bool(api_key) or actual_local_noauth
-    status.update(  # logged_in mirrors configured for compat with the OAuth status shape
-        configured=configured, base_url=base_url, logged_in=configured,
-        key_source=key_source or ("local-offline" if actual_local_noauth else ""))
-    return status
+    return {  # logged_in mirrors configured for compat with the OAuth status shape
+        "configured": configured, "provider": provider_id, "name": pconfig.name,
+        "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
+        "base_url": base_url, "logged_in": configured}
 
 
 def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:

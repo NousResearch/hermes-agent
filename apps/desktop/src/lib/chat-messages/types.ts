@@ -12,6 +12,9 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
+   * so the next delta re-renders from the source instead of the render. */
+  mediaSource?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from cron.constants import FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
@@ -925,13 +926,6 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 _persisted_error_recoveries: int = 0
 # Bounded in-memory history kept by every probe-visible fire-path counter.
 _TELEMETRY_RECENT_HISTORY = 20
-# A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
-# for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
-FIRE_CLAIM_TTL_SECONDS = 300
-# A hosted/webhook fire for the armed slot can arrive a few seconds before the stored
-# ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
-# the slot; only claims further ahead are off-tick manual/dashboard fires.
-FIRE_CLAIM_SKEW_SECONDS = 60
 _persisted_error_recoveries_recent: list = []
 
 

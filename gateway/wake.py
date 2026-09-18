@@ -51,7 +51,8 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
         raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
-async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
+async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
+                       notification_category: str = "result") -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. Raises on
@@ -60,13 +61,16 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
-        synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
+        synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
+                                   metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "
                          "requires the raw session id to self-post the wake turn")
-    await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+    await _self_post_chat_completion(adapter, text=text, session_id=session_id,
+                                     **({"notification_category": notification_category}
+                                        if notification_category == "diagnostic" else {}))
 
 
 def _delegation_display_metadata(evt: dict) -> dict:
@@ -83,6 +87,10 @@ def _delegation_display_metadata(evt: dict) -> dict:
                 "failed_count": failed_count}
     if evt.get("task_failure_notice"):
         metadata["delivery_notice"] = f"task_failure:{results[0].get('task_index', '') if results else ''}"
+        metadata["notification_category"] = "diagnostic"
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled("api_server"):
+            metadata["presentation_suppressed"] = True
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
@@ -132,7 +140,8 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     )
 
 
-async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str) -> None:
+async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str,
+                                      notification_category: str = "result") -> None:
     """POST the wake text to the in-pod API server as a normal session turn, using the adapter's
     own bind host/port/key. Session continuation via ``X-Hermes-Session-Id`` is 403-gated on
     ``API_SERVER_KEY``, so a missing key is a hard error rather than a wake in a fresh session
@@ -153,6 +162,8 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
     headers = {"Authorization": f"Bearer {api_key}", "X-Hermes-Session-Id": session_id}
     payload = {"model": str(getattr(adapter, "_model_name", "") or "hermes-agent"),
                "messages": [{"role": "user", "content": text}], "stream": False}
+    if notification_category == "diagnostic":
+        payload["hermes_notification_category"] = "diagnostic"
     last_err: Optional[BaseException] = None
     attempts = 1 + len(_RETRY_DELAYS_SECONDS)
     for attempt in range(attempts):

@@ -1101,6 +1101,10 @@ auxiliary:
 运行 `hermes config` 查看您当前的辅助模型设置。覆盖仅在与默认值不同时显示。
 :::
 
+### 原生视觉嵌入预算（顶层 `vision:`）
+
+与 `auxiliary.vision`（选择描述器模型）不同：当*主*模型支持视觉时，`vision_analyze` 和浏览器截图会把真实像素嵌入工具结果，并在之后的每一轮请求中重复发送。`vision.embed_target_bytes`（默认 `262144`，限制在 64 KiB..4 MiB 之间）控制单次嵌入的大小；`vision.max_calls_per_image` 限制同一张图片在一个会话中可被嵌入的次数（未设置 = 委派子代理内为 3，主代理不限；`0` = 不限）。参见 [视觉 → 原生嵌入伴随整个会话](/user-guide/features/vision#原生嵌入伴随整个会话visionembed_target_bytes-与-visionmax_calls_per_image)。
+
 ## 推理努力程度
 
 控制模型在响应前进行多少"思考"：

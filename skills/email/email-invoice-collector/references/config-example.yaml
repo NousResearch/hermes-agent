@@ -1,0 +1,21 @@
+# Email Invoice Collector - Configuration Example
+# Copy to config.yaml and fill in your credentials
+
+account:
+  imap_server: imap.qq.com       # QQ | Gmail | Outlook | 163
+  imap_port: 993
+  email: ${EMAIL}                # Or hardcode: user@qq.com
+  password: ${AUTH_CODE}         # QQ auth code / Gmail app password
+
+search:
+  since: "2026-05-01"
+  folders: [INBOX]
+
+filter:
+  keywords: [发票, invoice, 电子发票, 增值税, 税务]
+  extensions: [.pdf, .ofd, .xml, .jpg, .png, .zip]
+  format_priority: [.zip, .pdf, .ofd, .xml, .jpg, .png]
+
+output:
+  dir: invoices
+  reports: [csv, excel, markdown]

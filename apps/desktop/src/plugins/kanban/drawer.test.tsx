@@ -74,7 +74,13 @@ afterEach(() => {
 function openDrawer() {
   return render(
     <QueryClientProvider client={client}>
-      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      <TaskDrawer
+        columns={['todo', 'ready', 'done']}
+        id="t_example"
+        lookup={() => undefined}
+        onClose={vi.fn()}
+        onOpen={vi.fn()}
+      />
     </QueryClientProvider>
   )
 }

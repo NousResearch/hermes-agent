@@ -61,6 +61,8 @@ import {
   Avatar,
   Callout,
   columnLabel,
+  DEP_TONES,
+  depSegment,
   duration,
   errText,
   isLockedTarget,
@@ -538,16 +540,30 @@ function EstimateSection({ id }: { id: string }) {
   )
 }
 
+/** The slice of a board task the drawer's linked cards need. Kept structural so
+ *  the board can hand its own resolver over without another round trip. */
+export interface LinkedCard {
+  assignee?: null | string
+  id: string
+  progress?: null | { done: number; total: number }
+  status: string
+  title: string
+}
+
 export function TaskDrawer({
   columns,
   focusLinks,
   id,
+  lookup = () => undefined,
   onClose,
   onOpen
 }: {
   columns: string[]
   focusLinks?: number
   id: null | string
+  /** Board-wide id → task resolver: the parent/child cards below read their
+   *  status, assignee and progress off the board instead of another fetch. */
+  lookup?: (id: string) => undefined | LinkedCard
   onClose: () => void
   onOpen: (id: string) => void
 }) {
@@ -837,20 +853,66 @@ export function TaskDrawer({
                 <div className="flex flex-col gap-1.5" ref={linksRef}>
                   {(['parents', 'children'] as const).map(side =>
                     detail.links[side].length > 0 ? (
-                      <div className="flex flex-wrap items-center gap-1.5" key={side}>
+                      <div className="flex flex-col gap-1" key={side}>
                         <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
                           {side === 'parents' ? k.blockedBy : k.blocks}
                         </span>
-                        {detail.links[side].map(linked => (
-                          <button
-                            className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                            key={linked}
-                            onClick={() => onOpen(linked)}
-                            type="button"
-                          >
-                            {shortId(linked)}
-                          </button>
-                        ))}
+                        {detail.links[side].map(linked => {
+                          const card = lookup(linked)
+
+                          // Off-board relatives (filtered out, archived elsewhere)
+                          // keep the old id chip rather than inventing a card.
+                          if (!card) {
+                            return (
+                              <button
+                                className="w-fit rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                                key={linked}
+                                onClick={() => onOpen(linked)}
+                                type="button"
+                              >
+                                {shortId(linked)}
+                              </button>
+                            )
+                          }
+
+                          return (
+                            <button
+                              className="flex items-center gap-1.5 rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) px-1.5 py-1 text-left transition-colors hover:bg-(--chrome-action-hover)"
+                              key={linked}
+                              onClick={() => onOpen(linked)}
+                              type="button"
+                            >
+                              <span
+                                aria-hidden
+                                className="size-1.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: DEP_TONES[depSegment(card.status)] }}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-secondary)">
+                                {card.title || card.id}
+                              </span>
+                              {card.assignee && (
+                                <span className="shrink-0 font-mono text-[0.625rem] text-(--ui-text-quaternary)">
+                                  {card.assignee}
+                                </span>
+                              )}
+                              {card.progress && card.progress.total > 0 && (
+                                <span className="flex shrink-0 items-center gap-1">
+                                  <span className="h-[3px] w-8 overflow-hidden rounded-full bg-(--ui-bg-quaternary)">
+                                    <span
+                                      className="block h-full rounded-full bg-(--ui-text-secondary)"
+                                      style={{
+                                        width: `${Math.round((card.progress.done / card.progress.total) * 100)}%`
+                                      }}
+                                    />
+                                  </span>
+                                  <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)">
+                                    {card.progress.done}/{card.progress.total}
+                                  </span>
+                                </span>
+                              )}
+                            </button>
+                          )
+                        })}
                       </div>
                     ) : focusLinks ? (
                       <div className="flex items-center gap-1.5" key={side}>

@@ -54,6 +54,12 @@ type KanbanMessages = {
   title: string
   orchestrationSettings: string
   newTask: string
+  // PR2 — dependency rail + tenant colour coding
+  waitingOn: (label: string) => string
+  waitingOnCount: (n: number) => string
+  childrenTip: (n: number) => string
+  tenantAll: string
+  tenantTabs: string
   filterCards: string
   noMatch: string
   noTasks: string
@@ -300,6 +306,12 @@ export const en: KanbanMessages = {
   title: 'Kanban',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
+  // PR2 — dependency rail + tenant colour coding
+  waitingOn: label => `Waiting on ${label}`,
+  waitingOnCount: n => `Waiting on ${n} parents`,
+  childrenTip: n => `${n} children`,
+  tenantAll: 'All',
+  tenantTabs: 'Tenants',
   filterCards: 'Filter cards…',
   noMatch: 'No tasks match the filters',
   noTasks: 'No tasks on this board',
@@ -543,6 +555,12 @@ const ja: KanbanMessages = {
   title: 'カンバン',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
+  // PR2 — dependency rail + tenant colour coding
+  waitingOn: label => `${label} を待機中`,
+  waitingOnCount: n => `親 ${n} 件を待機中`,
+  childrenTip: n => `子 ${n} 件`,
+  tenantAll: 'すべて',
+  tenantTabs: 'テナント',
   filterCards: 'カードを絞り込み…',
   noMatch: 'フィルタに一致するタスクはありません',
   noTasks: 'このボードにタスクはありません',
@@ -785,6 +803,12 @@ const zh: KanbanMessages = {
   title: '看板',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
+  // PR2 — dependency rail + tenant colour coding
+  waitingOn: label => `等待 ${label}`,
+  waitingOnCount: n => `等待 ${n} 张父卡`,
+  childrenTip: n => `${n} 张子卡`,
+  tenantAll: '全部',
+  tenantTabs: '租户',
   filterCards: '筛选卡片…',
   noMatch: '没有符合筛选条件的任务',
   noTasks: '此面板暂无任务',
@@ -1024,6 +1048,12 @@ const zhHant: KanbanMessages = {
   title: '看板',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',
+  // PR2 — dependency rail + tenant colour coding
+  waitingOn: label => `等待 ${label}`,
+  waitingOnCount: n => `等待 ${n} 張父任務`,
+  childrenTip: n => `${n} 張子任務`,
+  tenantAll: '全部',
+  tenantTabs: '租戶',
   filterCards: '篩選卡片…',
   noMatch: '沒有符合篩選條件的任務',
   noTasks: '此面板尚無任務',

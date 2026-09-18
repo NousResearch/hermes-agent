@@ -17,6 +17,10 @@ export interface KanbanTask {
   link_counts?: { parents: number; children: number }
   /** N-of-M child completion, or null when the task has no children. */
   progress?: null | { done: number; total: number }
+  /** Parent/child ids, same shape as the drawer's `links`. The card's
+   *  dependency rail needs the parent *ids* to resolve their statuses on the
+   *  board — `link_counts` only says how many there are. */
+  links?: null | { parents: string[]; children: string[] }
   /** Compact diagnostics rollup — present only when a card has warnings. */
   warnings?: null | { count: number; highest_severity?: null | string }
   /** Worker liveness (present on running cards) — drives the arc + run clock. */

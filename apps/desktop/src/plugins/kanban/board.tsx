@@ -95,18 +95,26 @@ import {
   type ArcState,
   arcState,
   Avatar,
+  childrenIndicator,
   columnHelp,
   columnLabel,
+  DEP_TONES,
+  dependencyState,
+  type DepSegment,
   errText,
   FIELD_LABEL,
   fmtSecs,
   isLockedTarget,
   type KanbanText,
   lockedReason,
+  matchesTenant,
   RunClock,
   runtimeCapBadge,
   shortId,
   staleBlocked,
+  tenantColor,
+  tenantLabel,
+  tenantTabList,
   useDefaultAssignee,
   useKanban,
   useNowSecs,
@@ -289,7 +297,7 @@ function Meta({ children, icon }: { children: ReactNode; icon: string }) {
   )
 }
 
-function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
+function CardFooter({ arc, kids, task }: { arc: ArcState | null; kids: null | DepSegment; task: KanbanTask }) {
   const k = useKanban()
   const created = ago(task.created_at)
   const links = task.link_counts ? task.link_counts.parents + task.link_counts.children : 0
@@ -360,6 +368,13 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
             {task.priority}
           </span>
         )}
+        {kids && (
+          <Tip label={k.childrenTip(task.link_counts?.children ?? task.links?.children?.length ?? 0)}>
+            <span className="cursor-help">
+              <span aria-hidden className="block size-1.5 rounded-full" style={{ backgroundColor: DEP_TONES[kids] }} />
+            </span>
+          </Tip>
+        )}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
             {task.progress.done}/{task.progress.total}
@@ -385,6 +400,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
 function Card({
   assignees,
   columns,
+  lookup,
   onAct,
   onDelete,
   onMove,
@@ -396,6 +412,8 @@ function Card({
 }: {
   assignees: string[]
   columns: string[]
+  /** Board-wide id → task resolver: a parent's status lives on another card. */
+  lookup: (id: string) => undefined | KanbanTask
   onAct: (key: CardActionKey, ids: string[], value?: string) => void
   onDelete: (id: string) => void
   onMove: (id: string, status: string) => void
@@ -414,6 +432,9 @@ function Card({
   const now = useNowSecs(task.status === 'running')
   const cap = runtimeCapBadge(task, now)
   const stale = staleBlocked(task, now)
+  const dep = dependencyState(task, lookup)
+  const kids = childrenIndicator(task, lookup)
+  const tint = task.tenant ? tenantColor(task.tenant) : ''
 
   return (
     <ContextMenu>
@@ -425,6 +446,9 @@ function Card({
             // selected = the theme's focus color (same as a focused input).
             'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
             selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
+            // A gated card is parked, not actionable: 70% + a neutral border.
+            // The rail on the left edge names the parent holding it back.
+            dep.waiting && 'border-(--ui-text-quaternary) opacity-70',
             dragging && 'opacity-40'
           )}
           draggable
@@ -441,7 +465,13 @@ function Card({
           style={
             {
               '--kanban-tone': meta.tone,
-              borderLeftColor: cap?.kind === 'over' ? 'var(--destructive, #f87171)' : meta.tone
+              // Gated cards wear the neutral border (see the class list above);
+              // otherwise an over-cap card wins, then the status tone.
+              borderLeftColor: dep.waiting
+                ? 'var(--ui-text-quaternary)'
+                : cap?.kind === 'over'
+                  ? 'var(--destructive, #f87171)'
+                  : meta.tone
             } as CSSProperties
           }
         >
@@ -453,8 +483,37 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
+          {/* 3px tenant bar, then the dependency rail: one equal segment per
+              parent, so "how many parents are done" reads at a glance. Both are
+              decoration — the footer chips and the wait badge carry the text. */}
+          {tint && (
+            <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] rounded-l-md" style={{ backgroundColor: tint }} />
+          )}
+          {dep.rail.length > 0 && (
+            <span
+              aria-hidden
+              className={cn('absolute inset-y-0 flex w-[2px] flex-col overflow-hidden', tint ? 'left-[3px]' : 'left-0')}
+            >
+              {dep.rail.map((parent, index) => (
+                <span
+                  className="min-h-[2px] flex-1"
+                  key={`${parent.id}-${index}`}
+                  style={{ backgroundColor: DEP_TONES[parent.segment] }}
+                />
+              ))}
+            </span>
+          )}
           <span className="flex items-start gap-2 text-[0.8125rem] font-medium leading-snug text-foreground">
             <span className="line-clamp-2 min-w-0 flex-1">{task.title || task.id}</span>
+            {dep.waiting && (
+              <Tip label={dep.blockedBy.map(parent => parent.title).join(' · ')}>
+                <span className="shrink-0 cursor-help rounded bg-(--ui-bg-quaternary) px-1 py-px text-[0.5625rem] font-medium text-(--ui-text-tertiary)">
+                  {dep.blockedBy.length === 1
+                    ? k.waitingOn(shortId(dep.blockedBy[0].id))
+                    : k.waitingOnCount(dep.blockedBy.length)}
+                </span>
+              </Tip>
+            )}
             {cap && (
               <Tip label={cap.kind === 'over' ? k.overCapTip : k.nearCapTip}>
                 <span
@@ -479,7 +538,7 @@ function Card({
           {summary && (
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
           )}
-          <CardFooter arc={arc} task={task} />
+          <CardFooter arc={arc} kids={kids} task={task} />
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -550,6 +609,7 @@ function Column({
   collapsed,
   column,
   columns,
+  lookup,
   onAct,
   onAdd,
   onDelete,
@@ -564,6 +624,8 @@ function Column({
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  /** Board-wide id → task resolver: a parent's status lives on another card. */
+  lookup: (id: string) => undefined | KanbanTask
   onAct: (key: CardActionKey, ids: string[], value?: string) => void
   onAdd: (status: string) => void
   onDelete: (id: string) => void
@@ -691,6 +753,7 @@ function Column({
                     assignees={assignees}
                     columns={columns}
                     key={task.id}
+                    lookup={lookup}
                     onAct={onAct}
                     onDelete={onDelete}
                     onMove={onMove}
@@ -708,6 +771,7 @@ function Column({
                 assignees={assignees}
                 columns={columns}
                 key={task.id}
+                lookup={lookup}
                 onAct={onAct}
                 onDelete={onDelete}
                 onMove={onMove}
@@ -1575,6 +1639,21 @@ export function KanbanBoardPage() {
     [board]
   )
 
+  // One id → task index for the whole board: the dependency rail, the child
+  // dots and the drawer's linked cards all resolve through it, so a card never
+  // needs another fetch to learn a relative's status.
+  const byId = useMemo(() => {
+    const index = new Map<string, KanbanTask>()
+
+    for (const col of board?.columns ?? []) {
+      for (const task of col.tasks) {index.set(task.id, task)}
+    }
+
+    return index
+  }, [board])
+
+  const lookup = (id: string) => byId.get(id)
+
   // Client-side filters, mirroring the dashboard (search over title/body/id).
   const filtered = useMemo(() => {
     if (!board) {
@@ -1585,7 +1664,7 @@ export function KanbanBoardPage() {
 
     const keep = (task: KanbanTask) =>
       (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
-      (!tenant || task.tenant === tenant) &&
+      matchesTenant(task, tenant) &&
       (!assignee || task.assignee === assignee) &&
       matchesFacetFilters(task, facets)
 
@@ -1823,6 +1902,38 @@ export function KanbanBoardPage() {
         </div>
       </header>
 
+      {/* Tenant (profile) switch: fixed above the lanes so the colour a card
+          wears always sits next to the board it belongs to. */}
+      {board && board.tenants.length > 0 && (
+        <nav
+          aria-label={k.tenantTabs}
+          className="flex shrink-0 items-center gap-1 overflow-x-auto border-(--ui-stroke-tertiary) border-b px-4 pb-1.5"
+        >
+          {tenantTabList(board.tenants).map(name => {
+            const active = tenant === name
+            const hue = tenantColor(name)
+
+            return (
+              <button
+                aria-pressed={active}
+                className={cn(
+                  'inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[0.6875rem] transition-colors',
+                  active
+                    ? 'bg-(--ui-control-active-background) text-foreground'
+                    : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                )}
+                key={name || '__none__'}
+                onClick={() => setTenant(active ? '' : name)}
+                type="button"
+              >
+                <span aria-hidden className="size-2 rounded-full" style={{ backgroundColor: hue }} />
+                {name === '' ? k.tenantAll : tenantLabel(name)}
+              </button>
+            )
+          })}
+        </nav>
+      )}
+
       {settingsOpen && <OrchestrationPanel />}
 
       {board && <Intro />}
@@ -1862,6 +1973,7 @@ export function KanbanBoardPage() {
                 column={col}
                 columns={columnNames}
                 key={col.name}
+                lookup={lookup}
                 onAct={onCardAct}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
@@ -1892,6 +2004,7 @@ export function KanbanBoardPage() {
         columns={columnNames}
         focusLinks={linksPing}
         id={openId}
+        lookup={lookup}
         onClose={() => setOpenId(null)}
         onOpen={setOpenId}
       />

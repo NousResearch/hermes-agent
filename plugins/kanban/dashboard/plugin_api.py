@@ -330,9 +330,16 @@ def get_board(
             workflow_template_id=workflow_template_id, current_step_key=current_step_key)
         # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
         link_counts: dict[str, dict[str, int]] = {}
+        # Same rows, ids as well as counts: a card's dependency rail has to name
+        # the parent that still holds it back, and that parent's status lives on
+        # another card — a count can't tell "all parents done" from "one
+        # pending". Folded into the existing pass, so still one query.
+        link_ids: dict[str, dict[str, list[str]]] = {}
         for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})["children"] += 1
             link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})["parents"] += 1
+            link_ids.setdefault(row["parent_id"], {"parents": [], "children": []})["children"].append(row["child_id"])
+            link_ids.setdefault(row["child_id"], {"parents": [], "children": []})["parents"].append(row["parent_id"])
         comment_counts: dict[str, int] = {
             r["task_id"]: r["n"] for r in conn.execute("SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id")}
         # Last event per card — the stale-blocked badge's "last touched" clock
@@ -358,6 +365,9 @@ def get_board(
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
+            # Sorted so the rail's segments and the child dots keep one stable
+            # order across refetches (the aggregate pass follows row order).
+            d["links"] = {k: sorted((link_ids.get(t.id) or {}).get(k, [])) for k in ("parents", "children")}
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
             d["triage_signal"] = t.id in triage_task_ids

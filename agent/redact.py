@@ -385,6 +385,11 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
     then redact when the key is unambiguously credential-bearing or the value looks opaque."""
+    # Already-redacted sentinels must not be re-processed: ``mask(«redacted:ghp_…»)`` returns
+    # the generic «redacted-secret» sentinel, stripping the prefix label that the caller
+    # specifically preserved. An already-masked value cannot be a secret any more.
+    if value == "***" or value.startswith("«redacted"):
+        return False
     # Programmatic env lookups reference variable *names*, not secret values — masking them corrupts code
     # snippets in prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
     # Same programmatic-env-lookup exception as _redact_env above (issue #2852): "apiKey": "os.getenv('X')"
@@ -884,8 +889,9 @@ def _scan_cfg_value(text: str, start: int) -> tuple[int, str, str | None, bool]:
     return i, text[value_start:i], quote, False
 
 
-def _redact_config_assignments(text: str, pattern: "re.Pattern[str]") -> str:
+def _redact_config_assignments(text: str, pattern: "re.Pattern[str]", *, mask_nonreusable: bool = False) -> str:
     """Redact matches from a key regex using the linear config-value scanner."""
+    mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     pieces: list[str] = []
     cursor = 0
     for match in pattern.finditer(text):
@@ -897,7 +903,7 @@ def _redact_config_assignments(text: str, pattern: "re.Pattern[str]") -> str:
         if _should_redact_assignment(key, value, check_keyword=True):
             quote_text = quote or ""
             closing_quote = quote_text if closed else ""
-            pieces.append(f"{match.group(0)}{quote_text}{_mask_token(value)}{closing_quote}")
+            pieces.append(f"{match.group(0)}{quote_text}{mask(value)}{closing_quote}")
         else:
             pieces.append(text[match.start():value_end])
         cursor = value_end
@@ -947,7 +953,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
                 )
                 if not should_redact:
                     return match.group(0)
-                return f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+                return f"{match.group(1)}{match.group(2)}{match.group(3)}{mask(match.group(4)) if mask_nonreusable else '***'}"
 
             text = _INLINE_SECRET_ASSIGN_RE.sub(_redact_inline_assignment, text)
         # The keyword pre-gate is exact and keeps the config-key scan off text
@@ -960,8 +966,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         # runs. Values are scanned separately so quoted pipes cannot trigger
         # regex backtracking or consume following fields.
         if "://" not in text and _CFG_SECRET_WORD_RE.search(text):
-            text = _redact_config_assignments(text, _CFG_DOTTED_RE)
-            text = _redact_config_assignments(text, _CFG_ANCHORED_RE)
+            text = _redact_config_assignments(text, _CFG_DOTTED_RE, mask_nonreusable=mask_nonreusable)
+            text = _redact_config_assignments(text, _CFG_ANCHORED_RE, mask_nonreusable=mask_nonreusable)
 
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(

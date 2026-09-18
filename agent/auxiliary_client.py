@@ -7688,10 +7688,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope, **fallback_kwargs)
     if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
-        # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
-        # their turn), then discovery where the selection policy allows it.
-        for _pass in range(2):
+        # Walk the configured chain: each candidate that returns None was quarantined by
+        # _call_fallback_candidate_{sync,async} — fetch the next entry and keep walking until
+        # the chain is exhausted or a candidate succeeds. EgressBlocked exits to the local-only
+        # scanner. Non-capacity exceptions (unexpected errors) propagate immediately.
+        while True:
             _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
             try:
                 fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
@@ -7709,11 +7710,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                 break
             if fb_resp is not None:
                 return fb_resp
-            if _pass == 0:
-                fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-                    task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
-                if fb_client is None:
-                    break
+            # Candidate returned None (quarantined due to capacity); fetch the next entry.
+            fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
+                task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
+            if fb_client is None:
+                break
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator
@@ -8038,9 +8039,12 @@ def _call_llm_impl(
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
-        return _drive_ladder(
+        result = _drive_ladder(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
             _perform)
+        if result is _RERAISE_ORIGINAL:
+            raise first_err
+        return result
 
 
 def _coerce_llm_message(response):
@@ -8187,9 +8191,12 @@ async def _async_call_llm_impl(
             fb_client, fb_model, fb_label = args
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
-        return await _drive_ladder_async(
+        result = await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
+        if result is _RERAISE_ORIGINAL:
+            raise first_err
+        return result
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

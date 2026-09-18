@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from hermes_cli.config import migrate_config
-from hermes_cli.doctor import collect_relay_plugin_cutover_findings
+from hermes_cli.doctor_config import collect_relay_plugin_cutover_findings
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 
 

@@ -15,7 +15,7 @@ Fast vector similarity search at billion scale.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/faiss` |
-| Path | `optional-skills/mlops/faiss` |
+| Path | `optional-skills/mlops\faiss` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

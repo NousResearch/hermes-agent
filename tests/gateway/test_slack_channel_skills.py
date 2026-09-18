@@ -59,7 +59,8 @@ class TestSlackMessageEventAutoSkill:
 
     def test_message_event_carries_auto_skill(self):
         """Simulate the handler wiring: resolve + attach to MessageEvent."""
-        from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource, resolve_channel_skills
+        from gateway.platforms.base import Platform, SessionSource, resolve_channel_skills
+        from gateway.platforms.event import MessageEvent, MessageType
 
         config_extra = {
             "channel_skill_bindings": [

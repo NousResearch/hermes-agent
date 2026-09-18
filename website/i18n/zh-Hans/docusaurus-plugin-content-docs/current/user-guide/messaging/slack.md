@@ -235,7 +235,7 @@ hermes slack manifest --write
 
 ### 旧版 `/hermes <子命令>` 仍然有效
 
-为了向后兼容旧版 manifest，你仍然可以输入 `/hermes btw run the tests`——Hermes 会以与 `/btw run the tests` 相同的方式路由它。自由形式的问题也有效：`/hermes what's the weather?` 会被当作普通消息处理。
+为了向后兼容旧版 manifest，你仍然可以输入 `/hermes bg run the tests`——Hermes 会以与 `/bg run the tests` 相同的方式路由它。自由形式的问题也有效：`/hermes what's the weather?` 会被当作普通消息处理。
 
 ### 在话题（thread）中使用命令（`!cmd` 前缀）
 
@@ -567,7 +567,7 @@ slack:
 
 注意事项：
 - 绑定按频道 ID 匹配。对于绑定频道中的话题消息，话题继承父频道的绑定。
-- 技能仅在会话开始时加载（新会话或自动重置后）。如果更改绑定，请运行 `/new` 或等待会话自动重置以使其生效。
+- 技能仅在会话开始时加载（新会话开始时）。如果更改绑定，请运行 `/new` 使其生效。
 - 与 `channel_prompts` 结合使用，可在技能指令之上为每个频道设置语气/约束。
 
 ## 故障排除

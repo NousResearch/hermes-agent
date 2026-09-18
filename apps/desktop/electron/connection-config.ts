@@ -34,6 +34,8 @@
 //     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
+import { readStatusCode } from './api-transport'
+
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
@@ -121,7 +123,7 @@ function isGatewayAuthRejection(error) {
     return true
   }
 
-  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+  const statusCode = readStatusCode(error)
 
   return statusCode === 401 || statusCode === 403
 }
@@ -132,6 +134,15 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
+    // A rejected ticket mint is a CONFIRMED reauth failure, not a hint. The
+    // cookie path only sees a 401/403 after the gateway's transparent AT/RT
+    // rotation has already failed, and the native-bearer path only after
+    // mintGatewayWsTicket's forced /auth/native/refresh has. Nothing will
+    // change until the user signs in, so tag it the way startHermes latches
+    // (isReauthRequiredError): the boot is marked non-retryable and the
+    // overlay's Sign in button stops flickering away under the renderer's
+    // transient-boot retry loop (#95701).
+    ;(err as any).isReauthRequired = true
   }
 
   // Preserve structured HTTP context when the source error carried an integer
@@ -140,7 +151,7 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
   // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
   // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
   // failure, everything else keeps current behavior.
-  const sourceStatus = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+  const sourceStatus = readStatusCode(error)
 
   if (Number.isInteger(sourceStatus)) {
     ;(err as any).statusCode = sourceStatus
@@ -307,6 +318,23 @@ const FORBIDDEN_REMOTE_HEADER_NAMES = new Set([
   'x-hermes-session-token'
 ])
 
+/**
+ * Strip CR/LF from a header VALUE. Clipboard pastes of access-proxy service
+ * tokens routinely carry a trailing newline, and a bare CR/LF inside a header
+ * value is a request-splitting vector once it reaches setHeader/extraHeaders.
+ * Header NAMES are already constrained by REMOTE_HEADER_NAME_RE above, which
+ * admits no whitespace, so values are the only gap.
+ *
+ * Applied at BOTH ends because a safeStorage envelope stores ciphertext: this
+ * call sanitizes plaintext on the way in, and decryptRemoteHeaders sanitizes
+ * again on the way out so encrypted-at-rest values get the same treatment.
+ */
+function sanitizeRemoteHeaderValue(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, '')
+    .trim()
+}
+
 function normalizeRemoteHeaders(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return {}
@@ -323,7 +351,7 @@ function normalizeRemoteHeaders(raw) {
     }
 
     if (typeof secret === 'string') {
-      const value = secret.trim()
+      const value = sanitizeRemoteHeaderValue(secret)
 
       if (value) {
         out[headerName] = { encoding: 'plain', value }
@@ -592,6 +620,7 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/content',
   'PUT /api/skills/toggle',
   'POST /api/skills/hub/install',
+  'GET /api/skills/hub/official',
   'GET /api/skills/hub/preview',
   'GET /api/skills/hub/scan',
   'GET /api/skills/hub/search',
@@ -601,7 +630,15 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   // Spawns a background action polled via /api/actions/{name}/status — must
   // live on the SAME backend as that poll family (below), or the poll asks a
   // backend that never registered the dynamic action name and 404s.
-  'POST /api/mcp/catalog/install'
+  'POST /api/mcp/catalog/install',
+  // Gateway lifecycle: the handlers take `?profile=` and already decide, per
+  // profile, whether X has its own gateway or is served by the default
+  // multiplexer (409 / restart the multiplexer). Spawning from the primary keeps
+  // the action on the backend the status poll asks AND outside the pooled
+  // backend's own shutdown, which SIGTERMs its gateway-restart child.
+  'POST /api/gateway/restart',
+  'POST /api/gateway/start',
+  'POST /api/gateway/stop'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -635,6 +672,14 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Session reads already accept `profile` and open that profile's state.db
+  // read-only. Keep ownership probes and transcript reads on the shared primary
+  // instead of spawning one local backend per profile. Writes remain pooled so
+  // their process-level profile scope and side effects are unchanged.
+  if (method === 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return true
+  }
+
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.
@@ -653,7 +698,9 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  * The one place that answers "which backend serves profile P, and does its
  * REST path need a profile scope?". Six routes, in precedence order:
  *
- *  1. The primary profile owns the window backend outright.
+ *  1. The primary profile owns a local/window backend outright; on a global
+ *     remote its label is still carried per request because launch home can
+ *     differ from the selected profile.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
@@ -673,8 +720,18 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   const scopedProfile = connectionScopeKey(profile)
   const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
 
-  if (!scopedProfile || scopedProfile === primaryProfile) {
+  if (!scopedProfile) {
     return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (scopedProfile === primaryProfile) {
+    // A global remote is a multi-profile dashboard, not a backend process
+    // launched for this Desktop label. Even its "primary" label must travel on
+    // the wire: the dashboard's process HERMES_HOME can belong to a different
+    // launch profile, so a bare request silently reads that profile instead.
+    return opts.globalRemote
+      ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+      : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.profileRemoteOverride) {
@@ -1036,6 +1093,7 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,

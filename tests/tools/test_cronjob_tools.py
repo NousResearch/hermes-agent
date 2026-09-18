@@ -105,7 +105,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_tools import _scan_cron_skill_assembled  # noqa: E402
+from tools.cronjob_prompt_scan import _scan_cron_skill_assembled  # noqa: E402
 
 
 class TestScanCronSkillAssembled:
@@ -207,6 +207,15 @@ class TestCronjobRequirements:
         assert check_cronjob_requirements() is True
 
 
+    def test_accepts_external_cron_worker_with_presence_vars_stripped(self, monkeypatch):
+        """``_launch_external_cron_worker`` strips the presence trio from the worker env; the
+        cron session marker alone must keep ``cron.allow_agent_scheduling: true`` effective."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+        assert check_cronjob_requirements() is True
+
     @pytest.mark.parametrize(
         "var_name",
         ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"],
@@ -245,6 +254,44 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_with_natural_weekday_schedule(self):
+        # The documented "every monday 9am" form must create a real cron job
+        # through the tool path, not error out (issue: parser rejected it).
+        pytest.importorskip("croniter")
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Weekly report",
+                schedule="every monday 9am",
+                name="Weekly Report",
+            )
+        )
+        assert created["success"] is True
+        # Display keeps the user's natural phrasing.
+        assert created["schedule"] == "every monday 9am"
+        # A recurring job must have a computed next run.
+        assert created["next_run_at"]
+
+        # The stored schedule is a cron expression.
+        from cron.jobs import get_job
+        stored = get_job(created["job_id"])
+        assert stored["schedule"]["kind"] == "cron"
+        assert stored["schedule"]["expr"] == "0 9 * * 1"
+
+    def test_update_to_natural_weekday_schedule(self):
+        pytest.importorskip("croniter")
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, schedule="every day at 9am")
+        )
+        assert updated["success"] is True
+        assert updated["job"]["schedule"] == "every day at 9am"
+
+        from cron.jobs import get_job
+        assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
@@ -427,7 +474,7 @@ class TestAgentCannotSetModelPin:
 
         updated = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": job_id,
@@ -461,7 +508,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "name": "Continuable cron canary",
@@ -478,7 +525,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         stored = get_job(created["job_id"])
         assert stored is not None
         assert stored.get("attach_to_session") is True
-        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listing = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is True
 
@@ -488,7 +535,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "name": "plain",
@@ -502,7 +549,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         updated = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": created["job_id"],
@@ -518,7 +565,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         disabled = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "update",
                     "job_id": created["job_id"],
@@ -531,7 +578,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         stored = get_job(created["job_id"])
         assert stored is not None
         assert stored.get("attach_to_session") is False
-        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listing = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is False
 
@@ -541,7 +588,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
         created = json.loads(
             registry.dispatch(
-                "cronjob",
+                "cronjob_manage",
                 {
                     "action": "create",
                     "schedule": "1h",
@@ -554,7 +601,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         assert stored is not None
         assert "attach_to_session" not in stored
         # And the formatted list output must not invent the field either.
-        listed = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listed = json.loads(registry.dispatch("cronjob_manage", {"action": "list"}))
         formatted = next(
             j for j in listed["jobs"] if j["job_id"] == created["job_id"]
         )
@@ -606,6 +653,45 @@ class TestLocalDeliveryNotice:
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
+
+    def test_resnap_requires_scope(self):
+        # resnap with neither job_id nor all=true must refuse to guess scope.
+        result = json.loads(cronjob(action="resnap"))
+        assert result["success"] is False
+        assert "resnap requires either" in result["error"]
+
+    def test_resnap_single_job(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        # Deterministic global resolution for the snapshot recompute.
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+            job_id = created["job_id"]
+            result = json.loads(cronjob(action="resnap", job_id=job_id))
+        assert result["success"] is True
+        assert "remains unpinned" in result["message"]
+        assert result["job"]["job_id"] == job_id
+
+    def test_resnap_all(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            cronjob(action="create", prompt="One", schedule="every 1h")
+            cronjob(action="create", prompt="Two", schedule="every 2h")
+            result = json.loads(cronjob(action="resnap", all=True))
+        assert result["success"] is True
+        assert "Refreshed inference snapshots on" in result["message"]
+        assert len(result["updated_jobs"]) >= 1
 
 
 class TestValidateCronBaseUrl:

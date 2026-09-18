@@ -98,3 +98,49 @@ def test_preflight_wrapper_falls_back_to_generic_when_ineligible():
     generic = estimate_request_tokens_rough(messages)
 
     assert _preflight_request_tokens(agent, messages, "") == generic
+
+
+# ── Mid-turn pre-API guard parity (#96995) ────────────────────────────────
+# The mid-turn guard in conversation_loop must measure the same pruned wire
+# payload the turn-prologue preflight does (#96644/#96155); before #96995 it
+# used the generic durable-history estimate and false-tripped 600s local
+# compression on compacted native-Codex sessions.
+
+
+def test_midturn_pressure_uses_pruned_estimate_when_eligible():
+    from agent.conversation_loop import _midturn_request_pressure_tokens
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    agent = _codex_agent()
+    messages = [{"role": "system", "content": "be brief"}] + _history_with_checkpoint()
+    native = estimate_native_responses_preflight_tokens(
+        agent, messages, system_prompt="be brief"
+    )
+    generic = estimate_messages_tokens_rough(messages)
+
+    assert native is not None
+    assert generic > native * 2
+    # The assembled api_messages carry the system row; the helper must not
+    # double-count it (converter skips system rows, system_prompt adds it once).
+    assert _midturn_request_pressure_tokens(
+        agent, messages, "be brief", generic
+    ) == native
+
+
+def test_midturn_pressure_falls_back_to_generic_plus_tools_when_ineligible():
+    from agent.conversation_loop import (
+        _estimate_tools_tokens_rough,
+        _midturn_request_pressure_tokens,
+    )
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    agent = _codex_agent(
+        api_mode="chat_completions",
+        tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+    )
+    messages = [{"role": "system", "content": "be brief"}] + _history_with_checkpoint()
+    approx = estimate_messages_tokens_rough(messages)
+
+    assert _midturn_request_pressure_tokens(
+        agent, messages, "be brief", approx
+    ) == approx + _estimate_tools_tokens_rough(agent.tools)

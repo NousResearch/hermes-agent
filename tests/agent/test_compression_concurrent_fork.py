@@ -167,6 +167,105 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Path) -> None:
+    """The heartbeat must re-emit the compacting status, not just DB touches.
+
+    Remote transports (e.g. the Android relay app) run idle-progress turn
+    watchdogs that ``session.interrupt`` a turn after ~180s with no gateway
+    events. Compression is silent on the event stream, so without periodic
+    status heartbeats a long compression is killed mid-flight and retriggers
+    forever on sessions near the context ceiling.
+    """
+    from agent.conversation_compression import (
+        COMPACTION_HEARTBEAT_STATUS,
+        is_compaction_progress_status,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_STATUS_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    heartbeats = [e for e in status_events if e[1] == COMPACTION_HEARTBEAT_STATUS]
+    assert heartbeats, "no heartbeat status reached the client"
+    # Same "lifecycle" key as the other compaction statuses so the TUI gateway
+    # re-tags it to kind="compacting" and Telegram edits one bubble in place.
+    assert {event for event, _ in heartbeats} == {"lifecycle"}
+    assert is_compaction_progress_status(COMPACTION_HEARTBEAT_STATUS)
+    # Exactly one routine start line precedes the first heartbeat; the
+    # heartbeat no longer re-emits a start of its own (adapters without
+    # send_or_update_status would otherwise post two messages).
+    assert status_events[0][1] != COMPACTION_HEARTBEAT_STATUS
+    # Every heartbeat is a periodic tick: none may precede the first
+    # "in progress" DB touch, which is what start() would have produced.
+    first_tick_touch = touch_calls.index("context compression in progress")
+    assert first_tick_touch >= 1  # "started" touch came first
+    assert len(heartbeats) <= touch_calls.count("context compression in progress")
+
+
+def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Path) -> None:
+    """A context engine that suppresses the routine start status opens no
+    visible compaction phase; the heartbeat must not open one either (there
+    would be no terminal edge to close it)."""
+    from agent.conversation_compression import COMPACTION_HEARTBEAT_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_QUIET_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with patch(
+        "agent.conversation_compression.automatic_compaction_status_message",
+        return_value="",
+    ):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert all(m != COMPACTION_HEARTBEAT_STATUS for _, m in status_events)
+    assert "context compression in progress" in touch_calls  # DB touches still ran
+
+
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:
     """A lock loser still closes the structured compaction lifecycle.
 
@@ -2152,6 +2251,49 @@ def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     assert compressed is messages
     assert db.get_compression_failure_cooldown_row(session_id) == before
     assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_exact_cooldown_restore_tolerates_a_concurrently_deleted_session(
+    tmp_path: Path,
+) -> None:
+    """A deleted session has no cooldown state left to compensate (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETED_SESSION"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    assert snapshot["session_exists"] is True
+
+    assert db.delete_session(session_id) is True
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id) == {
+        "session_exists": False,
+        "cooldown_until": None,
+        "error": None,
+    }
+
+
+def test_exact_cooldown_restore_tolerates_deletion_before_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deletion after the compensating write is still an intentional no-op (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETE_DURING_VERIFY"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    real_execute_write = db._execute_write
+
+    def _restore_then_delete(callback):
+        monkeypatch.setattr(db, "_execute_write", real_execute_write)
+        result = real_execute_write(callback)
+        assert db.delete_session(session_id) is True
+        return result
+
+    monkeypatch.setattr(db, "_execute_write", _restore_then_delete)
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id)["session_exists"] is False
 
 
 def test_cooldown_rollback_failure_surfaces_and_releases_lease(

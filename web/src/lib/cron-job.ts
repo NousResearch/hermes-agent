@@ -74,6 +74,16 @@ export function cronJobHasExecutionContent(
   return Boolean(asString(job.prompt).trim() || asString(job.script).trim() || skills.length);
 }
 
+/** Focus a cron editor input by id (the editor renders `${idPrefix}-script`, etc.). */
+export function focusCronField(id: string): void {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById(id);
+  if (el instanceof HTMLElement) {
+    el.focus();
+    el.scrollIntoView?.({ block: "center" });
+  }
+}
+
 export function cronJobFormFromJob(job: CronJob): CronJobFormState {
   const storedRefs = splitCronList(job.context_from);
   // Raw store records carry the reserved "self" entry inside context_from;
@@ -101,4 +111,40 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
     enabled_toolsets: splitCronList(job.enabled_toolsets),
     workdir: asString(job.workdir),
   };
+}
+
+/** How a job's `last_status` should render. The scheduler writes a small,
+ *  closed set of literals; every literal maps to an explicit tone here so a
+ *  new status can never fall through to a neutral "unknown"-looking badge.
+ *  In particular `delivery_failed` (agent run succeeded, output never reached
+ *  the target) is amber, not green and not the same red as a run error, and
+ *  its detail lives in `last_delivery_error` (last_error is null for it). */
+export type CronLastResultTone = "success" | "warning" | "destructive";
+
+export interface CronLastResult {
+  status: string;
+  tone: CronLastResultTone;
+  /** Human detail to show next to the badge; null when nothing to add. */
+  detail: string | null;
+}
+
+const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
+  ok: "success",
+  delivery_failed: "warning",
+  blocked_config: "warning",
+  error: "destructive",
+};
+
+export function cronLastResult(
+  job: Pick<CronJob, "last_status" | "last_error" | "last_delivery_error">,
+): CronLastResult | null {
+  const status = asString(job.last_status).trim();
+  if (!status) return null;
+  const tone = CRON_LAST_RESULT_TONE[status] ?? "destructive";
+  if (status === "ok") return { status, tone, detail: null };
+  const detail =
+    status === "delivery_failed"
+      ? asString(job.last_delivery_error).trim() || asString(job.last_error).trim()
+      : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
+  return { status, tone, detail: detail || null };
 }

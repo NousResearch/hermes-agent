@@ -10,11 +10,8 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import (
-    MCPServerTask,
-    _handshake_rejected_as_modern,
-    _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION,
-)
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import _handshake_rejected_as_modern, _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
 
 
 class _Err(Exception):

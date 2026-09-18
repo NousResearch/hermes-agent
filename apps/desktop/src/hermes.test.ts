@@ -191,6 +191,19 @@ describe('Hermes REST helpers', () => {
     expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
   })
 
+  it('pins the profile list to an explicit (connection, profile) scope', async () => {
+    setApiRequestConnection('remote-a')
+    setApiRequestProfile('iris')
+
+    await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
+    await getProfiles({ connectionId: 'local', profile: 'default' })
+
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles' }),
+      expect.objectContaining({ connectionId: 'local', profile: 'default', path: '/api/profiles' })
+    ])
+  })
+
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
 
@@ -296,9 +309,7 @@ describe('Hermes REST helpers', () => {
 
     api.mockImplementation(({ path }: { path: string }) => {
       if (path.startsWith('/api/profiles/sessions/sidebar')) {
-        return Promise.reject(
-          new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}')
-        )
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
       }
 
       if (path.includes('source=cron')) {
@@ -498,6 +509,8 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  // Explicit profile/connection writes (deleting a profile) carry the foreground
+  // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -541,6 +554,7 @@ describe('Hermes REST helpers', () => {
       connectionId: 'source-a',
       method: 'DELETE',
       path: '/api/profiles/backend-worker',
+      priority: 'foreground',
       profile: 'backend-worker'
     })
   })

@@ -33,7 +33,6 @@ def test_failed_open_obeys_backoff_then_recovers() -> None:
         return handle
 
     assert cache.get(path, opener) is None
-    assert cache.status_for(path) == "unavailable"
     clock.now = 1.99
     assert cache.get(path, opener) is None
     assert calls == 1
@@ -42,7 +41,6 @@ def test_failed_open_obeys_backoff_then_recovers() -> None:
     assert cache.get(path, opener) is handle
     assert cache.get(path, opener) is handle
     assert calls == 2
-    assert cache.status_for(path) == "ok"
 
 
 def test_retry_is_single_flight_for_concurrent_callers() -> None:
@@ -74,7 +72,6 @@ def test_retry_is_single_flight_for_concurrent_callers() -> None:
     # and keep using the fallback rather than opening or blocking behind it.
     assert cache.get(path, opener) is None
     assert calls == 2
-    assert cache.status_for(path) == "retrying"
 
     release.set()
     thread.join(timeout=5)
@@ -111,8 +108,10 @@ def test_runtime_health_is_sanitized_and_recovers() -> None:
 
 def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, tmp_path) -> None:
     import hermes_state
+    import hermes_state_registry
     from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
-    from gateway.session import SessionStore, _DB_UNPINNED
+    from gateway.session import SessionStore
+    from gateway.session_persistence import _DB_UNPINNED
 
     db_path = tmp_path / "state.db"
     clock = _Clock()
@@ -126,7 +125,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state, "get_shared_session_db", fail_once_session_db)
+    monkeypatch.setattr(hermes_state_registry, "acquire", fail_once_session_db)
     monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
 
     store = object.__new__(SessionStore)
@@ -155,7 +154,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         runner_opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state, "get_shared_session_db", runner_fail_once)
+    monkeypatch.setattr(hermes_state_registry, "acquire", runner_fail_once)
     monkeypatch.setattr(hermes_state, "AsyncSessionDB", lambda db: ("async", db))
     runner = object.__new__(GatewayRunner)
     runner._session_db_pinned = _SESSION_DB_UNPINNED
@@ -196,7 +195,6 @@ def test_non_cacheable_guard_is_retried_immediately() -> None:
         except RuntimeError:
             pass
     assert calls == 2
-    assert cache.status_for(path) == "unknown"
 
 
 def test_close_all_rejects_and_closes_inflight_success() -> None:
@@ -264,7 +262,8 @@ def test_close_all_preserves_inflight_failure() -> None:
 def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_path) -> None:
     import hermes_state
     from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionEntry, SessionSource, SessionStore, _now
+    from gateway.session import SessionEntry, SessionSource, SessionStore
+    from gateway.session_lifecycle import _now
 
     db_path = tmp_path / "state.db"
     sessions_dir = tmp_path / "sessions"

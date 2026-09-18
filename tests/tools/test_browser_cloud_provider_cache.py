@@ -15,6 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 import tools.browser_tool as browser_tool
+from tools import browser_tool_cloud as bt_cloud
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +45,8 @@ class TestCloudProviderCachePolicy:
             resolutions.append(home)
             return providers[home]
 
-        monkeypatch.setattr(browser_tool, "_ensure_browser_plugins_loaded", lambda: None)
-        monkeypatch.setattr(browser_tool, "_registry_get_browser_provider", resolve)
+        monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_cloud._registry_get_browser_provider", resolve)
         home_a = tmp_path / "browser-a"
         home_b = tmp_path / "browser-b"
         providers[str(home_a)] = Mock(name="provider-a")
@@ -54,7 +55,7 @@ class TestCloudProviderCachePolicy:
         def resolve_for(home):
             token = set_hermes_home_override(home)
             try:
-                return browser_tool._get_cloud_provider()
+                return bt_cloud._get_cloud_provider()
             finally:
                 reset_hermes_home_override(token)
 
@@ -100,13 +101,13 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"cloud_provider": "cache-replacement"}},
         )
-        monkeypatch.setattr(browser_tool, "_ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
         token = set_hermes_home_override(home)
         try:
             browser_registry.register_provider(first, scope=home)
-            assert browser_tool._get_cloud_provider() is first
+            assert bt_cloud._get_cloud_provider() is first
             browser_registry.register_provider(second, scope=home)
-            assert browser_tool._get_cloud_provider() is second
+            assert bt_cloud._get_cloud_provider() is second
         finally:
             current = browser_registry.snapshot_registration(
                 "cache-replacement", scope=home
@@ -171,14 +172,14 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"cloud_provider": "cache-race"}},
         )
-        monkeypatch.setattr(browser_tool, "_ensure_browser_plugins_loaded", lambda: None)
-        monkeypatch.setattr(browser_tool, "_registry_get_browser_provider", racing_get)
+        monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_cloud._registry_get_browser_provider", racing_get)
         browser_registry.register_provider(first, scope=home)
 
         def resolve():
             token = set_hermes_home_override(home)
             try:
-                return browser_tool._get_cloud_provider()
+                return bt_cloud._get_cloud_provider()
             finally:
                 reset_hermes_home_override(token)
 
@@ -205,7 +206,7 @@ class TestCloudProviderCachePolicy:
             lambda: {"browser": {"cloud_provider": "local"}},
         )
 
-        assert browser_tool._get_cloud_provider() is None
+        assert bt_cloud._get_cloud_provider() is None
         assert browser_tool._cloud_provider_resolved is True
 
         # Even if config later changes, the cache stays.
@@ -213,7 +214,7 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
-        assert browser_tool._get_cloud_provider() is None
+        assert bt_cloud._get_cloud_provider() is None
 
 
     def test_no_credentials_yet_does_not_cache_none(self, monkeypatch):
@@ -224,45 +225,44 @@ class TestCloudProviderCachePolicy:
         )
 
         bu_unconfigured = Mock()
-        bu_unconfigured.is_configured.return_value = False
+        bu_unconfigured.is_available.return_value = False
         bb_unconfigured = Mock()
-        bb_unconfigured.is_configured.return_value = False
+        bb_unconfigured.is_available.return_value = False
         monkeypatch.setattr(
-            browser_tool, "BrowserUseProvider", lambda: bu_unconfigured
+            "tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: bu_unconfigured
         )
         monkeypatch.setattr(
-            browser_tool, "BrowserbaseProvider", lambda: bb_unconfigured
+            "tools.browser_tool_cloud.BrowserbaseBrowserProvider", lambda: bb_unconfigured
         )
 
-        assert browser_tool._get_cloud_provider() is None
+        assert bt_cloud._get_cloud_provider() is None
         assert browser_tool._cloud_provider_resolved is False
 
         # Credentials self-heal — next call must retry and pick up the provider.
         healed = Mock(name="healed-provider")
-        healed.is_configured.return_value = True
-        monkeypatch.setattr(browser_tool, "BrowserUseProvider", lambda: healed)
+        healed.is_available.return_value = True
+        monkeypatch.setattr("tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: healed)
 
-        assert browser_tool._get_cloud_provider() is healed
+        assert bt_cloud._get_cloud_provider() is healed
         assert browser_tool._cloud_provider_resolved is True
 
 
     def test_explicit_provider_instantiation_failure_does_not_cache(
         self, monkeypatch, caplog
     ):
-        """If `_PROVIDER_REGISTRY[key]()` raises, log warning and don't cache."""
-        def exploding_factory():
+        """If instantiating the registered provider raises, log warning and don't cache."""
+        def exploding_factory(name):
             raise RuntimeError("missing dependency")
 
-        monkeypatch.setattr(
-            browser_tool, "_PROVIDER_REGISTRY", {"browser-use": exploding_factory}
-        )
+        monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_cloud._registry_get_browser_provider", exploding_factory)
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
 
         with caplog.at_level(logging.WARNING, logger="tools.browser_tool"):
-            assert browser_tool._get_cloud_provider() is None
+            assert bt_cloud._get_cloud_provider() is None
 
         assert browser_tool._cloud_provider_resolved is False
         assert any(

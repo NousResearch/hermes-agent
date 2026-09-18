@@ -247,14 +247,15 @@ class TestThresholdGate:
 
 
 # ---------------------------------------------------------------------------
-# Retrieval (BM25 + substring fallback)
+# Retrieval (BM25, rarest-token admission)
 # ---------------------------------------------------------------------------
 
 
 class TestRetrieval:
     def _fake_catalog(self):
         """Build a catalog directly without touching the registry."""
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search import CatalogEntry
+        from tools.tool_search_catalog import _tokenize, _entry_search_text
         defs = [
             _td("github_create_issue", "Open a new issue in a GitHub repository",
                 {"title": {"type": "string"}, "body": {"type": "string"}}),
@@ -287,6 +288,64 @@ class TestRetrieval:
         from tools.tool_search import search_catalog
         hits = search_catalog(self._fake_catalog(), "github", limit=1)
         assert len(hits) <= 1
+
+
+class TestRelevanceFloor:
+    """Coverage floor layered on the rarest-token gate.
+
+    The gate stops a query whose intent word no tool carries. It does not stop a long
+    hunt whose every word exists SOMEWHERE in the catalog while no single tool carries
+    more than one of them; those must return nothing rather than a plausible-looking
+    list the model rephrases against forever.
+    """
+
+    def _catalog(self):
+        from tools.tool_search import build_catalog
+        defs = [
+            _td("github_rerun_failed_workflow_run_jobs",
+                "Re-run failed jobs in a workflow run",
+                {"run_id": {"type": "string"}}),
+            _td("github_create_issue", "Open a new issue in a GitHub repository",
+                {"title": {"type": "string"}, "body": {"type": "string"}}),
+            _td("github_list_issues", "List issues in a repository",
+                {"repo": {"type": "string"}}),
+            _td("slack_send_message", "Post a message into a Slack channel",
+                {"channel": {"type": "string"}, "text": {"type": "string"}}),
+            # Every hunt word below is answerable by SOME document, none by one
+            # document — the production catalog shape behind the 216-search trace.
+            _td("gist_save_snippet", "Save a shell command snippet as a gist",
+                {"content": {"type": "string"}}),
+            _td("codeql_scan", "Scan code for vulnerabilities and execute analysis",
+                {"repo": {"type": "string"}}),
+        ]
+        return build_catalog(defs)
+
+    def test_incidental_single_term_match_is_filtered(self):
+        # Every term answerable (each in exactly one document), so the rarest-token
+        # gate admits the tool sharing that one word; the floor must not.
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "run shell command execute code", limit=5)
+        assert hits == []
+
+    def test_short_queries_are_untouched(self):
+        # Below 4 answerable terms wording legitimately differs by a word.
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "list issues", limit=5)
+        assert any(h.name == "github_list_issues" for h in hits)
+        hits = search_catalog(self._catalog(), "send message", limit=5)
+        assert any(h.name == "slack_send_message" for h in hits)
+
+    def test_long_query_with_real_coverage_still_matches(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(
+            self._catalog(), "create issue github repository title", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
+        assert all(h.name != "github_rerun_failed_workflow_run_jobs" for h in hits)
+
+    def test_exact_name_match_bypasses_coverage(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "github_create_issue", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +703,7 @@ class TestCatalogListing:
         assert result.listing_form in {"names", "groups", "mixed"}
 
     def test_short_desc_first_sentence_and_clip(self):
-        from tools.tool_search import _short_desc
+        from tools.tool_search_catalog import _short_desc
         assert _short_desc("Open an issue. Second sentence dropped.") == "Open an issue."
         long = "word " * 40
         s = _short_desc(long)
@@ -713,9 +772,24 @@ class TestDeferredCallSchemaProbe:
         registry.register(
             name=name,
             handler=_handler,
-            schema={"type": "function",
-                    "function": {"name": name, "description": f"desc {name}",
-                                 "parameters": params}},
+            schema={"name": name, "description": f"desc {name}",
+                    "parameters": params},
+            toolset=toolset,
+        )
+
+    @staticmethod
+    def _register_schema(name, toolset, params, calls):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            calls.append(args)
+            return json.dumps({"ok": True, "args": args})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema={"name": name, "description": f"desc {name}",
+                    "parameters": params},
             toolset=toolset,
         )
 
@@ -751,3 +825,166 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+    def test_invalid_enum_is_blocked_before_dispatch(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_enum_validation"
+        toolset = "mcp-probe-enum-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {
+                "priority": {"type": "string", "enum": ["low", "high"]},
+            },
+            "required": ["priority"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"priority": "urgent"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert calls == []
+        assert result["path"] == "arguments.priority"
+        assert result["constraint"] == "enum"
+        assert "NOT invoked" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("suffix", "arguments", "expected_path", "expected_constraint"),
+        [
+            (
+                "nested_type",
+                {"options": {"count": "not-an-integer"}},
+                "arguments.options.count",
+                "type",
+            ),
+            (
+                "nested_required",
+                {"options": {}},
+                "arguments.options",
+                "required",
+            ),
+            (
+                "nested_extra",
+                {"options": {"count": 1, "extra": True}},
+                "arguments.options",
+                "additionalProperties",
+            ),
+        ],
+    )
+    def test_validator_reports_nested_constraint_path(
+        self, suffix, arguments, expected_path, expected_constraint,
+    ):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = f"mcp_probe_{suffix}"
+        self._register_schema(name, "mcp-probe-nested", {
+            "type": "object",
+            "properties": {
+                "options": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["options"],
+        }, calls)
+
+        result = json.loads(validate_deferred_call_args(name, arguments))
+
+        assert result["path"] == expected_path
+        assert result["constraint"] == expected_constraint
+
+    def test_coercible_arguments_validate_then_dispatch_repaired(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_coercion_validation"
+        toolset = "mcp-probe-coercion-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"count": "42"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"count": 42}]
+
+    def test_nullable_extension_remains_accepted(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_nullable_validation"
+        toolset = "mcp-probe-nullable-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"value": {"type": "string", "nullable": True}},
+            "required": ["value"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"value": None}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"value": None}]
+
+    def test_schema_normalization_preserves_literal_enum_objects(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = "mcp_probe_literal_enum_validation"
+        enum_value = {"nullable": True, "$ref": "literal-not-a-schema"}
+        self._register_schema(name, "mcp-probe-literal-enum", {
+            "type": "object",
+            "properties": {"value": {"enum": [enum_value]}},
+            "required": ["value"],
+        }, calls)
+
+        assert validate_deferred_call_args(name, {"value": enum_value}) is None
+
+    def test_malformed_schema_fails_open(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_malformed_validation"
+        toolset = "mcp-probe-malformed-validation"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"value": {"type": "not-a-json-schema-type"}},
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"value": "kept"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"value": "kept"}]
+
+    def test_external_ref_fails_open_without_resolution(self):
+        from tools.tool_search import validate_deferred_call_args
+
+        calls = []
+        name = "mcp_probe_external_ref_validation"
+        self._register_schema(name, "mcp-probe-external-ref", {
+            "type": "object",
+            "properties": {
+                "payload": {"$ref": "https://example.invalid/schema.json"},
+            },
+        }, calls)
+
+        assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None

@@ -4,7 +4,7 @@ session can't call (Blank Slate audit, Aug 2026).
 Covers:
   * HERMES_AGENT_HELP_GUIDANCE degrades to the docs-only variant when the
     skill tools aren't loaded.
-  * execution_guidance_text() drops web_search lines when web tools are off.
+  * execution_guidance_text() never names a web tool (guidance is toolset-neutral).
   * The coding operating brief drops the `todo` sentence when the todo tool
     isn't loaded.
   * ESSENTIAL_SKILLS can't be disabled via config, and the CLI writer strips
@@ -26,30 +26,15 @@ class TestHermesAgentHelpGuidance:
 
 
 class TestExecutionGuidanceText:
-    def test_full_text_when_web_search_available(self):
-        from agent.prompt_builder import (
-            OPENAI_MODEL_EXECUTION_GUIDANCE,
-            execution_guidance_text,
-        )
-        assert execution_guidance_text({"web_search", "terminal"}) == (
-            OPENAI_MODEL_EXECUTION_GUIDANCE
-        )
-
-    def test_full_text_when_toolset_unknown(self):
-        from agent.prompt_builder import (
-            OPENAI_MODEL_EXECUTION_GUIDANCE,
-            execution_guidance_text,
-        )
-        assert execution_guidance_text(None) == OPENAI_MODEL_EXECUTION_GUIDANCE
-
-    def test_web_search_dropped_without_web_tools(self):
-        from agent.prompt_builder import execution_guidance_text
-        text = execution_guidance_text({"terminal", "read_file"})
-        assert "web_search" not in text
+    def test_no_web_tool_named_without_web_tools(self):
+        # #39797: naming web_search here overrode SOUL.md and dangled when the web toolset was off.
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
+        text = execution_guidance_text()
+        assert text == OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "web_search" not in text and "web_extract" not in text
         # The surrounding structure survives.
         assert "<mandatory_tool_use>" in text
         assert "<missing_context>" in text
-        assert "(search_files, read_file, etc.)" in text
 
 
 class TestCodingBriefTodoGating:
@@ -109,7 +94,7 @@ class TestEssentialSkillsUndisableable:
         assert cfg["skills"]["disabled"] == ["other"]
 
     def test_skill_manage_delete_refused(self):
-        from tools.skill_manager_tool import _pinned_guard
+        from tools.skill_manager_guards import _pinned_guard
         msg = _pinned_guard("hermes-agent")
         assert msg is not None
         assert "essential" in msg.lower()

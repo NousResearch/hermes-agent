@@ -1,20 +1,8 @@
 """Fetch the public petdex manifest.
 
 ``https://petdex.dev/api/manifest`` 307-redirects to a JSON document on R2:
-
-    {
-      "generatedAt": "...",
-      "total": 2926,
-      "pets": [
-        {"slug": "boba", "displayName": "Boba", "kind": "creature",
-         "submittedBy": "railly",
-         "spritesheetUrl": "https://assets.petdex.dev/.../spritesheet.webp",
-         "petJsonUrl": "https://assets.petdex.dev/.../pet.json",
-         "zipUrl": "https://assets.petdex.dev/.../boba.zip"},
-        ...
-      ]
-    }
-
+``{"generatedAt", "total", "pets": [{"slug", "displayName", "kind",
+"submittedBy", "spritesheetUrl", "petJsonUrl", "zipUrl"}, ...]}``.
 Read-only and unauthenticated; no credentials involved.
 """
 
@@ -31,11 +19,9 @@ MANIFEST_URL = "https://petdex.dev/api/manifest"
 
 _DEFAULT_TIMEOUT = 10.0
 
-# In-process cache for the (large, slow, identical-per-call) manifest. The list
-# is a static CDN object that barely changes, yet a single session can ask for
-# it many times — every gallery open, plus a full re-fetch per install/select
-# (``find_entry``). A short TTL collapses those into one network hit without
-# going stale for long. Cleared by :func:`clear_cache` (tests).
+# In-process cache for the (large, slow, identical-per-call) manifest: a static
+# CDN object a single session may ask for many times (every gallery open, plus a
+# re-fetch per install/select). A short TTL collapses those into one network hit.
 _MANIFEST_TTL = 300.0
 _cache: tuple[float, list[ManifestEntry]] | None = None
 
@@ -56,15 +42,12 @@ def _cache_is_warm() -> bool:
 def prefetch(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
     """Warm the manifest cache in a daemon thread — idempotent, never blocks.
 
-    The desktop picker calls this when it loads the (instant) local-only gallery
-    so the full petdex catalog is usually cached by the time it's requested,
-    without ever holding up the user's own pets on a network round-trip.
+    The desktop picker calls this when loading the instant local-only gallery so
+    the full catalog is usually cached by the time it's requested.
     """
     global _prefetching
-
     if _cache_is_warm():
         return
-
     with _prefetch_lock:
         if _prefetching:
             return
@@ -112,29 +95,16 @@ class ManifestError(RuntimeError):
 
 
 def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) -> list[ManifestEntry]:
-    """Return every approved pet from the public manifest.
-
-    Cached in-process for ``_MANIFEST_TTL`` seconds (pass ``force=True`` to
-    bypass). Follows the 307 redirect to R2.  Raises :class:`ManifestError` on
-    any network/parse failure so callers can surface a clean message.
-    """
+    """Every approved pet from the public manifest; cached for ``_MANIFEST_TTL`` s unless *force*. Raises :class:`ManifestError`."""
     global _cache
-
-    if not force and _cache is not None and time.monotonic() - _cache[0] < _MANIFEST_TTL:
+    if not force and _cache_is_warm():
         return _cache[1]
-
     try:
         import httpx
     except ImportError as exc:  # pragma: no cover - httpx is a core dep
         raise ManifestError("httpx is required to fetch the petdex manifest") from exc
-
     try:
-        resp = httpx.get(
-            MANIFEST_URL,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "hermes-agent-petdex"},
-        )
+        resp = httpx.get(MANIFEST_URL, timeout=timeout, follow_redirects=True, headers={"User-Agent": "hermes-agent-petdex"})
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001 - normalize to one error type
@@ -143,15 +113,8 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
     pets = payload.get("pets") if isinstance(payload, dict) else None
     if not isinstance(pets, list):
         raise ManifestError("petdex manifest had no 'pets' array")
-
-    entries: list[ManifestEntry] = []
-    for raw in pets:
-        if not isinstance(raw, dict):
-            continue
-        entry = ManifestEntry.from_dict(raw)
-        if entry.slug and entry.spritesheet_url:
-            entries.append(entry)
-
+    parsed = (ManifestEntry.from_dict(raw) for raw in pets if isinstance(raw, dict))
+    entries = [entry for entry in parsed if entry.slug and entry.spritesheet_url]
     _cache = (time.monotonic(), entries)
     return entries
 
@@ -159,7 +122,4 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
 def find_entry(slug: str, *, timeout: float = _DEFAULT_TIMEOUT) -> ManifestEntry | None:
     """Return the manifest entry for *slug*, or ``None`` if not listed."""
     slug = slug.strip().lower()
-    for entry in fetch_manifest(timeout=timeout):
-        if entry.slug.lower() == slug:
-            return entry
-    return None
+    return next((entry for entry in fetch_manifest(timeout=timeout) if entry.slug.lower() == slug), None)

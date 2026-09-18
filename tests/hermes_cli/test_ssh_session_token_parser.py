@@ -4,7 +4,8 @@ import os
 import pytest
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-from hermes_cli.main import _read_ssh_session_token_file, cmd_dashboard
+from hermes_cli.main import cmd_dashboard
+from hermes_cli.main_dashboard import _read_ssh_session_token_file
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
 

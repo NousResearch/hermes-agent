@@ -170,7 +170,6 @@ class TestRunBoundedSync:
         result = run_bounded_sync(lambda: "ok", 5.0, label="t")
         assert result.timed_out is False
         assert result.value == "ok"
-        assert result.raise_if_timed_out() == "ok"
 
     def test_unbounded_when_timeout_none(self):
         result = run_bounded_sync(lambda: 7, None, label="t")
@@ -196,9 +195,7 @@ class TestRunBoundedSync:
         assert result.timed_out is True
         assert result.value is None
         assert elapsed < 5.0  # returned near the deadline, not after 30s
-        with pytest.raises(DeadlineExpired) as exc_info:
-            result.raise_if_timed_out()
-        assert "wedged" in str(exc_info.value)
+        assert result.label == "wedged"
         release.set()
 
     def test_on_timeout_callback_runs(self):

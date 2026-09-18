@@ -22,8 +22,6 @@ on:
 permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
-  actions: read # needed by osv-scanner (SARIF upload)
-  security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -49,6 +47,7 @@ jobs:
       uv_lock: ${{ steps.classify.outputs.uv_lock }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
+      desktop_updater: ${{ steps.classify.outputs.desktop_updater }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
@@ -84,6 +83,11 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests-os.yml
+    with:
+      # The Windows lane spawns the real desktop-update hand-off script
+      # (tests/test_desktop_update_windows_*.py) only when that surface
+      # changed; unit-level windows_only tests always run.
+      desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
 
   lint:
     name: Python lints
@@ -209,10 +213,6 @@ jobs:
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
       supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
 
-  osv-scanner:
-    name: OSV scan
-    uses: ./.github/workflows/osv-scanner.yml
-
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
@@ -244,7 +244,10 @@ jobs:
       - profile-artifact-check
       - supply-chain
       - review-labels
-      - osv-scanner
+      # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
+      # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
+      # in its review comment, and the SARIF upload tripped GitHub's
+      # per-installation API rate limit during merge trains.
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

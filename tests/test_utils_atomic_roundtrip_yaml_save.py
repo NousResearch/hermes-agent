@@ -248,7 +248,7 @@ class TestAtomicRoundtripYamlSave:
         from utils import atomic_roundtrip_yaml_save
 
         with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
-            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+            with pytest.raises(RuntimeError, match="this change was not saved"):
                 atomic_roundtrip_yaml_save(config_path, {"model": {"default": "replacement"}})
 
         assert config_path.read_text(encoding="utf-8") == original

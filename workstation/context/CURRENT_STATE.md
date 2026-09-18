@@ -15,23 +15,32 @@ file. “Implemented”, “contract layer validated” and “tests green” do
 a product-level causal invariant has been proven across Task -> Run -> operation ->
 evidence -> canonical commit -> projection.
 
-## 2026-09-18 native-browser compiler obstruction — implemented contract; native gate open
+## 2026-09-18 native-browser compiler obstruction — global latch fixed; semantic-family hardening open; native gate open
 
-The Canonical Execution Reliability Gate remains implemented history, but real
-native-browser dogfood exposed an execution-policy regression: the baseline
-durable compiler prevented safe stateful progress when a repeatability signal
-was treated as a broad mutation latch.
+The Canonical Execution Reliability Gate remains implemented history. Remote
+implementation `9e7292ab7825e5ce1ea294490eec57ba1f286069` removed the
+session/turn-wide repeatability latch and established operation-scoped progressive
+compilation. Documentation/evidence landed as
+`5e1b22527fd40d732ee4fa7a1035e6366953f6b7`; the previously recorded
+`365794e29d66cd63a6134c5c67ecc1ef603d70a6` is the local pre-publish SHA.
 
-Current target architecture is defined in
-[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
-Implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6` replaces the
-binary/session-wide gate with operation-scoped progressive compilation:
+Follow-up audit at `main@c4234200145162eefb60f6070c9f170b4bf79321`
+found one remaining false-positive class: shape-equivalent native browser
+mutations can still be treated as a homogeneous operation family even when page
+state, semantic target and intent differ. The target architecture is defined in
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md):
 
 ADAPTIVE -> COMPILED SEGMENT -> COMPILED WORK -> PROMOTED ROUTINE, with compact
 NEEDS_REASONING escalation on drift.
 
 All prior safety invariants remain required. This is a correction to admission
 and learning, not a rollback of durable execution.
+
+AEPC-E002 is now the active narrow follow-up: `REQUIRE_COMPILE` must require
+semantic homogeneity evidence, not only a third shape-equivalent mutation.
+Long stateful browser sequences with different semantic targets must remain
+bounded/adaptive; real same-family fan-out remains TaskCompiler/canary gated.
+The packaged/authenticated Electron smoke remains a separate product gate.
 
 Verified recipe selection is automatic by exact compatibility; promoted routines
 with structured semantic conditions lower into existing WorkItem checkpoints.

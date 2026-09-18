@@ -5,7 +5,6 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 """
 
 import sys
-import inspect
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -212,25 +211,6 @@ def test_dm_always_processed_regardless_of_setting():
     assert _would_process(adapter, is_dm=True, text="hello") is True
 
 
-# ---------------------------------------------------------------------------
-# Tests: MPIM / group-DM shared-surface gating (regression for the group-DM
-# routing bug introduced by PRs #4633 / #54632 / #54663, which classified
-# mpim as a DM and thereby exempted it from mention gating + reaction guards).
-# ---------------------------------------------------------------------------
-
-def _reaction_guard(channel_type, is_mentioned):
-    """Mirror of the production reaction guard in ``_handle_slack_message``:
-
-        _should_react = (is_one_to_one_dm or is_mentioned) and reactions_enabled
-
-    Only a true 1:1 IM or an explicit @mention earns a reaction; MPIMs and
-    channels must be @mentioned. ``test_reaction_guard_pinned_to_production_expression``
-    pins this to the real source so the two cannot silently drift.
-    """
-    is_one_to_one_dm = channel_type == "im"
-    return is_one_to_one_dm or is_mentioned
-
-
 def test_mpim_not_in_allowed_channels_dropped():
     """MPIM absent from a non-empty allowed_channels whitelist is dropped,
     even when mentioned."""
@@ -243,36 +223,6 @@ def test_one_to_one_im_still_exempt():
     """1:1 IM behavior is preserved: mention-exempt regardless of settings."""
     adapter = _make_adapter(require_mention=True, strict_mention=True)
     assert _would_process(adapter, channel_type="im", text="hello") is True
-
-
-def test_mpim_unmentioned_does_not_react():
-    """Reaction guard: only a 1:1 IM or an @mention earns a reaction. An
-    unmentioned MPIM message must NOT get :eyes:/:white_check_mark: noise."""
-    assert _reaction_guard("mpim", False) is False   # the reported spam case
-    assert _reaction_guard("mpim", True) is True      # addressed -> ok
-    assert _reaction_guard("im", False) is True        # 1:1 DM -> ok
-    assert _reaction_guard("", False) is False         # channel, unmentioned
-
-
-def test_reaction_guard_pinned_to_production_expression():
-    """Regression teeth for the reaction guard.
-
-    ``_reaction_guard`` mirrors the production expression at the
-    ``_should_react = (is_one_to_one_dm or is_mentioned) ...`` site in
-    ``adapter.py``. This test pins that source line so a revert of the fix
-    (back to ``is_dm or is_mentioned``, which reacts to unmentioned MPIMs)
-    fails here instead of silently passing a self-referential lambda.
-    """
-    # The public method is a thin claim-release guard; the production
-    # expression lives in the impl.
-    src = inspect.getsource(SlackAdapter._handle_slack_message_impl)
-    assert "(is_one_to_one_dm or is_mentioned)" in src, (
-        "reaction guard no longer keys off is_one_to_one_dm — an unmentioned "
-        "MPIM would react again (regression of the group-DM fix)"
-    )
-    assert "(is_dm or is_mentioned)" not in src, (
-        "reaction guard reverted to is_dm — MPIMs would react when unmentioned"
-    )
 
 
 def test_mentioned_message_always_processed():

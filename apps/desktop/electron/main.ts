@@ -380,7 +380,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
-import { fetchRosterSourceData } from './roster-source-fetch'
+import { fetchRosterSourceData, rosterProfileMetadata } from './roster-source-fetch'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -16051,25 +16051,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
                       return null
                     }
 
-                    const metadata: RosterProfileMetadata = {}
-
-                    if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
-                      metadata.display_name = profile.display_name.trim()
-                    }
-
-                    if (typeof profile?.title === 'string' && profile.title.trim()) {
-                      metadata.title = profile.title.trim()
-                    }
-
-                    if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
-                      metadata.ui_meta = profile.ui_meta
-                    }
-
-                    if (typeof profile?.has_avatar === 'boolean') {
-                      metadata.has_avatar = profile.has_avatar
-                    }
-
-                    return [name, metadata] as const
+                    return [name, rosterProfileMetadata(profile)] as const
                   })
                   .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
               )

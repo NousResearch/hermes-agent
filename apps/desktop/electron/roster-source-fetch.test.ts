@@ -2,7 +2,39 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { fetchRosterSourceData } from './roster-source-fetch'
+import { fetchRosterSourceData, rosterProfileMetadata } from './roster-source-fetch'
+
+test('roster profile metadata maps the explicit REST identity fields', () => {
+  assert.deepEqual(
+    rosterProfileMetadata({
+      bot_title: '  Build Bot  ',
+      display_name: '  Builder  ',
+      has_avatar: true,
+      title: 'Legacy title',
+      ui_meta: { 'hermes-bots': { color: '#abcdef' } }
+    }),
+    {
+      display_name: 'Builder',
+      has_avatar: true,
+      title: 'Build Bot',
+      ui_meta: { 'hermes-bots': { color: '#abcdef' } }
+    }
+  )
+})
+
+test('roster profile metadata keeps legacy title compatibility and rejects malformed fields', () => {
+  assert.deepEqual(
+    rosterProfileMetadata({
+      bot_title: ' ',
+      display_name: 7,
+      has_avatar: 'yes',
+      title: '  Legacy title  ',
+      ui_meta: []
+    }),
+    { title: 'Legacy title' }
+  )
+  assert.deepEqual(rosterProfileMetadata(null), {})
+})
 
 test('roster source starts profile and install-id reads together and preserves both results', async () => {
   let releaseProfiles!: (value: { profiles: Array<{ name: string }> }) => void

@@ -271,7 +271,9 @@ def _discover_repos_payload(
     def _agg(root: str) -> dict:
         return repos.setdefault(
             root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
-    cwd_rows = list(db.distinct_session_cwds())
+    # ``db`` is None for a profile whose session store was never initialized (read-only foreign
+    # handles never bootstrap it): the scan cache in projects.db is still authoritative.
+    cwd_rows = list(db.distinct_session_cwds()) if db is not None else []
     # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
     git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
     cwd_to_root: dict[str, str] = {}
@@ -286,7 +288,10 @@ def _discover_repos_payload(
         agg = _agg(root)
         agg["sessions"] += int(row.get("sessions") or 0)
         agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
-    if backfill:
+    # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
+    # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
+    # backfills on its own refreshes.
+    if backfill and db is not None and not getattr(db, "read_only", False):
         try:
             db.backfill_repo_roots(cwd_to_root)
         except Exception:

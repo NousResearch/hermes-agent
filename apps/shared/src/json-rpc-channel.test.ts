@@ -170,4 +170,50 @@ describe('JsonRpcRequestChannel', () => {
       vi.useRealTimers()
     }
   })
+
+  // Server→client requests (tui_gateway/server_requests.py): the backend asks,
+  // the client answers with a RESPONSE frame carrying the same id.
+  it('routes a server request to the first accepting handler and answers -32601 when nobody accepts', () => {
+    const unhandled: string[] = []
+    const channel = new JsonRpcRequestChannel({ onUnhandledRequest: req => void unhandled.push(req.method) })
+    const { sent, transport } = spyTransport()
+
+    channel.attach(transport)
+    channel.onRequest(req => (req.method === 'clarify' ? void req.respond({ answer: 'yes' }) : false))
+
+    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
+    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'tour', params: { session_id: 's1' } }))
+
+    const frames = sent.map(f => JSON.parse(f) as { id: string; result?: unknown; error?: { code: number } })
+
+    expect(frames[0]).toEqual({ id: 'srq-1', jsonrpc: '2.0', result: { answer: 'yes' } })
+    expect(frames[1].id).toBe('srq-2')
+    expect(frames[1].error?.code).toBe(-32601)
+    expect(unhandled).toEqual(['tour'])
+  })
+
+  it('re-delivers open_requests from a response before the caller sees the result, tagged replayed', async () => {
+    const delivered: Array<{ id: string; replayed?: boolean }> = []
+    const channel = new JsonRpcRequestChannel()
+    const { sent, transport } = spyTransport()
+
+    channel.attach(transport)
+    channel.onRequest(req => void delivered.push({ id: req.id, replayed: req.replayed }))
+
+    const resume = channel.request<{ session_id: string }>('session.resume', { session_id: 's1' })
+    const rid = (JSON.parse(sent.at(-1)!) as { id: string }).id
+
+    channel.handleFrame(
+      JSON.stringify({
+        id: rid,
+        jsonrpc: '2.0',
+        result: {
+          open_requests: [{ id: 'srq-9', method: 'sudo', params: { session_id: 's1' } }],
+          session_id: 's1'
+        }
+      })
+    )
+    await expect(resume).resolves.toMatchObject({ session_id: 's1' })
+    expect(delivered).toEqual([{ id: 'srq-9', replayed: true }])
+  })
 })

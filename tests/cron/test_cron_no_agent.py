@@ -250,10 +250,10 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
 
     assert scheduler.run_one_job(job) is True
     assert len(delivered) == 1
-    assert "provider timeout" in delivered[0].lower()
-    # Chain wording is now honest (#85508): exhausted when configured,
-    # "no fallback chain configured" guidance otherwise.
-    assert "fallback chain" in delivered[0].lower()
+    assert "did not respond in time" in delivered[0].lower()
+    # Chain wording is honest (#85508): "no backup provider succeeded" when configured,
+    # "no backup provider is configured" guidance otherwise.
+    assert "backup provider" in delivered[0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +364,8 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
     job = {"name": "nightly-job", "no_agent": True, "script": "nightly.sh"}
     msg = _summarize_cron_failure_for_delivery(job, error)
 
-    assert "provider" not in msg.lower()
-    assert "fallback chain" not in msg.lower()
+    assert "ai model service" not in msg.lower()
+    assert "backup provider" not in msg.lower()
     # The operator must be pointed at what actually failed.
     assert "script" in msg.lower()
 
@@ -373,9 +373,9 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        ("ReadTimeout: provider did not respond", "provider timeout"),
-        ("HTTP 429 rate limit exceeded", "provider rate limit"),
-        ("HTTP 401 authentication failed", "provider authentication error"),
+        ("ReadTimeout: provider did not respond", "did not respond in time"),
+        ("HTTP 429 rate limit exceeded", "rate-limited"),
+        ("HTTP 401 authentication failed", "rejected the sign-in"),
     ],
 )
 def test_agent_job_provider_classification_unchanged(error, expected):

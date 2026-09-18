@@ -590,7 +590,8 @@ class GatewayTurnPrepareMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
-        persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        from gateway.response_filters import display_kind_for_event
+        persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))

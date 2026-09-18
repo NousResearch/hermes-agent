@@ -443,7 +443,7 @@ class TestMCPReloadTimeout:
 
         # Create a mock HermesCLI-like object with the needed attributes
         class FakeCLI:
-            _config_mtime = 0.0
+            _config_sig = None
             _config_mcp_servers = {}
             _last_config_check = 0.0
             _command_running = False

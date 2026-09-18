@@ -146,12 +146,33 @@ def _cmd_subscribe(args):
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
+        if getattr(args, "cron_job", ""):
+            print(
+                "Error: --deliver-only and --cron-job are mutually exclusive. "
+                "--deliver-only pushes the rendered template as a message; "
+                "--cron-job fires an existing cron job (which handles its own "
+                "delivery)."
+            )
+            return
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
             return
         route["deliver_only"] = True
+    cron_job = (getattr(args, "cron_job", "") or "").strip()
+    if cron_job:
+        # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        try:
+            job = resolve_job_ref(cron_job)
+        except AmbiguousJobReference as e:
+            print(f"Error: {e}")
+            return
+        if job is None:
+            print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
+            return
+        route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
         route["script"] = script
@@ -168,6 +189,8 @@ def _cmd_subscribe(args):
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
+    if route.get("cron_job"):
+        print(f"  Mode: cron-job trigger — fires job '{route['cron_job']}' on each event")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         print(f"  {'Message' if route.get('deliver_only') else 'Prompt'}: {prompt_preview}")
@@ -191,6 +214,8 @@ def _cmd_list(args):
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
+        if route.get("cron_job"):
+            deliver = f"cron job '{route['cron_job']}'"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:

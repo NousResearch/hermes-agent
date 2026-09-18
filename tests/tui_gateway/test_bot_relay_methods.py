@@ -24,6 +24,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -112,9 +113,15 @@ def test_deliver_unreachable_authority_is_a_typed_refusal(home, monkeypatch):
         raise ValueError("profile authority is not ready")
 
     monkeypatch.setattr(live, "authority_delivery", _down)
-    err = srv._methods["bot_relay.deliver"](1, {"id": "d" * 32, "profile": "ghost", "message": "x"})
+    err = srv._methods["bot_relay.deliver"](1, {"id": "d" * 32, "profile": "ops", "message": "x"})
     assert err["error"]["data"]["reason"] == "runtime_unavailable"
     assert "not ready" in err["error"]["message"]
+    # A name that is not a live profile (#99392: infra dirs and bare shells are not teammates)
+    # is refused before any authority is consulted.
+    (home / "profiles" / "sessions").mkdir()
+    for ghost in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](2, {"id": "e" * 32, "profile": ghost, "message": "x"})
+        assert err["error"]["data"]["reason"] == "unknown_profile", ghost
 
 
 @pytest.mark.parametrize("params", [

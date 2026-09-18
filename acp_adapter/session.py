@@ -143,6 +143,9 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Per-session allocator for ACP assistant messageIds (lazily created by
+    # the server so streamed chunks group into distinct assistant replies).
+    message_ids: Any = None
 
 
 class SessionManager:
@@ -267,13 +270,15 @@ class SessionManager:
         return state
 
     def _get_db(self):
-        """Lazily initialise the SessionDB; ``None`` if unavailable (e.g. import error in a
-        minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured."""
+        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
+        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
+        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
+        registry handle is the one in-process tools (delegation, session_search, goals) also
+        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
         if self._db_instance is None:
             try:
-                from hermes_state import SessionDB
-                self._db_instance = SessionDB(db_path=get_hermes_home() / "state.db")
+                from hermes_state_registry import acquire
+                self._db_instance = acquire(get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         return self._db_instance
@@ -393,6 +398,7 @@ class SessionManager:
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
+            "cwd": cwd,
         }
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
@@ -420,9 +426,6 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
-        # Codex app-server sessions spawn lazily on the first turn; stamp the ACP
-        # workspace so the Codex runtime starts from the editor cwd, not ours.
-        agent.session_cwd = cwd
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

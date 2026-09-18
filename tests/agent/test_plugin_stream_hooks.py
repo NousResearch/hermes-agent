@@ -181,6 +181,8 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
 
     assert calls == []
 
+    # The opt-in is resolved once per stream; a new request picks up the flipped flag.
+    agent._reset_stream_delivery_tracking()
     with patch("hermes_cli.config.cfg_get", return_value=True):
         agent._fire_reasoning_delta("visible reasoning")
         _wait_for(lambda: calls)
@@ -189,6 +191,29 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
     assert calls[0][0] == "on_stream_delta"
     assert calls[0][1]["kind"] == "reasoning"
     assert calls[0][1]["delta"] == "visible reasoning"
+
+
+def test_reasoning_stream_opt_in_is_read_once_per_stream(monkeypatch):
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [lambda **kw: None]}))
+    reads = []
+
+    def _enabled():
+        reads.append(1)
+        return False
+
+    monkeypatch.setattr("agent.plugin_stream_hooks.stream_reasoning_deltas_enabled", _enabled)
+    agent = _agent()
+    for token in ("a", "b", "c"):
+        agent._fire_reasoning_delta(token)
+    assert len(reads) == 1
+
+    agent._reset_stream_delivery_tracking()
+    agent._fire_reasoning_delta("d")
+    assert len(reads) == 2
+    shutdown_plugin_stream_hook_dispatcher()
 
 
 def test_interim_message_plugin_hook_is_queued(monkeypatch):

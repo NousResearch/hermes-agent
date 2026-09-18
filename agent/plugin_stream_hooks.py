@@ -147,10 +147,13 @@ def has_reasoning_stream_observer_hooks() -> bool:
 
 
 def stream_reasoning_deltas_enabled() -> bool:
-    """Return True only when the user opted plugins into reasoning deltas."""
+    """Return True only when the user opted plugins into reasoning deltas.
+
+    Read-only scalar lookup: skips ``load_config()``'s deepcopy. Callers on the token path
+    should still cache the result per stream (``_fire_reasoning_delta`` does)."""
     try:
         from hermes_cli import config as config_mod
-        config = config_mod.load_config()
+        config = config_mod.load_config_readonly()
         return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)

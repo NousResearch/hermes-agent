@@ -2568,6 +2568,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
+        # Gateway full is a chat-only argument view; classic CLI keeps its all mode.
+        if self.tool_progress_mode == "full":
+            self.tool_progress_mode = "all"
         # focus_view (/focus) is display-only: snaps tool_progress to "off" (stashing the
         # pre-focus mode for /focus off); never changes what is sent to the model.
         self._focus_view_enabled = bool(display.get("focus_view", False))

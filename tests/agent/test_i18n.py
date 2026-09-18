@@ -164,3 +164,9 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_full_progress_mode_has_localized_description(lang):
+    description = _flatten(_load_raw(lang))["gateway.verbose.mode_full"]
+    assert isinstance(description, str) and description.strip()

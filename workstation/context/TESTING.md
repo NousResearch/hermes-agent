@@ -32,6 +32,78 @@ test_durable_hardening.py, test_browser_workstation_route.py,
 test_routines.py and canonical-work-loop coverage before adding broader
 product gates.
 
+
+## Upstream reliability hardening regression gate
+
+The parallel 2026-09-18 P0 lane is specified in
+[UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md).
+Run focused RED/GREEN tests for each slice before broad suites.
+
+### P0.0 — native Browser current-main discriminator
+
+Reuse the existing evidence surfaces instead of creating a parallel harness:
+
+- `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`;
+- `apps/desktop/electron/workstation-browser-task.test.ts`;
+- H013 `apps/desktop/e2e/workstation-headless-load.spec.ts`.
+
+Extend/rework H004 so current-main execution additionally proves timer progress,
+typed input, scroll preservation, a post-hide/park real controller/browser action
+against the same task-owned WebContents, and no external-browser fallback. If
+this passes, BrowserTask keepalive is not the cause of the dogfood obstruction.
+
+### P0.1 — transcript recovery/resync
+
+- extend `apps/desktop/src/lib/inflight-turn-journal.test.ts` with the #115068
+  sealed-interim + later-live-tail case and duplicate-id protection;
+- extend `apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts` with
+  #115085 active/tile refresh during an unacknowledged optimistic user send;
+- prove authoritative ACK later converges without duplicate user rows.
+
+### P0.2 — session writer ownership
+
+Add focused active-session/CLI/Desktop tests proving:
+
+- writer A + observer B is allowed;
+- writer A + writer B for the same `session_id` is refused;
+- transfer cannot steal a foreign-owned live session;
+- dead/released owner can be pruned then reacquired;
+- registry read/corruption uncertainty fails closed;
+- read-only resume never mutates the session.
+
+Use #111493 as behavioral reference; adapt to downstream ownership paths.
+
+### P0.3 — Kanban provenance/liveness/worker truth
+
+- add a focused provenance regression equivalent to upstream #114785: stale
+  process env X + request-scoped persisted session Y must produce Y; nonexistent
+  ids are not persisted as valid provenance;
+- extend `tests/cron/test_cron_kanban_env_isolation.py` and
+  `tests/tools/test_delegate_kanban_isolation.py` for #114793: heartbeat is
+  true only when claim + worker writes persist and delegated-child activity
+  cannot refresh the parent worker;
+- add worker-exit durable-evidence coverage for #114904 using this fork's actual
+  one-shot path in `cli.py` and classifier in `hermes_cli/kanban_db.py`:
+  embedded and separate dispatcher topology must classify the same exit alike;
+  rate-limit remains neutral; clean exit while running remains protocol
+  violation; signal/no-trailer remains crash; the machine trailer is absent
+  from user-visible output.
+
+### P0.4 — bounded fallback browser recovery
+
+Extend `tests/tools/test_browser_supervisor.py` and/or the existing healthcheck
+suite. After one successful attach, a permanently dead CDP endpoint must stop
+after the configured consecutive-failure budget, evict its registry entry and
+allow a later fresh supervisor. A successful reconnect resets the budget and CDP
+credentials remain redacted.
+
+### Broad gate after focused green
+
+After the affected focused tests pass, run the relevant Workstation Python suite,
+Desktop UI/platform suites and typecheck. Native/E2E reruns are mandatory when
+the product/runtime/probe paths exercised by H004/H013 change; documentation-only
+heads may use the existing carry-forward rule only when Git proves equivalence.
+
 ## Validation ladder
 
 The read-only bootstrap regression is documented in

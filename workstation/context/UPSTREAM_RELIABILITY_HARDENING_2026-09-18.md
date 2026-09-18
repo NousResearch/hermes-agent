@@ -73,36 +73,75 @@ second state owner.
 - `cowork/workflow-record`: mine for UX ideas after RecipeStore/ProceduralMemory
   promotion is proven in dogfood.
 
+## Concrete implementation map
+
+The implementation agent should start from these current downstream seams and
+reuse the named focused tests. Upstream test filenames that do not yet exist in
+this fork should be created/adapted only when their behavior is still missing.
+
+| Slice | Current downstream code | Existing / target regression surface |
+| --- | --- | --- |
+| P0.0 native Browser truth | `apps/desktop/electron/workstation-browser-runtime.ts`, `workstation-browser-task.ts`, `tools/browser_workstation.py` | reuse/extend H004 probe, `workstation-browser-task.test.ts`, H013 `workstation-headless-load.spec.ts` |
+| P0.1 journal recovery | `apps/desktop/src/lib/inflight-turn-journal.ts` | extend existing `inflight-turn-journal.test.ts` with #115068 cases |
+| P0.1 optimistic resync | `apps/desktop/src/app/contrib/hooks/use-background-sync.ts` | extend existing `use-background-sync.test.ts` with #115085 cases |
+| P0.2 writer ownership | `hermes_cli/active_sessions.py` plus CLI/Desktop resume/admission callers | add downstream equivalent of upstream `test_cli_resume_read_only_owner.py`; test transfer fencing too |
+| P0.3 session provenance | `tools/kanban_tools.py`, request-scoped gateway session context, `hermes_state.SessionDB` | add focused provenance test equivalent to #114785 |
+| P0.3 heartbeat truth | `tools/kanban_tools.py::heartbeat_current_worker_from_env` | extend `tests/cron/test_cron_kanban_env_isolation.py` and `tests/tools/test_delegate_kanban_isolation.py` |
+| P0.3 durable worker exit | worker one-shot exit path in `cli.py`; classification currently in `hermes_cli/kanban_db.py` | add worker-exit-trailer regression; integrate with existing protocol-violation/rate-limit policy |
+| P0.4 bounded fallback recovery | `tools/browser_supervisor.py` | extend current `tests/tools/test_browser_supervisor.py` / healthcheck coverage; do not create a second supervisor |
+| P1 snapshot quality | native `snapshotForEntry()` / `inventoryScript(...)` in `workstation-browser-runtime.ts` | benchmark hit-test/freshness/latency/recall; do not port a second native snapshot authority |
+
+Important current-fork difference for #114904: upstream now has a separate
+`quiet_single_query.py`, but this fork's one-shot exit-code path is still in
+`cli.py`. Port the **durable exit evidence contract**, not the upstream file
+layout.
+
 ## P0 implementation sequence
 
-### P0.0 — Native Browser truth test before changing architecture
+### P0.0 — Revalidate and extend the native Browser truth evidence
 
 **Goal:** determine whether the current native-browser problem violates the
 Workstation runtime itself, the Desktop composition surface, task ownership, or
-the adaptive-execution gate.
+the adaptive-execution gate **without duplicating the existing native harness**.
 
-Add a real Electron/WebContentsView regression that:
+Current evidence already exists and must be reused:
 
-1. creates a BrowserTask and loads a fixture with:
+- `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`
+  used a real `BrowserWindow` + `WebContentsView` and proved same task/tab/
+  WebContents identity plus renderer sentinel across `hide -> show` and
+  `park -> show`, explicit destroy and logical restart recovery;
+- `apps/desktop/electron/workstation-browser-task.test.ts` protects the pure
+  BrowserTask lifecycle;
+- H013 in `apps/desktop/e2e/workstation-headless-load.spec.ts` already exercises
+  the integrated Desktop/Browser/controller path and hide/park/destroy cleanup.
+
+Do **not** create a parallel harness from scratch. Extend/rework the existing H004
+probe so it can run against current `main` rather than its historical branch
+precondition, then add only the missing discriminators:
+
+1. load a deterministic fixture with:
    - a running timer;
    - an input with typed state;
-   - scroll position;
-   - a stable agent reference/automation target;
-2. records `taskId`, tab id and WebContents identity;
-3. executes `hide -> show`;
-4. executes `park -> show`;
-5. switches Desktop route/surface and returns;
-6. proves:
+   - non-zero scroll position;
+   - a stable controller/automation target;
+2. record `taskId`, tab id and WebContents identity;
+3. execute `hide -> show`, then `park -> show`;
+4. exercise a real `browser_*` controller action after the round-trip;
+5. where the host-transfer surface is relevant, reuse H013/viewport coverage
+   rather than inventing a second UI owner;
+6. prove:
    - no `destroy` occurred;
    - the same live page is reused inside the process;
    - timer advanced while hidden/parked;
    - input + scroll survive;
-   - agent control still reaches the same task-owned page;
+   - agent/controller automation still reaches the same task-owned page;
    - no second independently navigated page was allocated;
-   - browser routing did not silently fall back to an external runtime.
+   - no external-browser fallback occurred.
 
-If this passes while real dogfood still cannot use the browser, investigate the
-Adaptive Execution/TaskCompiler admission path next; do **not** weaken BrowserTask.
+If this extended current-main probe passes while dogfood still cannot mutate the
+page, classify BrowserTask/keepalive as **not the blocker** and move immediately to
+Adaptive Execution/TaskCompiler admission. Do **not** weaken BrowserTask or create
+another browser state plane.
 
 ### P0.1 — Session recovery and resync correctness
 

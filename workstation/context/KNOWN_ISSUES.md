@@ -34,6 +34,49 @@ authority store, or globally bypassing work_execute.
 **Canonical design:** 
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
 
+## KI-012 — Upstream-derived ownership/resync/Kanban/recovery gaps [OPEN — 2026-09-18]
+
+A direct comparison of high-value upstream PRs with current Hermes Work found
+several concrete downstream gaps that are independent of KI-011's compiler-policy
+obstruction. They share one failure class: canonical work can be correct locally
+while ownership, resync, liveness, provenance or recovery at an adjacent boundary
+lies or loses state.
+
+**Confirmed open code gaps:**
+
+- `tools/browser_supervisor.py`: post-attach CDP reconnect is unbounded
+  (#114897);
+- `hermes_cli/active_sessions.py`: no strict one-writer-per-`session_id`
+  invariant and no foreign-owner transfer fence/read-only resume (#111493);
+- `apps/desktop/src/lib/inflight-turn-journal.ts`: recovery can choose an
+  earlier sealed stream-looking row instead of the last live projection
+  (#115068);
+- `use-background-sync.ts`: background reconciliation can drop an
+  unacknowledged optimistic user row (#115085);
+- Kanban task provenance can still accept an ambient session id without proving
+  persistence in the active profile's SessionDB/request context (#114785);
+- automatic Kanban heartbeat reports attempt rather than requiring durable
+  success and does not yet fence delegated-child liveness (#114793);
+- worker exit classification has strong downstream policy but its reaped exit
+  evidence is process-local, so a different dispatcher can classify the same
+  death differently (#114904).
+
+**Important non-root-causes / non-actions:**
+
+- Do not treat #114964 as proof BrowserTask keepalive is missing. H004 already
+  proves real Electron WebContents identity across hide/show and park/show and
+  H013 covers the integrated path. Reuse/extend those probes instead of creating
+  another browser owner/harness.
+- Do not port #114986 while the downstream Desktop gateway lacks the upstream
+  `turnLeases` mechanism it fixes.
+- Do not port #115056 as a second native snapshot system; the Electron runtime
+  already performs its principal inventory in one `executeJavaScript` call.
+
+**Required action:** implement in P0.0 → P0.4 order from
+[UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md)
+and close each sub-gap only with the focused regression named there. H-065 in
+the engineering journal is the anti-repeat evidence ledger.
+
 
 This file records observed/reproduced gaps and the evidence boundary around them. A listed symptom is **not** permission to assume a root cause; verify current `main` and any explicitly named candidate before changing code.
 

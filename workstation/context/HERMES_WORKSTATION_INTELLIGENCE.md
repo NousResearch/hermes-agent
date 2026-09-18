@@ -100,8 +100,12 @@ Regras para qualquer agente que use essa evidência:
 Estado confirmado no código no momento deste intake:
 
 - BrowserTask já unit-testa `hide -> show`, `park -> show`, página única e
-  destruição somente explícita; falta fechar o cenário de composição real com
-  `WebContentsView`;
+  destruição somente explícita; além disso, H004 já provou em Electron real
+  `BrowserWindow` + `WebContentsView` a mesma identidade de página/WebContents
+  e renderer sentinel através de hide/show e park/show, enquanto H013 cobre o
+  caminho integrado Desktop/Browser. O gap atual não é “não existe E2E nativo”:
+  é revalidar/estender esses probes no `main` corrente com timer/input/scroll,
+  ação real via controller e assertiva explícita de ausência de fallback;
 - o browser nativo já produz seu inventário principal por uma única chamada
   `webContents.executeJavaScript(inventoryScript(...))`; #115056 é otimização
   de qualidade/benchmark, não nova autoridade de snapshot;
@@ -115,6 +119,30 @@ Estado confirmado no código no momento deste intake:
 
 Esses itens são **planejados até seus testes de aceitação passarem**. Só então
 devem migrar desta seção/roadmap para a descrição de arquitetura implementada.
+
+### Mapa de execução confirmado para o próximo agente
+
+- **P0.0:** reaproveitar H004/H013; não criar terceiro harness nativo.
+- **P0.1:** portar seletivamente #115068 em
+  `apps/desktop/src/lib/inflight-turn-journal.ts` + teste existente e #115085
+  em `use-background-sync.ts` + teste existente.
+- **P0.2:** estender `hermes_cli/active_sessions.py` para um único writer por
+  `session_id`, transferência fenced e resume estrangeiro read-only/observer;
+  falha de leitura do registry é fail-closed.
+- **P0.3:** validar provenance de Kanban via SessionDB/request-scoped context;
+  heartbeat só é verdadeiro se os writes persistirem; delegated child não
+  prolonga liveness do worker; exit status ganha evidência durável entre
+  processos sem substituir o breaker/protocol-violation policy existente.
+- **P0.4:** `tools/browser_supervisor.py` recebe orçamento finito de reconnect
+  pós-attach e eviction do supervisor morto; isso é para a lane legado/fallback,
+  não uma nova política de WebSocket para o browser Electron interno.
+- **P1:** consolidar entrega durável em um único rail; #115056 serve apenas para
+  qualidade/freshness/occlusion/benchmark porque o snapshot nativo já é one-call.
+
+Diferença estrutural relevante para #114904: no fork atual, o one-shot exit está
+em `cli.py`; não existe o mesmo `hermes_cli/quiet_single_query.py` do upstream.
+Portar o contrato de evidência, não a topologia de arquivos.
+
 
 
 Este documento atua como a **base de conhecimento canônica e fonte única da verdade (inteligência centralizada)** sobre o funcionamento, a arquitetura de baixo nível, os contratos de persistência e a integração do **Hermes Workstation (Hermes Work)** nesta branch/fork downstream do repositório Hermes Agent.

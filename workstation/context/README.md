@@ -8,21 +8,23 @@ Before changing Workstation code, read these documents in order:
 
 1. [`../../AGENTS.md`](../../AGENTS.md) — repository-wide engineering rules and invariants.
 2. [`CURRENT_STATE.md`](CURRENT_STATE.md) — what works, what is partial, what is not built, and the latest validation state.
-3. [`CANONICAL_EXECUTION_RELIABILITY_GATE.md`](CANONICAL_EXECUTION_RELIABILITY_GATE.md) — **active immediate implementation gate** established by the 2026-09-17 forensic audit; it supersedes older roadmap sequencing until its exit criteria pass.
-4. [`FORENSIC_RELIABILITY_SYNTHESIS_2026-09-17.md`](FORENSIC_RELIABILITY_SYNTHESIS_2026-09-17.md) — integrated evidence map across the three 2026-09-17 investigations, including what is confirmed open on current `main`, what already exists and must be reused, and what still requires revalidation before code changes.
-5. [`MAINLINE_CONSOLIDATION.md`](MAINLINE_CONSOLIDATION.md) — the pre-1.5 gate result, complete PR/branch disposition ledger, and recurring post-milestone review rule.
-6. [`DECISIONS.md`](DECISIONS.md) — settled downstream architecture decisions.
-7. [`CONSTRAINTS.md`](CONSTRAINTS.md) — non-negotiable boundaries and security/maintenance constraints.
-8. [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — Workstation runtime architecture and distribution model.
-9. [`../UPSTREAM.md`](../UPSTREAM.md) and [`../UPSTREAM_DELTA.md`](../UPSTREAM_DELTA.md) — upstream base, synchronization model, and tracked downstream delta.
-10. [`../SOURCE_MATRIX.md`](../SOURCE_MATRIX.md) — ownership and use of internal/external components.
-11. [`../ROADMAP.md`](../ROADMAP.md) — sequencing and intentionally deferred work. The Canonical Execution Reliability Gate is the current active milestone.
-12. [`TESTING.md`](TESTING.md) — validation ladder and evidence required before a Workstation change is considered stable.
-13. [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — reproduced or observed problems whose causes must not be guessed.
-14. [`engineering-journal/CURRENT.md`](engineering-journal/CURRENT.md) — active hypothesis/experiment ledger and anti-repeat memory for ongoing Workstation investigations. Read it before creating a new validation harness or repeating an experiment.
-15. [`../PATCH_MANIFEST.md`](../PATCH_MANIFEST.md) when touching an upstream integration point, rebase/migration tooling, or the downstream patch surface.
+3. [`ADAPTIVE_EXECUTION_COMPILATION.md`](ADAPTIVE_EXECUTION_COMPILATION.md) — **active execution-policy correction** discovered by 2026-09-18 native-browser dogfood; preserves causal safety while making novel stateful work executable.
+4. [`UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md) — **active parallel P0 hardening lane** for ownership, transcript resync, Kanban provenance/liveness, worker-exit truth and bounded browser recovery. Read H-065 before repeating its upstream/code audit.
+5. [`CANONICAL_EXECUTION_RELIABILITY_GATE.md`](CANONICAL_EXECUTION_RELIABILITY_GATE.md) — implemented causal reliability invariants that both active lanes must preserve.
+6. [`FORENSIC_RELIABILITY_SYNTHESIS_2026-09-17.md`](FORENSIC_RELIABILITY_SYNTHESIS_2026-09-17.md) — integrated evidence map across the three 2026-09-17 investigations.
+7. [`MAINLINE_CONSOLIDATION.md`](MAINLINE_CONSOLIDATION.md) — the pre-1.5 gate result, complete PR/branch disposition ledger, and recurring post-milestone review rule.
+8. [`DECISIONS.md`](DECISIONS.md) — settled downstream architecture decisions.
+9. [`CONSTRAINTS.md`](CONSTRAINTS.md) — non-negotiable boundaries and security/maintenance constraints.
+10. [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — Workstation runtime architecture and distribution model.
+11. [`../UPSTREAM.md`](../UPSTREAM.md) and [`../UPSTREAM_DELTA.md`](../UPSTREAM_DELTA.md) — upstream base, synchronization model, tracked downstream delta, and planned selective adaptations.
+12. [`../SOURCE_MATRIX.md`](../SOURCE_MATRIX.md) — ownership and use of internal/external components.
+13. [`../ROADMAP.md`](../ROADMAP.md) — sequencing and intentionally deferred work. The active immediate work is the Adaptive Execution correction plus the compatible upstream-reliability P0 lane; feature expansion remains subordinate to reliability.
+14. [`TESTING.md`](TESTING.md) — validation ladder and evidence required before a Workstation change is considered stable.
+15. [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — reproduced or observed problems whose causes must not be guessed.
+16. [`engineering-journal/CURRENT.md`](engineering-journal/CURRENT.md) — active hypothesis/experiment ledger and anti-repeat memory. H-065 is the current upstream-hardening code audit.
+17. [`../PATCH_MANIFEST.md`](../PATCH_MANIFEST.md) when touching an upstream integration point, rebase/migration tooling, or the downstream patch surface.
 
-After this read-order, inspect the **current `main` implementation and its tests** for the subsystem you intend to change. Documentation is intent and state; code on `main` is the source of truth for implementation details. The forensic synthesis is not permission to implement a report literally: confirmed historical findings that current `main` has already fixed become regressions, while unverified claims must be reproduced before architecture changes.
+After this read-order, inspect the **current `main` implementation and its tests** for the subsystem you intend to change. Documentation is intent and state; code on `main` is the source of truth for implementation details. Historical findings that current `main` has already fixed become regression evidence, while unverified claims must be reproduced before architecture changes. In particular, do not recreate a native Browser harness merely because #114964 describes an upstream keepalive bug: H004/H013 already exist downstream and must be reused/extended.
 
 ## Working rule
 

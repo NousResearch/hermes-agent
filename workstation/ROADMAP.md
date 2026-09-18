@@ -14,12 +14,15 @@ patch that fits the canonical Work owners.
 
 Immediate order:
 
-1. **P0.0 — native Browser truth test (#114964-derived):**
-   prove on a real Electron `WebContentsView` that `hide/park != destroy`, the
-   same BrowserTask/page survives route/surface changes, state/timers/scroll and
-   the automation target remain live, and no external-browser fallback occurs.
-   Current BrowserTask unit tests already prove the lifecycle abstraction; this
-   step closes the real composition/E2E gap before architecture is changed.
+1. **P0.0 — revalidate/extend native Browser truth (#114964-derived):**
+   reuse the existing H004 real Electron `BrowserWindow`/`WebContentsView`
+   probe and H013 integrated Desktop/Browser E2E rather than creating a new
+   harness. Extend current-main evidence with timer/input/scroll survival, a real
+   post-hide/park `browser_*` controller action and an explicit no-fallback
+   assertion. H004 already proves same live WebContents identity across
+   `hide/show` and `park/show`; the remaining purpose is to decide whether
+   BrowserTask is actually the blocker or whether control should move directly
+   to Adaptive Execution/TaskCompiler admission.
 2. **P0.1 — recovery/resync correctness (#115068 + #115085):**
    port the live-tail journal fix and preserve unacknowledged optimistic user
    messages during background resync.
@@ -60,6 +63,17 @@ This lane may run alongside the Adaptive Execution correction because it removes
 false state, lost intent, phantom ownership and unbounded recovery. It must not
 weaken the Canonical Execution Reliability Gate or add a second SessionDB, Kanban,
 BrowserTask, delivery ledger, ArtifactStore or Memory owner.
+
+**Implementation evidence refinement (2026-09-18):** direct code comparison
+confirmed open downstream gaps for #114897, #111493, #115068, #115085, #114785
+and #114793. #114904 is partial: the current fork already has stronger
+protocol-violation/rate-limit/crash policy, but exit classification is still
+process-local when no durable exit record exists. #114964 is now diagnostic
+revalidation because H004/H013 already provide native Browser evidence. #114986
+remains watchlist-only because its upstream `turnLeases` mechanism is absent
+from this downstream `gateway.ts`. #115056 remains P1 because the native browser
+already performs its principal inventory in one `webContents.executeJavaScript`
+round trip.
 
 
 ## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — ACTIVE

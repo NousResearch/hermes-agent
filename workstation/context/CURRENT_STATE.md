@@ -33,6 +33,45 @@ NEEDS_REASONING escalation on drift.
 All prior safety invariants remain required. This is a correction to admission
 and learning, not a rollback of durable execution.
 
+
+## 2026-09-18 upstream reliability hardening — confirmed parallel P0 lane
+
+A direct PR-to-current-code comparison on `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033`
+confirmed a second, compatible reliability lane. It does not supersede the
+Adaptive Execution correction and does not represent implemented behavior yet.
+
+**Confirmed open downstream gaps:**
+
+- #114897: `tools/browser_supervisor.py` has unbounded post-attach reconnect;
+- #111493: active-session capacity exists, but same-`session_id` writer
+  exclusivity and transfer fencing do not;
+- #115068: in-flight recovery still selects the first live-looking projection
+  row instead of the last true live tail;
+- #115085: background resync does not preserve the local unacknowledged user row;
+- #114785: Kanban provenance is not uniformly validated against persisted
+  SessionDB/request-scoped ownership before persistence;
+- #114793: automatic heartbeat reports attempted work rather than requiring both
+  durable writes and lacks delegated-child liveness fencing;
+- #114904: downstream worker failure policy is already richer, but exit-code
+  evidence remains process-local when a different dispatcher observes death.
+
+**Refined non-gap / watchlist evidence:**
+
+- #114964 is not evidence that BrowserTask keepalive is missing. H004 already
+  proved real Electron `BrowserWindow`/`WebContentsView` identity across
+  hide/show and park/show; H013 covers the integrated Desktop/Browser path.
+  P0.0 therefore reuses/extends those probes on current main with timer/input/
+  scroll, controller action and explicit no-fallback assertions.
+- #114986 is watchlist-only because the affected upstream `turnLeases`
+  mechanism is absent from the downstream Desktop gateway.
+- #115056 is P1 quality/benchmark work because native `snapshotForEntry()`
+  already obtains its principal inventory in one `executeJavaScript` call.
+
+Canonical plan:
+[UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md).
+Engineering evidence: H-065 in
+[engineering-journal/CURRENT.md](engineering-journal/CURRENT.md).
+
 ## 2026-09-17 forensic reliability audit — current boundary
 
 The audit changes the interpretation of the existing implementation without

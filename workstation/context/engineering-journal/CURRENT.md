@@ -1,5 +1,127 @@
 # CURRENT — Workstation Engineering Journal
 
+
+## H-065 — Upstream reliability hardening code-to-PR gap audit (2026-09-18)
+
+**Classification:** VALIDATED for the code-level gap map; P0.0 Browser keepalive
+hypothesis REFORMULATED from “missing native E2E” to “reuse/extend existing native
+evidence”.
+
+**Audit base:** `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033` after the
+documentation-only PR #24 intake. No product code was changed during this
+investigation.
+
+**Question:** which high-value upstream reliability PRs correspond to real missing
+behavior in current Hermes Work, which are already covered by stronger downstream
+owners, and which should become regression evidence instead of cherry-picks?
+
+**Confirmed current-main evidence:**
+
+1. **#114964 browser keepalive — invariant already exists; diagnostic extension only.**
+   `workstation-browser-task.test.ts` already proves hide/show and park/show
+   preserve one page in the lifecycle abstraction. More importantly,
+   `engineering-journal/probes/h004-native-browser-task-smoke.mjs` historically
+   used real Electron `BrowserWindow` + `WebContentsView` and proved the same
+   task/tab/WebContents identity plus renderer sentinel across hide/show and
+   park/show. H013 (`apps/desktop/e2e/workstation-headless-load.spec.ts`) already
+   exercises the integrated Desktop/Browser/controller path and cleanup.
+   **Implication:** do not invent a new browser state plane or a parallel harness.
+   Rework/reuse H004 against current main and add only the missing discriminators:
+   timer/input/scroll survival, a real controller action after hide/park, and an
+   explicit no-external-fallback assertion. If that passes, BrowserTask is not the
+   blocker and investigation moves to Adaptive Execution/TaskCompiler admission.
+
+2. **#114897 bounded CDP reconnect — CONFIRMED OPEN.**
+   `tools/browser_supervisor.py::CDPSupervisor._run` still reconnects forever
+   after the first successful attach. It increments/logs attempts but has no
+   terminal consecutive-failure budget or registry eviction.
+   **Required fix:** bounded post-attach failures, reset on successful attach,
+   terminal warning + registry removal, later `get_or_start` may create fresh
+   supervisor. Applies to legacy/fallback supervisor; do not graft this WebSocket
+   mechanism onto the Electron-native controller.
+
+3. **#111493 one writer / read-only resume — CONFIRMED OPEN.**
+   `hermes_cli/active_sessions.py` enforces a global active-session count but
+   does not prevent two live writer leases from owning the same `session_id`.
+   `transfer_active_session` can also retarget onto a foreign-owned live session.
+   **Required fix:** one canonical writer, N observers; strict live-owner lookup;
+   transfer fencing; read-only/observer resume when foreign-owned; unreadable
+   ownership registry fails closed.
+
+4. **#115068 in-flight journal recovery — CONFIRMED OPEN.**
+   Current `mergeInFlightMessages` still chooses the first live-looking assistant
+   projection with `findIndex`; a sealed interim row may retain an
+   `assistant-stream-*` id and be selected before the truly live tail.
+   **Required fix:** last live projection row + sealed-row id dedupe, preserving
+   structured reasoning/tool parts and existing journal ownership.
+
+5. **#115085 optimistic message survives resync — CONFIRMED OPEN.**
+   `use-background-sync.ts` grafts authoritative refreshed messages and preserves
+   assistant errors but does not compose `preserveLocalPendingTurnMessages`.
+   **Required fix:** preserve unacknowledged local user intent during both active
+   and tile transcript reconciliation, then converge without duplication after ACK.
+
+6. **#114785 Kanban session provenance — CONFIRMED OPEN.**
+   Current task creation can still derive session provenance from ambient/process
+   state without first proving the id exists in the active profile's `state.db`.
+   **Required fix:** read-only SessionDB validation; request-scoped ContextVar/
+   gateway session context outranks process-global env; dangling ids are never
+   persisted as valid provenance; canonical parent Task/TaskRun lineage remains
+   authoritative when inherited.
+
+7. **#114793 heartbeat truth/fence — CONFIRMED OPEN.**
+   `heartbeat_current_worker_from_env` currently reports attempted activity
+   rather than requiring both claim-extension and worker-heartbeat persistence to
+   succeed, and it lacks the delegated-child fence from upstream.
+   Existing cron/delegation isolation tests are present and should be extended.
+   **Required fix:** boolean means durable success; delegated child cannot keep the
+   parent worker alive; preserve `expected_run_id` fencing and warn once on
+   inherited worker-scope rejection.
+
+8. **#114904 dead-worker classification — PARTIAL / REAL MISSING SEAM.**
+   Downstream already has stronger policy than the upstream patch in several
+   respects: `expected_run_id`, protocol-violation streak, neutral rate-limit
+   sentinel, crash grace and failure breaker. The missing seam is topology
+   independence: `_recent_worker_exits` is process-local, so another dispatcher
+   can see a dead PID without the exit code reaped elsewhere.
+   **Required fix:** durable bounded worker-exit evidence/trailer and fallback
+   classification from it. The current one-shot exit-code path lives in `cli.py`;
+   this fork does **not** have the upstream `hermes_cli/quiet_single_query.py`
+   layout. Port the contract, not the file topology.
+
+9. **#114986 phantom Desktop turn lease — NOT APPLICABLE NOW / WATCHLIST.**
+   Current downstream `apps/desktop/src/store/gateway.ts` does not have the
+   upstream `turnLeases/retainGatewayForSessionTurn` mechanism that the PR fixes.
+   No blind port.
+
+10. **#115056 one-call snapshot — BENEFIT ALREADY STRUCTURALLY PRESENT / P1.**
+    Native `snapshotForEntry()` already obtains its principal inventory with one
+    `webContents.executeJavaScript(inventoryScript(...))` call. Future work should
+    benchmark/import hit-test/occlusion, geometry and mutation-freshness ideas,
+    not create a second native snapshot authority.
+
+**Anti-repeat conclusion:** do not rerun the old premise “Hermes Work has no real
+native hide/park evidence”. H004/H013 already invalidate that premise. Any new
+native probe must explicitly state what additional discriminator it adds.
+
+**Next implementation order:**
+
+```text
+P0.0 extend/revalidate H004/H013 on current main
+  -> if native keepalive/controller fails: repair that exact boundary
+  -> if it passes: do not touch BrowserTask; continue Adaptive Execution diagnosis
+
+P0.1 #115068 + #115085 recovery/resync
+P0.2 #111493 one-writer ownership
+P0.3 #114785 + #114793 + #114904 Kanban truth
+P0.4 #114897 bounded fallback supervisor recovery
+P1 one Durable Delivery Rail
+P1 #115056 snapshot quality benchmark
+```
+
+Canonical implementation plan:
+`../UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
+
 ## H-064 — Canonical Work Loop (2026-09-17)
 
 Continuation experiment: subscribe on the owning RuntimeEventBus before compiler

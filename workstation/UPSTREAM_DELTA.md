@@ -1,5 +1,45 @@
 # Hermes Workstation upstream delta
 
+
+## Tracked upstream reliability intake — 2026-09-18 [PLANNED, NO PRODUCT DELTA YET]
+
+Audit base: downstream `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033`.
+Canonical plan:
+`context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
+Engineering evidence: H-065.
+
+This entry records **planned selective adaptation**, not merged behavior. Upstream
+PRs are field evidence and regression sources; they are not a cherry-pick queue.
+
+Immediate candidates:
+
+- #115068 / #115085: focused Desktop transcript recovery/resync patches are
+  directly applicable to existing downstream files/tests;
+- #111493: port the one-writer/read-only-owner invariant into downstream
+  `active_sessions.py` and resume/admission paths;
+- #114785 / #114793: adapt session provenance and heartbeat truth into the
+  current canonical Kanban/TaskRun lineage;
+- #114904: port only the topology-independent worker-exit evidence seam. Keep
+  downstream protocol-violation streak, neutral rate-limit and breaker policy.
+  This fork's one-shot exit path is in `cli.py`, not upstream's newer
+  `quiet_single_query.py` topology;
+- #114897: cap reconnect in the legacy/fallback `tools/browser_supervisor.py`
+  after successful attach, with registry eviction.
+
+Disposition-only references:
+
+- #114964: BrowserTask keepalive semantics and native Electron evidence already
+  exist downstream (H004/H013). Reuse/extend regression evidence; do not port
+  upstream pane code into the Workstation runtime.
+- #114986: watchlist only while downstream lacks its upstream `turnLeases`
+  mechanism.
+- #115056: P1 benchmark/quality input only; native Work already performs its
+  principal snapshot inventory in one `webContents.executeJavaScript` call.
+
+No source row in PATCH_MANIFEST is added until a production adaptation actually
+lands. When it does, update this section from PLANNED to the exact downstream
+files/commits and re-evaluate rebase conflict ownership.
+
 ## HW-022 — Verified procedure admission and planner context (2026-09-16)
 
 Downstream base: `a977651539dd4b793e26f96c6116bce187677cc9`.

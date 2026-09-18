@@ -1995,7 +1995,10 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code,
+/* Themed at the renderer root so every `aui-md` consumer (assistant turns,
+   system-message reports, session-import previews) inherits it; the room
+   selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */
+.aui-md :not(pre) > code,
 [data-slot='group-chat-message-content'] :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);

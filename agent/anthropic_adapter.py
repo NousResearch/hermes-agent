@@ -470,11 +470,11 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 _OAUTH_SYSTEM_REPLACEMENTS = (
     ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
-# The slug is rewritten only as a standalone word. Joined to a host, path, repo or mailbox
-# (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
-# ``NousResearch/hermes-agent``) it is an address the model dereferences, and the rewritten
-# form does not exist (#48860).
-_OAUTH_SLUG_PATTERN = re.compile(r"(?<![\w./:@-])hermes-agent(?![\w./@-])")
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
+# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
+# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# dereferences, and the rewritten form does not exist (#48860). A sentence-final ``.`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@'"`-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):

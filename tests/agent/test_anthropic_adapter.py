@@ -1909,7 +1909,8 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
                     "Hermes Agent by Nous Research uses hermes-agent skills. "
                     "Docs: https://hermes-agent.nousresearch.com/docs ; "
                     "interpreter ~/.hermes/hermes-agent/venv/bin/python ; "
-                    "source github.com/NousResearch/hermes-agent"
+                    "source github.com/NousResearch/hermes-agent ; mail hermes-agent@example.com ; "
+                    "skill_view(name='hermes-agent') ; built by hermes-agent."
                 ),
             },
             {"role": "user", "content": "Hi"},
@@ -1927,4 +1928,7 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     # ``~/.hermes/claude-code/venv/bin/python`` fails on a file that does not exist.
     assert "~/.hermes/hermes-agent/venv/bin/python" in system_text
     assert "github.com/NousResearch/hermes-agent" in system_text
-    assert "claude-code" not in system_text.replace("claude-code skills", "")
+    assert "hermes-agent@example.com" in system_text
+    assert "skill_view(name='hermes-agent')" in system_text  # a quoted slug is an identifier
+    assert "built by claude-code." in system_text  # a sentence-final dot is prose
+    assert system_text.count("claude-code") == 2

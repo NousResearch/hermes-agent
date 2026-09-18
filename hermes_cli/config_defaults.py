@@ -1321,6 +1321,10 @@ DEFAULT_CONFIG = {
     # goal is satisfied, else a continuation prompt re-enters the session until done, budget
     # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
     "goals": {
+        # Opt-in gateway behavior: start or replace the standing goal with each
+        # ordinary external user message. Slash commands and synthetic turns never
+        # activate it.
+        "auto_start": False,
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,

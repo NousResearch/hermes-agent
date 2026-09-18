@@ -227,11 +227,17 @@ Add to `~/.hermes/config.yaml`:
 
 ```yaml
 goals:
+  # Gateway only: automatically replace the standing goal with each ordinary
+  # external user message. Slash commands and continuation turns are excluded.
+  # Default: false. This runs the judge even for short questions.
+  auto_start: false
   # Max continuation turns before Hermes auto-pauses and asks you to
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
 ```
+
+When `auto_start` is enabled, a new ordinary gateway message replaces the current goal before the agent starts. It gives every prompt the same continuation behavior as `/goal <prompt>` without turning slash commands or Hermes' synthetic continuation messages into new goals. Keep `max_turns` bounded: the judge runs after every response, including a one-turn answer.
 
 ### Choosing the judge model
 

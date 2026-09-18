@@ -1235,10 +1235,13 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 
 ```yaml
 goals:
+  # Gateway only: every ordinary external message becomes a new standing goal.
+  # Slash commands and synthetic continuation turns are excluded. Default: false.
+  auto_start: false
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+`auto_start` is an opt-in gateway policy. With it enabled, every ordinary external user message starts (or replaces) the session's standing goal; slash commands and Hermes' own continuation events are excluded. It is intentionally off by default because even short questions invoke the goal judge after the response. `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
 
 ### API Timeouts
 

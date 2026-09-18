@@ -1345,6 +1345,7 @@ class GatewayInboundMixin:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            await self._auto_start_goal_for_inbound_event(event)
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:

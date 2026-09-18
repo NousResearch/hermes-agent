@@ -9,10 +9,15 @@ it('carries the same first-use guidance through the hidden guide and every first
 
   const greeting = 'What should I call you?'
   const seeds = buildChatOnboardingSeedMessages(greeting)
-  expect(seeds.filter(seed => seed.display_kind !== 'hidden')).toEqual([{ role: 'assistant', content: greeting }])
+  // `buildChatOnboardingSeedMessages` returns typed `SeedMessage` rows now (the wire shape); compare the
+  // fields this test is about, not the envelope.
+  expect(seeds.filter(seed => seed.display_kind !== 'hidden').map(seed => ({ content: seed.content, role: seed.role })))
+    .toEqual([{ content: greeting, role: 'assistant' }])
 
+  // `SeedMessage.content` is nullable on the wire; this seed is text, and an empty string would
+  // fail the length assertion below exactly as a null would.
   const prompts = [
-    seeds[0].content,
+    seeds[0].content ?? '',
     ...(['build', 'machine-setup', 'plugin'] as const).map(plan =>
       buildFirstTaskRunbook('Organize my work', DEFAULT_ANSWERS, plan, '/tmp/example-plugins')
     )

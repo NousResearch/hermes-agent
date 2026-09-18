@@ -150,7 +150,20 @@ function hasLayout(element: Element | null): boolean {
   return !!rect && (rect.width > 0 || rect.height > 0)
 }
 
-function TooltipContent({
+function TooltipContent(props: TooltipContentProps) {
+  return (
+    <TooltipPrimitive.Portal>
+      <PaneClippedContent {...props} />
+    </TooltipPrimitive.Portal>
+  )
+}
+
+// Rendered inside the Portal, which Radix mounts only while the tip is open —
+// so the pane is resolved at OPEN time, on every open. Resolving it once at
+// `Tip` mount clipped composer tips against the zero-rect floating host for
+// good: the trigger had no layout yet when the effect ran, the host was kept
+// "as before", and nothing ever re-resolved it (#114602, live pass).
+function PaneClippedContent({
   align,
   arrowPadding = 6,
   children,
@@ -195,32 +208,30 @@ function TooltipContent({
   }, [anchor, boundary])
 
   return (
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Content
-        align={align ?? preferred.align}
-        arrowPadding={arrowPadding}
-        className={cn(
-          'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
-          className
-        )}
-        collisionBoundary={collisionBoundary ?? pane ?? undefined}
-        collisionPadding={collisionPadding}
-        data-slot="tooltip-content"
-        hideWhenDetached={hideWhenDetached}
-        side={side ?? preferred.side}
-        sideOffset={sideOffset}
-        {...props}
-      >
-        <div className="tooltip-bubble-label" data-slot="tooltip-label">
-          {children}
-        </div>
-        <TooltipPrimitive.Arrow asChild height={5} width={10}>
-          <svg aria-hidden data-slot="tooltip-arrow" viewBox="0 0 10 5">
-            <path d="M0 0h10L5.7 4.3a1 1 0 0 1-1.4 0Z" />
-          </svg>
-        </TooltipPrimitive.Arrow>
-      </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
+    <TooltipPrimitive.Content
+      align={align ?? preferred.align}
+      arrowPadding={arrowPadding}
+      className={cn(
+        'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
+        className
+      )}
+      collisionBoundary={collisionBoundary ?? pane ?? undefined}
+      collisionPadding={collisionPadding}
+      data-slot="tooltip-content"
+      hideWhenDetached={hideWhenDetached}
+      side={side ?? preferred.side}
+      sideOffset={sideOffset}
+      {...props}
+    >
+      <div className="tooltip-bubble-label" data-slot="tooltip-label">
+        {children}
+      </div>
+      <TooltipPrimitive.Arrow asChild height={5} width={10}>
+        <svg aria-hidden data-slot="tooltip-arrow" viewBox="0 0 10 5">
+          <path d="M0 0h10L5.7 4.3a1 1 0 0 1-1.4 0Z" />
+        </svg>
+      </TooltipPrimitive.Arrow>
+    </TooltipPrimitive.Content>
   )
 }
 

@@ -9,13 +9,17 @@ const rect = (x: number, y: number, width: number, height: number): DOMRect =>
 /** Chromium-like geometry, installed BEFORE render because the boundary is
  *  resolved in a layout effect during the mount commit: a zero-rect
  *  [data-tree-group] host, a real trigger inside it, a full viewport around. */
-function mockGeometry() {
+function mockGeometry(triggerLaidOut = () => true) {
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
     if (this.hasAttribute('data-tree-group')) {
       return rect(0, 0, 0, 0)
     }
 
-    return this.tagName === 'BUTTON' ? rect(100, 100, 40, 30) : rect(0, 0, 1024, 768)
+    if (this.tagName === 'BUTTON') {
+      return triggerLaidOut() ? rect(100, 100, 40, 30) : rect(0, 0, 0, 0)
+    }
+
+    return rect(0, 0, 1024, 768)
   })
 
   // floating-ui reads a boundary's inner size from clientWidth/clientHeight,
@@ -74,4 +78,41 @@ it('opens a tip whose nearest tree-group host has no layout', async () => {
 
   expect(wrapper).not.toBeNull()
   expect(wrapper?.style.visibility).not.toBe('hidden')
+})
+
+// The live app mounts composer `Tip`s before their trigger has geometry (the
+// floating surface is laid out later). The pane must be resolved when the tip
+// OPENS — a once-at-mount resolution keeps the zero-rect host forever and every
+// composer tip stays visibility:hidden.
+it('resolves the pane at open time, not at mount', async () => {
+  let laidOut = false
+  mockGeometry(() => laidOut)
+
+  render(
+    <RootTooltipProvider>
+      <div data-tree-group="floating-host">
+        <Tip label="Add context">
+          <button>Trigger</button>
+        </Tip>
+      </div>
+    </RootTooltipProvider>
+  )
+
+  laidOut = true
+  const trigger = screen.getByRole('button')
+  fireEvent.pointerEnter(trigger)
+  fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
+
+  await vi.waitFor(
+    () => {
+      // eslint-disable-next-line no-restricted-globals -- the portal mounts on the live document
+      expect(document.querySelector('[data-radix-popper-content-wrapper]')).not.toBeNull()
+    },
+    { timeout: 2000 }
+  )
+
+  await vi.waitFor(() => {
+    // eslint-disable-next-line no-restricted-globals -- the portal mounts on the live document
+    expect(document.querySelector<HTMLElement>('[data-radix-popper-content-wrapper]')?.style.visibility).not.toBe('hidden')
+  })
 })

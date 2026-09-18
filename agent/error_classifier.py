@@ -807,8 +807,26 @@ def classify_api_error(
         anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
-    base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
+    message = _extract_message(error, body)
+    if verdict["reason"] in (_R.auth, _R.auth_permanent):
+        # An auth refusal from a non-stock route names the host, so a credential posted to the
+        # wrong endpoint (a stale ``model.base_url`` after a provider switch, #113719) reads as
+        # such — not as a bad key.
+        host = _off_route_host(c)
+        if host:
+            message = f"{message} (endpoint: {host})"
+    base = {"status_code": status_code, "provider": provider, "model": model, "message": message}
     return ClassifiedError(**{**base, **verdict})
+
+
+def _off_route_host(c: _Ctx) -> str:
+    """The contacted host when ``base_url`` is set and is not the provider's own endpoint; ``""`` otherwise."""
+    from hermes_cli.route_identity import provider_owns_route
+    from utils import base_url_hostname
+    host = base_url_hostname(c.base_url)
+    if not host or provider_owns_route(c.provider_slug, c.base_url) is True:
+        return ""
+    return host
 
 
 # ── Status code handlers ────────────────────────────────────────────────

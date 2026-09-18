@@ -85,6 +85,55 @@ function isLiveTailRow(message: ChatMessage): boolean {
   )
 }
 
+const rowsShareIdentity = (left: ChatMessage, right: ChatMessage): boolean =>
+  left.id === right.id || (left.rowId !== undefined && left.rowId === right.rowId)
+
+interface CurrentLiveAssistantTail {
+  message: ChatMessage
+  ownerText: string
+}
+
+/** The one non-interim assistant that can own an anonymous live projection. */
+function currentLiveAssistantTail(messages: ChatMessage[]): CurrentLiveAssistantTail | null {
+  let assistantIndex = -1
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'assistant') {
+      assistantIndex = index
+
+      break
+    }
+  }
+
+  if (assistantIndex < 0) {
+    return null
+  }
+
+  const message = messages[assistantIndex]
+
+  if (message.interim === true || !isLiveTailRow(message)) {
+    return null
+  }
+
+  let ownerText = ''
+
+  for (let index = assistantIndex - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      ownerText = textWithoutReferenceLines(chatMessageText(messages[index])).trim()
+
+      break
+    }
+  }
+
+  return { message, ownerText }
+}
+
+const currentLiveTailsCorrespond = (
+  next: CurrentLiveAssistantTail | null,
+  previous: CurrentLiveAssistantTail | null
+): boolean =>
+  Boolean(next && previous && (!next.ownerText || !previous.ownerText || next.ownerText === previous.ownerText))
+
 /**
  * True when `next` is a pure forward extension of the previous *answer* text.
  * Empty previous answer never accepts a dump as an extension — that is how the
@@ -328,6 +377,9 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     return nextMessages
   }
 
+  const nextCurrentTail = currentLiveAssistantTail(nextMessages)
+  const previousCurrentTail = currentLiveAssistantTail(previousMessages)
+  const currentTailsCorrespond = currentLiveTailsCorrespond(nextCurrentTail, previousCurrentTail)
   const previousByRoleOrdinal = new Map<string, ChatMessage>()
   const previousRoleCounts = new Map<string, number>()
 
@@ -343,7 +395,19 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
 
-    const previous = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    const ordinalPrevious = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    let previous = ordinalPrevious
+
+    if (ordinalPrevious && rowsShareIdentity(message, ordinalPrevious)) {
+      previous = ordinalPrevious
+    } else if (message === nextCurrentTail?.message && currentTailsCorrespond) {
+      previous = previousCurrentTail?.message
+    } else if (ordinalPrevious === previousCurrentTail?.message && isLiveTailRow(message)) {
+      // Different segmentation can put the cached current phase at an earlier
+      // projected segment's ordinal. Reserve it for the corresponding current
+      // tail instead of moving later structure backward in the turn.
+      previous = undefined
+    }
 
     if (!previous) {
       return message
@@ -375,20 +439,24 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
     //
-    // Live-tail identity: structure-only same-turn carry is allowed only when
-    // the *structure-bearing cached row* is still the in-flight stream
-    // (pending / stream id / interim). Marking only the text-only next row
-    // live is not enough — after compression a new live assistant can share a
-    // role ordinal with an unrelated historical structured row and must not
-    // inherit its reasoning/tool parts (#76444 review / salvage).
+    // Structure-only carry needs stronger association than a shared role
+    // ordinal: either durable row identity or the corresponding non-interim
+    // current tail in both inputs. Otherwise a newly segmented interim row can
+    // inherit a later phase's reasoning/tool calls (#76444 review / salvage).
+    // Empty bodies likewise are not a same-turn anchor.
+    const sameIdentity = rowsShareIdentity(message, previous)
+
+    const sameCurrentLiveTail =
+      currentTailsCorrespond && message === nextCurrentTail?.message && previous === previousCurrentTail?.message
+
     const sameTurn =
-      sameText ||
+      (sameText && (Boolean(nextText) || sameIdentity)) ||
       (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
-      (message.role === 'assistant' &&
+      (sameCurrentLiveTail &&
+        message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
-        !hasStructuralParts(message) &&
-        isLiveTailRow(previous))
+        !hasStructuralParts(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)

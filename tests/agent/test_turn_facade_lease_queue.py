@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import threading
 
+from agent import turn_facade_lease
 from agent.turn_facade_lease import admit_durable_turn_lease
 from tools.bot_live_delivery import claim_lease_delivery, enqueue_lease_delivery
 
@@ -252,3 +253,106 @@ def test_drain_failure_does_not_break_the_turn(tmp_path, monkeypatch):
     finally:
         lease.stop_refresher()
         lease.join_threads()
+
+
+def test_drain_is_bounded_by_count_and_leaves_the_rest_queued(tmp_path, monkeypatch):
+    """A spool that grew while no turn could run must not become one unbounded prompt.
+
+    The queue is drained from the head in FIFO order, so a bound that defers the tail keeps every
+    message and delivers it in order on a later turn - it never drops one.
+    """
+    home = _queue_home(tmp_path, monkeypatch)
+    limit = turn_facade_lease._LEASE_DRAIN_MAX_RECORDS
+    for index in range(limit + 2):
+        enqueue_lease_delivery(
+            home, conversation_id="s1", message=f"queued {index:02d}", holder="",
+            delivery_id=f"peer-{index:02d}",
+        )
+
+    first = _admit(_agent(_Db()), [{"role": "assistant", "content": "reply"}])
+    lease = first.lease
+    try:
+        assert first.drained_delivery_ids == [f"peer-{index:02d}" for index in range(limit)]
+        body = first.conversation_history[-1]["content"]
+        assert body.startswith("queued 00")
+        assert f"queued {limit - 1:02d}" in body
+        assert f"queued {limit:02d}" not in body, "the tail waits for the next turn"
+    finally:
+        lease.stop_refresher()
+        lease.join_threads()
+
+    second = _admit(_agent(_Db()), list(first.conversation_history or []))
+    lease2 = second.lease
+    try:
+        assert second.drained_delivery_ids == [f"peer-{index:02d}" for index in range(limit, limit + 2)]
+        assert f"queued {limit + 1:02d}" in second.conversation_history[-1]["content"]
+    finally:
+        lease2.stop_refresher()
+        lease2.join_threads()
+
+    assert claim_lease_delivery(home, conversation_id="s1") is None, "nothing is left behind"
+
+
+def test_drain_takes_one_oversized_record_then_stops_at_the_byte_budget(tmp_path, monkeypatch):
+    """The count bound is not a byte bound: one big body must not become the whole turn's prompt.
+
+    The head is always taken whatever its size - deferring it forever would starve it - so the cap
+    bounds everything after it.
+    """
+    home = _queue_home(tmp_path, monkeypatch)
+    oversized = "x" * (turn_facade_lease._LEASE_DRAIN_MAX_BYTES + 1)
+    enqueue_lease_delivery(home, conversation_id="s1", message=oversized, holder="",
+                           delivery_id="peer-big")
+    enqueue_lease_delivery(home, conversation_id="s1", message="small ask", holder="",
+                           delivery_id="peer-small")
+
+    first = _admit(_agent(_Db()), [{"role": "assistant", "content": "reply"}])
+    lease = first.lease
+    try:
+        assert first.drained_delivery_ids == ["peer-big"]
+        assert first.conversation_history[-1]["content"] == oversized
+    finally:
+        lease.stop_refresher()
+        lease.join_threads()
+
+    second = _admit(_agent(_Db()), list(first.conversation_history or [])
+                    + [{"role": "assistant", "content": "reply"}])
+    lease2 = second.lease
+    try:
+        assert second.drained_delivery_ids == ["peer-small"]
+        assert second.conversation_history[-1]["content"] == "small ask"
+    finally:
+        lease2.stop_refresher()
+        lease2.join_threads()
+
+
+def test_drain_follows_a_task_scoped_home_override(tmp_path, monkeypatch):
+    """A multiplexed gateway serves several profiles in one process: the spool must follow the
+    profile this task is scoped to, not the one the process was started for.
+
+    The queue is written under ``get_hermes_home()`` (context-local override, then ``HERMES_HOME``),
+    so reading it from the process home alone would leave another profile's mail undrained.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    process_home = tmp_path / "process-home"
+    scoped_home = tmp_path / "scoped-home"
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    enqueue_lease_delivery(scoped_home, conversation_id="s1", message="scoped hello", holder="",
+                           delivery_id="peer-scoped")
+
+    token = set_hermes_home_override(scoped_home)
+    try:
+        admission = _admit(_agent(_Db()), [{"role": "assistant", "content": "reply"}])
+        lease = admission.lease
+        try:
+            assert admission.conversation_history[-1] == {"role": "user", "content": "scoped hello"}
+            assert admission.drained_delivery_ids == ["peer-scoped"]
+        finally:
+            lease.stop_refresher()
+            lease.join_threads()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert claim_lease_delivery(scoped_home, conversation_id="s1") is None
+    assert not (process_home / "runtime" / "bot_live_delivery").exists()

@@ -85,13 +85,16 @@ class SubagentHandle:
     depth: int
     capability: str
     # Route provenance (appended last, defaults None, so positional construction and old serialized
-    # handles stay valid). All four are None for legacy profile-less launches. ``resolved_model`` is the
+    # handles stay valid). All five are None for legacy profile-less launches. ``resolved_model`` is the
     # SPAWN-TIME route model while ``model`` tracks the child's live model — divergence between the two
-    # is the requested-vs-effective signal when a fallback fires mid-run.
+    # is the requested-vs-effective signal when a fallback fires mid-run. ``resolved_reasoning`` is the
+    # reasoning the child was BUILT with ("<effort>" / "disabled"); None = inherited or unknown at spawn
+    # time, never inferred.
     requested_profile: Optional[str] = None
     resolved_provider: Optional[str] = None
     resolved_model: Optional[str] = None
     fallback_policy: Optional[str] = None
+    resolved_reasoning: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -236,6 +239,7 @@ _HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
     ("resolved_provider", _opt_str),
     ("resolved_model", _opt_str),
     ("fallback_policy", _opt_str),
+    ("resolved_reasoning", _opt_str),
 )
 
 # Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
@@ -324,6 +328,7 @@ class SubagentLifecycleService:
             resolved_provider=getattr(child, "_route_resolved_provider", None),
             resolved_model=getattr(child, "_route_resolved_model", None),
             fallback_policy=getattr(child, "_route_fallback_policy", None),
+            resolved_reasoning=getattr(child, "_route_resolved_reasoning", None),
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:

@@ -74,6 +74,7 @@ class _Harness:
 
     def __init__(self, cfg, capabilities=None):
         self.built = []
+        self.children = []
         self.cfg = cfg
         self._patches = [
             patch("tools.delegate_tool._load_config", return_value=cfg),
@@ -84,7 +85,12 @@ class _Harness:
 
     def _factory(self, *args, **kwargs):
         self.built.append(kwargs)
-        return _make_child()
+        child = _make_child()
+        # AIAgent stores the kwarg verbatim as ``child.reasoning_config``; mirror that so the spawn-time
+        # route stamp reads the effective value instead of a MagicMock auto-attribute.
+        child.reasoning_config = kwargs.get("reasoning_config")
+        self.children.append(child)
+        return child
 
     def __enter__(self):
         for p in self._patches:
@@ -135,6 +141,29 @@ def test_profile_reasoning_effort_overrides_parent():
     with _Harness(cfg) as h:
         delegate_task(goal="Do the maintenance work carefully", parent_agent=_make_parent())
     assert h.built[0]["reasoning_config"] == parse_reasoning_effort("low")
+
+
+def test_profile_reasoning_effort_is_stamped_as_resolved_reasoning_end_to_end():
+    """The child built with the profile's reasoning_config carries resolved_reasoning == "low"
+    on its spawn-time route stamp and on the delegate_task result entry."""
+    cfg = {"profiles": PROFILES, "default_profile": "tiny"}
+    with _Harness(cfg) as h:
+        result = delegate_task(goal="Do the maintenance work carefully", parent_agent=_make_parent())
+    assert h.children[0]._route_resolved_reasoning == "low"
+    import json
+    assert json.loads(result)["results"][0]["resolved_reasoning"] == "low"
+
+
+def test_profile_without_reasoning_effort_stamps_none_when_parent_reasoning_unknown():
+    """No profile reasoning, no delegation.reasoning_effort, parent reasoning_config None → the child
+    is built with None and the stamp is None (inherited/unknown, never inferred)."""
+    cfg = {"profiles": PROFILES, "default_profile": "small"}
+    parent = _make_parent()
+    parent.reasoning_config = None
+    with _Harness(cfg) as h:
+        delegate_task(goal="Do the maintenance work carefully", parent_agent=parent)
+    assert h.built[0]["reasoning_config"] is None
+    assert h.children[0]._route_resolved_reasoning is None
 
 
 def test_profile_fallback_list_replaces_parent_chain():

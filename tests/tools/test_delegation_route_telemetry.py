@@ -20,6 +20,7 @@ class _FakeChild:
     _route_resolved_provider: "str | None" = None
     _route_resolved_model: "str | None" = None
     _route_fallback_policy: "str | None" = None
+    _route_resolved_reasoning: "str | None" = None
     model = "live-model"
     _delegate_role = "leaf"
     session_prompt_tokens = 10
@@ -33,7 +34,9 @@ def _entry(child):
     return _build_result_entry(child, result, 0, 1.5, _SchemaOutcome(None, None, [], 0))
 
 
-ROUTE_KEYS = ("requested_profile", "resolved_provider", "resolved_model", "fallback_policy")
+ROUTE_KEYS = (
+    "requested_profile", "resolved_provider", "resolved_model", "fallback_policy", "resolved_reasoning",
+)
 
 # Today's legacy result-entry key set on main — EXACTLY this, no provenance keys. Snapshot of the
 # KEY SET only (values are contract-tested elsewhere) so legacy payload shape stays byte-identical.
@@ -79,11 +82,70 @@ class TestResultEntryRouteTelemetry(unittest.TestCase):
         self.assertNotEqual(entry["model"], entry["resolved_model"])
         self.assertEqual(entry["fallback_policy"], "profile:fast")
 
+    def _profile_child(self, reasoning):
+        child = _FakeChild()
+        child._route_requested_profile = "fast"
+        child._route_resolved_provider = "openrouter"
+        child._route_resolved_model = "live-model"
+        child._route_fallback_policy = "none"
+        child._route_resolved_reasoning = reasoning
+        return child
+
+    def test_profile_run_carries_resolved_reasoning_effort_label(self):
+        entry = _entry(self._profile_child("low"))
+        self.assertEqual(entry["resolved_reasoning"], "low")
+
+    def test_profile_run_carries_resolved_reasoning_disabled(self):
+        entry = _entry(self._profile_child("disabled"))
+        self.assertEqual(entry["resolved_reasoning"], "disabled")
+
+    def test_profile_run_unstamped_reasoning_is_present_and_none(self):
+        """Inherited/unknown reasoning: the key is PRESENT on a profile child, value None (never inferred)."""
+        entry = _entry(self._profile_child(None))
+        self.assertIn("resolved_reasoning", entry)
+        self.assertIsNone(entry["resolved_reasoning"])
+
+    def test_legacy_run_omits_resolved_reasoning_even_when_stamped(self):
+        child = _FakeChild()
+        child._route_resolved_reasoning = "low"  # no requested_profile → legacy → no provenance at all
+        self.assertNotIn("resolved_reasoning", _entry(child))
+
 
 class TestChildRouteStamp(unittest.TestCase):
     def test_stamp_helper_empty_for_unstamped_child(self):
         from tools.delegate_tool_child_run import _route_telemetry
         self.assertEqual(_route_telemetry(object()), {})
+
+    def test_route_telemetry_key_set_is_exactly_the_five(self):
+        from tools.delegate_tool_child_run import _route_telemetry
+        child = _FakeChild()
+        child._route_requested_profile = "fast"
+        self.assertEqual(set(_route_telemetry(child)), set(ROUTE_KEYS))
+
+
+class TestReasoningLabel(unittest.TestCase):
+    """_reasoning_label(cfg): enabled+effort → effort; enabled False → "disabled"; None/garbage → None."""
+
+    def test_enabled_with_effort_yields_effort(self):
+        from tools.delegate_tool import _reasoning_label
+        self.assertEqual(_reasoning_label({"enabled": True, "effort": "low"}), "low")
+        self.assertEqual(_reasoning_label({"enabled": True, "effort": "high"}), "high")
+
+    def test_disabled_yields_disabled(self):
+        from tools.delegate_tool import _reasoning_label
+        self.assertEqual(_reasoning_label({"enabled": False}), "disabled")
+
+    def test_none_yields_none_not_inferred(self):
+        from tools.delegate_tool import _reasoning_label
+        self.assertIsNone(_reasoning_label(None))
+
+    def test_garbage_yields_none(self):
+        from tools.delegate_tool import _reasoning_label
+        self.assertIsNone(_reasoning_label({}))
+        self.assertIsNone(_reasoning_label("low"))
+        self.assertIsNone(_reasoning_label({"enabled": True}))
+        self.assertIsNone(_reasoning_label({"enabled": True, "effort": 3}))
+        self.assertIsNone(_reasoning_label(object()))
 
 
 class TestHandleRouteTelemetry(unittest.TestCase):
@@ -102,14 +164,22 @@ class TestHandleRouteTelemetry(unittest.TestCase):
     def test_from_dict_round_trip_with_new_keys(self):
         payload = {
             **self._base(), "requested_profile": "fast", "resolved_provider": "openrouter",
-            "resolved_model": "m1", "fallback_policy": "profile:fast",
+            "resolved_model": "m1", "fallback_policy": "profile:fast", "resolved_reasoning": "low",
         }
         handle = SubagentHandle.from_dict(payload)
         self.assertEqual(handle.requested_profile, "fast")
         self.assertEqual(handle.resolved_provider, "openrouter")
         self.assertEqual(handle.resolved_model, "m1")
         self.assertEqual(handle.fallback_policy, "profile:fast")
+        self.assertEqual(handle.resolved_reasoning, "low")
         self.assertEqual(SubagentHandle.from_dict(handle.to_dict()), handle)
+
+    def test_well_formed_check_rejects_non_string_resolved_reasoning(self):
+        """The handle field validator tuple covers the new field exactly like fallback_policy."""
+        from agent.subagent_lifecycle import _handle_is_well_formed
+        self.assertTrue(_handle_is_well_formed(SubagentHandle.from_dict({**self._base(), "resolved_reasoning": "low"})))
+        self.assertTrue(_handle_is_well_formed(SubagentHandle.from_dict(self._base())))
+        self.assertFalse(_handle_is_well_formed(SubagentHandle.from_dict({**self._base(), "resolved_reasoning": 3})))
 
 
 if __name__ == "__main__":

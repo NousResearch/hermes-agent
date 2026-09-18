@@ -514,6 +514,22 @@ class TestDocxExtraction(unittest.TestCase):
         self.assertIn("Hello World", text)
         self.assertIn("Second", text)
 
+    def test_text_box_not_duplicated(self):
+        # A text box nests a paragraph inside the surrounding paragraph. Its
+        # text must appear once and retain the document's relative order.
+        p = os.path.join(self.tmp, "box.docx")
+        _write_docx(p, self._doc(
+            '<w:p><w:r><w:t>Before </w:t></w:r>'
+            '<w:r><w:pict><w:txbxContent>'
+            '<w:p><w:r><w:t>BOXTEXT</w:t></w:r></w:p>'
+            '</w:txbxContent></w:pict></w:r>'
+            '<w:r><w:t> After</w:t></w:r></w:p>'
+            '<w:p><w:r><w:t>Tail</w:t></w:r></w:p>'))
+        text = extract_document_text(p)
+        self.assertEqual(text.count("BOXTEXT"), 1)
+        self.assertLess(text.index("Before"), text.index("BOXTEXT"))
+        self.assertLess(text.index("BOXTEXT"), text.index("After"))
+        self.assertLess(text.index("After"), text.index("Tail"))
 
     def test_missing_document_xml_raises(self):
         p = os.path.join(self.tmp, "nodoc.docx")

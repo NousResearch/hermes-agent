@@ -126,6 +126,20 @@ def test_configured_max_in_progress_parsing(monkeypatch):
         assert kbd.configured_max_in_progress() == expected, config
 
 
+def test_configured_profile_resource_groups_ignore_invalid_entries(monkeypatch):
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config_readonly",
+        lambda: {"kanban": {"profile_resource_groups": {
+            "research": "gpu0", " ": "gpu1", "coding": 2,
+        }}},
+    )
+
+    assert kbd.configured_profile_resource_groups() == {"research": "gpu0"}
+
+
 # ---------------------------------------------------------------------------
 # 2. max_in_progress counts running work on ALL boards (P1b)
 # ---------------------------------------------------------------------------

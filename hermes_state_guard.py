@@ -23,12 +23,42 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 
 
+#: Real home captured at import time (forensics t_90fe17c3 gap 1): a test
+#: that redirects ``HOME`` before this module loads must not move the deny
+#: root — otherwise the guard compares the live board against the SANDBOX
+#: root and waves the write through. ``pwd`` reads the passwd database, which
+#: conftest fixtures never touch; the captured value is fixed for the life
+#: of the process.
+_REAL_HOME: Optional[Path] = None
+_REAL_HOME_LOCK = threading.Lock()
+
+
+def _capture_real_home() -> Optional[Path]:
+    global _REAL_HOME
+    with _REAL_HOME_LOCK:
+        if _REAL_HOME is None:
+            try:
+                import pwd  # POSIX only; win32 never reaches this branch
+
+                _REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+            except Exception:
+                try:
+                    _REAL_HOME = Path(os.path.expanduser("~"))
+                except Exception:
+                    _REAL_HOME = None
+    return _REAL_HOME
+
+
 def _real_platform_state_root() -> Optional[Path]:
     """The REAL platform-default Hermes root. Avoids ``Path.home()`` /
-    ``hermes_constants`` (tests monkeypatch Path.home to a tempdir); ``expanduser``
-    reads HOME/passwd, which the conftest never rewrites."""
+    ``hermes_constants`` (tests monkeypatch Path.home to a tempdir). The home
+    is captured from the passwd database ONCE at first use — a test that
+    redirects ``HOME`` afterwards (or before importing this module) cannot
+    move the deny root, so the guard keeps matching the production board."""
     try:
-        home = Path(os.path.expanduser("~"))
+        home = _capture_real_home()
+        if home is None:
+            return None
         if sys.platform == "win32":
             base = os.environ.get("LOCALAPPDATA", "").strip()
             root = Path(base) / "hermes" if base else home / "AppData" / "Local" / "hermes"

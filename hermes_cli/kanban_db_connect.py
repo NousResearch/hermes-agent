@@ -1270,6 +1270,14 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     since those side effects would fire while the outer txn can still roll back.
     """
     _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
+    # Write-boundary choke (2026-09-18 wave 8): ``connect()``/``init_db()``
+    # refuse the production board from a test context, but a conn opened via
+    # raw ``sqlite3.connect`` (or opened before this process imported the
+    # guard) reaches every write helper here unguarded. The write boundary is
+    # the last choke a fixture can hit before touching the live board.
+    db_file = _main_db_file(conn)
+    if db_file:
+        _ensure_test_isolation(Path(db_file))
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

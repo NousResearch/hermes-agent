@@ -135,3 +135,45 @@ def test_guard_inert_outside_test_context(monkeypatch):
     # nothing pytest-shaped above us inside the test runner either, so the
     # guard must stay silent and simply return.
     kbc._ensure_test_isolation(root / "kanban.db")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Write-boundary choke (2026-09-18 wave 8): write_txn guards externally-opened
+# conns too — a raw sqlite3.connect to the live board must not become a write
+# path for dispatcher helpers (claim_task / create_task / _set_worker_pid).
+# ---------------------------------------------------------------------------
+
+
+def test_write_txn_refuses_raw_conn_to_live_board(_pytest_context):
+    """connect() refuses the live board, but a fixture that opens the live DB
+    with raw sqlite3.connect and drives kb.create_task goes through
+    write_txn — that boundary must refuse as well."""
+    import sqlite3
+
+    from hermes_state_guard import _real_platform_state_root
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    root = _real_platform_state_root()
+    assert root is not None
+    raw = sqlite3.connect(root / "kanban.db")
+    try:
+        with pytest.raises(RuntimeError, match="test-isolation guard"):
+            with kbc.write_txn(raw):
+                kb.create_task(raw, title="wave8-probe", assignee="alpha")
+    finally:
+        raw.close()
+
+
+def test_real_platform_state_root_ignores_redirected_home(monkeypatch, tmp_path):
+    """Invariant (wave-8 forensics item 1): the deny-root follows the REAL
+    home, not the HOME env a test redirected — so the guard keeps matching
+    the production board even while HOME points at a sandbox."""
+    from hermes_state_guard import _real_platform_state_root
+
+    real = _real_platform_state_root()
+    assert real is not None
+    monkeypatch.setenv("HOME", str(tmp_path / "sandbox-home"))
+    assert _real_platform_state_root() == real, (
+        "deny-root must not follow a redirected HOME env"
+    )

@@ -507,6 +507,15 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # And never let a developer-shell (or leaked child) bypass disarm the
     # guard for in-process code under test.
     monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
+    # Kanban twin of the same escape hatch (2026-09-18 wave 8): the
+    # ``live_system_guard_bypass`` conftest wiring flips the module global
+    # ``kanban_db_connect._KANBAN_GUARD_BYPASS`` for marked tests, and any
+    # child that inherited ``HERMES_KANBAN_GUARD_BYPASS=1`` (a leaked twin
+    # from a bypass-marked test's subprocess) would disarm the kanban choke
+    # for THIS test and every orphaned descendant. Blank it alongside the
+    # state-DB twin so a leaked env var can never outlive the single marked
+    # test that legitimately asked for the bypass.
+    monkeypatch.delenv("HERMES_KANBAN_GUARD_BYPASS", raising=False)
 
     # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
     #     at import time. When the module is first imported at collection (any

@@ -722,6 +722,38 @@ def _cmd_rename(db, args):
     print(f"Session '{resolved_session_id}' renamed to: {title}")
 
 
+def _cmd_stamp(db, args):
+    """Short per-session label(s) stored server-side, so scripts and bots stamp a session on the
+    SAME store Desktop/Dashboard read (mirrors the rename/pin split: the router owns HTTP, this
+    owns the terminal).
+
+    Text REPLACES the session's list (the terminal door is the one-label case; the Desktop menu
+    is where a second and third stamp get added), and --clear empties it."""
+    resolved_session_id = db.resolve_session_id(args.session_id)
+    if not resolved_session_id:
+        return _not_found(args.session_id)
+    if args.clear:
+        if " ".join(args.text).strip():
+            print("Error: --clear takes no stamp text.")
+            return 1
+        stamp = None
+    else:
+        stamp = " ".join(args.text)
+        if not stamp.strip():
+            print("Error: stamp cannot be empty or whitespace-only (use --clear to remove one).")
+            return 1
+    try:
+        if not db.set_session_stamp(resolved_session_id, stamp):
+            return _not_found(args.session_id)
+    except ValueError as e:
+        # Control characters / over-length: the setter refuses, we report it verbatim.
+        print(f"Error: {e}")
+        return 1
+    stored = db.get_session_stamps(resolved_session_id)
+    print(f"Session '{resolved_session_id}' stamped: {', '.join(stored)}" if stored
+          else f"Cleared stamp on session '{resolved_session_id}'.")
+
+
 def _cmd_pin(db, args, pinning):
     """Durable "keep" flag (exempt from sessions.auto_archive, always listed); every surface shares the store."""
     failures = 0
@@ -967,6 +999,7 @@ _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _c
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
+    "stamp": _cmd_stamp,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,

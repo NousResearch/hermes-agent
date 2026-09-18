@@ -19,6 +19,7 @@ from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    effective_session_stamps,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -914,6 +915,94 @@ class SessionSessionsMixin:
             if not is_canonical_bot_chat:
                 self._set_lineage_column("hidden", session_id, 0)
         return result
+
+    # Stamps are up to THREE short free-text labels per session (Merged, WIP, Review, Handoff,
+    # …), kept in the order they were added. They ride the compression lineage exactly like
+    # pinned/archived: list readers project a root to its live tip, so a tip-only write would
+    # let the root resurrect a stale list on refresh.
+    #
+    # `stamps` (a JSON array) is the truth. The older singular `stamp` column mirrors the FIRST
+    # label (and stays NULL when the list is empty) so the CLI, the dashboard and any client
+    # that only knows one label keep reading a coherent value instead of a stale one.
+    MAX_STAMP_LENGTH = 24
+    MAX_SESSION_STAMPS = 3
+    _STAMP_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+    @classmethod
+    def normalize_session_stamp(cls, stamp: Optional[str]) -> Optional[str]:
+        """Normalize a stamp to the stored form — ``None`` means no stamp. ``None`` or a blank
+        string clears (None); anything else is stripped and internal whitespace runs collapse to
+        one space. Control characters (newline/tab/…) and text past :data:`MAX_STAMP_LENGTH` are
+        REJECTED with ValueError rather than silently sanitized — the caller must see the refusal,
+        and the router maps it to HTTP 400."""
+        if stamp is None:
+            return None
+        text = stamp.strip()
+        if not text:
+            return None
+        if cls._STAMP_CONTROL_RE.search(text):
+            raise ValueError("Stamp cannot contain control characters (newline, tab, …)")
+        text = re.sub(r"\s+", " ", text)
+        if len(text) > cls.MAX_STAMP_LENGTH:
+            raise ValueError(f"Stamp too long ({len(text)} chars, max {cls.MAX_STAMP_LENGTH})")
+        return text
+
+    @classmethod
+    def normalize_session_stamps(cls, labels: Optional[Sequence[str]]) -> List[str]:
+        """Normalize a whole label list: each entry through :meth:`normalize_session_stamp`,
+        blanks dropped, case-insensitive duplicates collapsed onto their FIRST spelling, order
+        preserved. ``None``/empty/blank-only clears (an empty list).
+
+        Past :data:`MAX_SESSION_STAMPS` distinct labels this RAISES rather than truncating: the
+        list is what the user built, and silently dropping the tail would hide a real refusal.
+        """
+        out: List[str] = []
+        for raw in labels or ():
+            label = cls.normalize_session_stamp(raw)
+            if not label or any(label.lower() == seen.lower() for seen in out):
+                continue
+            out.append(label)
+        if len(out) > cls.MAX_SESSION_STAMPS:
+            raise ValueError(
+                f"Too many stamps ({len(out)}, max {cls.MAX_SESSION_STAMPS})")
+        return out
+
+    @staticmethod
+    def _stamps_payload(labels: Sequence[str]) -> Optional[str]:
+        """Stored form of a label list: a JSON array, or NULL for an empty list — never ``'[]'``,
+        which would read as "stamped with nothing" to a raw-SQL reader."""
+        return json.dumps(list(labels), ensure_ascii=False) if labels else None
+
+    def set_session_stamps(self, session_id: str, labels: Optional[Sequence[str]]) -> bool:
+        """Replace a session's whole stamp list (empty clears) across its compression lineage.
+        Raises ValueError on an invalid label, a repeated-over-limit list, or a control character.
+
+        The singular `stamp` column is written in the same call so single-label readers (the CLI
+        listing, an older Desktop build) never read a label the list no longer carries."""
+        normalized = self.normalize_session_stamps(labels)
+        wrote = self._set_lineage_column("stamps", session_id, self._stamps_payload(normalized))
+        self._set_lineage_column("stamp", session_id, normalized[0] if normalized else None)
+        return wrote
+
+    def set_session_stamp(self, session_id: str, stamp: Optional[str]) -> bool:
+        """Set (or clear, when ``stamp`` is None/blank) a session's stamp: the singular door is
+        the one-label case of :meth:`set_session_stamps`, so it REPLACES the list. Raises
+        ValueError on control characters or an over-length label."""
+        return self.set_session_stamps(session_id, [stamp] if stamp else [])
+
+    def get_session_stamps(self, session_id: str) -> List[str]:
+        """Get a session's stamp labels, in order — empty when unstamped. A row written before
+        the list column existed (or by a single-label writer) reads as its one ``stamp``."""
+        row = self._read_one(
+            "SELECT stamps, stamp FROM sessions WHERE id = ?", (session_id,))
+        if not row:
+            return []
+        return effective_session_stamps(row["stamps"], row["stamp"])
+
+    def get_session_stamp(self, session_id: str) -> Optional[str]:
+        """Get a session's FIRST stamp label, or None when unstamped (the stored form)."""
+        labels = self.get_session_stamps(session_id)
+        return labels[0] if labels else None
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""

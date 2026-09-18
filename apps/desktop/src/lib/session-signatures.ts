@@ -5,6 +5,16 @@
 
 import type { SessionInfo, SessionMessage } from '@/hermes'
 
+/** Value-equality for a stamp LIST. The list arrives as a fresh array every poll, so an
+ *  identity compare would mark every row as changed and repaint the list for nothing; a
+ *  length-and-order compare keeps the signature cheap while still noticing a toggle. */
+function sameStamps(one: string[] | undefined, other: string[] | undefined): boolean {
+  const a = one ?? []
+  const b = other ?? []
+
+  return a.length === b.length && a.every((label, index) => label === b[index])
+}
+
 export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   if (a.length !== b.length) {
     return false
@@ -30,7 +40,12 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
       session.pinned === other.pinned &&
-      session.archived === other.archived
+      session.archived === other.archived &&
+      // Same reasoning for the stamp: an idle row's only delta is the label the
+      // user just put on it, and a page that never swaps in would keep showing
+      // the list without it.
+      sameStamps(session.stamps, other.stamps) &&
+      session.stamp === other.stamp
     )
   })
 }

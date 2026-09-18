@@ -526,6 +526,18 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** The session's durable stamp labels (`sessions.stamps`) — up to three short
+   *  pieces of free text ("Merged", "WIP", "Review", "Handoff", "Hold", or the
+   *  user's own words), in the order they were added, each painting as a tinted
+   *  chip beside the title in every list and tab. Server-side only,
+   *  deliberately: two Desktop installs and the CLI have to agree on them, so
+   *  the row IS the truth (see store/session-stamp). The backend projects a real
+   *  list; an older backend omits it and `stamp` carries the one label. */
+  stamps?: string[]
+  /** The session's FIRST stamp, kept for single-label readers (the CLI, an
+   *  older client). Null and undefined both read as unstamped; the list wins
+   *  when both are present. */
+  stamp?: null | string
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
    *  see `SessionDB.session_unread`). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.

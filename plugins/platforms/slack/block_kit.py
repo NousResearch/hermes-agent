@@ -91,6 +91,15 @@ _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
+# Strongest emphasis first, each paired with the width of its closing delimiter, so a
+# candidate match can be rejected when that delimiter sits inside an inline code span
+# (code is opaque: a `*` or `_` between backticks is never emphasis).
+_EMPHASIS_RULES = (
+    (_BOLD_RE, "bold", 2),
+    (_STRIKE_RE, "strike", 2),
+    (_ITALIC_RE, "italic", 1),
+)
+
 
 def _mention_element(body: str) -> Optional[dict[str, Any]]:
     """Map a Slack mention token body (without the angle brackets) to a rich_text element.
@@ -111,8 +120,9 @@ def _mention_element(body: str) -> Optional[dict[str, Any]]:
 
 def _inline_elements(text: str) -> list[dict[str, Any]]:
     """Parse a run of inline markdown into rich_text section child elements.
-    Produces ``text`` elements (optionally styled bold/italic/strike/code) and ``link`` elements.
-    Unmatched markup is emitted verbatim as plain text, so this never loses characters."""
+    Produces ``text`` elements (optionally styled bold/italic/strike/code), ``link`` elements and
+    mention elements. Unmatched markup is emitted verbatim as plain text, so this never loses
+    characters."""
     elements: list[dict[str, Any]] = []
 
     def emit_text(s: str, style: Optional[dict[str, bool]] = None) -> None:
@@ -123,10 +133,33 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
             el["style"] = style
         elements.append(el)
 
-    # Tokenize by the highest-priority markers first using a single scan.
-    # We recursively split on code, then links, then emphasis to keep spans
-    # from overlapping incorrectly.
+    # Emphasis is resolved outermost, then inline code, then links. That order is
+    # the fix, not an accident: emphasis has to be found before the constructs it
+    # may wrap, or its own delimiters get consumed as ordinary text by the earlier
+    # passes and leak into the rendered message (see _EMPHASIS_RULES below). Code
+    # spans stay opaque — a `*` or `_` inside backticks is never emphasis — so a
+    # candidate match is only accepted when both of its delimiters sit outside one.
     def walk(s: str, style: dict[str, bool]) -> None:
+        if not s:
+            return
+        spans = [(m.start(), m.end()) for m in _INLINE_CODE_RE.finditer(s)]
+
+        def opaque(pos: int) -> bool:
+            return any(a <= pos < b for a, b in spans)
+
+        for rx, key, delim in _EMPHASIS_RULES:
+            for m in rx.finditer(s):
+                if opaque(m.start()) or opaque(m.end() - delim):
+                    continue
+                inner_style = dict(style)
+                inner_style[key] = True
+                walk(s[: m.start()], style)
+                walk(m.group(1), inner_style)
+                walk(s[m.end() :], style)
+                return
+        _walk_code(s, style)
+
+    def _walk_code(s: str, style: dict[str, bool]) -> None:
         pos = 0
         # inline code is opaque — no nested styling
         for m in _INLINE_CODE_RE.finditer(s):
@@ -134,6 +167,7 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
             emit_text(m.group(1), {**style, "code": True})
             pos = m.end()
         _walk_links(s[pos:], style)
+
     def _emit_link(url: str, text: str, style: dict[str, bool]) -> None:
         link_el: dict[str, Any] = {"type": "link", "url": url, "text": text}
         if style:
@@ -151,32 +185,18 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
     def _walk_slack_links(s: str, style: dict[str, bool]) -> None:
         # rich_text does not interpret mrkdwn. Agents often emit <url|label>
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
-        # Mention labels are dropped from the element anyway; strip them first
-        # so a label like |dev_ops_alerts is not split by the italic regex.
-        s = _SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}>", s)
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
+            _emit_leaf(s[pos : m.start()], style)
             url = m.group(1)
             _emit_link(url, m.group(2) or url, style)
             pos = m.end()
-        _walk_emphasis(s[pos:], style)
-    def _walk_emphasis(s: str, style: dict[str, bool]) -> None:
-        if not s:
-            return
-        # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
-            m = rx.search(s)
-            if m:
-                _walk_emphasis(s[: m.start()], style)
-                inner_style = dict(style)
-                inner_style[key] = True
-                _walk_emphasis(m.group(1), inner_style)
-                _walk_emphasis(s[m.end() :], style)
-                return
-        # Base case: split on mention tokens at the leaf so emphasis spans
-        # wrapping a mention are kept intact, while mentions themselves
-        # remain unstyled (Slack rejects styled mention elements).
+        _emit_leaf(s[pos:], style)
+
+    def _emit_leaf(s: str, style: dict[str, bool]) -> None:
+        # Split on mention tokens at the leaf so emphasis spans wrapping a mention
+        # are kept intact, while mentions themselves remain unstyled (Slack rejects
+        # styled mention elements).
         pos = 0
         for m in _SLACK_MENTION_RE.finditer(s):
             emit_text(s[pos : m.start()], dict(style) if style else None)
@@ -187,7 +207,10 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
                 emit_text(m.group(0), dict(style) if style else None)
             pos = m.end()
         emit_text(s[pos:], dict(style) if style else None)
-    walk(text, {})
+
+    # Mention labels are dropped from the element anyway; strip them before the
+    # emphasis pass so a label like |dev_ops_alerts is not split by the italic regex.
+    walk(_SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}>", text), {})
     return elements or [{"type": "text", "text": text}]
 
 

@@ -376,3 +376,41 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_reset_no_progress_after_compaction_clears_only_the_idempotent_streak_109683():
+    """#109683: mid-turn REAL compaction rewrites the visible transcript, so a legitimate
+    re-read of content the model can no longer see must not inherit the no-progress streak
+    counted against the PRE-compaction context. Only the idempotent no-progress tracker may
+    be reset; exact-failure / same-tool-failure counters are unrelated to context visibility
+    and must survive untouched (complements the cross-turn tracker in open PR #85352)."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True, no_progress_warn_after=2, no_progress_block_after=2,
+            exact_failure_block_after=5,
+        )
+    )
+    read_args = {"path": "notes.md"}
+    controller.before_call("read_file", read_args)
+    controller.after_call("read_file", read_args, "same content", failed=False)
+    controller.before_call("read_file", read_args)
+    controller.after_call("read_file", read_args, "same content", failed=False)
+    blocked = controller.before_call("read_file", read_args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+    # Unrelated exact-failure streak, warmed on a different tool/signature.
+    fail_args = {"command": "pytest -k thing"}
+    controller.before_call("terminal", fail_args)
+    controller.after_call("terminal", fail_args, "boom", failed=True)
+    controller.before_call("terminal", fail_args)
+    second_fail = controller.after_call("terminal", fail_args, "boom", failed=True)
+    assert second_fail.count == 2
+
+    controller.reset_no_progress_after_compaction()
+
+    # The re-read is allowed again — the pre-compaction streak no longer blocks it.
+    assert controller.before_call("read_file", read_args).action == "allow"
+    # The exact-failure streak kept counting from where it left off, untouched by the reset.
+    third_fail = controller.after_call("terminal", fail_args, "boom", failed=True)
+    assert third_fail.count == 3

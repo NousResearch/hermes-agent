@@ -329,6 +329,20 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
+    def reset_no_progress_after_compaction(self) -> None:
+        """Forget streaks whose evidence was removed by a real mid-turn compaction.
+
+        Compression changes the model-visible context, so an idempotent re-read used to
+        re-anchor after compaction is not a continuation of the pre-compaction loop. Failure
+        counters and caps deliberately survive: they track independent safety boundaries.
+        """
+        self._no_progress.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_result_hash = ""
+        self._identical_streak_count = 0
+        self._identical_streak_first_call_id = ""
+        self._call_history.clear()
+
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision

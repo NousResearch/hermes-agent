@@ -1545,6 +1545,17 @@ OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
 )
 
 
+def openrouter_slug_suffix(model_id: str) -> str | None:
+    """Raw suffix after the LAST ``:`` (``x-ai/grok-4:nitro`` → ``nitro``,
+    ``z-ai/glm-5.3-flash:deepinfra/fp4`` → ``deepinfra/fp4``), else None.
+    Pure parsing — callers classify the suffix (catalog variant, routing
+    modifier, provider pin)."""
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base or not suffix:
+        return None
+    return suffix
+
+
 def openrouter_variant_base(model_id: str) -> str | None:
     """Return the base model id when ``model_id`` carries a recognized
     OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
@@ -1561,11 +1572,9 @@ def openrouter_variant_base(model_id: str) -> str | None:
     >>> openrouter_variant_base("x-ai/grok-4") is None
     True
     """
-    base, sep, suffix = (model_id or "").rpartition(":")
-    if not sep or not base:
-        return None
-    if suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
-        return base
+    suffix = openrouter_slug_suffix(model_id)
+    if suffix is not None and suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return (model_id or "").rpartition(":")[0]
     return None
 
 

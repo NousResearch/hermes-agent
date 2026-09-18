@@ -29,7 +29,9 @@ def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
         "used_fallback": False,
     }
     with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
-         patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+         patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+         patch("hermes_cli.models.fetch_openrouter_endpoint_slugs",
+               return_value=kw.pop("endpoint_slugs", None)):
         return validate_requested_model(model, provider, **kw)
 
 
@@ -703,6 +705,114 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result["accepted"] is True
         assert result["recognized"] is True
         assert result.get("corrected_model") is None
+
+
+class TestValidateOpenRouterProviderPinSuffixes:
+    """OpenRouter provider-pin suffixes (`model:wafer`, `model:deepinfra/fp4`)
+    are wire-valid but never listed in /models (only `:free`/`:batch` SKUs and
+    the `:nitro`-family modifiers appear there). Validation must verify the
+    suffix against the model's public endpoints API, accept valid pins
+    verbatim, reject unknown pins naming the available provider slugs, and
+    keep the pre-existing generic reject when the endpoints API is
+    unreachable — a typo must not pass just because the probe failed."""
+
+    _LISTING = ["z-ai/glm-5.3-flash", "x-ai/grok-4.6"]
+    _SLUGS = ["deepinfra/fp4", "wafer", "z-ai/fp8"]
+
+    def _validate(self, model, slugs=_SLUGS, api_models=None):
+        return _validate(model, "openrouter", api_models=api_models or self._LISTING,
+                         endpoint_slugs=slugs)
+
+    def test_provider_pin_accepted_verbatim(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafer")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_provider_pin_with_quantization_tag_accepted(self):
+        result = self._validate("z-ai/glm-5.3-flash:deepinfra/fp4")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_provider_pin_case_insensitive(self):
+        result = self._validate("z-ai/glm-5.3-flash:WAFER")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_unknown_pin_rejected_with_available_pins(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafre")
+        assert result["accepted"] is False
+        assert ":wafer" in result["message"]
+        assert "wafre" in result["message"]
+
+    def test_pin_listing_truncated_for_wide_models(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafre", slugs=[f"prov{i}" for i in range(12)])
+        assert result["accepted"] is False
+        assert "and 4 more" in result["message"]
+
+    def test_unreachable_endpoints_api_keeps_generic_reject(self):
+        """No endpoints data → fall through to the pre-existing verdict path;
+        a guessed suffix must not be soft-accepted on a failed probe."""
+        result = self._validate("z-ai/glm-5.3-flash:bogus", slugs=None)
+        assert result["accepted"] is False
+
+    def test_pin_on_unknown_base_rejected(self):
+        result = self._validate("x-ai/notreal-model:wafer")
+        assert result["accepted"] is False
+
+    def test_non_openrouter_provider_unaffected(self):
+        result = _validate(
+            "z-ai/glm-5.3-flash:wafer", "groq", api_models=["z-ai/glm-5.3-flash"],
+        )
+        assert result["accepted"] is False
+
+    def test_catalog_fallback_pin_accepted(self):
+        """Gateway path: /models unreachable → curated catalog validates the
+        base id and the endpoints API still verifies the pin."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.provider_model_ids",
+                   return_value=["z-ai/glm-5.3-flash"]), \
+             patch("hermes_cli.models.fetch_openrouter_endpoint_slugs",
+                   return_value=self._SLUGS):
+            result = validate_requested_model(
+                "z-ai/glm-5.3-flash:wafer",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+
+class TestOpenRouterSlugSuffixParser:
+    """hermes_constants.openrouter_slug_suffix: pure suffix parsing shared by
+    the modifier and provider-pin paths."""
+
+    def test_modifier_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("x-ai/grok-4:nitro") == "nitro"
+
+    def test_provider_pin_with_slash(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash:deepinfra/fp4") == "deepinfra/fp4"
+
+    def test_no_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash") is None
+
+    def test_empty_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash:") is None
+
+    def test_variant_base_still_excludes_free_sku(self):
+        from hermes_constants import openrouter_variant_base
+
+        assert openrouter_variant_base("x-ai/grok-4:NITRO") == "x-ai/grok-4"
+        assert openrouter_variant_base("thinkingmachines/inkling:free") is None
 
 
 class TestValidateRequestedModelNousPortalRecommendations:

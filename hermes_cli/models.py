@@ -2632,6 +2632,51 @@ def fetch_api_models(
     return result.get("models")
 
 
+# OpenRouter per-model endpoint slugs (provider-pin suffixes). Process-lifetime
+# cache: a pin validation is a rare user action, the public endpoints response
+# changes at most a few times a day.
+_OPENROUTER_ENDPOINT_SLUGS_TTL: float = 3600.0
+_openrouter_endpoint_slugs_cache: dict[str, tuple[float, list[str]]] = {}
+_openrouter_endpoint_slugs_lock = threading.Lock()
+
+
+def fetch_openrouter_endpoint_slugs(
+    base_model_id: str, *, timeout: float = 4.0, force_refresh: bool = False,
+) -> Optional[list[str]]:
+    """Provider endpoint slugs for ``base_model_id`` from OpenRouter's public
+    ``/models/{id}/endpoints`` — the ``tag`` fields (``wafer``, ``deepinfra/fp4``,
+    ...). These are exactly the suffixes OpenRouter accepts as provider pins
+    (``vendor/model:wafer``); pinned ids never appear in ``/models`` itself.
+
+    Returns the sorted slug list, or None when the API is unreachable or yields
+    no endpoints (callers fall through to their existing verdict path). Successful
+    results are cached for ``_OPENROUTER_ENDPOINT_SLUGS_TTL`` seconds."""
+    base = (base_model_id or "").strip().strip(":")
+    if not base or "/" not in base:
+        return None
+    now = time.monotonic()
+    key = base.lower()
+    if not force_refresh:
+        with _openrouter_endpoint_slugs_lock:
+            cached = _openrouter_endpoint_slugs_cache.get(key)
+            if cached and (now - cached[0]) < _OPENROUTER_ENDPOINT_SLUGS_TTL:
+                return list(cached[1])
+    from hermes_constants import OPENROUTER_BASE_URL
+
+    url = f"{OPENROUTER_BASE_URL}/models/{urllib.parse.quote(base, safe='')}/endpoints"
+    try:
+        data = _get_json(url, timeout=timeout, headers={"User-Agent": _HERMES_USER_AGENT})
+        endpoints = ((data or {}).get("data") or {}).get("endpoints") or []
+        slugs = sorted({str(e["tag"]).strip() for e in endpoints if isinstance(e, dict) and e.get("tag")})
+    except Exception:
+        return None
+    if not slugs:
+        return None
+    with _openrouter_endpoint_slugs_lock:
+        _openrouter_endpoint_slugs_cache[key] = (now, slugs)
+    return list(slugs)
+
+
 def _custom_endpoint_fingerprint(
     api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
     """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to

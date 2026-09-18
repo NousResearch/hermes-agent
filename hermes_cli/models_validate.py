@@ -16,7 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
-from hermes_constants import openrouter_variant_base
+from hermes_constants import openrouter_slug_suffix, openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -478,6 +478,31 @@ def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
         return [], False
     catalog = _static_catalog(normalized)
     return catalog, own_endpoint and bool(catalog)
+def _openrouter_pin_verdict(req: _Request, catalog: list[str]) -> Optional[dict[str, Any]]:
+    """Verdict for OpenRouter provider-pin suffixes (``model:wafer``,
+    ``model:deepinfra/fp4``): wire-valid ids OpenRouter never lists in ``/models``
+    (only ``:free``/``:batch`` SKUs and the ``:nitro``-style modifiers appear there).
+    When the BASE id is listed, verify the suffix against the model's public
+    endpoints API — a valid pin is accepted verbatim, a bad one is rejected with
+    the available pins. Returns None (fall through to the caller's verdict path)
+    when this is not a pin case or the endpoints API is unreachable."""
+    if req.normalized != "openrouter" or ":" not in req.lookup:
+        return None
+    base = req.lookup.rpartition(":")[0]
+    suffix = openrouter_slug_suffix(req.lookup)
+    if not suffix or base not in set(catalog):
+        return None
+    from hermes_cli import models as _m
+
+    slugs = _m.fetch_openrouter_endpoint_slugs(base)
+    if not slugs:
+        return None
+    if suffix.lower() in {s.lower() for s in slugs}:
+        return _accept()
+    shown = ", ".join(f"`:{s}`" for s in slugs[:8])
+    more = f" (and {len(slugs) - 8} more)" if len(slugs) > 8 else ""
+    return _reject(f"`:{suffix}` does not match any provider endpoint of `{base}` on OpenRouter."
+                   f"\n  Available provider pins: {shown}{more}")
 
 
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
@@ -512,6 +537,11 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     variant_base = openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
     if variant_base is not None and variant_base in set(api_models):
         return _accept()
+    # Provider pins (":wafer", ":deepinfra/fp4", ...) are also wire-valid, never listed —
+    # verify the suffix against the model's public endpoints API.
+    pin = _openrouter_pin_verdict(req, api_models)
+    if pin is not None:
+        return pin
     # Listed but not found: the account may reach models absent from the public listing
     # (e.g. Z.AI Pro/Max plans use glm-5 on coding endpoints) — warn but allow where plausible.
     # Curated-catalog soft-accept: providers omit valid models from live listings (stale cache,
@@ -599,6 +629,9 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
         variant_base = openrouter_variant_base(req.lookup)
         if variant_base is not None and variant_base.lower() in {m.lower() for m in catalog}:
             return _accept()
+        pin = _openrouter_pin_verdict(req, catalog)
+        if pin is not None:
+            return pin
     return _soft_accept(
         f"Note: `{req.requested}` was not found in the {label} curated catalog "
         f"and the /models endpoint was unreachable.{match.suggestion_text}"

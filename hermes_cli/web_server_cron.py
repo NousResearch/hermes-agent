@@ -123,13 +123,19 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
-def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+def _annotate_cron_job(
+    job: Dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
+) -> Dict[str, Any]:
     return {
         **job,
         "profile": profile,
         "profile_name": profile,
         "hermes_home": str(home),
-        "is_default_profile": profile == "default"}
+        "is_default_profile": profile == "default",
+        # Seconds since this profile's ticker last iterated (None = never/unknown): a
+        # `next_run_at` parked in the past is only explained by a scheduler that stopped
+        # ticking, so the dashboard can date it (#114309).
+        "scheduler_heartbeat_age_s": heartbeat_age}
 
 
 @contextlib.contextmanager
@@ -158,10 +164,11 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
             result = create_job_with_scheduler_registration(*args, **kwargs)
         else:
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        heartbeat_age = cron_jobs.get_ticker_heartbeat_age()
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        return [_annotate_cron_job(j, profile_name, home, heartbeat_age) for j in result]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        return _annotate_cron_job(result, profile_name, home, heartbeat_age)
     return result
 
 

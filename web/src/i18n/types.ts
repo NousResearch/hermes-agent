@@ -323,6 +323,7 @@ export interface Translations {
     last: string;
     next: string;
     overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;

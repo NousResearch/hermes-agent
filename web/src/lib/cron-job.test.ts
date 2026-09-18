@@ -5,7 +5,9 @@ import {
   cronJobHasExecutionContent,
   cronJobFormFromJob,
   cronLastResult,
+  cronAgoLabel,
   cronNextRunOverdueMs,
+  cronSchedulerStaleAgeS,
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
@@ -218,5 +220,22 @@ describe("cronNextRunOverdueMs", () => {
     ).toBeNull();
     expect(cronNextRunOverdueMs({ next_run_at: "2026-09-17T13:34:18+04:00", enabled: false }, now)).toBeNull();
     expect(cronNextRunOverdueMs({ next_run_at: "not-a-date", enabled: true }, now)).toBeNull();
+  });
+});
+
+describe("cronSchedulerStaleAgeS", () => {
+  it("dates the oldest stale ticker among jobs expected to fire, and stays quiet otherwise (#114309)", () => {
+    expect(
+      cronSchedulerStaleAgeS([
+        { scheduler_heartbeat_age_s: 25 * 3600, enabled: true, state: "scheduled" },
+        { scheduler_heartbeat_age_s: 7 * 3600, enabled: true },
+        { scheduler_heartbeat_age_s: 90 * 3600, enabled: true, state: "paused" },
+      ]),
+    ).toBe(25 * 3600);
+    expect(cronSchedulerStaleAgeS([{ scheduler_heartbeat_age_s: 90, enabled: true }])).toBeNull();
+    expect(cronSchedulerStaleAgeS([{ scheduler_heartbeat_age_s: null, enabled: true }])).toBeNull();
+    expect(cronSchedulerStaleAgeS([{ scheduler_heartbeat_age_s: 25 * 3600, enabled: false }])).toBeNull();
+    expect(cronSchedulerStaleAgeS([])).toBeNull();
+    expect([7 * 3600 + 120, 90, 3 * 86400].map(cronAgoLabel)).toEqual(["7h ago", "1m ago", "3d ago"]);
   });
 });

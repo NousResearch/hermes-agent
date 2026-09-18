@@ -24,7 +24,7 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials

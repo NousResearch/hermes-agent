@@ -128,6 +128,16 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     assert result.stdout.strip() == str(fake_home / ".x" / "config.yaml")
     assert not (cwd / "~").exists(), sorted(p.name for p in cwd.iterdir())
 
+    # Raw-reader observable: the ~30 ``os.environ["HERMES_HOME"]`` readers in hermes_cli/ never
+    # call the resolver, so the entry-point hunk in main.py (not hermes_constants) must have
+    # rewritten the env var by the time the module import finishes.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
+        capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == str(fake_home / ".x")
+
 
 def test_normalize_hermes_home_env_rewrites_tilde_and_leaves_absolute_alone(tmp_path, monkeypatch):
     from hermes_cli import _startup_fast

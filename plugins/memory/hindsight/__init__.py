@@ -1022,19 +1022,25 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
                               label: str, track_ops: bool = True) -> Callable[[], None]:
-        """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
-        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
-        content = "[" + ",".join(turns) + "]"
-        metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
-        lineage = (("session", self._session_id), ("parent", self._parent_session_id))
-        tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
-        bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
+        """Writer job shipping *turns* as one document. Everything is snapshotted NOW —
+        the item included — because the writer runs after later sync_turn() calls or an
+        on_session_switch() mutate the provider's mutable item-config attributes
+        (_retain_tags, _observation_scopes, _retain_source). Building the item at run
+        time would stamp an OLD-session retain with NEW-session tags/scopes."""
+        item = self._build_retain_kwargs(
+            "[" + ",".join(turns) + "]",
+            context=self._retain_context,
+            metadata=self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index),
+            tags=[f"{kind}:{sid}" for kind, sid in
+                  (("session", self._session_id), ("parent", self._parent_session_id)) if sid] or None,
+            update_mode=update_mode,
+        )
+        bank_id, retain_async = self._bank_id, self._retain_async
 
         def _job() -> None:
-            item = self._build_retain_kwargs(content, context=retain_context, metadata=metadata,
-                                             tags=tags, update_mode=update_mode)
             logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
+                         label, bank_id, document_id, update_mode, retain_async,
+                         len(item["content"]), len(turns))
             resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.

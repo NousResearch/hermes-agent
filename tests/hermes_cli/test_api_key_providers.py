@@ -1362,3 +1362,65 @@ class TestIonetProvider:
     def test_ionet_aux_model_from_profile(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("io-net") == "zai-org/GLM-5.3-Flash"
+
+    def test_ionet_pricing_cache(self, monkeypatch):
+        """_fetch_ionet_pricing should convert /models per-token prices and cache on the base URL."""
+        from hermes_cli import models as models_mod
+        from hermes_cli import models_pricing
+        monkeypatch.setenv("IONET_API_KEY", "io-test-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
+        models_pricing._pricing_cache.pop("https://api.intelligence.io.solutions/api/v1", None)
+
+        call_count = {"n": 0}
+        fake_payload = {
+            "data": [
+                {
+                    "id": "org/model",
+                    "input_token_price": 6.066e-07,
+                    "output_token_price": 1.0386e-06,
+                    "cache_read_token_price": 3.033e-07,
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            assert req.full_url == "https://api.intelligence.io.solutions/api/v1/models"
+            assert "Bearer io-test-key" in req.headers.get("Authorization", "")
+            return _FakeResp()
+
+        monkeypatch.setattr(
+            models_mod, "_urlopen_model_catalog_request", fake_urlopen
+        )
+
+        first = models_pricing._fetch_ionet_pricing()
+        assert first["org/model"]["prompt"] == str(6.066e-07)
+        assert first["org/model"]["completion"] == str(1.0386e-06)
+        assert first["org/model"]["input_cache_read"] == str(3.033e-07)
+        assert call_count["n"] == 1
+
+        # Second call returns cached result without re-hitting the network.
+        second = models_pricing._fetch_ionet_pricing()
+        assert second == first
+        assert call_count["n"] == 1
+
+        # force_refresh bypasses the cache.
+        models_pricing._fetch_ionet_pricing(force_refresh=True)
+        assert call_count["n"] == 2
+
+    def test_ionet_pricing_registered(self):
+        from hermes_cli import models_pricing
+        assert models_pricing._PRICING_FETCHERS["io-net"] is models_pricing._fetch_ionet_pricing_for_provider
+        assert models_pricing._STATIC_PRICING_SCOPES["io-net"] is models_pricing._ionet_pricing_scope
+        assert models_pricing.pricing_cache_scope("io-net") == "https://api.intelligence.io.solutions/api/v1"

@@ -630,6 +630,25 @@ class TestRootLevelProviderOverride:
         assert cfg["terminal"]["vercel_runtime"] == "python3.13"
         assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
+    def test_display_input_height_reaches_the_tui_dimension(self, tmp_path, monkeypatch):
+        """display.input_height, set via config.yaml, reaches the TextArea's Dimension via
+        load_cli_config() — the same loader the CLI actually uses."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"display": {"input_height": 4}}))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["display"]["input_height"] == 4
+        assert cli._cli_input_min_height(cfg) == 4
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys

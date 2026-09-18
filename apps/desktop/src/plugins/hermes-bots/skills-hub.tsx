@@ -10,6 +10,8 @@ import { Button, host, Input } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
+import { requestForBot } from './routing'
+import type { RosterRow } from './types'
 
 // ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
 // https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
@@ -26,13 +28,12 @@ interface HubSkillResult {
   name: string
 }
 interface HubSkillsSectionProps {
-  /** Install target: a bare profile name, a connection-scoped descriptor for a
-   *  bot on another gateway, or null for the launch profile (create time). */
-  forProfile: null | string | { connectionId?: null | string; profile?: null | string }
+  /** Existing bot to route through; omitted for the launch profile at create time. */
+  bot?: RosterRow
   onInstalled?: (name: string) => void
 }
 
-export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionProps) {
+export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   const b = useBots()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<HubSkillResult[] | null>(null)
@@ -119,18 +120,15 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
     setInstalling(label)
 
     try {
-      // With forProfile the install lands in that bot's skills dir
-      // (gateway skills.manage profile scoping); null = launch profile,
-      // which is right at create time — the new bot clones/copies from it.
-      await host.request('skills.manage', {
+      // Existing bots must use their owner route; the active gateway is not
+      // necessarily the gateway that owns the bot. Create-time installs stay
+      // ambient because there is no bot row to route yet.
+      const params = {
         action: 'install',
         query: name,
-        ...(forProfile
-          ? {
-              profile: forProfile
-            }
-          : {})
-      })
+        ...(bot ? { profile: bot.name } : {})
+      }
+      await (bot ? requestForBot(bot, 'skills.manage', params) : host.request('skills.manage', params))
       setInstalled(prev => ({
         ...prev,
         [label]: true

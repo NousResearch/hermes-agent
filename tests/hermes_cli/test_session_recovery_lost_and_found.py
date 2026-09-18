@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from hermes_cli import session_recovery
 from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
+    _cli_recover_attempts,
     classify_lost_and_found_row,
     map_lost_and_found_rows,
     rebuild_fts_indexes,
@@ -157,9 +160,10 @@ def test_exact_lookup_recovers_tail_row_next_to_damaged_high_edge(
 
     copied = report["copy"]["messages"]
     bounds = copied["rowid_bounds"]
-    # Premise check: the high edge probe really failed and fell back.
+    # Premise check: the high edge probe really failed; the bound came from the aggregate
+    # (#98050) or, when that fails too, the synthetic-domain fallback.
     assert any("high rowid" in error for error in bounds["errors"]), bounds
-    assert "high" in bounds["fallback_edges"]
+    assert "high" in bounds["fallback_edges"] or "high" in bounds.get("aggregate_edges", ())
 
     conn = sqlite3.connect(str(output))
     try:
@@ -302,6 +306,54 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
         assert len(sessions) == expected["sessions"]
     finally:
         recovered_db.close()
+
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_lost_and_found_lane_recovers_page1_header_damaged_source(tmp_path: Path) -> None:
+    """#106667: a garbage page-1 header makes SQLite (and the shell's .recover) refuse the file
+    with 'file is not a database' although every data page survives. The lane must still
+    salvage the rows, and must do it on its snapshot — the user's file stays byte-identical."""
+    source = tmp_path / "header-damaged.db"
+    output = tmp_path / "header-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        for session_number in range(3):
+            session_id = f"hdr-session-{session_number}"
+            db.create_session(session_id, "cli", cwd="/tmp/hdr")
+            for message_number in range(9):
+                db.append_message(session_id, "user", f"payload {session_number} {message_number}")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
+    data = bytearray(source.read_bytes())
+    data[0:100] = bytes(range(1, 101))  # not the magic, not zeroes: the incident shape
+    source.write_bytes(data)
+    damaged_bytes = source.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        sqlite3.connect(str(source)).execute("SELECT count(*) FROM sqlite_master").fetchone()
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["sqlite3_cli"]["header_zeroed"] is True
+    assert any("header salvage" in warning for warning in report["verification"]["warnings"])
+    assert source.read_bytes() == damaged_bytes
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 27
+    finally:
+        conn.close()
 
 
 # ── mapper unit tests (no sqlite3 CLI required) ─────────────────────────────
@@ -1126,3 +1178,43 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
     assert report["lost_and_found"]["unrecognized_layout_rows"] == 2
     assert report["verified"] is False
     assert any("matched no known physical column layout" in e for e in report["verification"]["errors"])
+
+
+# ── .recover stderr pipe must be drained while the child runs ──────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="stub sqlite3 is a /bin/sh script")
+def test_recover_attempts_survive_dump_stderr_beyond_pipe_buffer(tmp_path: Path) -> None:
+    """A heavily damaged source makes ``.recover`` emit per-page diagnostics on
+    stderr. Past the OS pipe buffer (~64KB) an undrained stderr blocks the dump
+    child, its stdout never reaches EOF, and ``load.communicate()`` burns the
+    whole salvage timeout instead of finishing in milliseconds."""
+    stub = tmp_path / "sqlite3"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-readonly" ]; then\n'
+        "  i=0\n"
+        "  while [ $i -lt 3000 ]; do\n"
+        '    echo "lost and found page $i: orphan btree cell, unable to reconstruct row" >&2\n'
+        "    i=$((i+1))\n"
+        "  done\n"
+        '  echo "Error: near line 4000: file is not a database" >&2\n'
+        '  echo "CREATE TABLE t(x); INSERT INTO t VALUES(1);"\n'
+        "else\n"
+        "  cat >/dev/null\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    source = tmp_path / "source.db"
+    source.write_bytes(b"corrupt")
+    lf_path = tmp_path / "lost_and_found.db"
+
+    started = time.monotonic()
+    attempts = _cli_recover_attempts(source, lf_path, str(stub), timeout=30.0)
+    assert time.monotonic() - started < 30.0
+
+    assert attempts[-1]["dump_returncode"] == 0
+    # The stderr tail is load-bearing: the caller keys the header-zeroing retry
+    # on "not a database" appearing in it, so the drain must preserve it.
+    assert "file is not a database" in attempts[-1]["dump_stderr_tail"]

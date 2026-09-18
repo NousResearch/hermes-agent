@@ -55,6 +55,8 @@ class ProviderProfile:
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+    # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
+    supports_model_listing: bool = True
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
@@ -105,6 +107,8 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
+    unsupported_response_formats: tuple = ()
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
@@ -177,6 +181,14 @@ class ProviderProfile:
         Default: ({}, {}).
         """
         return {}, {}
+
+    def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
+        """Provider-specific OpenAI client keyword arguments.
+
+        Values are defaults: explicit runtime/custom-provider settings win.
+        The returned mapping must be cheap to build and must not perform I/O.
+        """
+        return {}
 
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
@@ -292,6 +304,8 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        if not self.supports_model_listing:
+            return None
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (

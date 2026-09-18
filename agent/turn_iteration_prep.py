@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
+from agent.interrupt_control import interrupt_issuer
 from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -329,7 +330,8 @@ def begin_iteration(
 
     if agent._interrupt_requested:
         interrupted = True
-        _turn_exit_reason = "interrupted_by_user"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = f"interrupted_by_system({_issuer})" if _issuer else "interrupted_by_user"
         if not agent.quiet_mode:
             agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
         return _verdict("break")
@@ -342,7 +344,7 @@ def begin_iteration(
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
                 f"({int(agent.session_input_tokens):,} tokens) — stopping "
-                f"the review tool loop before the next provider call."
+                f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
 
@@ -359,7 +361,7 @@ def begin_iteration(
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
-            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)", diagnostic=True)
         return _verdict("break")
     return _verdict("fallthrough")
 
@@ -437,7 +439,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _turn_exit_reason = "interrupted_during_api_call"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = (
+            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
+        )
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
@@ -507,7 +512,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+        agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     return _verdict("fallthrough")

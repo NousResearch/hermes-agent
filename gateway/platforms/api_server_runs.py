@@ -9,13 +9,17 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+try:
+    from aiohttp.web_request import RequestKey
+except ImportError:
+    # Separate block: aiohttp < 3.14 lacks RequestKey, and a shared except
+    # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
@@ -43,6 +47,18 @@ _FIXED_EVENT_FIELDS = {
     "tool.completed": lambda tool, preview, kw: {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+_TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
+
+
+def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
+    """Bounded, secret-redacted result summary for the public run stream — redacted BEFORE
+    truncation so a cut never leaves a secret's prefix on the wire."""
+    if result is None:
+        return ""
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    preview = redact_sensitive_text(text, force=True)
+    limit = _TOOL_COMPLETED_PREVIEW_MAX_CHARS
+    return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 
 def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
@@ -64,6 +80,28 @@ def _room_retention_until(request: "web.Request") -> float:
 def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
     """Build one SSE event payload (key order is part of the wire format)."""
     return {"event": name, "run_id": run_id, "timestamp": time.time(), **fields}
+
+
+def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Map a ``run_conversation`` result to its terminal run status and the wire fields every
+    terminal event/status carries. An interrupted turn is ``cancelled``; a turn that ended
+    without finishing (``failed``, ``partial``, or ``completed=False`` such as the iteration
+    budget) is ``failed``, so ``completed: true`` never rides next to ``partial: true``."""
+    interrupted = bool(result.get("interrupted"))
+    finished = (
+        not interrupted and not result.get("failed") and not result.get("partial")
+        and result.get("completed") is not False
+    )
+    status = "cancelled" if interrupted else "completed" if finished else "failed"
+    fields: Dict[str, Any] = {
+        "completed": finished, "partial": bool(result.get("partial")), "interrupted": interrupted,
+    }
+    if not finished and result.get("turn_exit_reason"):
+        fields["turn_exit_reason"] = str(result["turn_exit_reason"])
+    if result.get("pending_steer"):
+        # Undelivered steer text rides on every terminal event/status for client replay.
+        fields["pending_steer"] = result["pending_steer"]
+    return status, fields
 
 
 def _run_not_found(_openai_error, run_id: str) -> "web.Response":
@@ -161,7 +199,11 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         # lifecycle boundaries must land so clients can observe delegate_task failures.
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
-            _push(_run_event(run_id, event_type, **fields(tool_name, preview, kwargs)))
+            event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.completed":
+                event_fields["preview"] = _tool_completed_preview(
+                    kwargs.get("result"), redact_sensitive_text)
+            _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
             if preview is not None:
@@ -327,6 +369,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
 
     @property
     def approval_session_key(self) -> str:
@@ -412,6 +455,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
     if not user_message:
         return _json_error(_openai_error, "No user message found in input", status=400)
+    try:
+        turn_author = _api_server._request_turn_author(body)
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
     conversation_history, instructions, stored_session_id, history_err = (
         _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
     if history_err is not None:
@@ -488,7 +535,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        turn_author=turn_author)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -523,6 +571,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
+                profile=run.request_profile or "",
                 browser_control_principal=run.browser_control_principal,
                 browser_control_transport_family=run.browser_control_transport_family,
                 # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
@@ -544,9 +593,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
+            # Passed only when set: a human turn keeps today's call shape.
+            author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id)
+                task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -620,15 +671,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
-        if run_id in self._stopping_run_ids and result.get("interrupted") is True:
-            _finish("cancelled")
+        status, fields = terminal_run_status(result)
+        if status == "cancelled":
+            _finish("cancelled", fields)
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
-            _finish("failed", error=_redact_api_error_text(result.get("error") or "agent run failed"))
+            _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            # Undelivered steer text rides on the terminal event/status for client replay.
-            extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -733,7 +783,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     try:
         while True:
             try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                event = await asyncio.wait_for(
+                    q.get(), timeout=_api_server.CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
                 await response.write(b": keepalive\n\n")
                 continue

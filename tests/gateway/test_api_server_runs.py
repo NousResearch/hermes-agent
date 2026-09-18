@@ -249,6 +249,59 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @staticmethod
+    async def _wait_completed(cli, run_id: str) -> None:
+        for _ in range(40):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] == "completed":
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"run {run_id} did not complete")
+
+    @staticmethod
+    def _capturing_agent(captured):
+        agent = MagicMock()
+        agent.run_conversation.side_effect = lambda **kwargs: captured.update(kwargs) or {"final_response": "done"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+        return agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, expected", [
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": " dixie ", "is_bot": True, "role": "admin"}},
+         {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": "dixie", "is_bot": True, "origin": "cloud-1"}},
+         {"id": "bot:cloud-1/dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello"}, "absent"),
+    ], ids=["author", "author with origin", "no author"])
+    async def test_start_passes_normalized_author_to_run_conversation(self, adapter, body, expected):
+        """A body ``author`` reaches ``run_conversation`` normalized; it labels memory only. Without one the
+        call keeps today's shape."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=self._capturing_agent(captured)):
+                resp = await cli.post("/v1/runs", json=body)
+                assert resp.status == 202
+                await self._wait_completed(cli, (await resp.json())["run_id"])
+
+        assert captured["user_message"] == "hello"
+        assert captured.get("turn_author", "absent") == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+    async def test_start_rejects_non_object_author(self, adapter, author):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "author": author})
+                assert resp.status == 400
+                body = await resp.json()
+        assert body["error"]["code"] == "invalid_author"
+        assert body["error"]["message"] == "author must be an object"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
@@ -362,6 +415,29 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_tool"] = asyncio.Queue()
+        callback = adapter._make_run_event_callback("run_tool", loop)
+
+        callback(
+            "tool.completed", "terminal", duration=0.077, is_error=True,
+            result={
+                "exit_code": 2,
+                "error": "BLOCKED: approval required",
+                "token": "sk-abcdefghijklmnopqrstuvwxyz",
+                "output": "x" * 600,
+            },
+        )
+        event = await adapter._run_streams["run_tool"].get()
+
+        assert event["error"] is True
+        assert "BLOCKED: approval required" in event["preview"]
+        assert "abcdefghijklmnopqrstuvwxyz" not in event["preview"]
+        assert len(event["preview"]) <= 500
+        assert event["preview"].endswith("...")
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
@@ -616,6 +692,45 @@ class TestSteerRun:
 
         assert adapter._run_statuses[run_id]["status"] == "completed"
         assert adapter._run_statuses[run_id]["pending_steer"] == "tighten the ending"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "expected_status"),
+        [
+            ({"final_response": "Operation interrupted.", "interrupted": True, "completed": False}, "cancelled"),
+            ({"final_response": "Budget exhausted summary.", "completed": False,
+              "turn_exit_reason": "max_iterations_reached(2/2)"}, "failed"),
+            ({"final_response": "done", "completed": True}, "completed"),
+        ],
+    )
+    async def test_run_terminal_status_follows_result_flags(self, adapter, result, expected_status):
+        """A turn that ended interrupted or unfinished must not be booked as ``completed``
+        (#111770): the persisted status, the ``completed`` flag and the terminal event name
+        agree, and a late steer survives on every terminal status."""
+        result["pending_steer"] = "tighten the ending"
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_agent.run_conversation.return_value = result
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == expected_status:
+                        break
+                    await asyncio.sleep(0.05)
+                events = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        status = adapter._run_statuses[run_id]
+        assert status["status"] == expected_status
+        assert status["completed"] is (expected_status == "completed")
+        assert status["pending_steer"] == "tighten the ending"
+        assert f"run.{expected_status}" in events
 
     @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):

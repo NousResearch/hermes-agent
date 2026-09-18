@@ -62,6 +62,9 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
         def set_session_title(self, _key, _title):
             return None
 
+        def set_auto_title(self, _key, _title, *, source):
+            self.title_source = source
+
     captured = CaptureDB()
 
     @contextlib.contextmanager
@@ -82,6 +85,7 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
     server._seed_branch_row(record, "seeded-row", "parent-row", [{"role": "user", "content": "hi"}], "desktop",
                             str(default_home))
     assert captured.profile_name == "default"
+    assert captured.title_source == "derived"
     assert record["pending_title"] is None
 
 

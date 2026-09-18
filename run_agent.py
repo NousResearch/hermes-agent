@@ -35,7 +35,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -43,14 +43,32 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
+# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
+# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
+# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
+# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
+
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
+
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
         from gateway.session_context import get_session_env
-
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+        get_session_env = os.environ.get
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
+        source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
+    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -109,7 +127,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import ApiErrorSummaryMixin
+from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -250,7 +268,7 @@ class AIAgent(
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        setup_mcp_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
+        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -269,7 +287,7 @@ class AIAgent(
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
-        capabilities: Dict[str, bool] | None = None,
+        capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -404,6 +422,10 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # The drifted-prompt compaction INFO is once per session, so a /new or /resume re-arms it.
+        self._compaction_prompt_drift_logged = False
+        # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
+        self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
 
@@ -483,7 +505,7 @@ class AIAgent(
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
         return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
                 and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and "expected ident at line" in str(error).strip().lower())
+                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -501,7 +523,10 @@ class AIAgent(
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {key: getattr(self, key, "") or "" for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode")}
+        return {
+            key: getattr(self, key, "") or ""
+            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
+        }
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")
@@ -561,14 +586,19 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        explicit = self._stale_timeout_is_explicit()
+        # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
+        # cap below, so the floor can never outlive the run budget.
+        if self.api_mode == "codex_responses" and not explicit:
+            timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         run_budget = getattr(self, "run_budget_seconds", None)
         started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
+        if run_budget and started and not explicit:
             remaining = float(run_budget) - (time.time() - started)
             timeout = min(timeout, max(60.0, remaining * 0.5))
         return timeout
@@ -634,10 +664,11 @@ class AIAgent(
     @staticmethod
     def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
+        from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom"):
+        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -891,6 +922,10 @@ class AIAgent(
             return
         try:
             sync_kwargs = {"session_id": self.session_id or "", **({"messages": messages} if messages is not None else {})}
+            # Stashed by build_turn_context() for this turn, None on a human turn.
+            turn_author = getattr(self, "_turn_author", None)
+            if turn_author is not None:
+                sync_kwargs["turn_author"] = turn_author
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
@@ -1215,11 +1250,12 @@ class AIAgent(
             self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
         return (
-            f"I stopped retrying {decision.tool_name or 'a tool'} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
+            f"{decision.count} times without making progress. The last result above shows what "
+            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+            "different approach."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
@@ -1246,9 +1282,9 @@ class AIAgent(
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
-            # observe_call may have raised the identical-call streak halt (hard_stop_enabled, tool-agnostic).
+            # observe_call may have raised the identical-call streak or batch-cycle halt (hard_stop_enabled, tool-agnostic).
             streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
@@ -1298,7 +1334,8 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
+            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 
@@ -1325,6 +1362,9 @@ class AIAgent(
     def _conversation_root_id(self) -> Optional[str]:
         """Session-lineage ROOT id for Portal usage attribution, so one conversation keeps a single
         ``conversation=`` tag across compression rotation; subagents resolve via ``_parent_session_id``."""
+        cached = getattr(self, "_cached_conversation_root", None)
+        if cached:
+            return str(cached)
         sid = getattr(self, "session_id", None)
         if not sid:
             return None

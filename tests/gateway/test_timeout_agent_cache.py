@@ -255,11 +255,15 @@ async def test_retirement_belongs_to_the_exact_worker(monkeypatch, phase, replac
     runner._agent_cache_lock = threading.Lock()
     runner._agent_cache = {"test": (old, "signature")}
     scheduled_releases = []
+    scheduled_release_keys = []
     spawn_release = runner._spawn_release_thread
 
-    def record_release(target, args, name, *, inline_fallback):
+    def record_release(target, args, name, *, inline_fallback, session_key=None):
         scheduled_releases.append(args[0])
-        return spawn_release(target, args, name, inline_fallback=inline_fallback)
+        scheduled_release_keys.append(session_key)
+        return spawn_release(
+            target, args, name, inline_fallback=inline_fallback, session_key=session_key,
+        )
 
     monkeypatch.setattr(runner, "_spawn_release_thread", record_release)
     state = runner._session_state("test")
@@ -341,6 +345,9 @@ async def test_retirement_belongs_to_the_exact_worker(monkeypatch, phase, replac
         await until(lambda: released.is_set() and old._db_flush_scan_prefix is None)
         select_timeout()
         assert scheduled_releases == ([old] if phase == "finished" else [])
+        # The deferred release must carry the session key so it runs in the owning profile's
+        # scope; without it a multiplexed gateway releases under the default profile root.
+        assert scheduled_release_keys == (["test"] if phase == "finished" else [])
         assert old.release_count == 1
         assert old._session_messages == []
         assert old._db_flush_scan_prefix is None

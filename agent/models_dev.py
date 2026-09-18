@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_json_write, atomic_write_text
 
+from hermes_constants import openrouter_variant_base
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -97,10 +99,10 @@ class ProviderInfo:
 class ModelCapabilities:
     """Structured capability metadata for a model from models.dev."""
     supports_tools: bool = True
-    supports_vision: bool = False
-    supports_reasoning: bool = False
+    supports_vision: Optional[bool] = None
+    supports_reasoning: Optional[bool] = None
     context_window: int = 200000
-    max_output_tokens: int = 8192
+    max_output_tokens: Optional[int] = None
     model_family: str = ""
 
 
@@ -148,6 +150,45 @@ def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _configured_catalog_provider(provider: str) -> Optional[str]:
+    """``catalog_provider`` declared on a custom provider's ``providers.<name>`` row (or legacy
+    ``custom_providers[]`` entry): the catalogued vendor whose models it resells. None when unset."""
+    name = (provider or "").strip()
+    if name.lower().startswith("custom:"):
+        name = name[len("custom:"):]
+    if not name or name in PROVIDER_TO_MODELS_DEV:
+        return None
+    alias = _dict_or_empty(_cfg_get("providers", name, default=None)).get("catalog_provider")
+    if not alias:
+        legacy = _cfg_get("custom_providers", default=None)
+        alias = next((e.get("catalog_provider") for e in (legacy if isinstance(legacy, list) else [])
+                      if isinstance(e, dict) and str(e.get("name") or "").strip() == name), None)
+    alias = str(alias or "").strip()
+    return alias or None
+
+
+def _models_dev_id(provider: str) -> Optional[str]:
+    """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
+    catalog only through its configured ``catalog_provider`` alias (#112649)."""
+    key = (provider or "").strip()
+    mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
+    if mdev_id is None:
+        alias = _configured_catalog_provider(key)
+        mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
+        if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
+                and mdev_id not in fetch_models_dev(allow_network=False):
+            # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
+            if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
+                _UNKNOWN_CATALOG_PROVIDER_WARNED.add((key, alias))
+                logger.warning("providers.%s: catalog_provider %r is neither a Hermes provider id nor a "
+                               "models.dev id; ignoring", key, alias)
+            mdev_id = None
+    return mdev_id
+
+
+_UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process
+
+
 def _cfg_get(*keys: str, default: Any) -> Any:
     """``cfg_get`` over the read-only config; *default* on any failure."""
     try:
@@ -187,7 +228,9 @@ def _load_etag() -> str:
 def _save_etag(etag: str) -> None:
     def write() -> None:
         etag_path = _get_etag_path()
-        etag_path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(etag_path.parent)
         atomic_write_text(etag_path, etag)
     _quietly("save models.dev ETag", write)
 
@@ -458,16 +501,50 @@ def _registry_models(mdev_id: str, *, allow_network: bool) -> Optional[Dict[str,
 def _get_provider_models(provider: str, *, allow_network: bool = False) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_id = _models_dev_id(provider)
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
-def _iter_model_entries(models: Dict[str, Any], model: str, *, suffix_fallback: bool = True):
+_OPENROUTER_CATALOG_PROVIDERS = frozenset({"openrouter"})
+
+
+def _openrouter_catalog_lookup_base(provider: str, model: str) -> Optional[str]:
+    """Return the base id to retry a catalog lookup with, or ``None``.
+
+    OpenRouter's ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are
+    request-time routing modifiers: they change which endpoint serves the
+    request, never which model runs. ``/models`` and models.dev list only the
+    base id, so a routed id must resolve to the base model's metadata.
+
+    Scoped to OpenRouter so a genuine ``model:tag`` on another provider (an
+    Ollama tag, a ``:cloud`` catalog key) is never rewritten.
+
+    Deliberately excludes ``:free``, ``:batch``, ``:extended``, and
+    ``:thinking``: those are REAL catalog SKUs with their own entries and
+    their own — sometimes different — context windows. Stripping them would
+    report a window LARGER than the model actually has. Their real entries
+    are found by the exact/case-insensitive passes above, and a genuinely
+    absent SKU must miss so ``model_overrides`` ``_default`` fill-gap
+    semantics still apply.
+    """
+    if provider not in _OPENROUTER_CATALOG_PROVIDERS:
+        return None
+    return openrouter_variant_base(model)
+
+
+def _iter_model_entries(
+    models: Dict[str, Any], model: str, *, suffix_fallback: bool = True, provider: str = ""
+):
     """Yield ``(model_id, entry)`` candidates: exact, case-insensitive, then (optionally)
     ``:cloud``/``-cloud`` suffixed forms. Suffix fallback: some providers (ollama-cloud) store
     ``kimi-k2.6:cloud`` while the live API returns the bare name; without it context lookup falls to
     stale OpenRouter metadata and trips the 64k minimum-context guard. Every consumer shares this
-    order so a suffix-keyed catalog model counts as KNOWN for ``model_overrides`` fill-gap ``_default``."""
+    order so a suffix-keyed catalog model counts as KNOWN for ``model_overrides`` fill-gap ``_default``.
+
+    ``provider`` enables the OpenRouter routing-variant fallback as a LAST
+    resort — after exact, case-insensitive, and ``:cloud`` matching — so a
+    real catalog SKU always wins over its base.
+    """
     for name in ([model] + [model + suffix for suffix in (":cloud", "-cloud")] if suffix_fallback else [model]):
         entry = models.get(name)
         if isinstance(entry, dict):
@@ -476,11 +553,20 @@ def _iter_model_entries(models: Dict[str, Any], model: str, *, suffix_fallback: 
         for mid, mdata in models.items():
             if mid.lower() == name_lower and isinstance(mdata, dict):
                 yield mid, mdata
+    routed_base = _openrouter_catalog_lookup_base(provider, model)
+    if routed_base is not None:
+        # Recursion is bounded: the base never carries a recognized variant suffix,
+        # and provider is cleared so the retry cannot loop.
+        yield from _iter_model_entries(
+            models, routed_base, suffix_fallback=suffix_fallback, provider=""
+        )
 
 
-def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+def _find_model_entry(
+    models: Dict[str, Any], model: str, provider: str = ""
+) -> Optional[Dict[str, Any]]:
     """First catalog entry for *model* (exact, case-insensitive, suffix), or None."""
-    return next((entry for _mid, entry in _iter_model_entries(models, model)), None)
+    return next((entry for _mid, entry in _iter_model_entries(models, model, provider=provider)), None)
 
 
 def _extract_limit(entry: Any, key: str) -> Optional[int]:
@@ -506,7 +592,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
     if override_ctx is not None:
         return override_ctx
     models = _get_provider_models(provider, allow_network=allow_network)
-    catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model) if (ctx := _extract_context(entry))), None) if models is not None else None
+    catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
     return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
 
 
@@ -518,13 +604,21 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
 # Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
-# Safe defaults for models absent from the catalog (tools on, vision/reasoning off, 200K context);
-# shared by get_model_capabilities and get_model_info so the two unknown-model paths agree.
-_UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 8192}, "tool_call": True}
+# Safe defaults for models absent from the catalog (tools on, 200K context). Capability fields and the
+# output limit stay absent so consumers see them as unknown instead of a synthesized value.
+_UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000}, "tool_call": True}
 
 # Account-gated models may be usable before models.dev has indexed them.  Keep
 # their capabilities available for an explicitly selected/discovered model
 # without adding them to any picker catalog.
+_DEEPSEEK_FLASH_VISION: Dict[str, Any] = {
+    "limit": {"context": 1_000_000, "output": 384_000},
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+    "tool_call": True,
+    "reasoning": True,
+    "family": "deepseek-flash",
+}
+
 _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
     ("openai", "gpt-6-astra"): {
         "limit": {"context": 1_050_000, "output": 128_000},
@@ -533,6 +627,14 @@ _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
         "reasoning": True,
         "family": "gpt-6",
     },
+    # Native DeepSeek V4.1-Flash is multimodal (https://api-docs.deepseek.com/guides/vision).
+    # models.dev lagged the 2026-09-10 rename; without this, a cold/empty cache treats
+    # ``deepseek-flash`` as unknown → image_input_mode falls through to lossy text.
+    # ``deepseek-v4-pro`` stays catalog-only: vendor docs still mark it text-only.
+    ("deepseek", "deepseek-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4.1-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash-vision-exp"): _DEEPSEEK_FLASH_VISION,
 }
 
 
@@ -656,11 +758,16 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
     return merged
 
 
+def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
+    provider_key = _models_dev_id(provider) or (provider or "").strip()
+    return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+
+
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
-    builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    builtin = _builtin_model_metadata(provider, model)
     base = entry if entry is not None else builtin
     override = _override_for(provider, model, catalog_hit=base is not None)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
@@ -684,16 +791,21 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     (#84482).
     """
     models = _get_provider_models(provider, allow_network=allow_network)
-    entry = _find_model_entry(models, model) if models is not None else None
+    entry = _find_model_entry(models, model, provider) if models is not None else None
+    unknown_base = entry is None and _builtin_model_metadata(provider, model) is None
     raw = _apply_overrides(provider, model, entry)
     if raw is None:
         return None
     return ModelCapabilities(
         supports_tools=bool(raw.get("tool_call", False)),
-        supports_vision=_entry_supports_vision(raw),
-        supports_reasoning=bool(raw.get("reasoning", False)),
+        supports_vision=(
+            None
+            if unknown_base and "attachment" not in raw and "modalities" not in raw
+            else _entry_supports_vision(raw)
+        ),
+        supports_reasoning=None if unknown_base and "reasoning" not in raw else bool(raw.get("reasoning", False)),
         context_window=_extract_limit(raw, "context") or 200000,
-        max_output_tokens=_extract_limit(raw, "output") or 8192,
+        max_output_tokens=_extract_limit(raw, "output"),
         model_family=raw.get("family", "") or "",
     )
 
@@ -770,7 +882,7 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 
 def get_provider_info(provider_id: str, *, allow_network: bool = True) -> Optional[ProviderInfo]:
     """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _models_dev_id(provider_id) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
@@ -785,9 +897,9 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _models_dev_id(provider_id) or provider_id
     models = _registry_models(mdev_id, allow_network=allow_network)
-    mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False), (model_id, None)) if models is not None else (model_id, None)
+    mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.
     raw = _apply_overrides(provider_id, model_id, entry)
     return _parse_model_info(mid, raw, mdev_id) if raw is not None else None

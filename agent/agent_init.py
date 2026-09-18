@@ -15,7 +15,6 @@ import re
 import sys
 import threading
 import time
-import uuid
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
@@ -41,6 +40,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -372,8 +372,11 @@ _EXPLICIT_API_MODES = {
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
+    from hermes_cli.providers import is_actual_route
     host, url = agent._base_url_hostname, agent._base_url_lower
-    if api_mode in _EXPLICIT_API_MODES:
+    if is_actual_route(agent.provider, base_url):
+        agent.api_mode = "chat_completions"
+    elif api_mode in _EXPLICIT_API_MODES:
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -416,6 +419,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
+    from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -453,6 +457,11 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
 
+    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
+    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
+    from hermes_cli.anon_auth import pin_model_for_route
+    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
+
     # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
     # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
@@ -468,6 +477,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
         # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
         api_mode is None
         and agent.api_mode == "chat_completions"
+        and not is_actual_route(agent.provider, agent.base_url)
         and agent.provider != "copilot-acp"
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
@@ -577,6 +587,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # skills.auto_load rendered ONCE per agent: every rebuild (model switch, compression,
+    # static-prefix restoration) reuses these exact bytes instead of re-reading config/skills.
+    "_auto_load_skills_resolved": False,
+    "_auto_load_skills_result": ("", [], []),
     # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
     # probed once per session and replayed on every rebuild, so a moving repo can't push the
     # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
@@ -595,8 +609,8 @@ _SESSION_STATE: Dict[str, Any] = {
     # False on helper agents (compression / hygiene / review forks) that hand the session to
     # a continuation row that must stay open.
     "_end_session_on_close": True,
-    # True on the background review fork: never persist, so its harness turn can't hijack
-    # the live session.
+    # True on the background review fork: never persist or publish session lifecycle hooks,
+    # so its harness turn can't hijack or appear under the live session.
     "_persist_disabled": False,
 }
 
@@ -617,6 +631,8 @@ _STREAM_STATE: Dict[str, Any] = {
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,
     "_stream_writer_dropped": 0,
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    "_stream_options_unsupported": False,
     # API-facing user message override when it differs from the persisted transcript (voice).
     "_persist_user_message_idx": None,
     "_persist_user_message_override": None,
@@ -679,12 +695,6 @@ def _setup_logging(agent):
     # would starve the root file handlers. Noise reduction belongs in hermes_logging.
 
 
-def _bedrock_region_from_url(base_url) -> str:
-    """AWS region from a bedrock-runtime.<region>.amazonaws.com URL (default us-east-1)."""
-    m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-    return m.group(1) if m else "us-east-1"
-
-
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
     """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
     Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
@@ -706,20 +716,16 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     agent._anthropic_base_url = base_url
     if agent.provider == "bedrock":
         # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
-        _br_region = agent._bedrock_region = _bedrock_region_from_url(base_url)
-        agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
-        agent._anthropic_api_key = "aws-sdk"
-        agent._is_anthropic_oauth = False
-        agent.api_key = "aws-sdk"
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, base_url, "anthropic_messages")
         if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
         return
     # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token() if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -753,9 +759,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
 def _init_moa_client(agent, api_key):
     """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import build_moa_facade
-    agent.api_mode = "chat_completions"
-
+    from agent.moa_loop import bind_moa_runtime
     # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
     # shows each reference's answer before the aggregator acts. Display-only; shared with
     # fallback-restore so a restored facade keeps emitting.
@@ -765,32 +769,15 @@ def _init_moa_client(agent, api_key):
     # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
     # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
     # they never touch the message history. See #53802.
-    agent.client = build_moa_facade(agent, agent.model)
-    agent._client_kwargs = {}
-    agent.api_key = api_key or "moa-virtual-provider"
-    agent.base_url = "moa://local"
+    bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
 
 
 def _init_bedrock_client(agent, base_url):
     """bedrock_converse: boto3 directly, no OpenAI client."""
-    agent._bedrock_region = _bedrock_region_from_url(base_url)
-    # Guardrail config — read from config.yaml at init time.
-    agent._bedrock_guardrail_config = None
-    with suppress(Exception):
-        from hermes_cli.config import load_config_readonly as _load_br_cfg
-        _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
-        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
-            agent._bedrock_guardrail_config = {
-                "guardrailIdentifier": _gr["guardrail_identifier"],
-                "guardrailVersion": _gr["guardrail_version"],
-            }
-            for _src, _dst in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
-                if _gr.get(_src):
-                    agent._bedrock_guardrail_config[_dst] = _gr[_src]
-    agent.client = None
-    agent._client_kwargs = {}
+    from agent.bedrock_adapter import bind_bedrock_runtime
+    bind_bedrock_runtime(agent, base_url, "bedrock_converse")
     if not agent.quiet_mode:
         _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
         print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
@@ -830,16 +817,21 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
-def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str, Any]:
+def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
     Falls through to the init-time fallback chain, then raises with the missing-key /
-    no-provider diagnostic.
+    no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
+    already bound and there is no OpenAI client to construct.
     """
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
+        from hermes_cli.providers import is_actual_route, normalize_provider
+        effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
+        if is_actual_route(effective_provider):
+            agent.provider = normalize_provider(effective_provider)
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool
     # must not die with a misleading "No LLM provider configured"); only explicitly named
@@ -860,9 +852,16 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
+            agent._fallback_activated = True
+            if str(_fb["provider"]).strip().lower() == "moa":
+                # The chokepoint handed back the preset's aggregator client, which only proves the
+                # preset resolves and its aggregator has credentials. A MoA entry means the preset
+                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, _fb["model"])
+                return None
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
-            agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -878,14 +877,13 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             f"was found. Set the {_env_hint} environment "
             f"variable, or switch to a different provider with `hermes model`."
         )
+    from hermes_constants import profile_cli_selector
+    _sel = profile_cli_selector()
     raise RuntimeError(
-        "No LLM provider configured. Run `hermes model` to "
-        "select a provider, or run `hermes setup` for first-time "
+        f"No LLM provider configured. Run `hermes {_sel}model` to "
+        f"select a provider, or run `hermes {_sel}setup` for first-time "
         "configuration."
     )
-
-
-_FINE_GRAINED_BETA = "fine-grained-tool-streaming-2025-05-14"
 
 
 def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
@@ -893,12 +891,14 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
     # Anthropic buffers the whole tool call and OpenRouter's proxy times out.
+    from agent.anthropic_adapter import _TOOL_STREAMING_BETA
+
     _effective_base = str(client_kwargs.get("base_url", "")).lower()
     if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
         headers = client_kwargs.get("default_headers") or {}
         existing_beta = headers.get("x-anthropic-beta", "")
-        if _FINE_GRAINED_BETA not in existing_beta:
-            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _FINE_GRAINED_BETA)))
+        if _TOOL_STREAMING_BETA not in existing_beta:
+            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _TOOL_STREAMING_BETA)))
             client_kwargs["default_headers"] = headers
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
@@ -924,6 +924,15 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+        if client_kwargs is None:  # init-time fallback bound the MoA facade
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+            return
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
+        agent.api_mode = "chat_completions"
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
     try:
         from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
         configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
@@ -943,7 +952,9 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             print(f"🤖 AI Agent initialized with model: {agent.model}")
             if base_url:
                 print(f"🔗 Using custom base URL: {base_url}")
-            _print_key_banner(client_kwargs.get("api_key", "none"), "API key", warn_missing=True)
+            from gateway.warning_notifications import warning_notifications_enabled
+            _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
+                              warn_missing=warning_notifications_enabled(agent.platform))
     except Exception as e:
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
@@ -1068,10 +1079,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
+    # expose kanban_show interactively, and children/cron runs inherit the env var, without
+    # owning a task.
+    from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
     if agent.quiet_mode:
         return
@@ -1085,7 +1099,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         requirements = model_tools.check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+            agent._safe_print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}", diagnostic=True)
     else:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
     if agent.save_trajectories:
@@ -1125,9 +1139,7 @@ def _publish_session_id(session_id: str) -> None:
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
     checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
     agent.session_start = datetime.now()
-    agent.session_id = session_id or (
-        f"{agent.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    )
+    agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
 
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
@@ -1217,12 +1229,17 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
                 kwargs["session_title"] = _st
+                _source = agent._session_db.get_session_title_source(agent.session_id)
+                if _source:
+                    kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
+    if agent.session_cwd:
+        kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
@@ -1507,12 +1524,23 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
 
 def _warn_invalid_config_int(
     what: str, value: Any, requirement: str, fallback: str, print_fallback: str = "",
+    agent: Any = None,
 ) -> None:
     """Log + stderr-print an invalid integer config value (``print_fallback``: user-facing
-    wording where it differs from the log line)."""
+    wording where it differs from the log line). The print is an automatic diagnostic and
+    honors the warning-notification policy; the log line never does."""
     _ra().logger.warning(
         "Invalid %s: %r — %s. Falling back to %s.", what, value, requirement, fallback,
     )
+    from gateway.warning_notifications import warning_notifications_enabled
+    try:
+        if not warning_notifications_enabled(
+            getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+            getattr(agent, "_notification_config", None),
+        ):
+            return
+    except Exception:
+        pass
     print(
         f"\n⚠ Invalid {what}: {value!r}\n"
         f"  {requirement[0].upper() + requirement[1:]}.\n"
@@ -1666,6 +1694,7 @@ def _warn_invalid_custom_provider_context_length(agent, _custom_providers) -> No
             _warn_invalid_config_int(
                 f"context_length for model {agent.model!r} in custom_providers",
                 _cp_ctx, _CTX_LEN_REQUIREMENT, "auto-detection", "auto-detected context window",
+                agent=agent,
             )
         return
 
@@ -1693,7 +1722,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
             _warn_invalid_config_int(
                 "model.context_length in config.yaml", _config_context_length,
                 "must be a plain integer (e.g. 256000, not '256K')",
-                "auto-detection", "auto-detected context window",
+                "auto-detection", "auto-detected context window", agent=agent,
             )
             _config_context_length = None
 
@@ -2068,7 +2097,7 @@ def _emit_compression_summary(agent, cs):
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.
         if _autoraise_notice:
-            print(_autoraise_notice)
+            agent._safe_print(_autoraise_notice, diagnostic=True)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.
@@ -2113,7 +2142,8 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
-    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=scope_terminal_cwd() or None)
+    agent._subdirectory_hints = SubdirectoryHintTracker(
+        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 
@@ -2167,7 +2197,7 @@ _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "setup_mcp_callback", "tour_callback",
+    "read_window_below_callback", "connection_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
@@ -2190,7 +2220,7 @@ def init_agent(
     thinking_callback: callable = None, reasoning_callback: callable = None,
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
-    read_window_below_callback: callable = None, setup_mcp_callback: callable = None,
+    read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,
@@ -2208,13 +2238,15 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      cwd: logical session workspace, available to memory providers during construction;
+        None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2230,6 +2262,7 @@ def init_agent(
         setattr(agent, _name, _params[_name])
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
+    agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's
@@ -2241,6 +2274,10 @@ def init_agent(
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(provider, base_url):
+        from hermes_cli.auth import normalize_actual_base_url
+        base_url = normalize_actual_base_url(base_url)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""

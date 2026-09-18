@@ -32,7 +32,7 @@ def _env_base_url(base_url_env: str) -> str:
     return get_env_value(base_url_env) or os.getenv(base_url_env, "")
 
 
-def _prompt_base_url_override(effective_base: str, base_url_env: str) -> str:
+def _prompt_base_url_override(effective_base: str, base_url_env: str, *, persist_env: bool = True) -> str:
     """Optional ``Base URL [...]`` prompt; a valid override is saved to *base_url_env*."""
     from hermes_cli.config import save_env_value
     override = _ask(f"Base URL [{effective_base}]: ", cancel_msg="", on_cancel="")
@@ -40,7 +40,8 @@ def _prompt_base_url_override(effective_base: str, base_url_env: str) -> str:
         if not override.startswith(_HTTP):
             print("  Invalid URL — must start with http:// or https://. Keeping current value.")
         else:
-            save_env_value(base_url_env, override)
+            if persist_env:
+                save_env_value(base_url_env, override)
             return override
     return effective_base
 
@@ -112,14 +113,14 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting: {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -150,11 +151,18 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say(
+        "",
+        f"Default model set to: {selected_name} (via Mixture of Agents)",
+        f"  Preset: {selected_name}",
+        "  Reference models (advise once per user turn):",
+    )
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+    )
 
 
 def _nous_login_args(args) -> argparse.Namespace:
@@ -288,6 +296,21 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_cli.model_switch_providers import _free_tier_nous_row
+    tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
+    if tier_row is None:
+        print("The Nous free tier is off for this install; sign in with `hermes auth upgrade` to use Nous models.")
+        return
+    if tier_row["models"]:
+        # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,
+        # pricing, or account lookups apply.
+        creds = _nous_verified_credentials()
+        if creds is None:
+            return
+        selected = tier_row["models"][0]
+        _nous_persist_selection(selected, creds)
+        print(f"Default model set to: {selected} (via {tier_row['name']})")
+        return
     model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")
@@ -521,12 +544,11 @@ def _copilot_obtain_token() -> bool:
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
-    from hermes_cli.main_provider_setup import _prompt_reasoning_effort_selection
-    from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
+    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code. The reasoning-effort step
+    is the shared post-pick one in ``select_provider_and_model`` (Copilot's per-model level set
+    comes from ``github_model_reasoning_efforts`` there)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.config import load_config
-    from hermes_cli.models import fetch_api_models, github_model_reasoning_efforts, copilot_model_api_mode
+    from hermes_cli.models import fetch_api_models, copilot_model_api_mode
     provider_id = "copilot"
     pconfig = PROVIDER_REGISTRY[provider_id]
     creds = resolve_api_key_provider_credentials(provider_id)
@@ -556,25 +578,9 @@ def _model_flow_copilot(config, current_model=""):
         print("No change.")
         return
     selected = _normalize(selected)
-    current_effort = _current_reasoning_effort(load_config())
-    reasoning_efforts = github_model_reasoning_efforts(selected, catalog=catalog, api_key=api_key)
-    selected_effort = None
-    if reasoning_efforts:
-        print(f"  {selected} supports reasoning controls.")
-        selected_effort = _prompt_reasoning_effort_selection(reasoning_efforts, current_effort=current_effort)
-
-    def _finish(cfg, _model):
-        if selected_effort is not None:
-            _set_reasoning_effort(cfg, selected_effort)
-
     _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key), finish=_finish)
+                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
     print(f"Default model set to: {selected} (via {pconfig.name})")
-    if reasoning_efforts:
-        if selected_effort == "none":
-            print("Reasoning disabled for this model.")
-        elif selected_effort:
-            print(f"Reasoning effort set to: {selected_effort}")
 
 
 def _model_flow_copilot_acp(config, current_model=""):
@@ -931,6 +937,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 current_base = str(_m.get("base_url") or "").strip()
     effective_base = current_base or pconfig.inference_base_url
 
+    if provider_id == "actual":
+        from hermes_cli.providers import normalize_provider
+        model_cfg = config.get("model") or {}
+        if isinstance(model_cfg, dict) and normalize_provider(str(model_cfg.get("provider") or "")) == provider_id:
+            effective_base = str(model_cfg.get("base_url") or "").strip() or effective_base
+
     if provider_id == "zai":
         # Four official endpoints with separate billing paths — a picker lets users match
         # the endpoint to their key type.
@@ -939,7 +951,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             save_env_value(base_url_env, chosen_base)
         effective_base = chosen_base
     else:
-        effective_base = _prompt_base_url_override(effective_base, base_url_env)
+        effective_base = _prompt_base_url_override(effective_base, base_url_env, persist_env=provider_id != "actual")
 
     model_list = _api_key_provider_model_list(provider_id, pconfig, existing_key, key_env, effective_base)
     if is_opencode:

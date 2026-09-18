@@ -63,6 +63,10 @@ def _runner_fake(user_config, chat_id):
         # lineage, merged 6005aa1f); the real RunContext carries the field (turn_context.py),
         # so this fixture must too or the guard AttributeErrors. Caught by the 9/16 merge audit.
         scheduled_heartbeat=False,
+        # Upstream added a mute_notification_reply guard ahead of the streaming resolution
+        # (run_turn_runner.py:908, merged 65b5ac6ef9 2026-09-17); real RunContext carries it.
+        # Caught by the 9/17 post-restore test run.
+        mute_notification_reply=False,
         streaming_tts_consumer_holder=[None],
         user_config=user_config,
         resolve_display_setting=resolve_display_setting,

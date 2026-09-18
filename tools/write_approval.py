@@ -248,32 +248,55 @@ def _find_skill_path(name: str) -> Optional[Path]:
 
 
 def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
+    """Preview current files in operation order without writing any skill state."""
     payload = record.get("payload", {})
-    action = payload.get("action", "")
-    name = payload.get("name", "")
-    if action == "create":
-        return payload.get("content") or ""
-    if action not in {"edit", "patch", "write_file"}:
-        return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
-                "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
+    preview = {}
+    if payload.get("action") == "batch":
+        sections = []
+        for index, op in enumerate(payload.get("operations", [])):
+            target = op.get("file_path") or "SKILL.md"
+            header = f"[{index}] {op.get('action', '')} {op.get('name', '')}/{target}"
+            sections.append(header + "\n" + _skill_operation_diff(op, preview))
+        return "\n\n".join(sections)
+    return _skill_operation_diff(payload, preview)
 
-    # patch/write_file target a file inside the skill; edit always targets SKILL.md.
-    target_label, current = "SKILL.md", ""
+
+def _skill_operation_diff(payload: Dict[str, Any], preview: dict) -> str:
+    action, name = payload.get("action", ""), payload.get("name", "")
+    if action not in {"create", "edit", "patch", "write_file", "remove_file"}:
+        return f"delete skill '{name}'" if action == "delete" else f"({action} on '{name}')"
+    rewrite = action in {"create", "edit"} or (action == "patch" and payload.get("content"))
+    target_label = "SKILL.md" if rewrite else (payload.get("file_path") or "SKILL.md")
     skill_dir = _find_skill_path(name)
-    if skill_dir:
-        if action != "edit":
-            target_label = payload.get("file_path") or "SKILL.md"
-        with suppress(Exception):
-            p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8") if p.exists() else ""
-
-    if action == "patch":
-        old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+    # Canonical paths join categorized and bare-name aliases in the same batch.
+    key = (str(skill_dir.resolve()) if skill_dir else name, str(Path(target_label)))
+    current = preview.get(key)
+    if current is None:
+        current = ""
+        if skill_dir:
+            from tools.skill_manager_tool import _resolve_supporting_file
+            target, error = _resolve_supporting_file(skill_dir, target_label)
+            if error:
+                return f"Cannot preview: {error['error']}"
+            if target.exists():
+                current = target.read_text(encoding="utf-8")
+    if action == "remove_file":
+        preview[key] = ""
+        return f"remove file: {target_label} from skill '{name}'"
+    if action == "create":
+        new = payload.get("content") or ""
+        preview[key] = new
+        return new
+    if action == "patch" and not payload.get("content"):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        new, _, _, error = fuzzy_find_and_replace(
+            current, payload.get("old_string") or "", payload.get("new_string") or "",
+            payload.get("replace_all", False))
+        if error:
+            return f"Cannot apply patch to preview: {error}"
     else:
-        new = payload.get("content" if action == "edit" else "file_content") or ""
+        new = payload.get("file_content" if action == "write_file" else "content") or ""
+    preview[key] = new
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"

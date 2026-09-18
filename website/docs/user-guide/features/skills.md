@@ -8,7 +8,7 @@ description: "On-demand knowledge documents — progressive disclosure, agent-ma
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
-All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
+All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. Agent writes to bundled and Hub-installed skills require explicit approval; ordinary local skills follow the configured write policy.
 
 You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
 
@@ -670,9 +670,10 @@ The targeted `patch` is preferred for updates — it's more token-efficient than
 
 ### Gating agent skill writes (`skills.write_approval`)
 
-By default the agent writes skills freely — including from the [background
+By default the agent writes ordinary local skills freely. The [background
 self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
-that runs after a turn. If you'd rather approve every skill write first
+that runs after a turn is additionally restricted to curator-managed skills.
+If you'd rather approve every skill write first
 (small models that misjudge what they learned, secure environments, or just
 wanting eyes on the self-improvement loop), turn on the write-approval gate:
 
@@ -681,7 +682,22 @@ skills:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
-When `write_approval: true`, every `skill_manage` write (create / edit /
+**Upstream-managed exception:** foreground `skill_manage` mutations to bundled or
+Hub-installed packages are always staged, even with `write_approval: false`.
+The pending summary identifies the package and risk: bundled edits freeze future
+updates to the whole package; Hub updates may overwrite local edits. A mixed
+`operations[]` call waits as one batch, without committing its local-skill changes
+first. Existing background-review ownership refusals still apply.
+
+Adding a new local `references/*.md` is semantically different from editing a
+shipped reference, but today bundled sync hashes the **entire directory**. Both
+currently change its hash, even when `SKILL.md` is untouched, so both need approval.
+This gate does not implement file-level merge or ignore the `references/` tree.
+Keep autonomous lessons in a separate local skill; explicit approval still allows
+intentional customization. Existing modified packages are not reset or overwritten.
+This is a `skill_manage` policy, not a filesystem sandbox for arbitrary shell code.
+
+When `write_approval: true`, every otherwise permitted `skill_manage` write (create / edit /
 patch / delete / write_file / remove_file) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.

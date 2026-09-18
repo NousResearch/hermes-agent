@@ -3,7 +3,7 @@
 
 Skills are the agent's procedural memory (narrow "how to do X"; MEMORY.md/USER.md are
 broad, declarative). New skills land in ~/.hermes/skills/ (or ``skills.create_dir``);
-existing skills (bundled, hub, user) are modified in place. Layout:
+existing skills are modified in place (bundled/Hub mutations require approval). Layout:
 ``<skills>/[category/]<skill>/SKILL.md`` + optional ``references/ templates/ scripts/ assets/``.
 """
 
@@ -600,23 +600,136 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
-def _run_write_gate(build_staging):
-    """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
-    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
-    write_approval cannot be imported."""
+def _bundled_install_relpath(name: str) -> Optional[str]:
+    """Return the install-relative path of bundled skill ``name``.
+
+    Bundled skills sync into the skills root preserving their category
+    structure (e.g. ``bundled/skills/mlops/axolotl`` ->
+    ``~/.hermes/skills/mlops/axolotl``), while the bundled manifest records
+    only the skill name. Comparing names alone lets a user-owned skill that
+    merely shares the name in another category be misread as bundled, so
+    the provenance check must also confirm the on-disk path.
+
+    Returns the posix relative path (e.g. ``"mlops/axolotl"``), or None when
+    the bundled origin cannot be located or does not ship ``name``.
+    """
+    try:
+        from agent.skill_utils import is_excluded_skill_path
+        from hermes_constants import get_bundled_skills_dir
+    except Exception:
+        return None
+    try:
+        bundled_dir = get_bundled_skills_dir(
+            Path(__file__).parent.parent / "skills"
+        )
+        if not bundled_dir.exists():
+            return None
+        for skill_md in bundled_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            if skill_md.parent.name == name:
+                return skill_md.parent.relative_to(bundled_dir).as_posix()
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _managed_skill_provenance(name: str) -> Optional[str]:
+    """Return upstream provenance for an installed skill, if any.
+
+    Bundled edits freeze updates; Hub edits risk overwrite on reinstall.
+    Resolve the actual package path before consulting either ownership store.
+    """
+    existing = _find_skill(name)
+    if not existing:
+        return None
+
+    skills_root = _skills_dir()
+    try:
+        relative_path = existing["path"].resolve().relative_to(
+            skills_root.resolve()
+        ).as_posix()
+    except (OSError, ValueError):
+        # External skill roots are not represented by the local package
+        # provenance stores.
+        return None
+
+    name = existing["path"].name  # categorized lookups must not bypass provenance
+    manifest_path = skills_root / ".bundled_manifest"
+    try:
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            manifest_name = line.partition(":")[0].strip()
+            if manifest_name != name:
+                continue
+            # Name-only is not enough: bundled skills keep their category
+            # structure on disk, so a user-owned skill that merely shares
+            # the name in another category must not be treated as bundled.
+            expected = _bundled_install_relpath(name)
+            if expected is None or expected == relative_path:
+                return "bundled"
+            break
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Could not read bundled skill manifest %s", manifest_path, exc_info=True)
+
+    lock_path = skills_root / ".hub" / "lock.json"
+    try:
+        lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+        installed = lock_data.get("installed", {}) if isinstance(lock_data, dict) else {}
+        if not isinstance(installed, dict):
+            installed = {}
+        for lock_name, record in installed.items():
+            if not isinstance(record, dict):
+                continue
+            install_path = str(record.get("install_path") or lock_name).strip("/")
+            if install_path == relative_path:
+                return "hub"
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        logger.warning("Could not read hub skill lock %s", lock_path, exc_info=True)
+
+    return None
+
+
+def _run_write_gate(build_staging, *, targets=()):
+    """Stage the entire call when any target is upstream-managed, even with the
+    global gate off. Approved replay bypasses this at the caller, not per op."""
+    managed = {name: origin for action, name in targets if action != "create"
+               if (origin := _managed_skill_provenance(name))}
     try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
+        if managed:
+            return tool_error("Cannot load approval gate for upstream-managed skills.", success=False)
+        return None  # preserve existing behavior for ordinary local skills
     decision = wa.evaluate_gate(wa.SKILLS)
+    if managed and not decision.blocked:
+        warnings = []
+        for name, provenance in managed.items():
+            risk = (
+                "editing it will freeze future package updates, including supporting files added upstream"
+                if provenance == "bundled" else
+                "hub updates reinstall the skill, so local edits may be overwritten and lost")
+            warnings.append(f"'{name}' is an upstream-managed {provenance} skill: {risk}.")
+        decision = wa.GateDecision(stage=True, message=(
+            "Staged for approval. Not yet saved. " + " ".join(warnings)
+            + " Prefer a separate user-owned skill for local lessons. Do not bypass this gate "
+              "with file or terminal tools. Review with /skills pending."))
     if decision.allow:
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
+    if managed:
+        gist += " — " + decision.message  # persist the risk for the human's pending/approve UI
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    kinds = set(managed.values())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
-                       "gist": gist, "message": decision.message}, ensure_ascii=False)
+                       "gist": gist, "message": decision.message,
+                       **({"provenance": next(iter(kinds)) if len(kinds) == 1 else "mixed",
+                           "managed_skills": managed} if managed else {})}, ensure_ascii=False)
 
 
 def _apply_skill_write_gate(action, name, **payload_kwargs):
@@ -629,7 +742,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging)
+    return _run_write_gate(_staging, targets=[(action, name)])
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
@@ -813,7 +926,8 @@ def _skill_manage_description(create_dir: str) -> str:
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
-        "op only). Existing skills are modified wherever they live. Keep "
+        "op only). Bundled/Hub writes are staged for human approval, not applied. "
+        "Save local lessons in a separate skill instead. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "

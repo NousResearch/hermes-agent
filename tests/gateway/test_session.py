@@ -454,6 +454,33 @@ class TestLoadTranscriptDBOnly:
         assert result[1]["content"] == "db-a"
 
 
+class TestGatewayReasoningRoutePersistence:
+    def test_append_transcript_message_round_trips_reasoning_route(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+        session_id = "reasoning-route-session"
+        db.create_session(session_id=session_id, source="gateway", model="m")
+
+        store._append_transcript_message(
+            session_id,
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning": "private trace",
+                "_reasoning_route": "a" * 64,
+            },
+        )
+
+        replayed = db.get_messages_as_conversation(session_id)
+        assert replayed[0]["reasoning"] == "private trace"
+        assert replayed[0]["_reasoning_route"] == "a" * 64
+        db.close()
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 
@@ -1339,6 +1366,8 @@ class TestRewriteTranscriptPreservesReasoning:
             reasoning="I need to think step by step.",
             reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
+            anthropic_content_blocks=[{"type": "thinking", "signature": "sig"}],
+            bedrock_content_blocks=[{"reasoningContent": "signed"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
 
@@ -1347,6 +1376,8 @@ class TestRewriteTranscriptPreservesReasoning:
         assert before[0].get("reasoning") == "I need to think step by step."
         assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert before[0].get("anthropic_content_blocks") == [{"type": "thinking", "signature": "sig"}]
+        assert before[0].get("bedrock_content_blocks") == [{"reasoningContent": "signed"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
         # Now simulate /retry: build the SessionStore and call rewrite_transcript
@@ -1364,6 +1395,8 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert after[0].get("anthropic_content_blocks") == [{"type": "thinking", "signature": "sig"}]
+        assert after[0].get("bedrock_content_blocks") == [{"reasoningContent": "signed"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
 

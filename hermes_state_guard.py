@@ -32,6 +32,33 @@ _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 _REAL_HOME: Optional[Path] = None
 _REAL_HOME_LOCK = threading.Lock()
 
+#: Sandbox roots captured by test fixtures BEFORE they redirect the process
+#: home view (``Path.home`` monkeypatch). A DB path under one of these roots
+#: belongs to a test sandbox, not the production board — the deny-root
+#: pinned from the passwd home must not mis-match it, and the strict
+#: real-root predicate must never fire on it.
+_SANDBOX_ROOTS: list[Path] = []
+_SANDBOX_LOCK = threading.Lock()
+
+
+def pin_sandbox_root(root: "os.PathLike[str] | str") -> None:
+    """Register *root* as a test-sandbox root. Called by test fixtures while
+    their sandbox is still reachable from the process home view; afterwards
+    the fixture redirects ``Path.home`` and the captured deny-root would no
+    longer see the sandbox."""
+    try:
+        resolved = Path(root).expanduser().resolve()
+        with _SANDBOX_LOCK:
+            if resolved not in _SANDBOX_ROOTS:
+                _SANDBOX_ROOTS.append(resolved)
+    except Exception:
+        pass
+
+
+def _path_in_sandbox(resolved: Path) -> bool:
+    with _SANDBOX_LOCK:
+        return any(resolved.is_relative_to(s) for s in _SANDBOX_ROOTS)
+
 
 def _capture_real_home() -> Optional[Path]:
     global _REAL_HOME
@@ -146,7 +173,10 @@ def _in_test_context() -> bool:
 
 def _is_production_state_db(resolved: Path, root: Path) -> bool:
     """*resolved* is ``<root>/state.db`` or ``<root>/profiles/<name>/state.db``;
-    deeper scratch paths (repo worktrees) are deliberately NOT matched."""
+    deeper scratch paths (repo worktrees) are deliberately NOT matched.
+    Paths under a fixture-registered sandbox root are never production."""
+    if _path_in_sandbox(resolved):
+        return False
     if resolved.parent == root:
         return True
     try:

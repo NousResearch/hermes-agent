@@ -714,6 +714,13 @@ def _ensure_test_isolation(path: Path) -> None:
     if root is None:
         return
     try:
+        from hermes_state_guard import _path_in_sandbox
+
+        if _path_in_sandbox(resolved):
+            return  # fixture-registered sandbox root: never production
+    except ImportError:
+        pass
+    try:
         parts = resolved.relative_to(root).parts
     except ValueError:
         return
@@ -1277,21 +1284,29 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     # the last choke a fixture can hit before touching the live board.
     db_file = _main_db_file(conn)
     if db_file:
-        db_path = Path(db_file)
+        db_path = Path(db_file).expanduser().resolve()
         # The deny-root is the REAL home (passwd), so a sandbox conn whose
-        # path merely happens to sit under the test's redirected home is NOT
-        # production: pre-filter with the process view before paying the
-        # strict check. A conn ON the production board always passes this.
+        # path sits under the test's redirected home is NOT production:
+        # pre-filter with the process view and fixture-registered sandbox
+        # roots before paying the strict check. A conn ON the production
+        # board passes neither filter and still hits the guard.
+        skip = False
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_state_guard import _path_in_sandbox
 
-            process_root = Path(get_hermes_home()).expanduser().resolve()
-            if db_path.expanduser().resolve().is_relative_to(process_root):
-                db_file = None  # sandboxed under the process view: not live
-        except Exception:
+            skip = _path_in_sandbox(db_path)
+        except ImportError:
             pass
-        if db_file:
-            _ensure_test_isolation(Path(db_file))
+        if not skip:
+            try:
+                from hermes_constants import get_hermes_home
+
+                process_root = Path(get_hermes_home()).expanduser().resolve()
+                skip = db_path.is_relative_to(process_root)
+            except Exception:
+                pass
+        if not skip:
+            _ensure_test_isolation(db_path)
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

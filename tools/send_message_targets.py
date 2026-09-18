@@ -18,6 +18,11 @@ _SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+# Google Chat resource names mirror the adapter's strict _GCHAT_CHAT_ID_RE / _GCHAT_THREAD_ID_RE
+# charset: the full "spaces/<id>/threads/<id>" name (what inbound events carry in thread.name,
+# usable verbatim) addresses that thread; a bare "spaces/<id>" / "users/<id>" is the space itself.
+_GCHAT_THREAD_TARGET_RE = re.compile(r"^\s*(spaces/[A-Za-z0-9_-]+)/threads/([A-Za-z0-9_-]+)\s*$")
+_GCHAT_SPACE_TARGET_RE = re.compile(r"^\s*((?:spaces|users)/[A-Za-z0-9_-]+)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
@@ -82,6 +87,15 @@ def _parse_matrix(ref):
     return (trimmed[:split_idx], trimmed[split_idx + 1:]) if split_idx > 0 else None
 
 
+def _parse_google_chat(ref):
+    # The full thread resource name splits into (space, thread); the adapter takes the
+    # complete name as thread_id (``thread.name`` / REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD).
+    match = _GCHAT_THREAD_TARGET_RE.fullmatch(ref)
+    if match:
+        return match.group(1), f"{match.group(1)}/threads/{match.group(2)}"
+    return _parse_regex_stripped(_GCHAT_SPACE_TARGET_RE)(ref)
+
+
 def _parse_yuanbao(ref):
     # "group:<code>" / "direct:<id>"; a bare number is a group code (never generic rules).
     match = _YUANBAO_TARGET_RE.fullmatch(ref)
@@ -107,6 +121,7 @@ _PLATFORM_PARSERS = {
     "matrix": _parse_matrix,
     "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
     "yuanbao": _parse_yuanbao,
+    "google_chat": _parse_google_chat,
     "ntfy": _parse_nonempty,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.

@@ -61,9 +61,33 @@ def test_loop_type_without_text_fail_opens_generation():
     assert result.ok is False
     assert "needs_generation" in (result.steps[0].error or "")
 
+def test_loop_type_compiles_to_set_value_on_chosen_target():
+    calls = []
+    queue = [
+        {"ok": True, "fail_open": False, "decision": {
+            "action": "type", "target_element": 2, "done": False, "backend": "jev", "confidence": 0.9,
+        }},
+        {"ok": True, "fail_open": False, "decision": {
+            "action": "done", "done": True, "backend": "jev", "confidence": 0.99,
+        }},
+    ]
+
+    def handle(args):
+        if args["action"] == "decide":
+            return queue.pop(0)
+        calls.append(dict(args))
+        return {"ok": True}
+
+    result = run_decide_loop("Enter Kevin into textbox B", handle, text="Kevin")
+    assert result.ok is True
+    assert calls == [{"action": "set_value", "element": 2, "value": "Kevin"}]
+
+
 def test_run_goal_action_on_noop(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "noop")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    scopes = []
+    monkeypatch.setattr(cu_tool, "_request_approval", lambda action, args: scopes.append(action) or None)
     cu_tool.reset_backend_for_tests()
     backend = cu_tool._get_backend("")
     clicks = []
@@ -80,14 +104,55 @@ def test_run_goal_action_on_noop(monkeypatch, tmp_path):
             "action": "done", "done": True, "backend": "jev", "confidence": 0.99,
         }})
 
-    monkeypatch.setattr(cu_tool, "_do_decide", fake_decide)
+    spec = cu_tool._ACTIONS["decide"]
+    monkeypatch.setitem(cu_tool._ACTIONS, "decide", spec._replace(handler=fake_decide))
     raw = cu_tool._do_run_goal(backend, "run_goal", {"goal": "Submit", "max_steps": 4})
     payload = json.loads(raw)
     assert payload["action"] == "run_goal"
     assert payload["ok"] is True
     assert payload["status"] == "done"
     assert clicks == [1]
+    assert "click" in scopes
     cu_tool.reset_backend_for_tests()
+
+
+def test_run_goal_type_preserves_target_element(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "noop")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(cu_tool, "_request_approval", lambda *a, **k: None)
+    cu_tool.reset_backend_for_tests()
+    backend = cu_tool._get_backend("")
+    fields = {1: "", 2: ""}
+
+    def set_value(value, element=None, **_):
+        fields[int(element)] = value
+        return ActionResult(ok=True, action="set_value")
+
+    backend.set_value = set_value
+    n = {"i": 0}
+
+    def fake_decide(_backend, _action, _args, session_id=None, **_):
+        n["i"] += 1
+        if n["i"] == 1:
+            return json.dumps({"ok": True, "fail_open": False, "decision": {
+                "action": "type", "target_element": 2, "done": False, "backend": "jev", "confidence": 0.9,
+            }})
+        return json.dumps({"ok": True, "fail_open": False, "decision": {
+            "action": "done", "done": True, "backend": "jev", "confidence": 0.99,
+        }})
+
+    spec = cu_tool._ACTIONS["decide"]
+    monkeypatch.setitem(cu_tool._ACTIONS, "decide", spec._replace(handler=fake_decide))
+    raw = cu_tool._do_run_goal(
+        backend, "run_goal",
+        {"goal": "Enter Kevin into textbox B", "text": "Kevin", "max_steps": 4},
+    )
+    payload = json.loads(raw)
+    assert payload["ok"] is True
+    assert payload["status"] == "done"
+    assert fields == {1: "", 2: "Kevin"}
+    cu_tool.reset_backend_for_tests()
+
 
 
 def test_same_state_ab_rules_vs_jev():

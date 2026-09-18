@@ -58,28 +58,28 @@ def _execute(handle: Handle, decision: dict[str, Any], *, app: str | None, text:
     action = (decision.get("action") or "").strip().lower()
     if action in {"done", "escalate"}:
         return {"ok": True}
-    if action == "wait":
-        time.sleep(min(max(float(decision.get("seconds") or 0.3), 0.05), 5.0))
-        return {"ok": True}
     args: dict[str, Any] = {"action": action}
     if app:
         args["app"] = app
-    if action in {"click", "type"}:
+    if action == "wait":
+        args["seconds"] = min(max(float(decision.get("seconds") or 0.3), 0.05), 5.0)
+    elif action in {"click", "type"}:
         target = decision.get("target_element")
         if target is None:
             return {"ok": False, "error": f"{action} missing target_element"}
         args["element"] = int(target)
-    if action == "type":
-        if decision.get("needs_generation") and not (text or "").strip():
-            return {"ok": False, "error": "needs_generation — planner must supply text"}
-        if not (text or "").strip():
-            return {"ok": False, "error": "type requires text"}
-        args["text"] = text
-    if action == "key":
+        if action == "type":
+            if decision.get("needs_generation") and not (text or "").strip():
+                return {"ok": False, "error": "needs_generation — planner must supply text"}
+            if not (text or "").strip():
+                return {"ok": False, "error": "type requires text"}
+            args["action"] = "set_value"
+            args["value"] = text
+    elif action == "key":
         args["keys"] = decision.get("keys") or "Return"
-    if action == "scroll":
+    elif action == "scroll":
         args["direction"] = decision.get("direction") or "down"
-    if action not in {"click", "type", "key", "scroll", "wait"}:
+    else:
         return {"ok": False, "error": f"unsupported loop action: {action!r}"}
     return _parse(handle(args))
 

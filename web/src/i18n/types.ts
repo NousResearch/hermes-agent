@@ -84,9 +84,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
-      degraded: string;
+      degraded?: string;
       failed: string;
-      heartbeatStale: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;

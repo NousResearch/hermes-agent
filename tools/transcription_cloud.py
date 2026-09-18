@@ -281,7 +281,7 @@ def _transcribe_xai(
 
     def _post() -> Any:
         from tools.xai_http import hermes_xai_user_agent
-        # Omit ``model`` and xAI serves grok-voice-transcribe-1.0 until it flips the default.
+        # Always send the model so xAI's current 1.0 server default cannot leak into Hermes.
         resolved_model = normalize_xai_stt_model(model_name)
         data: Dict[str, str] = {"model": resolved_model}
         if language:

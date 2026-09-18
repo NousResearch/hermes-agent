@@ -48,7 +48,8 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
 
 
 def _proc_summary(pid: int) -> Dict[str, Any]:
-    """Compact /proc/<pid> snapshot (pid, ppid, state, uid, cmdline); missing fields omitted."""
+    """Compact /proc/<pid> identity (pid, name, state, ppid, uid). Never reads cmdline/argv —
+    those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays)."""
     summary: Dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
@@ -60,12 +61,6 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
             summary["ppid"] = int(ppid)
     if (uid := _read_proc_field(pid, "Uid")) is not None:
         summary["uid"] = uid.split()[0] if uid else uid  # "real effective saved fs"
-    try:
-        data = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        data = b""
-    if data:  # truncate aggressively — these can be 4KB
-        summary["cmdline"] = data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()[:300]
     return summary
 
 
@@ -106,7 +101,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
     with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
-        hermes_home_str = os.environ.get("HERMES_HOME")
+        hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
         if hermes_home_str:
             raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
             if raw is not None:
@@ -119,12 +114,28 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+def _async_diagnostic_script(signal_name: str, self_pid: int) -> str:
+    """POSIX listing used by the detached diagnostic. Columns are identity/resource only — no argv."""
+    return (
+        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
+        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+        "echo '--- ps (top 60 by cpu, comm only) ---'; "
+        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -60; "
+        f"echo '--- pstree of self ---'; pstree -pl {self_pid} 2>/dev/null | head -40 || true; "
+        "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
+        "echo '--- recent dmesg (oom/killed) ---'; "
+        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+        "echo '=== end ==='"
+    )
+
+
 def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
                            timeout_seconds: float = 5.0) -> Optional[int]:
     """Fire-and-forget ``ps``-style snapshot appended to ``log_path``: a detached subprocess (own
-    ``timeout`` so a wedged ``ps`` self-cleans) rather than a blocking ``ps aux`` in the signal
+    ``timeout`` so a wedged ``ps`` self-cleans) rather than a blocking process listing in the signal
     handler, which can freeze the loop >2s on a busy host. Returns the subprocess PID, or ``None``
     on failure / Windows (bash -c is available on every POSIX target; Windows has no ps anyway).
+    The listing is comm-only: full argv is not persisted.
     """
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,20 +143,13 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         return None
     if sys.platform == "win32":
         return None
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        f"echo '--- pstree of self ---'; pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
-    )
+    script = _async_diagnostic_script(signal_name, os.getpid())
     try:  # O_APPEND so concurrent diagnostics from rapid signals don't trample each other
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
+    with contextlib.suppress(OSError):  # tighten logs created 0644 by earlier releases
+        os.fchmod(fd, 0o600)
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
@@ -159,7 +163,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
 
 
 def format_context_for_log(ctx: Dict[str, Any]) -> str:
-    """Render a shutdown context dict as one scannable log line (parent cmdline is key)."""
+    """Render a shutdown context dict as one scannable log line (parent identity, never argv)."""
     parent = ctx.get("parent") or {}
     load_str = f"{load:.2f}" if isinstance(load := ctx.get("loadavg_1m"), (int, float)) else "?"
     extras: List[str] = []
@@ -174,7 +178,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     return (
         f"signal={ctx.get('signal', '?')} under_systemd={'yes' if ctx.get('under_systemd') else 'no'} "
         f"parent_pid={parent.get('pid') or '?'} parent_name={parent.get('name') or '?'} "
-        f"loadavg_1m={load_str}{extras_str} parent_cmdline={parent.get('cmdline', '(unknown)')!r}"
+        f"loadavg_1m={load_str}{extras_str}"
     )
 
 

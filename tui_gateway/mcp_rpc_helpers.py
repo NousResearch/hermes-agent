@@ -1,22 +1,12 @@
 """Shared helpers for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
-Published onto ``tui_gateway.server`` as ``_mcp_reset_profile`` /
-``_mcp_summarize_server`` so the rebound handler bodies in methods_tools resolve them.
+Published onto ``tui_gateway.server`` as ``_mcp_summarize_server`` so the rebound handler
+bodies in methods_tools resolve it.
 """
 
 from __future__ import annotations
 
-import contextlib
 from typing import Any, Dict
-
-
-def reset_profile(token) -> None:
-    if token is None:
-        return
-    with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override
-
-        reset_hermes_home_override(token)
 
 
 def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:

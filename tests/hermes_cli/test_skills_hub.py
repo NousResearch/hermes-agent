@@ -562,6 +562,6 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
 
     out = sink.getvalue()
-    assert "Could not fetch" in out
+    assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit

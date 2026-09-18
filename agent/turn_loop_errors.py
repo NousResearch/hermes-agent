@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from agent.message_metadata import append_message
+from agent.turn_failure_copy import short_detail, site_copy
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -70,7 +71,7 @@ def handle_outer_loop_error(
     if sys.is_finalizing() or _is_interpreter_shutdown_error(e):
         error_msg = f"Interpreter is shutting down — cannot continue (API call #{api_call_count}): {e}"
         try:
-            agent._safe_print(f"❌ {error_msg}")
+            agent._safe_print(f"❌ {error_msg}", diagnostic=True)
         except (OSError, ValueError):
             pass
         logger.warning(error_msg)
@@ -81,7 +82,11 @@ def handle_outer_loop_error(
         except Exception:
             pass
         _turn_exit_reason = "interpreter_shutdown"
-        final_response = "Session is shutting down. Your conversation can be resumed with: hermes --resume <session-id>"
+        failed = True
+        _sid = getattr(agent, "session_id", None)
+        final_response = site_copy(
+            "interpreter_shutdown", resume=f" (CLI: `hermes --resume {_sid}`)" if _sid else "",
+        )
         return _verdict("break")
 
     # Deterministic local post-processing bugs (traceback via local helpers, never API
@@ -96,16 +101,16 @@ def handle_outer_loop_error(
     )
 
     if _is_local_processing_error:
-        error_msg = f"Error during local message processing after OpenAI-compatible API call #{api_call_count}: {str(e)}"
+        error_msg = f"Error during local message processing after API call #{api_call_count}: {str(e)}"
     else:
-        error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+        error_msg = f"Error during API call #{api_call_count}: {str(e)}"
     # Honor the _vprint contract: suppress_status_output silences hard failures;
     # quiet_mode -q still shows them. Traceback is logged below.
     if getattr(agent, "suppress_status_output", False):
         logger.error(error_msg)
     else:
         try:
-            print(f"❌ {error_msg}")
+            agent._safe_print(f"❌ {error_msg}", diagnostic=True)
         except (OSError, ValueError):
             logger.error(error_msg)
 
@@ -147,15 +152,20 @@ def handle_outer_loop_error(
         or api_call_count >= agent.max_iterations - 1
         or _outer_error_count >= _outer_error_cap
     ):
+        # finalize_turn stamps failure_reason=loop_error from the exit reason so the desktop
+        # card stops reading these as "unknown"/retryable. The deterministic local bug keeps
+        # ``failed`` as it was (an incomplete, not failed, turn): flipping it made every such
+        # child run a strike against the kanban dispatcher breaker.
+        detail = short_detail(e)
         if _is_local_processing_error:
             _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
-            final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+            final_response = site_copy("local_processing_error", detail=detail)
         elif _outer_error_count >= _outer_error_cap:
             failed = True
             _turn_exit_reason = f"repeated_outer_errors({error_msg[:80]})"
-            final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+            final_response = site_copy("loop_error", detail=detail)
         else:
             _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-            final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+            final_response = site_copy("loop_error", detail=detail)
         return _verdict("break")
     return _verdict("fallthrough")

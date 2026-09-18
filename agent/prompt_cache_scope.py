@@ -90,7 +90,18 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     when no key is declared, for a background-review fork (``_persist_disabled``), for an
     explicit fork child, and on any DB error (fail closed rather than merge a fork onto its
     parent's key).
+
+    The one sanctioned exception is a same-model cache-parity fork (#109964): its whole purpose
+    is prefix parity with the parent, yet ``_persist_disabled`` + ``_session_db=None`` made both
+    resolvers key it into a different bucket (one cold ~full-context request per review).
+    ``build_cache_parity_fork`` stamps the parent's ALREADY-RESOLVED scope as
+    ``_inherited_cache_scope`` (no DB access from the fork). Only a ``gwk_`` value is a declared
+    scope; a physical lineage root stays out of the affinity header so the fork publishes
+    exactly what its parent publishes (None → consumers fall back to the conversation root).
     """
+    inherited = getattr(agent, "_inherited_cache_scope", None)
+    if isinstance(inherited, str) and inherited.startswith(_DECLARED_SCOPE_PREFIX):
+        return inherited
     key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
     if not key or getattr(agent, "_persist_disabled", False):
         return None
@@ -130,8 +141,12 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
 
 
 def resolve_prompt_cache_scope(agent: Any) -> str:
-    """Rotation-stable cache-scope id: declared scope, else the compression-lineage root of
-    ``agent.session_id`` (the physical id without ancestry/DB). Memoized on the agent."""
+    """Rotation-stable cache-scope id: the inherited parent scope of a same-model cache-parity
+    fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
+    (the physical id without ancestry/DB). Memoized on the agent."""
+    inherited = getattr(agent, "_inherited_cache_scope", None)
+    if isinstance(inherited, str) and inherited:
+        return inherited
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""

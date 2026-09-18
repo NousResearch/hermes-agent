@@ -24,7 +24,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
 _GENERIC_API_KEY_PROVIDERS = frozenset({
     "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
     "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",
-    "opencode-free", "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
+    "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
     "nvidia", "ollama-cloud", "tencent-tokenhub", "tencent-tokenplan", "lmstudio"})
 
 
@@ -665,7 +665,7 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
         meta = get_model_capabilities(slug, model)
     except Exception:
         meta = None
-    if meta is not None and not meta.supports_reasoning:
+    if meta is not None and meta.supports_reasoning is False:
         return None
     return list(VALID_REASONING_EFFORTS)
 

@@ -12,6 +12,20 @@ profile 是一个独立的 Hermes 主目录。每个 profile 拥有自己的目�
 
 创建 profile 后，它会自动成为独立的命令。创建名为 `coder` 的 profile，你立即就拥有了 `coder chat`、`coder setup`、`coder gateway start` 等命令。
 
+### Profile、agent 与 bot
+
+这几个术语描述的是 Hermes 的不同部分：
+
+- **Profile** 是一个助手的配置和数据的持久化主目录。它在多次对话和重启之间保持同一份状态。
+
+- **Agent** 是使用该配置和状态运行中的 Hermes 助手。"Hermes Agent" 同时也是产品的名称。
+
+- **Bot 模式中的 Bot** 是以具名条目出现在桌面应用 [Bot 模式](./bot-mode)花名册中的 profile，带有头像和一个持久的 Bot Chat。同一个 profile 仍然可以从 CLI 访问。每个 Bot 都是一个 profile，但并非每个 profile 都是 Bot：当 Bot 模式把它的花名册展示信息（标题、头像、分区、隐藏状态）写入该 profile 的元数据并固定其规范 Bot Chat 时，这个 profile 才成为 Bot。一个只在 CLI、Docker 或 gateway 中使用、从未加入花名册的 profile 仍然只是普通 profile。
+
+- **消息平台 bot** 是 Telegram、Discord、Slack 等平台上的一个账号，通过 gateway 连接到 Hermes。它的 [bot token](#不同的-bot-token) 标识的是那个平台账号。
+
+- **子 agent（subagent）** 是由 [`delegate_task`](./features/delegation.md) 为某个任务派生出的子助手，拥有全新的对话。独立的对话不等于独立的 profile。
+
 ## 快速开始
 
 ```bash

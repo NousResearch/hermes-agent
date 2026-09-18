@@ -1,4 +1,4 @@
-import { DEFAULT_REASONING_EFFORT, type ModelOptionsResponse } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -69,7 +69,7 @@ export function useModelMenuController({
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResponse> =>
+    queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })
 

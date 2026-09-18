@@ -322,7 +322,7 @@ def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
         assert evt["status"] == "stalled"
         assert evt["delegation_id"] == res["delegation_id"]
         assert evt["api_calls"] == 0
-        assert "stalled" in evt["error"]
+        assert "stopped responding" in evt["error"]  # status carries "stalled"; the text is for the user
         # Interrupt was requested BEFORE force-finalization (grace window).
         assert interrupted["count"] >= 1
         assert ad.active_count() == 0
@@ -1150,3 +1150,44 @@ def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeyp
         sidecar = tmp_path / f"state.db{suffix}"
         if sidecar.exists():
             assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+
+
+def test_persist_failure_still_delivers_result_and_frees_slot(monkeypatch):
+    """A failing terminal durable write (locked/full state.db) must not eat the completion
+    event or park the record on ``finalizing`` (#76605, #112030): the event is the only delivery
+    path and ``finalizing`` counts against ``max_concurrent_children`` forever."""
+    def boom(event, result):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ad, "_persist_completion", boom)
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="m", session_key="",
+        runner=lambda: {"status": "completed", "summary": "done"}, max_async_children=1,
+    )
+    evt = _drain_for(res["delegation_id"])
+
+    assert evt is not None and evt["status"] == "completed" and evt["summary"] == "done"
+    deadline = time.monotonic() + 2.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ad.active_count() == 0
+    with ad._records_lock:
+        assert ad._records[res["delegation_id"]]["status"] == "completed"
+
+
+def test_prune_never_evicts_live_records():
+    """Retention pruning drops TERMINAL records only; ``stalling``/``finalizing`` are live work
+    (#76605, #112030). A stalling record has no ``completed_at`` so it sorts oldest and was the
+    first eviction candidate, sending its late runner return into the missing-record path."""
+    with ad._records_lock:
+        for status, ts in (("stalling", 1.0), ("finalizing", 2.0), ("running", 3.0)):
+            ad._records[f"live-{status}"] = {"delegation_id": f"live-{status}", "status": status,
+                                             "dispatched_at": ts, "completed_at": None}
+        for i in range(ad._MAX_RETAINED_COMPLETED + 1):
+            ad._records[f"done-{i}"] = {"delegation_id": f"done-{i}", "status": "completed",
+                                        "dispatched_at": 100.0 + i, "completed_at": 200.0 + i}
+        ad._prune_completed_locked()
+        survivors = set(ad._records)
+
+    assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
+    assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED

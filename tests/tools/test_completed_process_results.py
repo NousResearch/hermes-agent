@@ -39,6 +39,8 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     # The local terminal backend uses bash, including Git Bash on Windows.
     command = shlex.join(path.as_posix() for path in (Path(sys.executable), child, release))
     observed = []
+    seen_tool = set()
+    follow_ups = []
 
     class Provider(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -50,6 +52,8 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
                 self.send_error(404)
                 return
             tool_results = [m for m in request["messages"] if m["role"] == "tool"]
+            follow_ups.extend(m["content"] for m in request["messages"]
+                              if m["role"] == "user" and "Background process" in str(m.get("content") or ""))
             has_terminal = any(t.get("function", {}).get("name") == "terminal"
                                for t in request.get("tools", []))
             message = {"role": "assistant", "content": "Coordinator finished."}
@@ -62,7 +66,13 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
                     },
                 }])
             elif tool_results:
-                observed.extend(json.loads(m["content"]) for m in tool_results)
+                # Requests accumulate history, so a follow-up turn re-carries the start
+                # receipt: count each distinct tool message once.
+                for m in tool_results:
+                    key = json.dumps(m, sort_keys=True)
+                    if key not in seen_tool:
+                        seen_tool.add(key)
+                        observed.append(json.loads(m["content"]))
                 release.touch()
             response = {
                 "id": "chatcmpl-local", "object": "chat.completion", "created": 1,
@@ -116,6 +126,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     assert len(observed) == 1, (observed, producer.stdout, producer.stderr)
     process_id = observed[0]["session_id"]
     assert observed[0].get("notify_on_complete") is True, observed
+    # The owned notify_on_complete completion resumes in-process as a follow-up turn
+    # (nested quiet-notify resume), carrying the child's real output to the model.
+    assert len(follow_ups) == 1, follow_ups
+    assert process_id in follow_ups[0]
+    assert "SYNTHETIC_REVIEW_COMPLETE" in follow_ups[0]
+    assert "exit code 7" in follow_ups[0]
 
     consumer = textwrap.dedent('''
         import json, sys

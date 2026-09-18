@@ -283,6 +283,57 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 )
         self.assertIn("ISOLATED", peek.get("output", ""), peek)
 
+    def test_live_children_keep_their_kernels_past_the_lru_cap(self):
+        """A fan-out wider than max_session_kernels used to evict LIVE children's kernels (each
+        child's execute_code spawned a kernel, the cap reaped the oldest sibling's), so a child's
+        second call hit NameError on state its first call had set — 48 NameErrors across 28 lanes,
+        while the schema promised persistence. A live child's kernel is pinned for the child's life."""
+        import contextvars
+
+        from agent.delegation_context import delegated_child_context
+
+        with _kernel_config(max_session_kernels=2):
+            contexts = []
+            for index in range(5):
+                def _set(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        self._run_as("conv", f"v = {index}", task_id=f"child-{index}")
+                ctx = contextvars.copy_context()
+                ctx.run(_set)
+                contexts.append(ctx)
+            outcomes = {}
+            for index, ctx in enumerate(contexts):
+                def _read(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        outcomes[index] = self._run_as("conv", "print(v)", task_id=f"child-{index}")
+                ctx.run(_read)
+        for index, outcome in outcomes.items():
+            self.assertEqual(outcome["status"], "success", outcome)
+            self.assertTrue(outcome["kernel"]["reused"], outcome)
+            self.assertIn(str(index), outcome["output"])
+
+    def test_finished_children_release_their_kernels(self):
+        """The pin is not a leak: when the child is torn down (the delegate_task cleanup path calls
+        ``shutdown_kernels_for_delegated_child``) its kernels die and stop counting."""
+        from agent.delegation_context import delegated_child_context
+        from tools.code_kernel import shutdown_kernels_for_delegated_child
+
+        with _kernel_config():
+            with delegated_child_context("child-done"):
+                self._run_as("conv", "v = 1", task_id="child-done")
+            with delegated_child_context("child-live"):
+                self._run_as("conv", "v = 2", task_id="child-live")
+            doomed = [k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")]
+            self.assertEqual(len(doomed), 1)
+            shutdown_kernels_for_delegated_child("child-done")
+            self.assertEqual([k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")], [])
+            doomed[0].proc.wait(timeout=10)
+            self.assertFalse(doomed[0].alive())
+            # The sibling's kernel is untouched.
+            with delegated_child_context("child-live"):
+                still = self._run_as("conv", "print(v)", task_id="child-live")
+        self.assertIn("2", still["output"])
+
     def test_session_clear_disposes_the_owners_kernels(self):
         from tools.approval import clear_session
 

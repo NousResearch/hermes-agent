@@ -18,24 +18,26 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
+from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT
 from tools import file_state
-from agent.redact import redact_sensitive_text
+from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content)
+    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
-    _mark_verification_stale, _patch_failure_lock, _patch_failure_tracker, _read_tracker,
-    _read_tracker_lock, _record_not_found, _record_patch_failure, _reset_patch_failures,
-    _task_data, _update_read_timestamp)
+    _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
+    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,19 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return _is_blocked_device_path(resolved)
 
 
+def _resolved_match_path(path: str, task_id: str) -> str:
+    """Best-effort task-cwd resolution of a search hit's path.
+
+    Search backends may return cwd-relative paths while the process cwd differs, so both the
+    read-block filter and the redaction classifier must resolve against the task cwd. An
+    unresolvable path is used as-is (the raw path is still worth classifying).
+    """
+    try:
+        return str(_resolve_path_for_task(path, task_id))
+    except (OSError, ValueError, RuntimeError):
+        return path
+
+
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
     """Remove credential/cache/env paths from a SearchResult in-place; return the omitted count.
 
@@ -219,11 +234,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
     def _allowed(path: str) -> bool:
         nonlocal omitted
-        try:
-            target = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError, RuntimeError):
-            target = path
-        if get_read_block_error(target):
+        if get_read_block_error(_resolved_match_path(path, task_id)):
             omitted += 1
             return False
         return True
@@ -458,7 +469,20 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     if len(result_dict["content"]) > max_chars:
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
-        result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
+        rendered = result_dict["content"]
+        result_dict["content"] = redact_sensitive_text(
+            rendered, file_read=True,
+            secret_file=_is_secret_file_arg(str(_resolved)))
+        redacted = result_dict["content"] != rendered
+    else:
+        redacted = False
+    if offset == 1 and not result_dict["truncated"] and not redacted:
+        # The whole document was shown, so a text-authorable format (.ipynb)
+        # may later be overwritten by write_file; the binary-container guard
+        # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
+        _mark_full_write_baseline(str(_resolved), task_id)
+        _update_read_timestamp(str(_resolved), task_id)
+        file_state.record_read(task_id, str(_resolved))
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -480,7 +504,11 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
             "still current. Proceed with your task using "
             "the information you already have.",
             path=path,
-            already_read=hits + 1)
+            already_read=hits + 1,
+            # A REFUSAL the harness chose, not a failure the tool hit: without the
+            # marker the failure classifiers count the block and a repeated read
+            # escalates to `repeated_exact_failure_block` over calls that never failed.
+            **{GUARDRAIL_REFUSAL_KEY: True})
 
     return json.dumps({
         "status": "unchanged",
@@ -492,14 +520,22 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
-                            offset: int, limit: int, dedup_key: tuple, *, partial: bool) -> int:
+                            offset: int, limit: int, dedup_key: tuple, *, partial: bool,
+                            redacted: bool = False, end_line: int | None = None,
+                            total_lines=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness). Then OUTSIDE our lock (no nested locking): the
-    cross-agent registry, and the background-review read-mark (a FULL read of a
-    skill file counts like skill_view so a follow-up skill_manage(patch) is accepted).
+    mtime for dedup + staleness, page coverage, and the write_file baseline once
+    the task has seen every line UNREDACTED — in one page or by paging
+    contiguously through a file too big for one; a redacted page returned a
+    non-round-trippable ``«redacted:…»`` sentinel, so it must not bless an
+    overwrite that would persist the sentinel into a credential file). Then
+    OUTSIDE our lock (no nested locking): the cross-agent registry, and the
+    background-review read-mark (a FULL read of a skill file counts like
+    skill_view so a follow-up skill_manage(patch) is accepted).
     """
+    complete = not partial
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
@@ -509,16 +545,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             _mtime_now = os.path.getmtime(resolved_str)
             task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if partial and end_line is not None:
+                complete, redacted = _note_read_coverage(
+                    task_data, resolved_str, _mtime_now, offset, end_line, total_lines, redacted)
         except OSError:
             pass
+        if complete and not redacted:
+            task_data.setdefault("full_write_baselines", set()).add(resolved_str)
         _cap_read_tracker_data(task_data)
 
     try:
-        file_state.record_read(task_id, resolved_str, partial=partial)
+        file_state.record_read(task_id, resolved_str, partial=not complete)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
-    if not partial:
+    if complete:
         try:
             # Background-review read-before-write guard integration (#61521): when the self-improvement
             # review fork reads a skill file with read_file (now whitelisted dispatch-side), register the
@@ -536,12 +577,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
-    Guard order: device-path blocklist (no I/O) → stat-based special-file
-    guard (host only) → document extraction → binary-extension guard → Hermes
-    internal denylist → negative-result cache → dedup stub → real read.
+    Guard order: NT/device-namespace prefix (raw string, no resolution) →
+    device-path blocklist (no I/O) → stat-based special-file guard (host only)
+    → document extraction → binary-extension guard → Hermes internal denylist
+    → negative-result cache → dedup stub → real read.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+
+        # On the RAW model-supplied string, before any expanduser()/resolve():
+        # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
+        # leak); on POSIX the task-base join would anchor the prefix as a
+        # relative segment and hide it from every resolved-path check below.
+        nt_err = get_nt_namespace_error(path, verb="Read")
+        if nt_err:
+            return tool_error(nt_err)
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
@@ -595,7 +645,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
+        # Same rule as skill_view: the review fork shares the parent's task_id and its
+        # read-before-write guard needs a real read, which the stub path never records (#95976).
+        if cached_mtime is not None and not is_background_review():
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
                     return _dedup_stub_or_block(task_data, dedup_key, path)
@@ -620,8 +672,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        redacted = False
         if result.content:
-            result.content = redact_sensitive_text(result.content, file_read=True)
+            unredacted = result.content
+            result.content = redact_sensitive_text(
+                unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
+            redacted = result.content != unredacted
             result_dict["content"] = result.content
 
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
@@ -631,15 +687,24 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Consider reading only the section you need with offset and limit "
                 "to keep context usage efficient."))
 
+        total_lines = result_dict.get("total_lines")
+        if result_dict.get("truncated_by") == "bytes":
+            end_line = int(result_dict.get("next_offset", offset)) - 1
+        else:
+            end_line = offset + limit - 1
+            if isinstance(total_lines, int) and total_lines > 0:
+                end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")))
+                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
                 "The content has NOT changed. You already have this information. "
                 "STOP re-reading and proceed with your task.",
                 path=path,
-                already_read=count)
+                already_read=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
         if count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -783,6 +848,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # Per-path lock serializes read→modify→write across concurrent
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
+            # A whole-file overwrite of content this task never saw, or that
+            # changed since, is refused HERE — before the write — instead of
+            # warning after the clobber (#65604). Nothing below runs.
+            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            if blocker:
+                return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
@@ -799,6 +870,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             else:
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
+                    # Own write = current whole-file content: consecutive
+                    # same-task writes stay unblocked. patch never does this.
+                    _mark_full_write_baseline(_resolved, task_id)
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -945,8 +1019,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have NOT changed. You already have this information. "
                 "STOP re-searching and proceed with your task.",
                 pattern=pattern,
-                already_searched=count)
+                already_searched=count,
+                **{GUARDRAIL_REFUSAL_KEY: True})
 
+        # Raw string before _resolve_path_for_task: resolving is the NTLM-leak
+        # trigger and the task-base join would hide the prefix (see read_file_tool).
+        nt_err = get_nt_namespace_error(path, verb="Search")
+        if nt_err:
+            return tool_error(nt_err)
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -971,7 +1051,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
-                m.content = redact_sensitive_text(m.content, file_read=True)
+                m.content = redact_sensitive_text(
+                    m.content, file_read=True,
+                    secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
         result_dict = result.to_dict(densify=True)
 
         if omitted:
@@ -1037,7 +1119,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1219,8 +1301,13 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # The schema documents path='.'; a present-but-blank (or JSON null) value
+    # is not a missing key for dict.get, so apply the default here (#112424).
+    path = args.get("path", ".")
+    if path is None or (isinstance(path, str) and not path.strip()):
+        path = "."
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)

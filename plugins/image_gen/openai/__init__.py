@@ -143,6 +143,9 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             logger.debug("OpenAI image %s failed", verb, exc_info=True)
             return fail(f"OpenAI image {'editing' if is_edit else 'generation'} failed: {exc}", "api_error")
 
+        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
+        # Recorded before extraction/save: the tokens are billed whether or not an image came back.
+        record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
         data = getattr(response, "data", None) or []
         if not data:
             return fail("OpenAI returned no image data", "empty_response")
@@ -153,8 +156,6 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             model=tier_id, prompt=prompt, aspect=aspect, log=logger)
         if err:
             return err
-        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
-        record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt

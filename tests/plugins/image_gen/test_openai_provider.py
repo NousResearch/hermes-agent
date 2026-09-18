@@ -172,9 +172,11 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
-    def test_token_usage_reaches_session_accounting(self, provider):
+    @pytest.mark.parametrize("has_image", [True, False])
+    def test_token_usage_reaches_session_accounting(self, provider, has_image):
         """gpt-image bills per token: the Images API ``usage`` block lands as one
-        ``image_generation`` row keyed on the API model, not the Hermes tier label."""
+        ``image_generation`` row keyed on the API model, not the Hermes tier label — also
+        when the billed HTTP 200 carries no image data."""
         from agent import aux_accounting
 
         recorded = []
@@ -184,6 +186,8 @@ class TestGenerate:
                 recorded.append((args, kwargs))
 
         response = _fake_response(b64=_b64_png())
+        if not has_image:
+            response.data = []
         response.usage = SimpleNamespace(input_tokens=23, output_tokens=1056, total_tokens=1079)
         fake_client = MagicMock()
         fake_client.images.generate.return_value = response
@@ -194,7 +198,9 @@ class TestGenerate:
         finally:
             aux_accounting.reset_accounting_context(token)
 
-        assert result["success"] is True
+        assert result["success"] is has_image
+        if not has_image:
+            assert result["error_type"] == "empty_response"
         ((session_id, task), kwargs), = recorded
         assert (session_id, task) == ("sess-1", "image_generation")
         assert (kwargs["model"], kwargs["billing_provider"]) == ("gpt-image-2", "openai")

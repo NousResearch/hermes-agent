@@ -705,14 +705,17 @@ class TestImageApiSurface:
 
     _USAGE = {"prompt_tokens": 1000, "completion_tokens": 128, "total_tokens": 1128}
 
-    @pytest.mark.parametrize("surface, model, usage", [
-        ("chat", "openai/gpt-5.4-image-2", _USAGE),      # default chain: token-billed via /chat/completions
-        ("images", "krea/krea-2-medium", _USAGE),         # curated Image API model
-        ("images", "krea/krea-2-medium", None),           # flat-fee body without usage: no write
+    @pytest.mark.parametrize("surface, model, usage, images", [
+        ("chat", "openai/gpt-5.4-image-2", _USAGE, True),   # default chain: token-billed via /chat/completions
+        ("images", "krea/krea-2-medium", _USAGE, True),      # curated Image API model
+        ("images", "krea/krea-2-medium", None, True),        # flat-fee body without usage: no write
+        ("chat", "openai/gpt-5.4-image-2", _USAGE, False),  # billed HTTP 200 with text but no image
+        ("images", "krea/krea-2-medium", _USAGE, False),     # billed HTTP 200 with empty ``data``
     ])
-    def test_token_usage_reaches_session_accounting(self, surface, model, usage):
+    def test_token_usage_reaches_session_accounting(self, surface, model, usage, images):
         """A response carrying token usage records one ``image_generation`` row on the ambient
-        session; a body without usage records nothing."""
+        session — also when it carries no image (the provider billed the tokens anyway); a body
+        without usage records nothing."""
         from agent import aux_accounting
 
         recorded = []
@@ -722,10 +725,10 @@ class TestImageApiSurface:
                 recorded.append((args, kwargs))
 
         if surface == "chat":
-            response = _mock_chat_response([_PNG_DATA_URI])
+            response = _mock_chat_response([_PNG_DATA_URI] if images else [])
             response.json.return_value["usage"] = dict(usage)
         else:
-            response = _mock_image_api_response(usage=usage)
+            response = _mock_image_api_response([] if not images else None, usage=usage)
         token = aux_accounting.set_accounting_context(_DB(), "sess-1")
         try:
             with patch(_RUNTIME, return_value=_runtime_ok()), \
@@ -735,7 +738,9 @@ class TestImageApiSurface:
         finally:
             aux_accounting.reset_accounting_context(token)
 
-        assert result["success"] is True
+        assert result["success"] is images
+        if not images:
+            assert result["error_type"] == "empty_response"
         if usage is None:
             assert recorded == []
             return

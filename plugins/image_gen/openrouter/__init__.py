@@ -680,6 +680,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                     "model_access", retryable=True)
             return _fail(failure.error, "api_error", retryable=status in _IMAGE_API_FALLBACK_STATUSES)
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(body, "usage"), model=model_id, provider=self._name, base_url=base_url)
         entries = [e for e in _list_at(body, "data") if isinstance(e, dict)]
         if not entries:
             return _fail(
@@ -692,7 +694,6 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             return _fail(f"Could not save generated image: {exc}", "io_error")
         if not saved:
             return _fail(f"{self._display} response carried neither b64_json nor url.", "empty_response")
-        record_token_usage(_dict_at(body, "usage"), model=model_id, provider=self._name, base_url=base_url)
         return success_response(
             image=saved[0], model=model_id, prompt=prompt, aspect_ratio=semantic_aspect, provider=self._name,
             modality="image" if usable_refs else "text",
@@ -725,6 +726,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 return fail(hint, "model_access"), "unavailable"
             return fail(failure.error, "api_error"), None
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(result, "usage"), model=model_id, provider=self._name, base_url=base_url)
         images = _extract_images(result)
         if not images:
             # Text but no image usually means the model didn't honor image output.
@@ -741,7 +744,6 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 saved_path = save_url_image(first, prefix=f"{self._name}_gen")
         except Exception as exc:  # noqa: BLE001
             return fail(f"Could not save generated image: {exc}", "io_error"), None
-        record_token_usage(_dict_at(result, "usage"), model=model_id, provider=self._name, base_url=base_url)
         return success_response(
             image=str(saved_path), model=model_id, prompt=prompt, aspect_ratio=aspect, provider=self._name,
         ), None

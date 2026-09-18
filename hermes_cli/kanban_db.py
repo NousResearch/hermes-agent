@@ -232,7 +232,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_self_review",
 )
 
 
@@ -3164,9 +3164,19 @@ def request_review(
 
     Implementer and reviewer are recorded on the event so requested changes
     route back to the right profile; ``reviewer`` reassigns the task, and on
-    re-review defaults to the latest ``changes_requested`` provenance. A live
-    claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    re-review defaults to the latest ``changes_requested`` provenance. On a
+    genuine FIRST review with no ``reviewer=`` given, falls back to
+    ``kanban.default_reviewer`` when configured; when that is also
+    unset/unresolvable, refuses rather than silently leaving the row
+    self-assigned (assignee == implementer) for the review-lane dispatcher
+    to hand back to its own author. A live claim is only cleared with proof
+    of ownership (``expected_run_id``) or ``force=True``. Returns ``bool``,
+    or ``(ok, reason)`` with ``with_reason``.
+
+    Not a *block*: even a refusal here never touches ``block_recurrences`` /
+    ``block_kind`` or routes through ``kanban_block`` — repeated review
+    requests on the same task (review -> rerun -> review) still never
+    escalate to triage.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3219,6 +3229,28 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                if reviewer is None:
+                    # First review, no reviewer named: fall back to the
+                    # operator-configured kanban.default_reviewer so the row
+                    # doesn't land in the review lane self-assigned (assignee
+                    # would otherwise stay == implementer — nothing else sets
+                    # it between the claim and this call). When that is also
+                    # unset/unresolvable, refuse outright rather than silently
+                    # leaving the card self-assigned: a refused transition is
+                    # an immediate, actionable error at the call site (the
+                    # tool handler's `_check(ok, ...)` surfaces it to the
+                    # model; the CLI's `_cmd_request_review` prints it and
+                    # returns non-zero) instead of a card that dispatches
+                    # clean and gates nothing.
+                    reviewer = _resolve_default_reviewer()
+                    if reviewer is None:
+                        return _ret(
+                            False, "no reviewer: this is a first review with no "
+                            "reviewer= given, and kanban.default_reviewer is "
+                            "unset (or names no installed profile) — pass "
+                            "reviewer= explicitly or configure "
+                            "kanban.default_reviewer",
+                        )
             reviewer = _canonical_assignee(reviewer)
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
@@ -3268,6 +3300,27 @@ def request_review(
     return _ret(True)
 
 
+def review_implementer(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Implementer recorded by the latest ``review_requested`` event, else
+    ``None``.
+
+    ``request_review`` stamps the row's assignee at handoff time as
+    ``implementer`` on that event (see its docstring), so for a card sitting
+    in ``review`` this is the durable "who wrote this" provenance — read back
+    from the event log rather than trusted from the current ``assignee``,
+    which a reviewer round-trip or a hand reassign moves. The review-lane
+    dispatch guard uses this to refuse to spawn an implementer as its own
+    reviewer (:func:`kanban_db_dispatch._self_review_reason`). ``None`` means
+    the card never recorded one — no ``review_requested`` event, or a payload
+    without a usable string — and callers must treat that as "unknown", never
+    as "distinct from the current assignee".
+    """
+    review_event = _latest_event(conn, task_id, "review_requested")
+    handoff = _json_dict(_row_get(review_event, "payload"))
+    implementer = handoff.get("implementer")
+    return implementer if isinstance(implementer, str) and implementer.strip() else None
+
+
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
     """Reviewer recorded by the latest ``changes_requested`` run's event.
     ``None`` = first review (no such run); ``False`` = a run exists but its
@@ -3282,6 +3335,34 @@ def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
     changes_event = _latest_event(conn, task_id, "changes_requested", changes_run["id"])
     reviewer = _json_dict(_row_get(changes_event, "payload")).get("reviewer")
     return reviewer if isinstance(reviewer, str) and reviewer.strip() else False
+
+
+def _resolve_default_reviewer() -> Optional[str]:
+    """``kanban.default_reviewer`` when set and it names a real, live profile;
+    otherwise ``None``. Only :func:`request_review`'s first-review path calls
+    this, and only when no explicit ``reviewer=`` was given — it is the last
+    resort before refusing outright, so a nonexistent or tombstoned name is
+    treated the same as unset rather than written to the row.
+
+    Local import + fail-open on any config error, mirroring
+    ``kanban_db_dispatch.review_dispatch_enabled``: ``kanban_db.py`` has no
+    module-level config dependency, and a broken/missing config file must not
+    crash a review handoff — it just means no fallback reviewer exists.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("default_reviewer")
+    except Exception:
+        return None
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name:
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        canon = normalize_profile_name(name)
+    except Exception:
+        return None
+    return canon if profile_exists(canon) else None
 
 
 def _nonblank_str(value: Any) -> Optional[str]:

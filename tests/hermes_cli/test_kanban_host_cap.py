@@ -215,6 +215,15 @@ def test_max_spawn_stays_per_board(kanban_home, all_assignees_spawnable):
 def _park_in_review(conn: sqlite3.Connection, title: str, assignee: str) -> str:
     tid = kb.create_task(conn, title=title, assignee=assignee)
     _set_task_status(conn, tid, "review")
+    # Stamp real review_requested provenance with a DISTINCT implementer so
+    # the self-review guard (t_035c6c0d) doesn't fail-closed these rows as
+    # implementer_unknown — this fixture predates that guard and exists to
+    # test capacity/scheduling, not self-review; "reviewer" != assignee here
+    # is deliberate so the row is legitimately spawnable.
+    kb._append_event(
+        conn, tid, "review_requested",
+        {"summary": None, "implementer": f"{assignee}-implementer", "reviewer": assignee},
+    )
     return tid
 
 

@@ -333,6 +333,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
             conn,
             child_id,
             summary="ready",
+            reviewer="reviewer2",
             expected_run_id=implementation.current_run_id,
         )
         active_review = kb.claim_review_task(conn, child_id)
@@ -438,6 +439,7 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
             conn,
             task_id,
             summary="ready",
+            reviewer="reviewer",
             expected_run_id=implementation.current_run_id,
         )
         review = kb.claim_review_task(conn, task_id)

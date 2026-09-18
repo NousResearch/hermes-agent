@@ -131,7 +131,22 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window, ready lane only), ``"active_pr"`` (GitHub PR URL in a
+    recent comment, ready lane only). Self-review exclusion is NOT here — see
+    ``skipped_self_review`` below; it has its own bucket because it needs a
+    third outcome ("couldn't determine", not just yes/no) that this guard's
+    binary skip/spawn return can't carry without a bogus reason string for
+    every other check."""
+    skipped_self_review: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` review-lane rows withheld because the assignee
+    must not review its own work: ``"assignee_is_implementer"`` (the row's
+    ``assignee`` equals the implementer recorded on the latest
+    ``review_requested`` event) or ``"implementer_unknown"`` (no usable
+    ``review_requested`` provenance at all, so a distinct reviewer cannot be
+    proven — fail closed rather than trust an unmarked row). Checked ahead of
+    ``check_respawn_guard`` in the review loop, at the same pre-dispatch level
+    as ``skipped_unassigned``: an operator-actionable park, not a "busy, retry
+    later" deferral. See :func:`_self_review_reason`."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -148,12 +163,12 @@ class DispatchResult:
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    ``active_pr=1, recent_success=2, self_review=1, rate_limited=1,
+    skipped_locked=1, memory_pressure=critical`` — the respawn-guard reasons
+    counted per task plus the tick-level holds. Feeds the "dispatcher stuck"
+    warnings of the CLI daemon and the embedded gateway dispatcher, which
+    otherwise report a bare zero-spawn count while ``hermes kanban tail`` is
+    the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -1372,17 +1387,18 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
+    (quota/auth pattern; the breaker still trips eventually), then LANE-SPECIFIC
+    checks: for the ready lane only, ``"recent_success"`` (completed run
+    within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    PR). The review lane skips those last two: they are the *inputs* to a
+    review handoff. Stale / dead claim locks are NOT a guard reason — the
+    reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1417,8 +1433,15 @@ def check_respawn_guard(
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
+    # Review-lane spawns stop here for recent-success/active-pr: a recent
+    # completed run and a fresh PR URL are the canonical *inputs* to a review
+    # handoff, not duplicate-work signals. Self-review exclusion for the
+    # review lane is NOT here — see ``_self_review_reason`` / the pre-dispatch
+    # ``skipped_self_review`` check in the review loop below. It has to fail
+    # closed on unknown implementer provenance (no ``review_requested`` event
+    # at all), which this function's ``None`` == \"no guard\" return
+    # convention cannot express without conflating \"no guard reason\" with
+    # \"couldn't determine one\" for every other reason in this function too.
     if lane == "review":
         return None
 
@@ -1811,6 +1834,32 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _self_review_reason(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> Optional[str]:
+    """Why ``assignee`` must not be spawned to review ``task_id``, else ``None``.
+
+    ``"assignee_is_implementer"`` — the card's recorded implementer IS this
+    assignee, compared through the same canonicalization ``request_review``
+    applies to a reviewer (:func:`kanban_db._canonical_assignee`), so a
+    case-only difference cannot slip past. ``"implementer_unknown"`` — the
+    card carries no ``review_requested`` implementer provenance at all
+    (:func:`kanban_db.review_implementer` returned ``None``), so a distinct
+    reviewer cannot be PROVEN. Fail closed on that: ``request_review``'s
+    refusal (see its docstring) makes this the rare case going forward, but a
+    row can still reach ``review`` without provenance — a pre-upgrade Hermes
+    version, a direct DB write, a hand-written test fixture — and trusting an
+    unmarked row would silently readmit exactly the self-review this guard
+    exists to stop.
+    """
+    implementer = _kb.review_implementer(conn, task_id)
+    if implementer is None:
+        return "implementer_unknown"
+    if _kb._canonical_assignee(implementer) == _kb._canonical_assignee(assignee):
+        return "assignee_is_implementer"
+    return None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2043,15 +2092,29 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
+def _any_spawnable_review(
+    conn: sqlite3.Connection, review_rows: list[sqlite3.Row],
+) -> bool:
     """Mirrors the review loop's own gate so human-pulled control-plane lanes
-    don't tax ready throughput; assumes spawnable when profiles are unimportable."""
+    don't tax ready throughput; assumes spawnable when profiles are
+    unimportable. A row the author-exclusion guard would withhold
+    (:func:`_self_review_reason`) is NOT spawnable review work: counting it
+    anyway would hold back the ready lane's reservation for a review that can
+    never actually dispatch."""
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+        return any(
+            row["assignee"] and _self_review_reason(conn, row["id"], row["assignee"]) is None
+            for row in review_rows
+        )
+    return any(
+        row["assignee"]
+        and profile_exists(row["assignee"])
+        and _self_review_reason(conn, row["id"], row["assignee"]) is None
+        for row in review_rows
+    )
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2112,7 +2175,7 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(review_rows):
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(conn, review_rows):
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
@@ -2165,6 +2228,22 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        # Author exclusion: the review lane must never spawn a task's own
+        # implementer with the review skill — the bot that wrote the change
+        # would be grading (and could land) its own work. Checked here,
+        # before any claim attempt, so it buckets exactly like
+        # skipped_unassigned/skipped_nonspawnable (operator-actionable park)
+        # rather than through check_respawn_guard's busy-retry-later
+        # semantics. Fail-closed: request_review()'s first-review path
+        # refuses outright when no reviewer resolves (see its docstring), so
+        # in the common case a self-assigned row is never written — this is
+        # the backstop for one that reaches review some other way (an
+        # explicit reviewer= naming the implementer itself, a later hand
+        # reassign, a direct DB write, a pre-upgrade row).
+        self_review = _self_review_reason(conn, row["id"], row["assignee"])
+        if self_review is not None:
+            result.skipped_self_review.append((row["id"], self_review))
             continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1

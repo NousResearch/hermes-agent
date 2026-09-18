@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Dict, Optional
@@ -152,16 +153,55 @@ def _env_extras(extra: Dict[str, Any], spec, *, strip: bool = False) -> None:
             extra[key] = fn[0](value) if fn else value
 
 
-def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, *, strip: bool = False) -> None:
-    """Set ``home_channel`` from ``<env_base>`` (+``_NAME``/``_THREAD_ID``) when the platform is configured."""
+def _env_home_channel(
+    config: GatewayConfig, platform: Platform, env_base: str, *, strip: bool = False,
+    normalize: Optional[Callable[[str], str]] = None,
+) -> None:
+    """Set ``home_channel`` from ``<env_base>`` (+``_NAME``/``_THREAD_ID``) when the platform is configured.
+
+    ``normalize`` reduces the raw env value to the chat id the adapter consumes (e.g. a pasted
+    Discord channel link → numeric channel id); an empty result skips the home channel entirely.
+    """
     chat_id = getenv(env_base)
     if strip:
         chat_id = chat_id.strip()
     if chat_id and platform in config.platforms:
+        if normalize is not None:
+            chat_id = normalize(chat_id)
+        if not chat_id:
+            return
         config.platforms[platform].home_channel = HomeChannel(
             platform=platform, chat_id=chat_id,
             name=getenv(f"{env_base}_NAME", "Home"), thread_id=getenv(f"{env_base}_THREAD_ID") or None,
         )
+
+
+# Pasted "Copy Link" output: https://discord.com/channels/<guild|@me>/<channel>[/<message>]
+# (subdomain variants like canary./ptb. and the legacy discordapp.com included).
+_DISCORD_CHANNEL_LINK = re.compile(
+    r"^(?:https?://)?(?:[a-z0-9-]+\.)*(?:discord|discordapp)\.com/channels/(?:@me|\d+)/(\d+)(?:/\d+)?/?$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_discord_channel_ref(value: str) -> str:
+    """Reduce a pasted Discord channel/message link (or ``<guild>/<channel>`` pair) to the numeric channel id.
+
+    The adapter resolves the home channel via ``int(chat_id)``; storing the link verbatim made
+    every delivery fail with ``ValueError: invalid literal for int()`` (#115216).
+    """
+    if match := _DISCORD_CHANNEL_LINK.match(value):
+        return match.group(1)
+    parts = value.split("/")
+    if len(parts) == 2 and all(part.isdigit() for part in parts):
+        return parts[1]
+    if not value.isdigit():
+        logger.warning(
+            "[config] DISCORD_HOME_CHANNEL %r is not a numeric channel id or channel link; "
+            "Discord home-channel delivery will fail until it is set to the channel id "
+            "(right-click the channel → Copy Channel ID)", value,
+        )
+    return value
 
 
 def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None:
@@ -249,8 +289,8 @@ class _Cred:
             _env_home_channel(config, self.platform, self.home, strip=self.home_strip)
 
 
-def _Home(platform: Platform, env_base: str, *, strip: bool = False):
-    return partial(_env_home_channel, platform=platform, env_base=env_base, strip=strip)
+def _Home(platform: Platform, env_base: str, *, strip: bool = False, normalize: Optional[Callable[[str], str]] = None):
+    return partial(_env_home_channel, platform=platform, env_base=env_base, strip=strip, normalize=normalize)
 
 
 def _ReplyMode(platform: Platform, env: str):
@@ -509,7 +549,7 @@ _ENV_STEPS: tuple = (
     _telegram_fallback_ips,
     _Home(Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL"),
     _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
-    _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL"),
+    _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL", strip=True, normalize=_normalize_discord_channel_ref),
     _ReplyMode(Platform.DISCORD, "DISCORD_REPLY_TO_MODE"),
     _whatsapp,
     _Home(Platform.WHATSAPP, "WHATSAPP_HOME_CHANNEL"),

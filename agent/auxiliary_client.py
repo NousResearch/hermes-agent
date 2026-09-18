@@ -5363,7 +5363,7 @@ def resolve_provider_client(
 
 def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, default_model_slug) for text-only aux tasks; ``task`` selects auxiliary.<task> overrides."""
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime,
@@ -5971,7 +5971,7 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, *, main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine (provider, model, base_url, api_key, api_mode) for a call.
 
@@ -5982,6 +5982,26 @@ def _resolve_task_provider_model(
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)
+        # Scope the optional compression route to explicitly listed local
+        # endpoints. Use the live runtime so /model switches and concurrent
+        # sessions never inherit the route from the startup model.
+        if task == "compression":
+            local_override = task_config.get("local_override")
+            if isinstance(local_override, dict):
+                runtime = _normalize_main_runtime(main_runtime) or {}
+                main_provider = str(runtime.get("provider") or "").lower()
+                main_url = str(runtime.get("base_url") or "").rstrip("/")
+                local_urls = local_override.get("base_urls", [])
+                if (
+                    main_provider in {"custom", "ollama", "lmstudio", "vllm"}
+                    or main_provider.startswith("custom:")
+                ) and main_url and isinstance(local_urls, list) and main_url in {
+                    str(url).rstrip("/") for url in local_urls if isinstance(url, str)
+                }:
+                    task_config = dict(task_config)
+                    for field in ("provider", "model", "base_url", "api_key", "api_mode", "key_env", "api_key_env"):
+                        if field in local_override:
+                            task_config[field] = local_override[field]
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -7191,7 +7211,7 @@ def _prepare_aux_request(
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -8111,7 +8131,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider,
         model=model,

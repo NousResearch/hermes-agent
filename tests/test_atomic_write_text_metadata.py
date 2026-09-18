@@ -184,3 +184,82 @@ class TestCreateMode:
         atomic_yaml_write(target, {"name": "new"}, create_mode=0o644)
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+class TestFsyncDir:
+    """``fsync_dir`` must name the directory whose entry the rename actually changed.
+
+    ``atomic_replace`` resolves a symlink target so the link survives the write and returns that
+    resolved path; the caller dropped the return value into a metadata call and then fsynced the
+    link's own parent, reporting durability for a directory nothing was written to (#115030).
+
+    The resolved directory is compared through ``Path.resolve()`` on both sides: on macOS the
+    temporary root is reached through ``/var`` -> ``/private/var``, so a raw comparison against
+    the un-resolved ``tmp_path`` would fail even on a correct fix.
+    """
+
+    def test_fsync_dir_names_the_resolved_symlink_target_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = tmp_path / "real"
+        links = tmp_path / "links"
+        real.mkdir()
+        links.mkdir()
+        target = real / "value"
+        target.write_text("old\n", encoding="utf-8")
+        link = links / "value"
+        link.symlink_to(target)
+
+        synced: list[Path] = []
+        monkeypatch.setattr("utils.fsync_directory", lambda p: synced.append(Path(p)))
+
+        atomic_write_text(link, "new\n", fsync_dir=True)
+
+        assert len(synced) == 1
+        assert synced[0].resolve() == real.resolve()
+
+    def test_symlink_and_content_survive_the_durable_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Correcting the fsync target must not be bought by writing through the link."""
+        real = tmp_path / "real"
+        links = tmp_path / "links"
+        real.mkdir()
+        links.mkdir()
+        target = real / "value"
+        target.write_text("old\n", encoding="utf-8")
+        link = links / "value"
+        link.symlink_to(target)
+
+        monkeypatch.setattr("utils.fsync_directory", lambda _p: None)
+        atomic_write_text(link, "new\n", fsync_dir=True)
+
+        assert link.is_symlink()
+        assert target.read_text(encoding="utf-8") == "new\n"
+
+    def test_plain_target_still_syncs_its_own_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every ``fsync_dir=True`` caller in the tree writes a real path, so this is unchanged."""
+        target = tmp_path / "auth.json"
+        target.write_text("{}\n", encoding="utf-8")
+
+        synced: list[Path] = []
+        monkeypatch.setattr("utils.fsync_directory", lambda p: synced.append(Path(p)))
+
+        atomic_write_text(target, '{"a": 1}\n', fsync_dir=True)
+
+        assert synced == [tmp_path]
+
+    def test_no_fsync_without_opt_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "notes.md"
+        target.write_text("old\n", encoding="utf-8")
+
+        synced: list[Path] = []
+        monkeypatch.setattr("utils.fsync_directory", lambda p: synced.append(Path(p)))
+
+        atomic_write_text(target, "new\n")
+
+        assert synced == []

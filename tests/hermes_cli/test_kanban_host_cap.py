@@ -17,11 +17,38 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+
+
+pytestmark = pytest.mark.real_memory_guard
+
+
+@pytest.fixture(autouse=True)
+def _host_allocator_sample(monkeypatch):
+    """Give static-cap tests a fresh, already-measured host budget."""
+    monkeypatch.setattr(
+        kb,
+        "_system_memory_sample",
+        lambda: {
+            "mem_total_kib": 16 * 1024 * 1024,
+            "mem_available_kib": 8 * 1024 * 1024,
+            "sampled_at_monotonic": time.monotonic(),
+        },
+    )
+    monkeypatch.setattr(
+        kb,
+        "_read_host_state",
+        lambda: {
+            "per_task_budget_kib": 1024 * 1024,
+            "rise_streak": 3,
+            "bootstrap_used": True,
+        },
+    )
 
 
 @pytest.fixture
@@ -175,15 +202,24 @@ def test_max_in_progress_partial_budget_across_boards(
     assert len(res.spawned) == 1
 
 
-def test_count_running_tasks_other_boards_fails_open(
+def test_count_running_tasks_other_boards_fails_closed(
     kanban_home, monkeypatch,
 ):
-    """A broken board enumeration must not brick dispatch (returns 0)."""
+    """A broken board enumeration must fail closed (returns None)."""
     monkeypatch.setattr(
         kb, "list_boards",
         lambda **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    assert kb.count_running_tasks_other_boards() == 0
+    assert kb.count_running_tasks_other_boards() is None
+
+
+def test_host_lock_is_shared_by_two_board_dispatchers(kanban_home):
+    held = []
+    with kb._host_dispatch_lock(kanban_home) as acquired:
+        held.append(acquired)
+        with kb._host_dispatch_lock(kanban_home) as nested:
+            held.append(nested)
+    assert held == [True, False]
 
 
 def test_max_spawn_stays_per_board(kanban_home, all_assignees_spawnable):
@@ -235,8 +271,8 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
         )
 
     spawned_ids = [s[0] for s in res.spawned]
-    # Budget 2: one ready + the reserved review slot — never 2×ready.
-    assert len(spawned_ids) == 2
+    # Host admission grows by at most one slot per tick.
+    assert len(spawned_ids) == 1
     assert review_id in spawned_ids
 
 
@@ -257,12 +293,12 @@ def test_review_reservation_released_when_no_review_work(
             conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
         )
 
-    # No review work → ready lane keeps the full budget.
-    assert len(res.spawned) == 2
+    # No review work → ready lane gets the one-slot tick budget.
+    assert len(res.spawned) == 1
 
 
 def test_nonspawnable_review_does_not_tax_ready_budget(
-    kanban_home, monkeypatch,
+    kanban_home, all_assignees_spawnable, monkeypatch,
 ):
     """Review tasks parked for humans (no real profile) release the slot."""
     import hermes_cli.config as cfgmod
@@ -286,8 +322,8 @@ def test_nonspawnable_review_does_not_tax_ready_budget(
             conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
         )
 
-    # Human-lane review is not spawnable → no reservation, ready gets both.
-    assert len(res.spawned) == 2
+    # Human-lane review is not spawnable → no reservation, ready gets one.
+    assert len(res.spawned) == 1
 
 
 def test_review_budget_still_bounded_by_shared_cap(
@@ -309,5 +345,5 @@ def test_review_budget_still_bounded_by_shared_cap(
             conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
         )
 
-    # Budget 2 total across both lanes, reservation notwithstanding.
-    assert len(res.spawned) == 2
+    # The one-slot host budget applies across both lanes.
+    assert len(res.spawned) == 1

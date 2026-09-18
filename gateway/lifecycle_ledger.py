@@ -77,10 +77,21 @@ def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
 def sample_memory() -> Dict[str, Any]:
     """Cheap memory snapshot: own RSS + system availability + swap.
 
-    Pure ``/proc`` reads, Linux-only (returns ``{}`` elsewhere), never
-    raises.  Values in KiB to match the kernel's units.
+    Linux reads ``/proc`` and Windows calls ``GlobalMemoryStatusEx``. Values
+    are normalized to KiB, and the source/timestamp fields make stale or
+    cross-platform samples distinguishable to the dispatcher. Never raises.
     """
     sample: Dict[str, Any] = {}
+    started = time.monotonic()
+    if os.name == "nt":
+        try:
+            sample = _windows_memory_sample()
+        except Exception:
+            sample = {}
+        if sample:
+            sample["sampled_at_monotonic"] = started
+            sample["source"] = "windows_globalmemorystatusex"
+        return sample
     try:
         with open("/proc/self/status", encoding="utf-8") as fh:
             for line in fh:
@@ -107,7 +118,64 @@ def sample_memory() -> Dict[str, Any]:
             sample["swap_used_kib"] = meminfo["SwapTotal"] - meminfo["SwapFree"]
     except (OSError, ValueError, IndexError):
         pass
+    if (
+        isinstance(sample.get("mem_total_kib"), int)
+        and not isinstance(sample.get("mem_total_kib"), bool)
+        and isinstance(sample.get("mem_available_kib"), int)
+        and not isinstance(sample.get("mem_available_kib"), bool)
+        and sample["mem_total_kib"] > 0
+        and 0 <= sample["mem_available_kib"] <= sample["mem_total_kib"]
+    ):
+        sample["sampled_at_monotonic"] = started
+        sample["source"] = "proc_meminfo"
     return sample
+
+
+def _windows_memory_sample(status_fn=None) -> Dict[str, Any]:
+    """Return a validated KiB sample from Windows ``GlobalMemoryStatusEx``.
+
+    ``status_fn`` is a narrow test seam returning the native field names and
+    byte values. The production path uses only ctypes and the Windows API;
+    no third-party process or memory dependency is introduced.
+    """
+    if status_fn is None:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        native = _MemoryStatusEx()
+        native.dwLength = ctypes.sizeof(native)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(native)):
+            return {}
+        status_fn = lambda: {
+            "ullTotalPhys": native.ullTotalPhys,
+            "ullAvailPhys": native.ullAvailPhys,
+        }
+    values = status_fn()
+    if not isinstance(values, dict):
+        return {}
+    total = values.get("ullTotalPhys")
+    available = values.get("ullAvailPhys")
+    if any(isinstance(value, bool) or not isinstance(value, int)
+           for value in (total, available)):
+        return {}
+    if total <= 0 or available < 0 or available > total:
+        return {}
+    return {
+        "mem_total_kib": total // 1024,
+        "mem_available_kib": available // 1024,
+    }
 
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:

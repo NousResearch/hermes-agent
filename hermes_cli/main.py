@@ -11198,6 +11198,25 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "kanban":
+        from hermes_cli.profiles import set_profile_kanban_availability
+
+        enabled = bool(getattr(args, "enable", False))
+        disabled = bool(getattr(args, "disable", False))
+        if enabled == disabled:
+            print("profile kanban: choose exactly one of --enable or --disable", file=sys.stderr)
+            sys.exit(2)
+        try:
+            set_profile_kanban_availability(
+                args.profile_name,
+                enabled=enabled,
+                reason=getattr(args, "reason", ""),
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Kanban dispatch {'enabled' if enabled else 'disabled'} for '{args.profile_name}'.")
+
     elif action == "describe":
         # Read or write a profile's description. The description is
         # consumed by the kanban decomposer to route tasks based on

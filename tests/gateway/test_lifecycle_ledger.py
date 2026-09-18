@@ -73,6 +73,30 @@ def test_sample_memory_has_expected_keys_on_linux() -> None:
     assert sample.get("rss_kib", 0) > 0
     assert sample.get("mem_total_kib", 0) > 0
     assert "mem_available_kib" in sample
+    assert sample["source"] == "proc_meminfo"
+    assert isinstance(sample["sampled_at_monotonic"], float)
+
+
+@pytest.mark.windows_only
+def test_sample_memory_uses_windows_globalmemorystatusex_contract() -> None:
+    sample = sample_memory()
+    assert sample["source"] == "windows_globalmemorystatusex"
+    assert sample["mem_total_kib"] > 0
+    assert 0 <= sample["mem_available_kib"] <= sample["mem_total_kib"]
+    assert isinstance(sample["sampled_at_monotonic"], float)
+
+
+def test_windows_memory_status_rejects_invalid_native_values() -> None:
+    from gateway.lifecycle_ledger import _windows_memory_sample
+
+    assert _windows_memory_sample(lambda: {
+        "ullTotalPhys": 100,
+        "ullAvailPhys": 101,
+    }) == {}
+    assert _windows_memory_sample(lambda: {
+        "ullTotalPhys": -1,
+        "ullAvailPhys": 0,
+    }) == {}
 
 
 # ---------------------------------------------------------------------------

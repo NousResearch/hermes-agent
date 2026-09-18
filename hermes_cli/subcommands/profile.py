@@ -103,6 +103,18 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="With --auto, run on every profile missing a description",
     )
 
+    profile_kanban = profile_subparsers.add_parser(
+        "kanban",
+        help="Enable or disable Kanban dispatch for a profile",
+    )
+    profile_kanban.add_argument("profile_name", help="Profile to update")
+    profile_kanban.add_argument("--enable", action="store_true", help="Allow dispatch")
+    profile_kanban.add_argument("--disable", action="store_true", help="Block dispatch")
+    profile_kanban.add_argument(
+        "--reason", default="", help="Reason required when dispatch is disabled"
+    )
+
+
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 

@@ -12,12 +12,13 @@ Covers the two safeguards added in response:
    default global concurrency cap when the operator never set one.
 2. The live memory-pressure guard inside ``dispatch_once`` — critical
    pressure spawns nothing; elevated pressure spawns at most one; unknown
-   imposes no restriction (fail-open).
+   memory fails closed.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pytest
 
@@ -57,12 +58,12 @@ def test_derived_cap_scales_with_memory_and_ceilings():
     assert kb.derive_default_max_in_progress({"mem_total_kib": 64 * GIB}) == 8
 
 
-def test_derived_cap_fails_open_without_memtotal():
-    assert kb.derive_default_max_in_progress({}) is None
-    assert kb.derive_default_max_in_progress({"mem_total_kib": 0}) is None
-    assert kb.derive_default_max_in_progress({"mem_total_kib": -5}) is None
-    assert kb.derive_default_max_in_progress({"mem_total_kib": True}) is None
-    assert kb.derive_default_max_in_progress({"mem_total_kib": "1048576"}) is None
+def test_derived_cap_fails_closed_without_memtotal():
+    assert kb.derive_default_max_in_progress({}) == 0
+    assert kb.derive_default_max_in_progress({"mem_total_kib": 0}) == 0
+    assert kb.derive_default_max_in_progress({"mem_total_kib": -5}) == 0
+    assert kb.derive_default_max_in_progress({"mem_total_kib": True}) == 0
+    assert kb.derive_default_max_in_progress({"mem_total_kib": "1048576"}) == 0
 
 
 def test_resolve_max_in_progress_explicit_config_wins(monkeypatch):
@@ -81,9 +82,9 @@ def test_resolve_max_in_progress_derives_when_unset(monkeypatch):
     assert kb.resolve_max_in_progress(None) == 2
 
 
-def test_resolve_max_in_progress_unset_and_unknown_memory_is_uncapped(monkeypatch):
+def test_resolve_max_in_progress_unset_and_unknown_memory_is_fail_closed(monkeypatch):
     monkeypatch.setattr(kb, "_system_memory_sample", lambda: {})
-    assert kb.resolve_max_in_progress(None) is None
+    assert kb.resolve_max_in_progress(None) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +112,17 @@ def test_pressure_level_classifies_via_gateway_thresholds():
 
 
 def _pressure_sample(level: str) -> dict:
-    total = 1 * GIB
+    total = 16 * GIB
+    sampled_at = time.monotonic()
     if level == "critical":
-        return {"mem_available_kib": 32 * 1024, "mem_total_kib": total}
+        return {"mem_available_kib": 32 * 1024, "mem_total_kib": total,
+                "sampled_at_monotonic": sampled_at}
     if level == "elevated":
-        return {"mem_available_kib": 100 * 1024, "mem_total_kib": total}
-    return {"mem_available_kib": total // 2, "mem_total_kib": total}
+        total = 8 * GIB
+        return {"mem_available_kib": 1 * GIB, "mem_total_kib": total,
+                "sampled_at_monotonic": sampled_at}
+    return {"mem_available_kib": total // 2, "mem_total_kib": total,
+            "sampled_at_monotonic": sampled_at}
 
 
 def test_dispatch_spawns_nothing_under_critical_pressure(
@@ -184,7 +190,9 @@ def test_dispatch_elevated_pressure_spawns_at_most_one(
             kb.create_task(conn, title=title, assignee="alice")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    assert len(spawns) == 1
+    # The allocator's 25% reserve is stricter than the legacy pressure
+    # throttle on this deliberately small sample, so no new worker is safe.
+    assert not spawns
     assert res.memory_pressure == "elevated"
 
 
@@ -211,7 +219,7 @@ def test_dispatch_elevated_pressure_does_not_widen_tighter_budget(
     assert not res.spawned
 
 
-def test_dispatch_unknown_pressure_imposes_no_restriction(
+def test_dispatch_unknown_memory_spawns_nothing(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
     monkeypatch.setattr(kb, "_system_memory_sample", lambda: {})
@@ -226,8 +234,34 @@ def test_dispatch_unknown_pressure_imposes_no_restriction(
             kb.create_task(conn, title=title, assignee="alice")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    assert len(spawns) == 3
-    assert res.memory_pressure is None
+    assert not spawns
+    assert not res.spawned
+    assert res.memory_pressure == "unknown"
+
+
+def test_host_budget_requires_three_fresh_good_ticks():
+    sample = {"mem_total_kib": 16 * GIB, "mem_available_kib": 8 * GIB,
+              "sampled_at_monotonic": 100.0}
+    state = {"per_task_budget_kib": 1024 * 1024, "bootstrap_used": True}
+    assert kb.host_spawn_budget(sample, 0, state, now=100.0) == 0
+    assert kb.host_spawn_budget(sample, 0, state, now=101.0) == 0
+    assert kb.host_spawn_budget(sample, 0, state, now=102.0) == 1
+
+
+def test_host_budget_unknown_or_stale_is_zero_and_resets_streak():
+    state = {"per_task_budget_kib": 1024 * 1024, "rise_streak": 3}
+    sample = {"mem_total_kib": 16 * GIB, "mem_available_kib": 8 * GIB,
+              "sampled_at_monotonic": 1.0}
+    assert kb.host_spawn_budget(sample, 1, state, now=200.0) == 0
+    assert state["rise_streak"] == 0
+
+
+def test_host_budget_bootstrap_allows_only_one_new_task():
+    sample = {"mem_total_kib": 16 * GIB, "mem_available_kib": 8 * GIB,
+              "sampled_at_monotonic": 100.0}
+    state = {}
+    assert kb.host_spawn_budget(sample, 0, state, now=100.0) == 1
+    assert kb.host_spawn_budget(sample, 0, state, now=101.0) == 0
 
 
 def test_dispatch_critical_pressure_still_runs_reclaim_bookkeeping(

@@ -344,6 +344,7 @@ def _fire_dispatch_tick_hook(
             result.skipped_per_profile_capped,
             result.skipped_unassigned,
             result.skipped_nonspawnable,
+            result.skipped_unavailable,
         )):
             outcome = "idle"
         invoke_hook(
@@ -1773,7 +1774,13 @@ def _dispatch_tick_lock(db_path: Path):
             except (OSError, AttributeError):
                 pass
             finally:
-                handle.close()
+                try:
+                    handle.close()
+                except PermissionError:
+                    # ``msvcrt.locking`` can retain a byte-range lock until
+                    # the CRT closes it; a losing probe must not abort the
+                    # dispatcher while cleaning up its handle.
+                    pass
 
 
 # Periodic WAL checkpoint state for the dispatcher tick path. The kanban
@@ -8053,6 +8060,9 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_unavailable: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks kept ready because the assignee profile explicitly disabled
+    Kanban dispatch. Entries are ``(task_id, assignee, reason)``."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -8094,6 +8104,8 @@ class DispatchResult:
     spawned. ``None`` when memory was fine/unknown and the guard imposed
     no restriction. Reclaim/promotion bookkeeping still ran either way;
     deferred tasks stay queued for the next tick."""
+    skipped_host_locked: bool = False
+    """True when the shared host allocator lock was unavailable."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -9655,6 +9667,335 @@ MEMORY_GUARD_MB_PER_WORKER = 512
 DERIVED_MAX_IN_PROGRESS_FLOOR = 2
 DERIVED_MAX_IN_PROGRESS_CEILING = 8
 
+# Host-wide allocator contract. This is intentionally separate from the
+# historical per-board/default-cap constants above: a worker is an OS process
+# and consumes the same physical memory regardless of which board claimed it.
+HOST_HARD_CEILING = 4
+DOYUN_MAX_RUNNING = 1
+HOST_RESERVE_FRACTION = 0.25
+HOST_RESERVE_MIN_KIB = 2 * 1024 * 1024
+HOST_RISE_STREAK_REQUIRED = 3
+HOST_SAMPLE_MAX_AGE_MULTIPLIER = 2
+HOST_STATE_FILENAME = "kanban-host-memory-budget.json"
+HOST_LOCK_FILENAME = "kanban-host-dispatch.lock"
+DOYUN_PROVIDER = "openai-codex"
+DOYUN_MODEL = "gpt-5.3-codex-spark"
+DOYUN_REQUIRED_FIELDS = (
+    "write_scope:",
+    "inputs:",
+    "expected_result:",
+    "repro_test:",
+    "risk_class: quick-mechanical",
+)
+
+
+def _doyun_task_validation(task: "Task") -> Optional[str]:
+    """Return a mechanical-task admission error, or ``None``."""
+    body = (task.body or "").casefold()
+    missing = [field for field in DOYUN_REQUIRED_FIELDS if field not in body]
+    if missing:
+        return "doyun task missing required fields: " + ", ".join(missing)
+    if task.model_override and task.model_override != DOYUN_MODEL:
+        return f"doyun model must be {DOYUN_MODEL!r}"
+    if task.provider_override and task.provider_override != DOYUN_PROVIDER:
+        return f"doyun provider must be {DOYUN_PROVIDER!r}"
+    return None
+
+
+def _host_state_path(home: Optional[Path] = None) -> Path:
+    """Return the one state path shared by every board dispatcher."""
+    return (home or kanban_home()) / "state" / HOST_STATE_FILENAME
+
+
+@contextlib.contextmanager
+def _host_dispatch_lock(home: Optional[Path] = None):
+    """Acquire the shared host allocator lock without waiting."""
+    lock_path = (home or kanban_home()) / "state" / HOST_LOCK_FILENAME
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        if _IS_WINDOWS:
+            import msvcrt
+            handle.seek(0)
+            handle.write(b"0")
+            handle.flush()
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            acquired = True
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+    except (OSError, AttributeError):
+        acquired = False
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            try:
+                if acquired:
+                    if _IS_WINDOWS:
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (OSError, AttributeError):
+                pass
+            try:
+                handle.close()
+            except PermissionError:
+                # ``msvcrt.locking`` can retain a byte-range lock until
+                # the CRT closes it; losing probes must not abort dispatch.
+                pass
+
+
+def _read_host_state(home: Optional[Path] = None) -> dict:
+    try:
+        data = json.loads(_host_state_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_host_state(state: Mapping[str, Any], home: Optional[Path] = None) -> None:
+    path = _host_state_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(dict(state), sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def host_spawn_budget(
+    sample: Optional[Mapping[str, Any]],
+    total_running: int,
+    state: dict,
+    *,
+    now: Optional[float] = None,
+    dispatch_interval_seconds: float = 60.0,
+) -> int:
+    """Return the number of new host slots permitted for this tick.
+
+    Unknown, stale, invalid, low-memory, and unmeasured-running states all
+    fail closed. The only exception is a fresh zero-running bootstrap, which
+    permits one measurement task so a real high-water can be established.
+    ``state`` is mutated in place so the caller can persist it atomically.
+    """
+    now = time.monotonic() if now is None else float(now)
+    if state.get("measurement_unknown") is True:
+        state["rise_streak"] = 0
+        return 0
+    state["rise_streak"] = int(state.get("rise_streak", 0) or 0)
+    if not isinstance(sample, Mapping):
+        state["rise_streak"] = 0
+        return 0
+    total = sample.get("mem_total_kib")
+    available = sample.get("mem_available_kib")
+    sampled_at = sample.get("sampled_at_monotonic")
+    if any(isinstance(v, bool) or not isinstance(v, int)
+           for v in (total, available)) or isinstance(sampled_at, bool) or not isinstance(sampled_at, (int, float)):
+        state["rise_streak"] = 0
+        return 0
+    if total <= 0 or available < 0 or available > total:
+        state["rise_streak"] = 0
+        return 0
+    try:
+        age = now - float(sampled_at)
+    except (TypeError, ValueError):
+        state["rise_streak"] = 0
+        return 0
+    if age < -dispatch_interval_seconds or age > (
+        HOST_SAMPLE_MAX_AGE_MULTIPLIER * dispatch_interval_seconds
+    ):
+        state["rise_streak"] = 0
+        return 0
+    reserve = max(int(total * HOST_RESERVE_FRACTION), HOST_RESERVE_MIN_KIB)
+    if available <= reserve:
+        state["rise_streak"] = 0
+        return 0
+    budget = state.get("per_task_budget_kib")
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
+        if total_running:
+            state["rise_streak"] = 0
+            return 0
+        if state.get("bootstrap_used"):
+            state["rise_streak"] = 0
+            return 0
+        state["bootstrap_used"] = True
+        return 1
+    headroom = available - reserve
+    additional = max(0, headroom // budget)
+    target = min(HOST_HARD_CEILING, int(total_running) + additional)
+    candidate = min(1, max(0, target - int(total_running)))
+    if candidate <= 0:
+        state["rise_streak"] = 0
+        return 0
+    state["rise_streak"] = min(
+        HOST_RISE_STREAK_REQUIRED,
+        state["rise_streak"] + 1,
+    )
+    if state["rise_streak"] < HOST_RISE_STREAK_REQUIRED:
+        return 0
+    return candidate
+
+
+def measure_process_tree_working_set(pid: int) -> tuple[int, bool]:
+    """Measure a worker and descendants in KiB on Windows.
+
+    The Windows implementation uses Tool Help and PSAPI directly. A missing
+    or access-denied descendant makes the sample incomplete rather than
+    silently lowering the next worker's budget. Other hosts return an
+    incomplete sample; their existing process liveness paths remain separate.
+    """
+    if os.name != "nt" or not isinstance(pid, int) or pid <= 0:
+        return 0, False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        PROCESS_VM_READ = 0x0010
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        class _ProcessEntry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        psapi = ctypes.windll.psapi
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snapshot == INVALID_HANDLE_VALUE:
+            return 0, False
+        parents: dict[int, int] = {}
+        entry = _ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        try:
+            if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                while True:
+                    parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                    if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                        break
+        finally:
+            kernel32.CloseHandle(snapshot)
+        pids = {int(pid)}
+        changed = True
+        while changed:
+            changed = False
+            for child, parent in parents.items():
+                if parent in pids and child not in pids:
+                    pids.add(child)
+                    changed = True
+        total = 0
+        complete = True
+        for current_pid in pids:
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                False,
+                current_pid,
+            )
+            if not handle:
+                complete = False
+                continue
+            counters = _Counters()
+            counters.cb = ctypes.sizeof(counters)
+            try:
+                if not psapi.GetProcessMemoryInfo(
+                    handle, ctypes.byref(counters), counters.cb
+                ):
+                    complete = False
+                else:
+                    total += int(counters.WorkingSetSize) // 1024
+            finally:
+                kernel32.CloseHandle(handle)
+        return total, complete
+    except Exception:
+        return 0, False
+
+
+def _update_host_high_water(
+    conn: sqlite3.Connection,
+    state: dict,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Record complete worker-tree high-waters across all live boards."""
+    try:
+        current_path = str(kanban_db_path(board=board).expanduser().resolve())
+        boards = list_boards(include_archived=False)
+    except Exception:
+        state["measurement_unknown"] = True
+        return
+    connections = [conn]
+    extras: list[sqlite3.Connection] = []
+    try:
+        for meta in boards:
+            slug = meta.get("slug") or DEFAULT_BOARD
+            path = kanban_db_path(board=slug).expanduser()
+            if not path.exists() or str(path.resolve()) == current_path:
+                continue
+            try:
+                other = connect(board=slug)
+            except Exception:
+                state["measurement_unknown"] = True
+                return
+            extras.append(other)
+            connections.append(other)
+        for active_conn in connections:
+            rows = active_conn.execute(
+                "SELECT worker_pid FROM tasks WHERE status = 'running' "
+                "AND worker_pid IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                measured, complete = measure_process_tree_working_set(
+                    int(row["worker_pid"])
+                )
+                if not complete or measured <= 0:
+                    continue
+                history = [
+                    int(value) for value in state.get("recent_high_waters", [])
+                    if isinstance(value, int) and value > 0
+                ]
+                history.append(measured)
+                state["recent_high_waters"] = history[-8:]
+                state["per_task_budget_kib"] = max(history)
+                state["bootstrap_used"] = True
+    finally:
+        for extra in extras:
+            try:
+                extra.close()
+            except Exception:
+                pass
+
 
 def _system_memory_sample() -> dict:
     """Best-effort system memory snapshot (KiB values), ``{}`` when unknown.
@@ -9677,15 +10018,14 @@ def derive_default_max_in_progress(sample: Optional[Mapping[str, Any]] = None) -
     """Memory-derived default for ``kanban.max_in_progress`` when unset.
 
     ``clamp(MemTotal / MEMORY_GUARD_MB_PER_WORKER, FLOOR, CEILING)`` — e.g.
-    a 1 GiB VM derives 2, a 4 GiB VM derives 8. Returns ``None`` (no cap,
-    pre-fix behaviour) when total memory can't be determined, so dev
-    machines on macOS/Windows are unaffected.
+    a 1 GiB VM derives 2, a 4 GiB VM derives 8. Returns ``0`` when total
+    memory cannot be determined so a sampler failure fails closed.
     """
     if sample is None:
         sample = _system_memory_sample()
     total_kib = sample.get("mem_total_kib")
     if isinstance(total_kib, bool) or not isinstance(total_kib, int) or total_kib <= 0:
-        return None
+        return 0
     workers = (total_kib // 1024) // MEMORY_GUARD_MB_PER_WORKER
     return max(
         DERIVED_MAX_IN_PROGRESS_FLOOR,
@@ -9750,7 +10090,7 @@ def count_running_tasks(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+def count_running_tasks_other_boards(board: Optional[str] = None) -> Optional[int]:
     """Total ``running`` tasks across every board EXCEPT ``board``.
 
     The concurrency caps bound the HOST (workers are OS processes sharing
@@ -9761,8 +10101,8 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 
     Boards are matched by resolved DB path, so the ``HERMES_KANBAN_DB``
     override (which pins every board to one file) naturally yields 0.
-    Fails open per board: one broken/corrupt board must not brick dispatch
-    on the healthy ones.
+    A board enumeration or read failure returns ``None`` so the host allocator
+    fails closed rather than treating unknown workers as zero.
     """
     try:
         current_path = str(kanban_db_path(board=board).expanduser().resolve())
@@ -9771,7 +10111,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     try:
         boards = list_boards(include_archived=False)
     except Exception:
-        return 0
+        return None
     total = 0
     for meta in boards:
         slug = meta.get("slug") or DEFAULT_BOARD
@@ -9791,7 +10131,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
                 except Exception:
                     pass
         except Exception:
-            continue
+            return None
     return total
 
 
@@ -9801,8 +10141,8 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     Reuses :func:`gateway.memory_status.classify_pressure` so the dispatcher's
     idea of "critical" matches the memory banner users see on the dashboard
     and the lifecycle ledger's OOM-suspicion heuristics (NS-608/NS-656).
-    ``unknown`` (non-Linux, read failure) imposes no restriction — the guard
-    must never brick dispatch on hosts where /proc isn't available.
+    ``unknown`` (non-Linux, read failure) fails closed: the allocator
+    separately records the reason and permits no new spawn.
     """
     if sample is None:
         sample = _system_memory_sample()
@@ -9873,14 +10213,16 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            host_lock_held=False,
         )
         _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
-    with _dispatch_tick_lock(db_path) as held:
-        if not held:
-            result = DispatchResult(skipped_locked=True)
-        else:
-            result = _dispatch_once_locked(
+    with _host_dispatch_lock() as host_held:
+        with _dispatch_tick_lock(db_path) as held:
+            if not held:
+                result = DispatchResult(skipped_locked=True)
+            else:
+                result = _dispatch_once_locked(
                 conn,
                 spawn_fn=spawn_fn,
                 ttl_seconds=ttl_seconds,
@@ -9892,12 +10234,13 @@ def dispatch_once(
                 board=board,
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
-                reconcile_orphans=reconcile_orphans,
-            )
-            # Still under the dispatch lock: run the periodic PASSIVE WAL
-            # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
-            # bounded by journal_size_limit on the writer's natural reset).
-            _maybe_checkpoint_wal(conn, db_path)
+                    reconcile_orphans=reconcile_orphans,
+                    host_lock_held=host_held,
+                )
+                # Still under the dispatch lock: run the periodic PASSIVE WAL
+                # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
+                # bounded by journal_size_limit on the writer's natural reset).
+                _maybe_checkpoint_wal(conn, db_path)
     # The dispatch lock has been released here. Fire the tick observer
     # strictly OUTSIDE the single-writer critical section (#56066 sweeper
     # finding / #64231 disposition): a slow subscriber must never extend
@@ -9920,6 +10263,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    host_lock_held: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -9990,6 +10334,34 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
+    # Host admission is deliberately after reclaim/promotion: pressure and
+    # lock failures defer only NEW work and never alter a running task.
+    if not host_lock_held:
+        result.skipped_host_locked = True
+        result.memory_pressure = "host_lock"
+        return result
+    host_state = _read_host_state()
+    _update_host_high_water(conn, host_state, board=board)
+    sample = _system_memory_sample()
+    pressure = _memory_pressure_level(sample)
+    other_running = count_running_tasks_other_boards(board)
+    if other_running is None:
+        result.memory_pressure = "running_count_unknown"
+        return result
+    total_running_for_host = count_running_tasks(conn) + other_running
+    host_budget = host_spawn_budget(sample, total_running_for_host, host_state)
+    if not dry_run:
+        try:
+            _write_host_state(host_state)
+        except OSError:
+            # A state write failure is fail-closed for new work. Existing
+            # bookkeeping above remains durable and the next tick retries.
+            host_budget = 0
+            pressure = "state_write_failed"
+    if host_budget <= 0:
+        result.memory_pressure = pressure
+        return result
+
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
@@ -10021,7 +10393,7 @@ def _dispatch_once_locked(
     # this, N active boards multiply the cap by N — exactly the fan-out
     # the memory-derived default exists to prevent.
     if max_in_progress is not None:
-        total_running = running_count + count_running_tasks_other_boards(board)
+        total_running = running_count + other_running
         if total_running >= max_in_progress:
             return result
         remaining = max_in_progress - total_running
@@ -10032,10 +10404,7 @@ def _dispatch_once_locked(
     # can't see the host's actual memory state (other tenants, bloated
     # long-lived workers, dashboard growth). Under observed pressure the
     # dispatcher stops adding load: critical -> spawn nothing this tick;
-    # elevated -> at most one new worker. Reclaim/promotion above already
-    # ran, so board bookkeeping stays live either way, and deferred tasks
-    # simply wait for a later tick. "unknown" imposes no restriction.
-    pressure = _memory_pressure_level()
+    # pressure is applied after host admission and caps the per-tick budget.
     if pressure == "critical":
         result.memory_pressure = pressure
         _log.warning(
@@ -10051,6 +10420,8 @@ def _dispatch_once_locked(
                 "limiting to at most 1 new worker this tick"
             )
             spawn_budget = 1
+    if spawn_budget is None or spawn_budget > host_budget:
+        spawn_budget = host_budget
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -10107,7 +10478,9 @@ def _dispatch_once_locked(
         and max_in_progress_per_profile > 0
     ) else None
     _per_profile_running: dict[str, int] = {}
-    if _per_profile_cap is not None:
+    if _per_profile_cap is not None or any(
+        row["assignee"] == "doyun" for row in ready_rows
+    ):
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -10175,15 +10548,64 @@ def _dispatch_once_locked(
             elif block_task(conn, row["id"], reason=reason):
                 result.auto_blocked.append(row["id"])
             continue
+        try:
+            from hermes_cli.profiles import read_profile_meta
+            profile_meta = read_profile_meta(profile_dir)
+        except Exception:
+            profile_meta = {"kanban_enabled": True, "kanban_disabled_reason": ""}
+        if profile_meta.get("kanban_enabled", True) is False:
+            reason = profile_meta.get("kanban_disabled_reason") or (
+                "profile kanban availability is disabled"
+            )
+            result.skipped_unavailable.append(
+                (row["id"], row_assignee, str(reason))
+            )
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "skipped_unavailable",
+                        {"assignee": row_assignee, "reason": str(reason)},
+                    )
+            continue
+        if row_assignee == "doyun":
+            doyun_task = get_task(conn, row["id"])
+            validation_error = (
+                _doyun_task_validation(doyun_task) if doyun_task else
+                "doyun task could not be read"
+            )
+            if validation_error:
+                result.skipped_unavailable.append(
+                    (row["id"], row_assignee, validation_error)
+                )
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "skipped_unavailable",
+                            {"assignee": row_assignee, "reason": validation_error},
+                        )
+                continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
         # quota / browser pool from being overwhelmed by a fan-out
         # while the global max_in_progress / max_spawn caps still allow
         # work on OTHER profiles.
-        if _per_profile_cap is not None:
+        # Doyun is a single-slot mechanical worker regardless of the
+        # board's broader per-profile setting.
+        effective_profile_cap = _per_profile_cap
+        if row_assignee == "doyun":
+            effective_profile_cap = (
+                min(effective_profile_cap, DOYUN_MAX_RUNNING)
+                if effective_profile_cap is not None
+                else DOYUN_MAX_RUNNING
+            )
+        if effective_profile_cap is not None:
             current = _per_profile_running.get(row_assignee, 0)
-            if current >= _per_profile_cap:
+            if current >= effective_profile_cap:
                 result.skipped_per_profile_capped.append(
                     (row["id"], row_assignee, current)
                 )
@@ -10278,7 +10700,9 @@ def _dispatch_once_locked(
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap
             # (#21582). Subsequent ticks re-query from the DB.
-            if _per_profile_cap is not None and claimed.assignee:
+            if (
+                _per_profile_cap is not None or claimed.assignee == "doyun"
+            ) and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
@@ -10402,7 +10826,9 @@ def _dispatch_once_locked(
             )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
-            if _per_profile_cap is not None and claimed.assignee:
+            if (
+                _per_profile_cap is not None or claimed.assignee == "doyun"
+            ) and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
@@ -10855,7 +11281,12 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
-    if task.model_override:
+    if profile_arg == "doyun":
+        # Doyun is never allowed to inherit or override its fixed Spark
+        # contract. Availability/authentication is checked separately by the
+        # profile gate and the child process reports any OAuth failure.
+        cmd.extend(["-m", DOYUN_MODEL, "--provider", DOYUN_PROVIDER])
+    elif task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker
         # resolves the model against the intended backend instead of the

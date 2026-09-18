@@ -711,6 +711,9 @@ class ProfileInfo:
     # Optional user-facing display name from profile.yaml. Presentation
     # only — resolution/comparison/spawn paths always use ``name``.
     display_name: str = ""
+    # Mechanical Kanban admission gate; absent metadata is enabled.
+    kanban_enabled: bool = True
+    kanban_disabled_reason: str = ""
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -882,7 +885,13 @@ def read_profile_meta(profile_dir: Path) -> dict:
     raises — a corrupt profile.yaml on an unrelated profile must not
     break ``hermes profile list``.
     """
-    empty = {"description": "", "description_auto": False, "display_name": ""}
+    empty = {
+        "description": "",
+        "description_auto": False,
+        "display_name": "",
+        "kanban_enabled": True,
+        "kanban_disabled_reason": "",
+    }
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
         return empty
@@ -898,6 +907,10 @@ def read_profile_meta(profile_dir: Path) -> dict:
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        "kanban_enabled": data.get("kanban_enabled", True) is not False,
+        "kanban_disabled_reason": str(
+            data.get("kanban_disabled_reason") or ""
+        ).strip(),
     }
 
 
@@ -907,6 +920,8 @@ def write_profile_meta(
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
     display_name: Optional[str] = None,
+    kanban_enabled: Optional[bool] = None,
+    kanban_disabled_reason: Optional[str] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -937,6 +952,16 @@ def write_profile_meta(
             existing["display_name"] = display_name.strip()
         else:
             existing.pop("display_name", None)
+    if kanban_enabled is not None:
+        existing["kanban_enabled"] = bool(kanban_enabled)
+        if kanban_enabled:
+            existing.pop("kanban_disabled_reason", None)
+    if kanban_disabled_reason is not None:
+        reason = kanban_disabled_reason.strip()
+        if reason:
+            existing["kanban_disabled_reason"] = reason
+        else:
+            existing.pop("kanban_disabled_reason", None)
     # Atomic write: bare open("w") truncates before the dump, and the read
     # path above swallows parse errors as {}, so a crashed write would
     # silently drop unspecified fields on the next call (#51356, #16743).
@@ -975,6 +1000,28 @@ def set_profile_display_name(profile_name: str, display_name: str) -> str:
     return cleaned
 
 
+def set_profile_kanban_availability(
+    profile_name: str,
+    enabled: bool,
+    reason: str = "",
+) -> bool:
+    """Set the profile's mechanical Kanban admission state."""
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+    cleaned_reason = (reason or "").strip()
+    if not enabled and not cleaned_reason:
+        raise ValueError("kanban_disabled_reason is required when disabled")
+    write_profile_meta(
+        profile_dir,
+        kanban_enabled=bool(enabled),
+        kanban_disabled_reason=cleaned_reason,
+    )
+    return bool(enabled)
+
+
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
@@ -1005,6 +1052,8 @@ def list_profiles() -> List[ProfileInfo]:
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
             display_name=meta.get("display_name", ""),
+            kanban_enabled=meta.get("kanban_enabled", True),
+            kanban_disabled_reason=meta.get("kanban_disabled_reason", ""),
         ))
 
     # Named profiles
@@ -1048,6 +1097,8 @@ def list_profiles() -> List[ProfileInfo]:
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
                 display_name=meta.get("display_name", ""),
+                kanban_enabled=meta.get("kanban_enabled", True),
+                kanban_disabled_reason=meta.get("kanban_disabled_reason", ""),
             ))
 
     return profiles

@@ -1137,3 +1137,22 @@ class TestResolveProfileEnvSpelling:
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
 
 
+class TestKanbanAvailability:
+    def test_missing_availability_is_enabled_for_legacy_profiles(self, tmp_path):
+        profile_dir = tmp_path / "legacy"
+        profile_dir.mkdir()
+        assert profiles.read_profile_meta(profile_dir)["kanban_enabled"] is True
+
+    def test_write_and_read_kanban_availability(self, tmp_path):
+        profile_dir = tmp_path / "doyun"
+        profile_dir.mkdir()
+        profiles.write_profile_meta(
+            profile_dir,
+            kanban_enabled=False,
+            kanban_disabled_reason="OAuth not verified",
+        )
+        meta = profiles.read_profile_meta(profile_dir)
+        assert meta["kanban_enabled"] is False
+        assert meta["kanban_disabled_reason"] == "OAuth not verified"
+
+

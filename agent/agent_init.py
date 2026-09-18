@@ -370,6 +370,26 @@ _EXPLICIT_API_MODES = {
 }
 
 
+def _opencode_family_api_mode(agent):
+    """Resolved api_mode for OpenCode-family providers, or None when N/A.
+
+    Uses the same ``opencode_model_api_mode`` routing table the model-switch
+    and fallback flows persist, so direct construction agrees with configured
+    usage (muse-spark/gpt/grok → codex_responses). Fail-closed to None
+    (caller falls through to the default ladder).
+    """
+    try:
+        from hermes_cli.models import opencode_model_api_mode, opencode_provider_family
+
+        if opencode_provider_family(getattr(agent, "provider", None)) is None:
+            return None
+        mode = opencode_model_api_mode(getattr(agent, "provider", None),
+                                       getattr(agent, "model", None))
+        return mode if mode in _EXPLICIT_API_MODES else None
+    except Exception:
+        return None
+
+
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
     from hermes_cli.providers import is_actual_route
@@ -402,6 +422,14 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         from hermes_cli.providers import nous_api_mode
         agent.api_mode = nous_api_mode(agent.model)
     else:
+        # OpenCode Zen/Go route per model through the maintained routing table
+        # (muse-spark/gpt/grok → codex_responses). Without this, direct AIAgent
+        # construction silently falls through to chat_completions and
+        # Responses-only models 500 on /chat/completions (#102148 class).
+        _opencode_mode = _opencode_family_api_mode(agent)
+        if _opencode_mode is not None:
+            agent.api_mode = _opencode_mode
+            return
         # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
         # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).
         # URL-driven, not provider-name-driven: `providers.meta` may point anywhere.

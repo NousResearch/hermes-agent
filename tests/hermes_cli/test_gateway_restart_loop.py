@@ -68,6 +68,9 @@ class TestGatewayLifecyclePattern:
         "pkill -u alice chrome",
         "pkill -t pts/1 vim",
         "pkill -f 'python mt_add_paused.py --go'",
+        # Unrelated scripts that merely contain "hermes" cannot match the gateway cmdline.
+        "pkill -f 'hermes-polis/run.sh'",
+        "pkill -f my_hermes_bot.py",
         "pgrep python",
         "hermes.exe gateway start",
         "my-hermes.exe gateway restart",
@@ -941,7 +944,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is True
@@ -971,7 +974,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
             is True
@@ -984,7 +987,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "activate.sh"
-        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
+        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is False

@@ -93,6 +93,19 @@ _ERE_WILDCARD_ONLY = re.compile(r"^[.*+?$\s]*$")
 _NAME_KILLERS = frozenset({"pkill", "killall", "taskkill", "stop-process"})
 _NAME_ENUMERATORS = frozenset({"pgrep", "pidof", "get-process"})
 _KILL_VERB_RE = re.compile(r"(?i)\b(?:kill|taskkill|stop-process)\b")
+# A `-f` pattern that does not start with the interpreter reaches the gateway cmdline
+# (`python -m hermes_cli.main gateway run` / `hermes gateway run`) only through its own tokens;
+# an unrelated script that merely contains "hermes" (`hermes-polis/run.sh`, `my_hermes_bot.py`)
+# cannot match it. Same hermes+gateway pairing as Branch D, plus the module path.
+_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
+# Rejection text for Branch E, shared by every tool surface that runs the guard so the agent is
+# pointed at the ownership-scoped route (proc_* id / explicit PID) rather than the shell.
+HOST_INTERPRETER_KILL_REJECTION = (
+    "Blocked: this command kills every process whose image/name matches the Python "
+    "interpreter, which is the process hosting this gateway (and this command). "
+    "Stop only the process you own instead: process(action=\"kill\", session_id=\"proc_…\") "
+    "for a background job Hermes started, or kill/taskkill by its explicit PID."
+)
 
 
 def _is_interpreter_image(value: str, *, substring: bool = False) -> bool:
@@ -126,7 +139,7 @@ def _pattern_reaches_host_interpreter(pattern: str, *, full_cmdline: bool, exact
         rest = head[match.start():] + " " + rest
         head = head[: match.start()]
     if not _is_interpreter_image(head, substring=not exact):
-        return full_cmdline and "hermes" in core.lower()
+        return full_cmdline and bool(_GATEWAY_CMDLINE_TOKEN_RE.search(core))
     return not rest.strip() or bool(_ERE_WILDCARD_ONLY.match(rest)) or "hermes" in rest.lower()
 
 

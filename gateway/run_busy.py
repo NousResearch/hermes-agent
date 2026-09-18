@@ -21,7 +21,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, _session_key_namespace
+from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 

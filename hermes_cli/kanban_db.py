@@ -229,7 +229,8 @@ def notify_task_updated(
 
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
-    "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
+    "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers",
+    "reaped_superseded_siblings", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
@@ -3764,6 +3765,140 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True
+
+
+_REAP_ALIVE_STATUSES = ("ready", "running", "review", "todo", "scheduled", "done")
+"""Statuses that prove a lineage's newer member is genuinely superseding the
+stale one — anything that isn't itself blocked/archived. ``done`` is included
+because a coordinator that already finished is just as valid a reason to
+retire an older stuck sibling as one still in flight."""
+
+
+def reap_stale_sibling(
+    conn: sqlite3.Connection, stale_task_id: str, keep_task_id: str,
+) -> bool:
+    """Archive ``stale_task_id`` because ``keep_task_id`` supersedes it —
+    same ``(title, created_by, assignee)`` lineage, ``keep_task_id`` alive in a
+    non-blocked/non-archived status, and ``stale_task_id`` currently ``blocked``.
+
+    This is the dispatcher's AUTOMATIC respawn-loop reaper primitive ONLY
+    (:func:`hermes_cli.kanban_db_dispatch._reap_superseded_blocked_siblings`) —
+    no human or worker judgment supervises an individual call, so it must be
+    mechanically narrow: lineage is re-derived from the DB rows and never taken
+    as a caller claim, which is what makes it safe to run unattended on every
+    tick. It is deliberately NOT what backs the ``kanban_reap`` tool: a worker
+    retiring a stale card for reasons OTHER than "this is my own respawned
+    clone" (e.g. its premise went false) is exactly the case a lineage gate
+    would wrongly refuse — see :func:`reap_task` for that broader, judgment-
+    supervised primitive. Raises ``ValueError`` naming exactly which
+    precondition failed (never a bare False) so a caller can tell an
+    already-reaped sibling from a genuine mismatch.
+    """
+    if stale_task_id == keep_task_id:
+        raise ValueError("stale_task_id and keep_task_id must be different tasks")
+    stale = get_task(conn, stale_task_id)
+    if stale is None:
+        raise ValueError(f"unknown task {stale_task_id}")
+    keeper = get_task(conn, keep_task_id)
+    if keeper is None:
+        raise ValueError(f"unknown task {keep_task_id}")
+    if stale.status != "blocked":
+        raise ValueError(
+            f"{stale_task_id} is {stale.status!r}, not 'blocked' — reap only retires "
+            "blocked siblings, use archive directly for other statuses")
+    if keeper.status not in _REAP_ALIVE_STATUSES:
+        raise ValueError(
+            f"{keep_task_id} is {keeper.status!r}, which does not prove it supersedes "
+            f"{stale_task_id} — keeper must be one of {sorted(_REAP_ALIVE_STATUSES)}")
+    if (stale.title, stale.created_by, stale.assignee) != (keeper.title, keeper.created_by, keeper.assignee):
+        raise ValueError(
+            f"{stale_task_id} and {keep_task_id} are not the same lineage "
+            "(title/created_by/assignee must all match) — refusing to reap unrelated tasks")
+    archived = archive_task(conn, stale_task_id)
+    if archived:
+        with write_txn(conn):
+            _insert_comment(
+                conn, stale_task_id, "dispatcher",
+                f"reaped: superseded by {keep_task_id} (same title/created_by/assignee, "
+                f"which is {keeper.status!r} — this respawned duplicate is now stale)",
+                int(time.time()),
+            )
+            _append_event(conn, stale_task_id, "reaped", {"superseded_by": keep_task_id})
+    return archived
+
+
+_REAP_TASK_ACTIONS = ("archive", "unblock")
+_REAP_TASK_SOURCE_STATUSES = ("blocked", "scheduled")
+"""``reap_task`` only ever touches a card with no live/resolved owner: never
+``running``/``review`` (an active claim would be raced) and never
+``done``/``archived`` (nothing to retire). This is what makes the verb safe to
+expose to a dispatcher-spawned worker acting on a card that is not its own —
+the trust boundary moves from \"never touch another task\" to \"never touch
+another task's LIVE work\", which archive/unblock-from-blocked can't do."""
+
+
+def reap_task(
+    conn: sqlite3.Connection, task_id: str, *, action: str, reason: str,
+    actor_task_id: Optional[str] = None, author: str = "worker",
+) -> bool:
+    """Archive or unblock ``task_id`` on behalf of a coordinator/worker that is
+    NOT its owner — the general-purpose primitive behind the ``kanban_reap``
+    tool (Problem B in kanban task t_a95da99a: a coordinator can create/link/
+    comment but had no way to retire a stale sibling it does not own).
+
+    Deliberately UNGATED by lineage (contrast :func:`reap_stale_sibling`): the
+    motivating case is a card whose premise went false (e.g. the PR it was
+    blocked on already merged), which is almost never the same title/creator
+    as the reaping card. A mechanical lineage match would refuse exactly that
+    case. Safety instead comes from three independent, mechanical limits that
+    hold regardless of the caller's judgment being right or wrong:
+
+    1. ``action`` is archive or unblock only — never complete, never a body/
+       result/summary rewrite, never anything that could forge a false
+       success signal onto someone else's card.
+    2. ``task_id`` must currently be ``blocked`` or ``scheduled`` — there is by
+       definition no live claim/worker to race and no resolved outcome to
+       overwrite. ``running``/``review``/``done`` are refused outright.
+    3. ``reason`` is mandatory and lands in the event payload alongside
+       ``actor_task_id`` — every reap is attributable and auditable from the
+       board, unlike a silent CLI mutation would be.
+
+    Archiving is TERMINAL system-wide (see :func:`archive_task` — there is no
+    unarchive primitive anywhere in Hermes), so 'archive' here is NOT
+    reversible via a later 'unblock': that call's own SQL only matches
+    ``status IN ('blocked', 'scheduled')``, never ``archived``. A caller unsure
+    whether a target is genuinely stale should reap with ``action="unblock"``
+    first (fully reversible — returns it to the normal ready/todo flow)
+    rather than archiving speculatively.
+
+    Both this function and its caller stay same-board-only by construction:
+    neither takes a ``board`` argument, so they only ever run against
+    whichever ``kanban.db`` the connection was opened against.
+    """
+    if action not in _REAP_TASK_ACTIONS:
+        raise ValueError(f"action must be one of {_REAP_TASK_ACTIONS}, got {action!r}")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required — every reap must record why the target was stale")
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if task.status not in _REAP_TASK_SOURCE_STATUSES:
+        raise ValueError(
+            f"{task_id} is {task.status!r} — kanban_reap only retires a card that is "
+            f"currently {' or '.join(_REAP_TASK_SOURCE_STATUSES)} (no live claim to race, "
+            "no resolved outcome to overwrite); use kanban_comment to flag anything else")
+    ok = archive_task(conn, task_id) if action == "archive" else unblock_task(conn, task_id)
+    if ok:
+        with write_txn(conn):
+            _insert_comment(
+                conn, task_id, author,
+                f"reaped ({action}) by {actor_task_id or author}: {reason.strip()[:500]}",
+                int(time.time()),
+            )
+            _append_event(conn, task_id, "reaped_by_worker", {
+                "action": action, "reason": reason.strip()[:1000], "actor_task_id": actor_task_id,
+            })
+    return ok
 
 
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:

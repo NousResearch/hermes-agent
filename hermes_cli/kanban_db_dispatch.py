@@ -62,6 +62,19 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Provider-side capacity exhaustion that killed the worker process outright, so
+# the run is recorded ``crashed`` and never reaches the ``rate_limited`` cooldown
+# path above. The text still matches _RESPAWN_BLOCKER_RE ("429", "rate limit"),
+# which would park the card under ``blocker_auth`` — a state with no expiry. The
+# card then sits ``ready`` and guarded forever while the board reads healthy.
+# Treat these as the transient quota walls they are: same cooldown, same retry.
+# Deliberately narrow — an expired key or a real 403 must still park the card.
+_PROVIDER_CAPACITY_RE = re.compile(
+    r"(are cooling down|rate_limit_error|temporarily unavailable|"
+    r"exceed your account's rate limit)",
+    re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -103,6 +116,12 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_superseded_siblings: list[str] = field(default_factory=list)
+    """``blocked`` task ids auto-archived by :func:`_reap_superseded_blocked_siblings`
+    because a same-lineage sibling (same title/created_by/assignee) already
+    reached ready/running/review/todo/scheduled/done — recovery for a
+    protocol-violation respawn loop that leaves stale duplicate clones behind
+    instead of resuming its own prior card (kanban task t_a95da99a)."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -846,6 +865,69 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     return reconciled
 
 
+def _reap_superseded_blocked_siblings(conn: sqlite3.Connection) -> list[str]:
+    """Auto-archive ``blocked`` cards superseded by a same-lineage sibling that
+    is already ready/running/review/todo/scheduled/done.
+
+    Targets the specific failure mode in kanban task t_a95da99a: a supervisor
+    script (or any respawn loop) that violates the one-clone-per-lineage
+    protocol and creates a fresh card every time it wakes, instead of finding
+    and resuming its own prior card. Each generation blocks (e.g. on the exact
+    same missing dependency the previous generation was already blocked on),
+    and nothing ever retired the old ones — 12 blocked clones of one card
+    accumulated with no automatic recovery.
+
+    Lineage is same ``(title, created_by, assignee)``, which is what
+    :func:`_kb.reap_stale_sibling` re-verifies independently of this caller —
+    this function only proposes candidate pairs, it re-derives nothing, so a
+    bug here can at most under- or over-*propose*, never bypass the real
+    safety check. Runs every reclaim phase (cheap: one indexed query over
+    ``blocked`` rows, bounded by how many blocked cards exist); returns the
+    ids it archived so :class:`DispatchResult` and dashboards can surface it
+    exactly like every other reclaim-phase action.
+    """
+    reaped: list[str] = []
+    blocked_rows = conn.execute(
+        "SELECT id, title, created_by, assignee FROM tasks WHERE status = 'blocked'"
+    ).fetchall()
+    if not blocked_rows:
+        return reaped
+    # One indexed query per distinct lineage, not one per blocked row: a
+    # supervisor that already left 12 clones must not cost 12 full-table scans.
+    seen_lineages: set[tuple[str, Optional[str], Optional[str]]] = set()
+    for row in blocked_rows:
+        lineage = (row["title"], row["created_by"], row["assignee"])
+        if lineage in seen_lineages:
+            continue
+        seen_lineages.add(lineage)
+        keeper = conn.execute(
+            "SELECT id FROM tasks WHERE title = ? AND created_by IS ? AND assignee IS ? "
+            f"  AND status IN ({','.join('?' * len(_kb._REAP_ALIVE_STATUSES))}) "
+            "ORDER BY created_at DESC LIMIT 1",
+            (*lineage, *_kb._REAP_ALIVE_STATUSES),
+        ).fetchone()
+        if not keeper:
+            continue  # every same-lineage card is blocked — nothing supersedes them yet
+        keep_id = keeper["id"]
+        for stale_row in blocked_rows:
+            if (stale_row["title"], stale_row["created_by"], stale_row["assignee"]) != lineage:
+                continue
+            if stale_row["id"] == keep_id:
+                continue
+            try:
+                if _kb.reap_stale_sibling(conn, stale_row["id"], keep_id):
+                    reaped.append(stale_row["id"])
+                    _kb._log.info(
+                        "kanban reap: archived stale blocked clone %s, superseded by %s",
+                        stale_row["id"], keep_id,
+                    )
+            except ValueError as exc:
+                # Lineage/status shifted between the SELECT above and this call
+                # (concurrent writer) — safe to skip, next tick re-evaluates.
+                _kb._log.debug("kanban reap: skipped %s -> %s: %s", stale_row["id"], keep_id, exc)
+    return reaped
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group."""
     fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
@@ -1394,16 +1476,27 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
+    # 1. Transient provider wall — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
+    #    A worker the provider killed outright lands here as ``crashed`` with
+    #    capacity text; it is the same wall and takes the same cooldown, because
+    #    blocker_auth below would otherwise park it with no expiry.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    err = row["last_failure_error"]
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+    if latest_run is not None and (
+        latest_run["outcome"] == "rate_limited"
+        or (
+            latest_run["outcome"] == "crashed"
+            and err
+            and _PROVIDER_CAPACITY_RE.search(err)
+        )
+    ):
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1417,7 +1510,6 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
@@ -2003,6 +2095,7 @@ def _run_reclaim_phase(
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
+    result.reaped_superseded_siblings = _reap_superseded_blocked_siblings(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks

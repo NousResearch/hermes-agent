@@ -519,6 +519,43 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ["task_id"],
 )
 
+KANBAN_REAP_SCHEMA = _schema(
+    "kanban_reap",
+    (
+        "Retire (archive) or revive (unblock) a card that is NOT your own — "
+        "the one capability that closes the loop where a coordinator can "
+        "create/link/comment on cards but never transition them. Visible to "
+        "dispatcher-spawned workers (unlike kanban_unblock) and deliberately "
+        "narrow: the target must currently be 'blocked' or 'scheduled' (never "
+        "'running'/'review' — there is no live claim to race — and never "
+        "'done', already terminal), only 'archive' or 'unblock' are allowed "
+        "(never 'complete', never a body/result rewrite — it cannot forge a "
+        "success signal onto someone else's card), a reason is mandatory and "
+        "is recorded on the target's own event log for audit, and the 'board' "
+        "parameter is IGNORED — reap always targets whichever board your own "
+        "task lives on, never an explicit override, so it can't reach across "
+        "boards or tenants. Archiving is TERMINAL, same as everywhere else in "
+        "Hermes (there is no unarchive) — 'unblock' only works on a card that "
+        "is still 'blocked'/'scheduled', never on one you already archived. "
+        "If you are unsure whether a card is truly stale, use 'unblock' "
+        "first (fully reversible: puts it back in the normal ready/todo flow) "
+        "rather than reaching for 'archive'."
+    ),
+    {
+        "task_id": _prop("string", "The blocked/scheduled task id to retire or revive. "
+                          "Must not be your own task (use kanban_complete/kanban_block "
+                          "for that)."),
+        "action": {
+            "type": "string",
+            "enum": ["archive", "unblock"],
+            "description": "'archive' to retire it, 'unblock' to revive it back to ready/todo.",
+        },
+        "reason": _prop("string", "Why this card is stale/should be retired or revived — "
+                         "recorded on the target's event log. Required."),
+    },
+    ["task_id", "action", "reason"],
+)
+
 KANBAN_LINK_SCHEMA = _schema(
     "kanban_link",
     (

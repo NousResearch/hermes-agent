@@ -1,4 +1,4 @@
-import type { PetDraft, PetGenProvider } from '@hermes/shared'
+import type { PetDraft, PetGenProvider, PetSelectResult } from '@hermes/shared'
 
 export type { PetDraft, PetGenProvider }
 import { atom } from 'nanostores'
@@ -351,8 +351,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   // so the grid fills live instead of sitting on placeholders until all N land.
   const off =
     $gateway.get()?.on('pet.generate.progress', event => {
-      // Shared map types this payload as an open record; the pet backend's draft shape is desktop-owned.
-      const draft = event.payload as (PetDraft & { count: number; token: string }) | undefined
+      const draft = event.payload
 
       // Token-only init event (no draft yet): learn the token immediately so an
       // early Stop can still tell the backend to cancel this run.
@@ -481,7 +480,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   // screen so a multi-minute hatch shows live progress instead of a black box.
   const offProgress =
     $gateway.get()?.on('pet.hatch.progress', event => {
-      const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
+      const p = event.payload
 
       if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
         return
@@ -556,11 +555,8 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   }
 }
 
-export interface AdoptOutcome {
-  ok: boolean
-  slug?: string
-  displayName?: string
-}
+/** `pet.select`'s result on success; `ok: false` alone when there was nothing to adopt or the select failed. */
+export type AdoptOutcome = { ok: false } | PetSelectResult
 
 /**
  * Adopt the previewed pet: optionally rename it to the user's chosen name (set

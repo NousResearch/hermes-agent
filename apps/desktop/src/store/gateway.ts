@@ -1615,9 +1615,7 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
     return
   }
 
-  const payload = event.payload as Record<string, unknown> | undefined
-
-  if (event.type === 'session.info' && payload?.running === false && !g.turnLeaseReleaseTimers.has(key)) {
+  if (event.type === 'session.info' && event.payload?.running === false && !g.turnLeaseReleaseTimers.has(key)) {
     // session.info(false) is the authoritative settled edge, but auto-followup
     // emits message.start immediately after it. A short debounce lets that
     // frame cancel release while still reclaiming ordinary completed turns.

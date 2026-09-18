@@ -220,3 +220,33 @@ def test_execute_code_plain_script_still_uses_guardian(smart_gateway_session):
     assert len(guardian_calls) == 1
     assert result["approved"] is True
     assert result.get("smart_approved") is True
+
+
+# ---------------------------------------------------------------------------
+# 5. Fail-closed: a detector error must route to the human prompt, never
+#    back to the guardian (Copilot review on PR #96555).
+# ---------------------------------------------------------------------------
+
+def test_execute_code_detector_error_fails_closed(smart_gateway_session, monkeypatch):
+    session_key, guardian_calls = smart_gateway_session
+    _register_resolver(session_key, "once")
+
+    def _raising_detector(_code):
+        raise RuntimeError("detector exploded")
+
+    monkeypatch.setattr(
+        "cron.lifecycle_guard.contains_gateway_lifecycle_command",
+        _raising_detector,
+    )
+
+    result = A.check_execute_code_guard("print('anything')", "local")
+
+    # Failing open would hand the script to the guardian (the pre-fix hole,
+    # reintroduced). Fail-closed means: guardian never consulted, human
+    # prompt decides.
+    assert guardian_calls == [], (
+        "detector error routed the script to the guardian instead of the "
+        "human prompt — that is fail-open and reintroduces the outage class"
+    )
+    assert result["approved"] is True
+    assert result.get("user_approved") is True

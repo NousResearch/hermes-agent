@@ -111,15 +111,18 @@ def _script_has_gateway_lifecycle(code: str) -> bool:
     referenced-script recursion) used for the in-gateway hard block and the splice-variant
     approval pattern.
 
-    Fail-open on detector errors: the worst case is that the guardian LLM reviews the script as
-    usual — never that execution proceeds ungated.
+    Fail-CLOSED on detector errors: an exception here must route the script to the human prompt
+    (return True), never back to the guardian LLM — failing open would reintroduce exactly the
+    auto-approved self-termination this exemption exists to prevent. The cost of a false
+    positive is one extra human approval prompt; the cost of a false negative is the gateway
+    outage class.
     """
     try:
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
 
         return contains_gateway_lifecycle_command(code)
     except Exception:
-        return False
+        return True
 
 
 def _smart_approve(command: str, description: str) -> str:

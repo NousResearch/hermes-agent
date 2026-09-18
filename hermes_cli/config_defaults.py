@@ -1808,7 +1808,9 @@ DEFAULT_CONFIG = {
         "dispatch_profiles": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
-        "auto_decompose": True,
+        # Opt in to running the decomposer on Triage tasks every tick. False = manual via
+        # `hermes kanban decompose <id>` or the dashboard's Decompose button.
+        "auto_decompose": False,
         # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
         # defers to the next tick.
         "auto_decompose_per_tick": 3,

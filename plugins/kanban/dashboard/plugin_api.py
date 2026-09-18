@@ -1591,7 +1591,7 @@ def get_orchestration_settings():
     return {
         "orchestrator_profile": explicit["orchestrator_profile"],
         "default_assignee": explicit["default_assignee"],
-        "auto_decompose": bool(kanban_cfg.get("auto_decompose", True)),
+        "auto_decompose": kanban_cfg.get("auto_decompose") is True,
         "auto_promote_children": bool(kanban_cfg.get("auto_promote_children", True)),
         "resolved_orchestrator_profile": resolved["orchestrator_profile"],
         "resolved_default_assignee": resolved["default_assignee"],

@@ -79,12 +79,12 @@ def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> "tuple[b
         cfg = load_config()
     except Exception:
         return False, 3
-    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) and isinstance(cfg.get("kanban"), dict) else {}
     try:
         per_tick = int(kcfg.get("auto_decompose_per_tick", 3) or 3)
     except (TypeError, ValueError):
         per_tick = 3
-    return bool(kcfg.get("auto_decompose", True)), max(per_tick, 1)
+    return kcfg.get("auto_decompose") is True, max(per_tick, 1)
 
 
 def _gc_retention_days() -> int:

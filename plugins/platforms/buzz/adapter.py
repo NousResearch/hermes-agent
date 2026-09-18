@@ -491,10 +491,25 @@ def _event_reply_parent_id(event: dict) -> Optional[str]:
 
 
 def _p_tagged(event: dict, pubkey: str) -> bool:
-    """True when the event carries a ``p`` tag equal to *pubkey* (case-insensitive)."""
+    """True when the event carries a pubkey mention equal to *pubkey* (case-insensitive).
+
+    ``buzz messages get`` can expose addressed users either as raw Nostr
+    ``p`` tags or as a normalized top-level mention list, depending on the
+    CLI/backend path.
+    """
+    pubkey = str(pubkey or "").lower()
+    if not pubkey:
+        return False
     tags = event.get("tags")
-    return isinstance(tags, list) and any(
-        isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "p" and str(tag[1]).lower() == pubkey for tag in tags)
+    if isinstance(tags, list) and any(
+        isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "p" and str(tag[1]).lower() == pubkey for tag in tags
+    ):
+        return True
+    for field in ("mention_pubkeys", "mentions"):
+        values = event.get(field)
+        if isinstance(values, list) and any(_normalize_user_ref(str(value)) == pubkey for value in values):
+            return True
+    return False
 
 
 # Cap stored parent content snippets (gateway reply injection also clips).

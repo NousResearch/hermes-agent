@@ -1610,6 +1610,32 @@ class TestMentionGating:
         assert len(adapter._dispatched) == 1
 
     @pytest.mark.asyncio
+    async def test_normalized_mention_pubkeys_dispatch_to_each_addressed_adapter(self, adapter):
+        reviewer = _make_adapter()
+        reviewer._self_pubkey = AGENT_PUBKEY
+        reviewer._self_npub = ""
+        reviewer._display_name = "Reviewer"
+        reviewer._dispatched = []
+
+        async def capture_reviewer(**kwargs):
+            reviewer._dispatched.append(kwargs)
+
+        reviewer._dispatch_message = capture_reviewer
+        reviewer._message_handler = AsyncMock()
+        reviewer._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+        to_chip = _event("to-chip", content="please take a look", created_at=10)
+        to_chip["mention_pubkeys"] = [SELF_PUBKEY]
+        to_reviewer = _event("to-reviewer", content="please review this", created_at=11)
+        to_reviewer["mention_pubkeys"] = [AGENT_PUBKEY]
+
+        await self._poll_with(adapter, to_chip, to_reviewer)
+        await self._poll_with(reviewer, to_chip, to_reviewer)
+
+        assert [item["message_id"] for item in adapter._dispatched] == ["to-chip"]
+        assert [item["message_id"] for item in reviewer._dispatched] == ["to-reviewer"]
+
+    @pytest.mark.asyncio
     async def test_other_recipient_tag_does_not_dispatch(self, adapter):
         event = _event("e1", content="please take a look", created_at=10)
         event["tags"].append(["p", "b" * 64])

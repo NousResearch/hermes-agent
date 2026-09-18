@@ -125,13 +125,17 @@ def dumps_toml(document: Mapping[str, Any]) -> str:
 
 
 def validate_relay_plugin_payload(payload: Mapping[str, Any]) -> list:
-    """Run the payload through Relay's own validator; returns the diagnostics (empty = clean).
-    Raises when Relay rejects the document outright."""
+    """Run the payload through Relay's own validator; returns the warnings (empty = clean).
+    Raises when Relay rejects the document, including by error-level diagnostics."""
     from nemo_relay import plugin
 
-    report = plugin.validate(dict(payload))
-    config_report = report.get("config") if isinstance(report, dict) else None
-    return list((config_report or {}).get("diagnostics") or []) if isinstance(config_report, dict) else []
+    # Exact: the runtime loads this document as the explicit file, never layered over the
+    # ambient user config that plain validate() would discover.
+    diagnostics = list(plugin.validate_exact(dict(payload))["config"]["diagnostics"])
+    # Relay 0.8 raised on these from initialize(); 0.9's validator reports them instead.
+    if errors := [d for d in diagnostics if d.get("level") == "error"]:
+        raise ValueError("; ".join(str(d.get("message") or d.get("code") or d) for d in errors))
+    return diagnostics
 
 
 def _comment_out_legacy_lines(lines: list[str], names: set[str]) -> list[str]:

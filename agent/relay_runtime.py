@@ -270,9 +270,7 @@ class _ProcessRelayPluginConfiguration:
         config_path = _configured_plugin_inputs()
         if config_path is None:
             return False
-        # The explicit file is the whole payload, static components and [[plugins.dynamic]]
-        # alike; Relay resolves it in place of user-file discovery and hands back the
-        # activation that owns every plugin it loaded.
+        # Relay reads the explicit file in place of the user file; the system file still layers beneath it.
         activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
         if activation is None:
             raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
@@ -1241,8 +1239,7 @@ def _configured_plugin_inputs() -> Path | None:
         ) from exc
 
 
-# Relay 0.9 has no query for an active plugin host; the only signal is initialize refusing the
-# lease. These are the two PluginError::Conflict messages it raises for that.
+# Relay 0.9 exposes no active-host query; only initialize's Conflict message signals one.
 _RELAY_HOST_CONFLICT_MARKERS = (
     "plugin configuration is already active",
     "owned by an active dynamic plugin host",

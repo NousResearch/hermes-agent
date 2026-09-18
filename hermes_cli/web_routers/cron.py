@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
-    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
+    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job, _validate_dashboard_cron_security,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
@@ -148,11 +148,12 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
         updates = _normalize_dashboard_cron_updates(body.updates, profile_home)
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(updates.get("context_from"), profile_name)
+        effective = {**existing, **updates}
         if _EXECUTION_FIELDS.intersection(updates):
-            effective = {**existing, **updates}
             if "skills" in updates and "skill" not in updates:
                 effective["skill"] = None
             _validate_dashboard_cron_effective_job(effective)
+        _validate_dashboard_cron_security(effective, updates)
         job = _mutate_cron_for_profile(profile_name, "update_job", job_id, updates)
     except HTTPException:
         raise
@@ -405,6 +406,9 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # Blueprint jobs deliver to the dashboard's configured target by default;
         # the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
+        # Slot values are user text interpolated into the stored prompt; the
+        # blueprint path must not bypass the tool path's prompt/deliver guards.
+        _validate_dashboard_cron_security(spec)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)

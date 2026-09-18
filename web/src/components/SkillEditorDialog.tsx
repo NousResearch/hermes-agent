@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
@@ -79,6 +80,7 @@ function EditorBody({
   onClose,
   onSaved,
 }: Omit<SkillEditorDialogProps, "open">) {
+  const { t } = useI18n();
   const isEdit = editName !== null;
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
@@ -152,7 +154,7 @@ function EditorBody({
         {!isEdit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-name">Name</Label>
+              <Label htmlFor="skill-editor-name">{t.fields.name}</Label>
               <Input
                 id="skill-editor-name"
                 autoFocus

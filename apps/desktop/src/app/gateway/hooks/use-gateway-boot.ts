@@ -228,7 +228,11 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot('Desktop IPC bridge is unavailable.')
+      // No bridge ⇒ the renderer is not running under Electron (dev-server URL
+      // opened in a regular browser). Flag it so the boot-failure overlay shows
+      // "open the desktop app" guidance instead of recovery buttons that would
+      // all silently no-op without the bridge.
+      failDesktopBoot(translateNow('boot.errors.ipcBridgeUnavailable'), { browserMode: true })
       setSessionsLoading(false)
 
       return () => void (cancelled = true)

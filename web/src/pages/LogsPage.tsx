@@ -72,21 +72,26 @@ export default function LogsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
-  const fetchLogs = useCallback(() => {
+  const fetchLogs = useCallback(async () => {
+    // Await-first loader: the setLoading below runs in a promise
+    // continuation, never synchronously inside the mount/refresh effect
+    // body (react-hooks/set-state-in-effect).
+    await Promise.resolve();
     setLoading(true);
     setError(null);
-    api
-      .getLogs({ file, lines: lineCount, level, component })
-      .then((resp) => {
-        setLines(resp.lines);
-        setTimeout(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          }
-        }, 50);
-      })
-      .catch((err) => setError(errorMessage(err)))
-      .finally(() => setLoading(false));
+    try {
+      const resp = await api.getLogs({ file, lines: lineCount, level, component });
+      setLines(resp.lines);
+      setTimeout(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, 50);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
   }, [file, lineCount, level, component]);
 
   useLayoutEffect(() => {
@@ -122,7 +127,7 @@ export default function LogsPage() {
           />
           {autoRefresh && (
             <Badge tone="success" className="text-xs">
-              <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+              <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>
           )}
@@ -148,7 +153,13 @@ export default function LogsPage() {
   ]);
 
   useEffect(() => {
-    fetchLogs();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await fetchLogs();
+    })();
   }, [fetchLogs]);
 
   useEffect(() => {

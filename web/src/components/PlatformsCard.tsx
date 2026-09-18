@@ -91,7 +91,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                 className="shrink-0 self-start sm:self-center"
               >
                 {display.tone === "success" && (
-                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                  <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}
                 {display.label}
               </Badge>

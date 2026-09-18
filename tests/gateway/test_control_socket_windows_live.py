@@ -130,15 +130,28 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     assert identify_gateway(home, timeout=2.0) is None
 
-    # Consumer falls back to the state file (live pid = this test process)
+    # Consumer falls back to the state file (live pid = this test process).
+    # The record must satisfy the identity-verification contract
+    # (gateway_state=running, gateway-like argv): with a readable command
+    # line the verifier trusts only a gateway-shaped live process, which a
+    # pytest process never is. Patch the cmdline read to None — the
+    # documented Windows/EACCES fallback — so the persisted record itself
+    # is verified, exactly the trust path the state-file fallback exists for.
     import hermes_cli.update_receipt as ur
 
     (home / "gateway_state.json").write_text(
         json.dumps(
-            {"pid": os.getpid(), "code_sha": "OLD", "kind": "hermes-gateway"}
+            {
+                "pid": os.getpid(),
+                "code_sha": "OLD",
+                "kind": "hermes-gateway",
+                "gateway_state": "running",
+                "argv": [str(PROJECT_ROOT / "hermes-gateway.exe"), "gateway", "run"],
+            }
         ),
         encoding="utf-8",
     )
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: None)
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},

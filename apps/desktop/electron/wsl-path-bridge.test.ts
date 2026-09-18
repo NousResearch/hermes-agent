@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, beforeAll, test, vi } from 'vitest'
 
 import {
   isWslBridgeActive,
@@ -12,6 +12,13 @@ import {
 } from './wsl-path-bridge'
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+// On loaded CI runners the 5s project default has proven too tight for the
+// wsl.exe-spawning tests here; 30s only widens the ceiling — the tests stay
+// fast in isolation.
+beforeAll(() => {
+  vi.setConfig({ testTimeout: 30_000 })
+})
 
 /** Reset the bridge to its default active state after every test so no test
  *  leaks global state into the next one. */

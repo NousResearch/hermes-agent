@@ -217,7 +217,12 @@ export const zh = defineLocale({
       signInFailed: '登录失败',
       signInToRemoteGateway: '登录远程网关',
       signInWithProvider: provider => `使用 ${provider} 登录`,
-      identityProvider: '你的身份提供方'
+      identityProvider: '你的身份提供方',
+      browserModeTitle: '在浏览器中打开，而非桌面应用',
+      browserModeDescription:
+        '此地址只是界面。Hermes Desktop 必须在它自己的窗口中运行，桌面桥接只在其中可用。没有东西损坏——请改为打开 Hermes Desktop 应用。',
+      browserModeHint: '开发模式用“npm run dev”启动桌面应用；安装版从开始菜单 / Applications 文件夹启动。',
+      browserModeDocs: '开发者文档'
     }
   },
 
@@ -422,10 +427,16 @@ export const zh = defineLocale({
       'view.terminalPaste': '粘贴到终端',
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
+      'view.toggleHud': '切换 HUD 模式',
+      'hud.snapToPointer': '移动 HUD 到指针位置（HUD 打开时全局生效）',
       'view.flipPanes': '交换侧边栏位置',
       'view.findInPage': '页面内查找',
       'view.findNext': '查找下一个',
       'view.findPrevious': '查找上一个',
+      'view.newTerminal': '新建终端',
+      'view.nextTerminal': '下一个终端',
+      'view.prevTerminal': '上一个终端',
+      'view.closeTerminal': '关闭终端',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',
@@ -2458,32 +2469,7 @@ export const zh = defineLocale({
       WHATSAPP_MODE: { label: '桥接模式' },
       WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
     },
-    platformIntro: {
-      telegram:
-        '在 Telegram 中，与 @BotFather 对话，运行 /newbot，复制它给你的令牌。然后从 @userinfobot 获取你的数字用户 ID。',
-      discord:
-        '打开 Discord 开发者门户，创建应用，添加 Bot，然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
-      slack: '创建 Slack 应用，启用 Socket Mode，安装到你的工作区，然后复制 bot 令牌和 app 级令牌。',
-      mattermost: '在你的 Mattermost 服务器上，创建机器人账户或个人访问令牌，然后在此粘贴服务器 URL 和令牌。',
-      matrix: '用机器人账户登录你的 homeserver，然后复制访问令牌、用户 ID 和 homeserver URL。',
-      signal: '在可访问的位置运行 signal-cli REST 桥接，然后把 Hermes 指向该 URL 和已注册的电话号码。',
-      whatsapp: '启动 Hermes 自带的 WhatsApp 桥接，首次运行时扫描二维码，然后启用该平台。',
-      bluebubbles:
-        '在装有 iMessage 的 Mac 上运行 BlueBubbles Server，暴露其 API，然后用服务器密码把 Hermes 指向该 URL。',
-      homeassistant: '在 Home Assistant 中打开你的个人资料并创建长期访问令牌。把它连同你的 HA URL 一起粘贴到这里。',
-      email: '使用专用邮箱。对于 Gmail/Workspace,创建应用专用密码并使用 imap.gmail.com / smtp.gmail.com。',
-      sms: '从 Twilio 控制台获取你的 Account SID 和 Auth Token，以及一个可发送短信的电话号码。',
-      dingtalk: '在开发者控制台创建钉钉应用，然后在此复制 Client ID(App key) 和 Client Secret。',
-      feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
-      wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
-      wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
-      weixin:
-        '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
-      qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',
-      api_server:
-        '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',
-      webhook: '运行一个 HTTP 服务器，供其他工具 (GitHub、GitLab、自定义应用)POST。用 secret 验证签名。'
-    }
+    platformIntro: {}
   },
 
   webhooks: {
@@ -4275,6 +4261,27 @@ export const zh = defineLocale({
         web_search: { done: '已搜索网页', pending: '正在搜索网页', pendingAction: '正在搜索' },
         write_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' }
       }
+    },
+
+    toolDetails: {
+      payloadDisclosure: '工具原始数据',
+      argumentsHeading: '参数',
+      resultHeading: '结果',
+      searchLabel: '搜索',
+      searchResultsLabel: '搜索结果',
+      errorDetailsLabel: '错误详情',
+      webSearchDetailsLabel: '详情',
+      browserSnapshotLabel: '快照摘要'
+    },
+
+    viewer: {
+      openFullView: '查看大图',
+      zoomIn: '放大',
+      zoomOut: '缩小',
+      reset: '重置',
+      copied: '已复制',
+      copy: '复制',
+      close: '关闭'
     }
   },
 

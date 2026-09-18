@@ -120,7 +120,15 @@ const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0
  * a native `<details>`, whose marker is a browser-drawn triangle matching
  * nothing else here.
  */
-function ToolPayloadDisclosure({ args, result }: { args: unknown; result: unknown }) {
+function ToolPayloadDisclosure({
+  args,
+  result,
+  labels
+}: {
+  args: unknown
+  result: unknown
+  labels: { arguments: string; payloadDisclosure: string; result: string }
+}) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -136,11 +144,11 @@ function ToolPayloadDisclosure({ args, result }: { args: unknown; result: unknow
         type="button"
       >
         <DisclosureCaret className="text-(--ui-text-tertiary)" open={open} size="0.625rem" />
-        Tool payload
+        {labels.payloadDisclosure}
       </button>
       {open && (
         <pre className={cn(TOOL_PAYLOAD_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-          {technicalTrace(args, result)}
+          {technicalTrace(args, result, labels)}
         </pre>
       )}
     </div>
@@ -178,10 +186,14 @@ function prettyTechnicalValue(value: unknown): string {
   }
 }
 
-export function technicalTrace(args: unknown, result: unknown): string {
+export function technicalTrace(
+  args: unknown,
+  result: unknown,
+  labels?: { arguments?: string; result?: string }
+): string {
   const parts = [
-    ['Arguments', args],
-    ['Result', result]
+    [labels?.arguments ?? 'Arguments', args],
+    [labels?.result ?? 'Result', result]
   ]
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([label, value]) => `${label}:\n${prettyTechnicalValue(value)}`)
@@ -370,6 +382,15 @@ function ToolEntry({ part }: ToolEntryProps) {
     [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
   )
 
+  const detailLabels = useMemo(
+    () => ({
+      browserSnapshot: t.assistant.toolDetails.browserSnapshotLabel,
+      errorDetails: t.assistant.toolDetails.errorDetailsLabel,
+      webSearchDetails: t.assistant.toolDetails.webSearchDetailsLabel
+    }),
+    [t.assistant.toolDetails]
+  )
+
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined && completedAt === undefined
@@ -394,8 +415,8 @@ function ToolEntry({ part }: ToolEntryProps) {
     const p =
       !isPending && result === undefined ? { ...stablePart, completedAt: stablePart.completedAt ?? 0 } : stablePart
 
-    return buildToolView(p, inlineDiff)
-  }, [inlineDiff, isPending, result, stablePart])
+    return buildToolView(p, inlineDiff, detailLabels)
+  }, [detailLabels, inlineDiff, isPending, result, stablePart])
 
   // Surface a previewable artifact (HTML file / localhost URL) as a compact link
   // in the composer status stack rather than a bulky inline card. Uses the same
@@ -460,7 +481,8 @@ function ToolEntry({ part }: ToolEntryProps) {
     (part.toolName === 'terminal' || part.toolName === 'execute_code' || part.toolName === 'read_file')
 
   const hasSearchHits = Boolean(view.searchHits?.length)
-  const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
+  const searchResultsLabel =
+    part.toolName === 'web_search' ? t.assistant.toolDetails.searchResultsLabel : view.detailLabel
 
   const hasExpandableContent = Boolean(
     view.imageUrl ||
@@ -612,7 +634,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {copyAction.text && (
             <CopyButton
               appearance="inline"
-              className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
+              className="absolute end-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
               iconClassName="size-3"
               label={copyAction.label}
               showLabel={false}
@@ -633,7 +655,9 @@ function ToolEntry({ part }: ToolEntryProps) {
             <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
               {view.searchQuery && (
                 <p className="mb-1 flex min-w-0 gap-1.5 wrap-anywhere">
-                  <span className="shrink-0 font-medium text-(--ui-text-tertiary)">Search</span>
+                  <span className="shrink-0 font-medium text-(--ui-text-tertiary)">
+                    {t.assistant.toolDetails.searchLabel}
+                  </span>
                   <span>{view.searchQuery}</span>
                 </p>
               )}
@@ -715,7 +739,17 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
+          {toolViewMode === 'technical' && (
+            <ToolPayloadDisclosure
+              args={part.args}
+              labels={{
+                arguments: t.assistant.toolDetails.argumentsHeading,
+                payloadDisclosure: t.assistant.toolDetails.payloadDisclosure,
+                result: t.assistant.toolDetails.resultHeading
+              }}
+              result={part.result}
+            />
+          )}
         </div>
       )}
     </div>

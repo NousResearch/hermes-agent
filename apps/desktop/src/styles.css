@@ -91,6 +91,42 @@
   src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Vazirmatn — bundled Persian/Arabic webfont (OFL). Loaded for RTL locales
+   (fa, ar) where the system UI faces render Persian poorly; the RTL block
+   below prepends it to the sans stack when html[dir='rtl'] is set. */
+@font-face {
+  font-family: 'Vazirmatn';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/Vazirmatn-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/Vazirmatn-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/Vazirmatn-Bold.woff2') format('woff2');
+}
+
+/* RTL locales (fa, ar): lead the sans stack with the bundled Persian face so
+   headings, labels, and body text render consistently across platforms, and
+   relax the Latin-tuned letter-spacing. Latin runs inside mixed text still
+   resolve via the fallback faces that follow. */
+html[dir='rtl'] body {
+  --dt-font-sans:
+    'Vazirmatn', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+  --dt-letter-spacing: 0;
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);

@@ -880,6 +880,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         heldCompletionCount: () => heldCompletionCount,
         close: () =>
           new Promise((resolveClose, rejectClose) => {
+            // Drop any keep-alive sockets first — Node's server.close() waits
+            // for open connections, and a lingering keep-alive (or a backend
+            // that still holds a pool connection) would hang teardown.
+            server.closeAllConnections?.()
             server.close((err) => {
               if (err) {
                 rejectClose(err)

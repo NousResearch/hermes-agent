@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>راهنمای کامل Hermes Desktop</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2330;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #f7941e;
+    --accent-soft: rgba(247, 148, 30, 0.12);
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --radius: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.9;
+  }
+  code, kbd, .en {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    direction: ltr;
+    unicode-bidi: embed;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Hero ─────────────────────────────── */
+  .hero {
+    background: linear-gradient(135deg, #1a1207 0%, #0d1117 60%);
+    border-bottom: 1px solid var(--border);
+    padding: 64px 24px 48px;
+    text-align: center;
+  }
+  .hero .badge {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    padding: 4px 18px;
+    font-size: 0.85rem;
+    margin-bottom: 18px;
+  }
+  .hero h1 { font-size: 2.2rem; margin-bottom: 12px; }
+  .hero h1 .en { color: var(--accent); }
+  .hero p { color: var(--muted); max-width: 720px; margin: 0 auto; font-size: 1.05rem; }
+
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+  /* ── TOC ──────────────────────────────── */
+  nav.toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px 28px;
+    margin: 36px auto;
+  }
+  nav.toc h2 { font-size: 1.1rem; color: var(--accent); margin-bottom: 14px; }
+  nav.toc ol { list-style: none; counter-reset: toc; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; }
+  nav.toc li { counter-increment: toc; }
+  nav.toc a { color: var(--text); display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed transparent; }
+  nav.toc a:hover { color: var(--accent); text-decoration: none; }
+  nav.toc a::before {
+    content: counter(toc);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    min-width: 28px; height: 28px;
+    border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0.8rem;
+  }
+  @media (max-width: 640px) { nav.toc ol { grid-template-columns: 1fr; } }
+
+  /* ── Sections ─────────────────────────── */
+  section { margin: 48px 0; scroll-margin-top: 24px; }
+  section > h2 {
+    font-size: 1.5rem;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--accent);
+    display: flex; align-items: center; gap: 12px;
+  }
+  section > h2 .num {
+    background: var(--accent);
+    color: #0d1117;
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 1rem;
+  }
+  h3 { font-size: 1.1rem; color: var(--accent); margin: 24px 0 10px; }
+  p { margin-bottom: 12px; }
+  p.lead { font-size: 1.02rem; color: var(--text); }
+  .muted { color: var(--muted); font-size: 0.92rem; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 22px;
+    margin: 14px 0;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+
+  ul.plain { list-style: none; }
+  ul.plain li { padding: 4px 0 4px 0; }
+  ul.plain li::before { content: "◂"; color: var(--accent); margin-left: 8px; font-size: 0.8rem; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.93rem; }
+  th {
+    background: var(--surface-2);
+    color: var(--accent);
+    text-align: right;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+  }
+  td { padding: 10px 14px; border: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  td .en { font-size: 0.88em; }
+
+  code {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 0.85em;
+    color: #7ee787;
+  }
+  pre {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  pre code { background: none; border: none; padding: 0; color: #7ee787; font-size: 0.88rem; }
+  kbd {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    padding: 1px 7px;
+    font-size: 0.82em;
+    color: var(--text);
+  }
+
+  .tip, .warn {
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin: 12px 0;
+    font-size: 0.93rem;
+  }
+  .tip { background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.35); }
+  figure.shot { margin: 1rem auto; max-width: 820px; }
+  figure.shot img {
+    width: 100%; display: block;
+    border: 1px solid var(--border, #30363d);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12);
+  }
+  figure.shot figcaption {
+    text-align: center; color: var(--text-secondary, #9aa4b2);
+    font-size: 0.85rem; margin-top: 0.4rem;
+  }
+  .tip::before { content: "💡 نکته: "; color: var(--green); font-weight: bold; }
+  .warn { background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.35); }
+  .warn::before { content: "⚠️ توجه: "; color: var(--red); font-weight: bold; }
+
+  .pill {
+    display: inline-block;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 12px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin: 2px;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    margin-top: 64px;
+    padding: 28px 24px 40px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .back-top {
+    position: fixed;
+    bottom: 22px; left: 22px;
+    background: var(--accent);
+    color: #0d1117;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2rem;
+    text-decoration: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    z-index: 10;
+  }
+  .back-top:hover { text-decoration: none; transform: translateY(-2px); transition: 0.2s; }
+</style>
+</head>
+<body id="top">
+
+<div class="hero">
+  <span class="badge">راهنمای کاربری</span>
+  <h1>راهنمای کامل <span class="en">Hermes Desktop</span></h1>
+  <p>توضیح گام‌به‌گام همه بخش‌های برنامه: از گفتگو با عامل و نشست‌ها تا مهارت‌ها، حافظه، پیام‌رسان‌ها، وظایف زمان‌بندی‌شده و تنظیمات.</p>
+</div>
+
+<div class="wrap">
+
+<nav class="toc" id="toc">
+  <h2>📖 فهرست مطالب</h2>
+  <ol>
+    <li><a href="#intro">معرفی برنامه</a></li>
+    <li><a href="#setup">راه‌اندازی کامل روی سیستم</a></li>
+    <li><a href="#layout">چیدمان کلی پنجره</a></li>
+    <li><a href="#chat">گفتگو و نوشتار</a></li>
+    <li><a href="#sessions">نشست‌ها و نوار کناری</a></li>
+    <li><a href="#artifacts">ساخته‌ها (Artifacts)</a></li>
+    <li><a href="#skills">مهارت‌ها (Skills)</a></li>
+    <li><a href="#messaging">پیام‌رسانی (Messaging)</a></li>
+    <li><a href="#webhooks">وب‌هوک‌ها (Webhooks)</a></li>
+    <li><a href="#command-center">مرکز فرمان</a></li>
+    <li><a href="#cron">وظایف زمان‌بندی‌شده (Cron)</a></li>
+    <li><a href="#profiles">پروفایل‌ها</a></li>
+    <li><a href="#agents">عامل‌ها</a></li>
+    <li><a href="#starmap">گراف حافظه (Starmap)</a></li>
+    <li><a href="#settings">تنظیمات — همه بخش‌ها</a></li>
+    <li><a href="#keybinds">کلیدهای میان‌بر</a></li>
+    <li><a href="#troubleshooting">عیب‌یابی و پرسش‌های رایج</a></li>
+  </ol>
+</nav>
+
+<!-- ════════════════ 1. معرفی ════════════════ -->
+<section id="intro">
+  <h2><span class="num">۱</span> معرفی برنامه</h2>
+  <p class="lead"><strong>Hermes Desktop</strong> رابط گرافیکی دسکتاپ برای <strong>Hermes Agent</strong> — عامل هوش مصنوعی خودبهبوددهنده ساخت <a href="https://nousresearch.com" target="_blank" rel="noopener">Nous Research</a> — است. این عامل از تجربه مهارت می‌سازد، حافظه ماندگار دارد، گفتگوهای گذشته را جستجو می‌کند و با هر نشست شناخت عمیق‌تری از شما پیدا می‌کند.</p>
+
+  <div class="grid">
+    <div class="card"><strong>🔁 حلقه یادگیری بسته</strong><p class="muted">پس از وظایف پیچیده مهارت جدید می‌سازد و مهارت‌های موجود را در طول استفاده بهبود می‌دهد.</p></div>
+    <div class="card"><strong>🧠 حافظه ماندگار</strong><p class="muted">خاطرات و نمای کاربر بین نشست‌ها حفظ می‌شود؛ گفتگوهای گذشته با جستجوی متنی قابل بازیابی‌اند.</p></div>
+    <div class="card"><strong>💬 همه‌جا در دسترس</strong><p class="muted">ترمینال، داشبورد، دسکتاپ، Telegram، Discord، Slack، WhatsApp و Signal — همه از یک دروازه واحد.</p></div>
+    <div class="card"><strong>⏰ اتوماسیون زمان‌بندی‌شده</strong><p class="muted">گزارش روزانه، پشتیبان شبانه یا ممیزی هفتگی — همه به زبان طبیعی و بدون حضور شما.</p></div>
+    <div class="card"><strong>🛠 هر مدلی که بخواهید</strong><p class="muted">Nous Portal، OpenRouter، OpenAI، Anthropic، نقطه پایانی محلی (Ollama و vLLM) و ده‌ها ارائه‌دهنده دیگر.</p></div>
+    <div class="card"><strong>🌍 چندزبانه</strong><p class="muted">این برنامه از فارسی پشتیبانی می‌کند و کل رابط به‌صورت خودکار راست‌به‌چپ (RTL) می‌شود.</p></div>
+  </div>
+</section>
+
+<!-- ════════════════ 2. چیدمان ════════════════ -->
+<section id="setup">
+  <h2><span class="num">۲</span> راه‌اندازی کامل روی سیستم</h2>
+  <p class="lead">این بخش از صفر تا اجرای برنامه را پوشش می‌دهد: پیش‌نیازها، نصب نسخه آماده یا اجرا از سورس، و اولین اجرا.</p>
+
+  <h3>پیش‌نیازها</h3>
+  <table>
+    <tr><th>مؤلفه</th><th>حداقل نسخه</th><th>توضیح</th></tr>
+    <tr><td dir="ltr">Node.js</td><td dir="ltr">22.22 / 24.11 / 26+</td><td>برای اجرای رابط دسکتاپ (نسخه LTS توصیه می‌شود).</td></tr>
+    <tr><td dir="ltr">Python</td><td dir="ltr">3.11 – 3.13</td><td>برای باک‌اند عامل (Hermes Agent).</td></tr>
+    <tr><td>سیستم‌عامل</td><td>—</td><td>ویندوز ۱۰/۱۱ (نیتیو یا WSL2)، macOS یا Linux.</td></tr>
+    <tr><td>اتصال اینترنت</td><td>—</td><td>برای دریافت مدل‌ها و به‌روزرسانی‌ها؛ اجرای روزانه بدون اینترنت هم ممکن است (مدل محلی).</td></tr>
+  </table>
+  <div class="note">نصب‌کننده رسمی همه پیش‌نیازها را خودش نصب می‌کند (Python، Node.js، ripgrep، ffmpeg و Git Bash پرتابل در ویندوز) — نیازی به نصب دستی نیست. مسیر دستی فقط برای توسعه‌دهندگانی است که از سورس اجرا می‌کنند.</div>
+
+  <h3>راه اول: نصب نسخه آماده (توصیه‌شده برای کاربر عادی)</h3>
+  <ol>
+    <li>به صفحه دانلود بروید: <span dir="ltr">hermes-agent.nousresearch.com</span> و نصب‌کننده Hermes Desktop را برای سیستم‌عامل خود بگیرید.</li>
+    <li>نصب‌کننده را اجرا کنید. در ویندوز نیازی به دسترسی مدیر (Admin) نیست؛ همه‌چیز زیر <span dir="ltr">%LOCALAPPDATA%\hermes</span> نصب می‌شود.</li>
+    <li>Hermes را از منوی استارت (ویندوز) یا پوشه Applications (مک) اجرا کنید.</li>
+  </ol>
+
+  <h3>راه دوم: اجرا از سورس (برای توسعه‌دهندگان)</h3>
+  <ol>
+    <li>Node.js و Python را طبق جدول بالا نصب کنید (در ویندوز، Git Bash هم لازم است).</li>
+    <li>وابستگی‌های ریشه را نصب کنید: <span dir="ltr">npm install</span></li>
+    <li>باک‌اند عامل را آماده کنید: <span dir="ltr">python run_agent.py --help</span> باید بدون خطا اجرا شود.</li>
+    <li>برنامه دسکتاپ را اجرا کنید: <span dir="ltr">cd apps/desktop && npm install && npm run dev</span> — این فرمان هم سرور رابط (Vite) و هم پوسته Electron را با هم بالا می‌آورد.</li>
+    <li>پنجره‌ای با عنوان «Hermes» باز می‌شود؛ همان برنامه اصلی است. نشانی <span dir="ltr">127.0.0.1:5174</span> را در مرورگر باز نکنید — فقط رابط است و بدون پوسته دسکتاپ بالا نمی‌آید (بخش «تفاوت مرورگر و برنامه دسکتاپ» را ببینید).</li>
+  </ol>
+
+  <h3>اولین اجرا</h3>
+  <ul>
+    <li>اجرای اول چند دقیقه طول می‌کشد: برنامه باک‌اند را از صفر راه می‌اندازد (نصب وابستگی‌ها و ساخت ایندکس‌ها). صفحه پیشرفت «راه‌اندازی Hermes Desktop…» را باز بگذارید.</li>
+    <li>پیکربندی برنامه در ویندوز زیر <span dir="ltr">%APPDATA%\Hermes</span> و در لینوکس/مک زیر <span dir="ltr">~/.hermes</span> ذخیره می‌شود. حذف برنامه این پوشه را پاک نمی‌کند.</li>
+    <li>برای کار با مدل‌ها، از صفحه نخست یا بخش تنظیمات ← «ارائه‌دهنده‌ها» کلید API خود را وارد کنید (Nous Portal، OpenRouter، OpenAI، Anthropic، Ollama محلی و ده‌ها ارائه‌دهنده دیگر). ساده‌ترین مسیر: راه‌اندازی یک‌مرحله‌ای Nous Portal — پایین‌تر در همین بخش.</li>
+    <li>زبان فارسی از مسیر تنظیمات ← «زبان» فعال می‌شود؛ کل رابط خودکار راست‌به‌چپ می‌شود.</li>
+  </ul>
+
+  <h3>راهنمای گام‌به‌گام اولین اجرا</h3>
+  <p>این تصاویر از خودِ برنامه (نسخه فارسی‌شده) گرفته شده‌اند و دقیقاً همان چیزی را نشان می‌دهند که در اولین اجرا می‌بینید:</p>
+
+  <figure class="shot">
+    <img src="guide-images/01-first-launch.png" alt="پنجره برنامه در اولین اجرا با زبان انگلیسی" loading="lazy">
+    <figcaption>۱ — برنامه باز شد؛ در اولین اجرا زبان پیش‌فرض انگلیسی است.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/02-language-menu.png" alt="فهرست انتخاب زبان با گزینه فارسی" loading="lazy">
+    <figcaption>۲ — در پایین نوار کناری روی «Switch language» کلیک کنید و <strong>فارسی</strong> را انتخاب کنید.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/03-persian-rtl.png" alt="رابط کاربری پس از انتخاب فارسی، راست‌به‌چپ" loading="lazy">
+    <figcaption>۳ — کل رابط بلافاصله فارسی و راست‌به‌چپ می‌شود؛ نوار کناری به سمت راست می‌رود.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/04-models-persian.png" alt="صفحه مدل‌ها برای تنظیم ارائه‌دهنده" loading="lazy">
+    <figcaption>۴ — از بخش «مدل‌ها» ارائه‌دهنده (Nous Portal، OpenRouter، OpenAI و…) و مدل دلخواه را تنظیم کنید.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/05-guide-persian.png" alt="راهنمای فارسی درون‌برنامه‌ای در صفحه مستندات" loading="lazy">
+    <figcaption>۵ — همین راهنما همیشه در دسترس است: بخش «مستندات» در خود برنامه.</figcaption>
+  </figure>
+
+  <h3>راه‌اندازی یک‌مرحله‌ای Nous Portal (ورود، مدل و دروازه ابزارها)</h3>
+  <p>پیشنهاد ما بعد از نصب: به‌جای واردکردن کلید API هر ارائه‌دهنده به‌صورت جداگانه، یک‌بار با Nous Portal وارد شوید. یک اشتراک، بیش از ۳۰۰ مدل و همزمان دروازه ابزارها (Tool Gateway): جستجوی وب، تولید تصویر، تبدیل متن به گفتار (TTS) و خودکارسازی مرورگر — همه از طریق همان اشتراک.</p>
+  <pre><code dir="ltr">hermes setup --portal</code></pre>
+  <ol>
+    <li><strong>ورود:</strong> اگر هنوز وارد نشده باشید، برنامه یک کد دستگاه (Device Code) نشان می‌دهد و مرورگر را روی <code dir="ltr">portal.nousresearch.com</code> باز می‌کند. کد را در مرورگر تأیید کنید تا ورود کامل شود. همین فرمان معادل <code dir="ltr">hermes portal</code> است.</li>
+    <li><strong>انتخاب مدل:</strong> فهرست مدل‌های پیشنهادی نمایش داده می‌شود و مدل دلخواه را انتخاب می‌کنید؛ Nous به‌طور خودکار به‌عنوان ارائه‌دهندهٔ اصلی ذخیره می‌شود.</li>
+    <li><strong>دروازه ابزارها:</strong> در پایان، اگر اشتراک شما شامل Tool Gateway باشد، پیشنهاد فعال‌سازی آن نمایش داده می‌شود؛ با تأیید، ابزارهای مدیریت‌شده (وب، تصویر، گفتار، مرورگر) به حساب شما وصل می‌شوند.</li>
+    <li><strong>پایان:</strong> پیام «Portal setup complete» را می‌بینید؛ از این‌جا به بعد اجرای <code dir="ltr">hermes</code> یا بازکردن برنامه دسکتاپ کافی است.</li>
+  </ol>
+  <pre><code dir="ltr"># بررسی سلامت اتصال و مسیریابی ابزارها پس از راه‌اندازی
+hermes portal info
+hermes portal tools</code></pre>
+  <ul class="plain">
+    <li><code dir="ltr">hermes portal info</code>: خلاصهٔ وضعیت ورود و مسیر سرویس‌دهی هر ابزار — «مدیریت‌شده» از طریق Portal یا موتور محلی (مثل Edge TTS و مرورگر محلی Playwright که بدون هیچ کلیدی کار می‌کنند). این فرمان اصلیِ بازرسی است (<code dir="ltr">hermes portal status</code> هم به‌عنوان نام قدیمی همین کار را می‌کند).</li>
+    <li><code dir="ltr">hermes portal open</code> صفحهٔ اشتراک را در مرورگر باز می‌کند؛ روشن/خاموش‌کردن تک‌تک ابزارها و انتخاب ارائه‌دهندهٔ هر کدام با <code dir="ltr">hermes setup tools</code> است — مثلاً می‌توانید وب و تولید تصویر را به Portal وصل کنید ولی TTS را روی حالت محلی رایگان نگه دارید.</li>
+  </ul>
+  <div class="note">پوشش ابزارهای مدیریت‌شده به اشتراک Portal شما بستگی دارد؛ اگر دسته‌ای در طرح شما نباشد، جادوگر به‌جای خطا، راهنمای ارتقا در صفحهٔ صورت‌حساب Portal نشان می‌دهد. اگر قبلاً وارد شده باشید، این فرمان فقط انتخاب مدل و فعال‌سازی دروازه را می‌پرسد و ورود را تکرار نمی‌کند.</div>
+
+  <div class="tip">اگر در طول راه‌اندازی به خطا خوردید، بخش «عیب‌یابی» در انتهای همین راهنما و بخش «اجرای برنامه در حالت توسعه» را ببینید — رایج‌ترین خطاها و راه‌حل آن‌ها آنجا فهرست شده است.</div>
+</section>
+
+<section id="layout">
+  <h2><span class="num">۳</span> چیدمان کلی پنجره</h2>
+  <p class="lead">پنجره برنامه از چند ناحیه تشکیل شده که هر کدام وظیفه مشخصی دارند:</p>
+  <table>
+    <tr><th>ناحیه</th><th>شرح</th></tr>
+    <tr><td><strong>نوار عنوان</strong></td><td>جستجوی سراسری نشست‌ها، نماها و اقدامات؛ دکمه‌های نمایش/پنهان نوار کناری چپ و راست، باز کردن تنظیمات، گراف حافظه و ورود به حالت HUD. در حالت RTL جای دکمه‌ها خودکار برعکس می‌شود.</td></tr>
+    <tr><td><strong>نوار کناری چپ</strong> (نشست‌ها)</td><td>فهرست گفتگوهای اخیر با جستجو، سنجاق، بایگانی و تراکم نمایش (فشرده / راحت / مفصل). با <kbd>Ctrl/⌘</kbd> کلیک روی یک گفتگو آن را بایگانی کنید.</td></tr>
+    <tr><td><strong>ناحیه کار</strong> (Workspace)</td><td>قلب برنامه: گفتگوی فعال، مرورگر فایل، مرورگر داخلی، ترمینال‌ها و زبانه‌ها اینجا باز می‌شوند.</td></tr>
+    <tr><td><strong>نوار کناری راست</strong></td><td>مرورگر فایل درخت‌واره‌ای؛ می‌توانید آن را پنهان کنید یا با <kbd>view.flipPanes</kbd> طرفش را عوض کنید.</td></tr>
+    <tr><td><strong>نوشتار (Composer)</strong></td><td>جعبه پیام پایین صفحه. شناور می‌شود، تاریخچه دارد و با <kbd>@</kbd> به فایل‌ها و آدرس‌ها ارجاع می‌دهید.</td></tr>
+    <tr><td><strong>نوار وضعیت</strong></td><td>وضعیت دروازه، مدل فعال، مصرف توکن و پیام‌های کوتاه برنامه.</td></tr>
+    <tr><td><strong>حالت HUD</strong></td><td>چیدمان شناور و فشرده روی صفحه — با <kbd>view.toggleHud</kbd> روشن/خاموش می‌شود و اندازه و جای آن قابل بازنشانی است.</td></tr>
+  </table>
+  <div class="tip">همه نوارها را می‌توانید نمایش یا پنهان کنید؛ اگر چیزی گم شد، کلید میان‌بر یا منوی نوار عنوان را امتحان کنید.</div>
+</section>
+
+<!-- ════════════════ 3. گفتگو ════════════════ -->
+<section id="chat">
+  <h2><span class="num">۴</span> گفتگو و نوشتار</h2>
+
+  <h3>ارسال پیام و هدایت عامل</h3>
+  <p>در نوشتار (Composer) تایپ کنید و با <kbd>Enter</kbd> بفرستید؛ با <kbd>Shift+Enter</kbd> خط جدید بگذارید. وقتی عامل در حال کار است می‌توانید:</p>
+  <ul class="plain">
+    <li><strong>هدایت نوبت (Steer):</strong> در میانه اجرا پیام بفرستید تا مسیر کار عوض شود.</li>
+    <li><strong>صف کردن (Queue):</strong> چند پیام در صف بگذارید تا نوبت‌به‌نوبت اجرا شوند.</li>
+    <li><strong>ارجاع (@):</strong> به فایل‌ها، پوشه‌ها و URL ها اشاره کنید تا عامل همان را بخواند.</li>
+    <li><strong>پالت اسلش (/):</strong> دستورهای عامل مثل <code>/model</code> یا <code>/usage</code> را همین‌جا صدا بزنید.</li>
+  </ul>
+
+  <h3>حالت صوتی</h3>
+  <p>با <kbd>voice.recordKey</kbd> (میان‌بر قابل تنظیم) ضبط صدا را شروع کنید؛ گفتار به متن تبدیل و پاسخ عامل در صورت فعال‌بودن «خواندن خودکار پاسخ‌ها» با TTS خوانده می‌شود. ارائه‌دهنده‌های STT/TTS در بخش صوت تنظیمات پیکربندی می‌شوند.</p>
+
+  <h3>نمایش فعالیت ابزار</h3>
+  <p>در تنظیمات ← ظاهر می‌توانید انتخاب کنید فراخوانی ابزارها چطور نمایش داده شوند:</p>
+  <ul class="plain">
+    <li><strong>محصول:</strong> فعالیت ابزار به زبان انسان با خلاصه‌های موجز.</li>
+    <li><strong>فنی:</strong> شامل آرگومان‌ها و نتایج خام ابزار و جزئیات سطح پایین.</li>
+  </ul>
+
+  <h3>واکنش‌ها و ظرافت‌ها</h3>
+  <p>به پیام‌ها واکنش ایموجی بدهید (تپ‌بک‌های سبک iMessage)، با «قلب‌های Vibe» از عامل تشکر کنید، و پیش‌نمایش‌های غنی لینک‌ها (YouTube و X) را با یکی از حالت‌های «پرسیدن / همیشه / خاموش» فعال کنید.</p>
+</section>
+
+<!-- ════════════════ 4. نشست‌ها ════════════════ -->
+<section id="sessions">
+  <h2><span class="num">۵</span> نشست‌ها و نوار کناری</h2>
+  <p class="lead">هر گفتگو یک «نشست» است. نشست‌ها در نوار کناری با تاریخ، پوشه پروژه و عنوان خودشان دیده می‌شوند.</p>
+  <ul class="plain">
+    <li><strong>نشست جدید:</strong> <kbd>Ctrl/⌘+N</kbd> — یا زبانه یا پنجره جدید باز کنید.</li>
+    <li><strong>سنجاق:</strong> نشست‌های سنجاق‌شده بالای فهرست می‌مانند و هرگز بایگانی خودکار نمی‌شوند.</li>
+    <li><strong>بایگانی:</strong> با <kbd>Ctrl/⌘</kbd> کلیک؛ گفتگوهای بایگانی‌شده از نوار کناری پنهان می‌شوند اما پیام‌هایشان حفظ می‌شود (بخش «گفتگوهای بایگانی‌شده» در تنظیمات).</li>
+    <li><strong>بایگانی خودکار:</strong> گفتگوهایی که مدتی به آن‌ها سر نزده‌اید پس از N روز بی‌فعالیتی خودکار بایگانی می‌شوند.</li>
+    <li><strong>سوئیچ سریع:</strong> کلیدهای <kbd>session.slot.1…9</kbd> به ۹ نشست اخیر می‌پرند؛ <kbd>session.next</kbd> و <kbd>session.prev</kbd> میان نشست‌ها می‌چرخند.</li>
+  </ul>
+  <div class="tip">عنوان نشست‌ها با مدل کمکی «تولید عنوان» خودکار ساخته می‌شود — در تنظیمات مدل می‌توانید برای هر وظیفه کمکی مدل جداگانه بدهید.</div>
+</section>
+
+<!-- ════════════════ 5. ساخته‌ها ════════════════ -->
+<section id="artifacts">
+  <h2><span class="num">۶</span> ساخته‌ها <span class="pill">Artifacts</span></h2>
+  <p class="lead">هر فایلی که عامل در طول کار می‌سازد — کد، سند، تصویر، گزارش — در صفحه ساخته‌ها جمع می‌شود تا بدون گشتن در گفتگو پیدا و بازشود.</p>
+  <ul class="plain">
+    <li>فایل‌ها را پیش‌نمایش بگیرید، دانلود یا در مدیر فایل سیستم‌عامل نمایش دهید.</li>
+    <li>منوی فایل شامل کپی مسیر، تغییر نام و حذف (انتقال به سطل بازیافت) است.</li>
+    <li>با <kbd>view.showFiles</kbd> مرورگر فایل و با <kbd>view.showBrowser</kbd> مرورگر داخلی باز می‌شود.</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 6. مهارت‌ها ════════════════ -->
+<section id="skills">
+  <h2><span class="num">۷</span> مهارت‌ها <span class="pill">Skills</span></h2>
+  <p class="lead">مهارت‌ها حافظه رویه‌ای عامل‌اند: دستورالعمل‌های قابل استفاده مجدد که Hermes آن‌ها را می‌سازد، ذخیره و در طول استفاده بهبود می‌دهد.</p>
+  <ul class="plain">
+    <li>عامل پس از انجام وظایف پیچیده خودش مهارت جدید می‌سازد.</li>
+    <li>مهارت‌ها با استاندارد باز <a href="https://agentskills.io" target="_blank" rel="noopener">agentskills.io</a> سازگارند و در <code>~/.hermes/skills/</code> زندگی می‌کنند.</li>
+    <li>صفحه مهارت‌ها در دسکتاپ، مدیریت و مرور (Skills Hub) را یک‌جا می‌دهد؛ مدل جستجوی مهارت در تنظیمات مدل قابل تعویض است.</li>
+    <li>مدل کمکی «امان» (Curator) استفاده از مهارت‌ها را بازبینی می‌کند.</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 7. پیام‌رسانی ════════════════ -->
+<section id="messaging">
+  <h2><span class="num">۸</span> پیام‌رسانی <span class="pill">Messaging</span></h2>
+  <p class="lead">با دروازه (Gateway)، Hermes از Telegram، Discord، Slack، WhatsApp، Signal و ایمیل در دسترس است — همان عامل، همان حافظه، همان مهارت‌ها.</p>
+  <ul class="plain">
+    <li>در ترمینال: <code>hermes gateway setup</code> و سپس <code>hermes gateway start</code>.</li>
+    <li>صفحه پیام‌رسانی در دسکتاپ وضعیت پلتفرم‌ها و پیوستن/جدا شدن کانال‌ها را نشان می‌دهد.</li>
+    <li>گفتگو بین پلتفرم‌ها ادامه‌دار است: از ترمینال شروع کنید، در Telegram ادامه دهید.</li>
+    <li>دستورهای اسلش در پیام‌رسان‌ها هم از کاتالوگ زبان رابط پیروی می‌کنند (فارسی با <code>display.language: fa</code>).</li>
+  </ul>
+  <div class="warn">دروازه به کلیدهای API پلتفرم‌ها نیاز دارد؛ آن‌ها را در تنظیمات ← کلیدهای API وارد کنید.</div>
+</section>
+
+<!-- ════════════════ 8. وب‌هوک‌ها ════════════════ -->
+<section id="webhooks">
+  <h2><span class="num">۹</span> وب‌هوک‌ها <span class="pill">Webhooks</span></h2>
+  <p class="lead">وب‌هوک‌ها اجازه می‌دهند سرویس‌های بیرونی (CI، فرم‌ها، مانیتورینگ) با یک درخواست HTTP رویدادی را به عامل بدهند و پاسخ بگیرند.</p>
+  <ul class="plain">
+    <li>هر وب‌هوک یک آدرس اختصاصی و اختیاراً یک توکن امنیتی دارد.</li>
+    <li>بار درخواست به‌صورت پرامپت به عامل می‌رسد و خروجی برگردانده می‌شود.</li>
+    <li>برای اتصال از اینترنت، دروازه را پشت پروکسی معکوس با TLS قرار دهید.</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 9. مرکز فرمان ════════════════ -->
+<section id="command-center">
+  <h2><span class="num">۱۰</span> مرکز فرمان</h2>
+  <p class="lead">یک صفحه یک‌نگاهی برای کنترل کل سیستم: وضعیت دروازه و نشست‌ها، کارهای در جریان، وظایف پس‌زمینه و میان‌برهای سریع به همه بخش‌ها.</p>
+  <p>اگر فقط یک جا برای «چه خبر؟» می‌خواهید، همین است. از پالت فرمان (<kbd>nav.commandPalette</kbd>) هم می‌توانید مستقیم به هر بخش بپرید.</p>
+</section>
+
+<!-- ════════════════ 10. وظایف زمان‌بندی‌شده ════════════════ -->
+<section id="cron">
+  <h2><span class="num">۱۱</span> وظایف زمان‌بندی‌شده <span class="pill">Cron</span></h2>
+  <p class="lead">وظایف تکرارشونده را به زبان طبیعی تعریف کنید؛ Hermes خودش برنامه زمانی می‌سازد و نتیجه را به پلتفرم دلخواه تحویل می‌دهد.</p>
+  <pre><code># نمونه از ترمینال
+hermes cron add --schedule "0 9 * * *" --prompt "خلاصه اخبار دیروز را بده"
+hermes cron list</code></pre>
+  <ul class="plain">
+    <li>در دسکتاپ، تب وظایف زمان‌بندی‌شده همین کار را بدون ترمینال انجام می‌دهد: تعریف، ویرایش و حذف وظیفه با چند کلیک.</li>
+    <li>تحویل خروجی به: محلی، Telegram، Discord، Slack یا ایمیل.</li>
+    <li>وظایف cron همراه با پروفایل خودشان ذخیره می‌شوند.</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 11. پروفایل‌ها ════════════════ -->
+<section id="profiles">
+  <h2><span class="num">۱۲</span> پروفایل‌ها</h2>
+  <p class="lead">پروفایل‌ها چند «هویت» جدا برای عامل‌اند: هر پروفایل مدل، کلیدها، حافظه، پوسته و حتی دروازه مستقل خودش را دارد.</p>
+  <ul class="plain">
+    <li><strong>نمونه:</strong> پروفایل <code>coder</code> با مدل کدنویسی و پوشه پروژه متفاوت؛ پروفایل <code>writer</code> با مدل متنی.</li>
+    <li>با کلیدهای <kbd>profile.switch.1…18</kbd> بین پروفایل‌ها می‌پرید؛ <kbd>profile.default</kbd> به پیش‌فرض برمی‌گردد.</li>
+    <li>بسیاری از تنظیمات یک نشان «اعمال به» دارند که می‌گوید تغییرات روی کدام پروفایل ذخیره می‌شود.</li>
+    <li>پوسته هر پروفایل جداگانه ذخیره می‌شود («برای پروفایل X ذخیره شد»).</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 12. عامل‌ها ════════════════ -->
+<section id="agents">
+  <h2><span class="num">۱۳</span> عامل‌ها</h2>
+  <p class="lead">صفحه عامل‌ها نمای کلی از عامل‌های در دسترس (محلی و ابری) و وضعیت اجرای آن‌هاست.</p>
+  <ul class="plain">
+    <li>اگر وارد <strong>Hermes Cloud</strong> شوید، عامل‌های حساب شما خودکار کشف می‌شوند.</li>
+    <li>برای هر عامل می‌توانید نشست تازه باز کنید و مستقیم داخل همان کار کنید.</li>
+  </ul>
+</section>
+
+<!-- ════════════════ 13. گراف حافظه ════════════════ -->
+<section id="starmap">
+  <h2><span class="num">۱۴</span> گراف حافظه <span class="pill">Starmap</span></h2>
+  <p class="lead">یک نشه بصری از حافظه عامل: مفهوم‌ها و خاطرات به‌شکل گره‌های ستاره‌ای که با گفتگوهای بیشتر پرتر می‌شوند.</p>
+  <p>از نوار عنوان با «باز کردن گراف حافظه» باز می‌شود. برای دیدن اینکه عامل واقعاً چه چیزهایی از شما یاد گرفته، بهترین جاست.</p>
+</section>
+
+<!-- ════════════════ 14. تنظیمات ════════════════ -->
+<section id="settings">
+  <h2><span class="num">۱۵</span> تنظیمات — همه بخش‌ها</h2>
+  <p class="lead">تنظیمات یک پوشش تمام‌صفحه با نوار ناوبری اختصاصی است و جستجوی سراسری دارد. بالای صفحه یک نشان «اعمال به» می‌گوید تغییرات روی کدام پروفایل ذخیره می‌شوند.</p>
+
+  <div class="grid">
+    <div class="card">
+      <strong>🌐 زبان</strong>
+      <p class="muted">زبان رابط دسکتاپ را انتخاب کنید. با انتخاب <strong>فارسی</strong>، کل رابط RTL می‌شود. تنظیم در <code>~/.hermes/config.yaml</code> هم ذخیره می‌گردد.</p>
+    </div>
+    <div class="card">
+      <strong>🧩 ارائه‌دهندگان</strong>
+      <p class="muted">حساب‌ها (ورود مرورگری بدون کپی کلید)، کلیدهای API، و نقاط پایانی سفارشی سازگار با OpenAI (Ollama، vLLM، llama.cpp…).</p>
+    </div>
+    <div class="card">
+      <strong>🎛 مدل</strong>
+      <p class="muted">مدل پیش‌فرض، پنجره زمینه، مدل‌های جایگزین، استدلال و مدل‌های کمکی هر وظیفه (بینایی، فشرده‌سازی، تولید عنوان، بازبینی، تأیید و…).</p>
+    </div>
+    <div class="card">
+      <strong>🔌 دروازه‌ها</strong>
+      <p class="muted">ثبت و مدیریت اتصال‌ها: محلی، راه دور (HTTP/S)، SSH یا Hermes Cloud. سوئیچ بین دروازه‌ها از صفحه نشست‌ها انجام می‌شود و کار دروازه‌های دیگر ادامه پیدا می‌کند.</p>
+    </div>
+    <div class="card">
+      <strong>🔑 ابزارها و کلیدها</strong>
+      <p class="muted">کلیدهای API ابزارها و اعتبارنامه‌ها در <code>.env</code>. مجموعه‌های ابزار فعال (حافظه، ترمینال، جستجوی وب، تفویض و…) را همین‌جا روشن/خاموش کنید.</p>
+    </div>
+    <div class="card">
+      <strong>🔗 MCP</strong>
+      <p class="muted">سرورهای Model Context Protocol را اضافه، فعال/غیرفعال و آزمایش کنید. ورود سریع از قطعه‌های mcp.json، فرمان npx/docker یا لینک Cursor پشتیبانی می‌کند.</p>
+    </div>
+    <div class="card">
+      <strong>💬 گفتگو</strong>
+      <p class="muted">سبک دستیار، نمایش استدلال، حداکثر نوبت‌های عامل، پیوست‌های تصویر و پوشه پیش‌فرض پروژه برای نشست‌های جدید.</p>
+    </div>
+    <div class="card">
+      <strong>🎨 ظاهر</strong>
+      <p class="muted">حالت روشن/تاریک/سیستم، پوسته‌ها (نصب از VS Code Marketplace)، مقیاس رابط، فونت ترمینال، شفافیت پنجره، پس‌زمینه گفتگو و موجود زنده (Pet).</p>
+    </div>
+    <div class="card">
+      <strong>🛡 ایمنی</strong>
+      <p class="muted">حالت تأییدها، مهلت تأیید، فهرست سفید فرمان‌ها، سانسور اسرار و نقاط بازگشت فایل (Checkpoints) پیش از ویرایش.</p>
+    </div>
+    <div class="card">
+      <strong>🧠 حافظه و زمینه</strong>
+      <p class="muted">حافظه ماندگار، پروفایل کاربر، سهمیه‌های کاراکتر، موتور زمینه و فشرده‌سازی خودکار گفتگوهای طولانی با آستانه و نسبت هدف.</p>
+    </div>
+    <div class="card">
+      <strong>🎙 صوت</strong>
+      <p class="muted">تبدیل گفتار به متن (محلی یا OpenAI، Groq، ElevenLabs و…) و متن به گفتار (Edge، OpenAI، ElevenLabs، Piper و…) با صدای قابل انتخاب.</p>
+    </div>
+    <div class="card">
+      <strong>🖥 فضای کار</strong>
+      <p class="muted">باک‌اند اجرای ترمینال (محلی، Docker، SSH، Singularity، Modal، Daytona)، پوشه کاری، مهلت فرمان‌ها و متغیرهای محیطی قابل عبور.</p>
+    </div>
+    <div class="card">
+      <strong>🔔 اعلان‌ها</strong>
+      <p class="muted">اعلان‌های سیستم‌عامل به‌تفکیک نوع: تأیید لازم است، ورودی لازم است، پاسخ آماده، وظیفه پس‌زمینه تمام شد، هشدار اعتبار و افزونه‌ها — به‌علاوه صدای پایان کار.</p>
+    </div>
+    <div class="card">
+      <strong>🧩 افزونه‌ها</strong>
+      <p class="muted">افزونه‌های دسکتاپ (رابط) و افزونه‌های عامل (ابزار، مهارت، سرور MCP، هوک و فرمان اسلش). نصب از مخزن Git با بازبینی پیش از نصب.</p>
+    </div>
+    <div class="card">
+      <strong>📦 نشست‌ها</strong>
+      <p class="muted">گفتگوهای بایگانی‌شده، بایگانی خودکار گفتگوهای کهنه و پوشه پیش‌فرض پروژه.</p>
+    </div>
+    <div class="card">
+      <strong>⚙️ پیشرفته</strong>
+      <p class="muted">محدودهای خواندن فایل و خروجی ابزار، مدل زیرعامل و تفویض، بیدار نگه داشتن کامپیوتر و ورود سریع (Quick Entry) با میان‌بر سراسری.</p>
+    </div>
+    <div class="card">
+      <strong>💳 صورت‌حساب</strong>
+      <p class="muted">اعتبار Nous Portal و وضعیت اشتراک ارائه‌دهنده‌ها؛ هشدار «اعتبار تمام شد» همین‌جا اتصال دارد.</p>
+    </div>
+    <div class="card">
+      <strong>ℹ️ درباره</strong>
+      <p class="muted">نسخه برنامه، شاخه و کامیت، به‌روزرسانی‌های خودکار یا دستی و یادداشت‌های انتشار.</p>
+    </div>
+  </div>
+
+  <h3>خروجی / ورود / بازنشانی پیکربندی</h3>
+  <p>از دکمه‌های بالای تنظیمات می‌توانید کل پیکربندی را <strong>خروجی</strong> بگیرید، در نصب دیگری <strong>وارد</strong> کنید یا به پیش‌فرض‌ها <strong>بازنشانی</strong> کنید.</p>
+</section>
+
+<!-- ════════════════ 15. کلیدهای میان‌بر ════════════════ -->
+<section id="keybinds">
+  <h2><span class="num">۱۶</span> کلیدهای میان‌بر</h2>
+  <p class="lead">پنل «کلیدهای میان‌بر» همه ترکیب‌ها را در ۵ دسته (نوشتار، پروفایل‌ها، نشست، ناوبری، نما) نشان می‌دهد؛ برای تغییر هر کدام روی آن کلیک کنید. مهم‌ترین‌ها:</p>
+  <table>
+    <tr><th>اقدام</th><th>شرح</th></tr>
+    <tr><td><code>nav.commandPalette</code></td><td>باز کردن پالت فرمان — سریع‌ترین راه پرش به هر بخش.</td></tr>
+    <tr><td><code>session.new</code></td><td>نشست جدید.</td></tr>
+    <tr><td><code>session.slot.1…9</code></td><td>سوئیچ به نشست اخیر ۱ تا ۹.</td></tr>
+    <tr><td><code>composer.modelPicker</code></td><td>باز کردن انتخاب‌گر مدل برای تعویض زنده مدل گفتگوی فعال.</td></tr>
+    <tr><td><code>composer.voice</code></td><td>شروع / پایان گفتگوی صوتی.</td></tr>
+    <tr><td><code>view.toggleSidebar</code> / <code>view.toggleRightSidebar</code></td><td>نمایش/پنهان نوار کناری نشست‌ها و مرورگر فایل.</td></tr>
+    <tr><td><code>view.showTerminal</code> / <code>view.newTerminal</code></td><td>نمایش ترمینال و باز کردن ترمینال جدید.</td></tr>
+    <tr><td><code>view.findInPage</code></td><td>جستجو در صفحه با نوار یافتن.</td></tr>
+    <tr><td><code>appearance.toggleMode</code></td><td>تغییر روشن / تاریک.</td></tr>
+    <tr><td><code>profile.switch.1…18</code></td><td>سوئیچ به پروفایل شماره‌دار.</td></tr>
+  </table>
+  <div class="tip">نام‌های فنی مثل <code>view.toggleHud</code> شناسه اقدام‌اند؛ در پنل میان‌بر‌ها هر کدام برچسب فارسی و کلید قابل ویرایش دارند.</div>
+</section>
+
+<!-- ════════════════ 16. عیب‌یابی ════════════════ -->
+<section id="troubleshooting">
+  <h2><span class="num">۱۷</span> عیب‌یابی و پرسش‌های رایج</h2>
+
+  <div class="warn">خطای <strong>«پل IPC دسکتاپ در دسترس نیست» (Desktop IPC bridge is unavailable)</strong> تقریباً همیشه یعنی نشانی <code>127.0.0.1:5174</code> را در یک مرورگر معمولی باز کرده‌اید — نه اینکه برنامه خراب باشد. پنجره برنامه دسکتاپ Hermes را باز کنید؛ توضیح کامل در «تفاوت مرورگر و برنامه دسکتاپ» پایین همین بخش.</div>
+
+  <h3 id="browser-vs-desktop">تفاوت مرورگر و برنامه دسکتاپ</h3>
+  <p>در حالت توسعه، برنامه از دو نیمه تشکیل شده که هر دو باید اجرا شوند:</p>
+  <table>
+    <tr><th>نیمه</th><th>چه چیزی است</th><th>چطور بالا می‌آید</th></tr>
+    <tr><td><strong>رابط کاربری (Vite)</strong></td><td>صفحه‌ای که در <code>127.0.0.1:5174</code> سرو می‌شود؛ فقط رندرر است.</td><td>خودکار همراه <code>npm run dev</code></td></tr>
+    <tr><td><strong>پوسته دسکتاپ (Electron)</strong></td><td>پنجره واقعی برنامه؛ پل <code>window.hermesDesktop</code> فقط همین‌جا تزریق می‌شود.</td><td>خودکار همراه <code>npm run dev</code></td></tr>
+  </table>
+  <p class="lead">پل IPC توسط اسکریپت preload الکترون به صفحه تزریق می‌شود، پس در فایرفاکس، کروم یا هر تب پیش‌نمایشِ مرورگری هرگز وجود ندارد. نتیجه: صفحه بالا می‌آید و فارسی هم دیده می‌شود، اما بوت با همین خطا متوقف می‌شود. برنامه عمداً نیست — کلاینت الکترون غایب است.</p>
+  <ul class="plain">
+    <li><strong>راه درست:</strong> پنجره دسکتاپ با عنوان «Hermes» را از نوار وظیفه باز کنید.</li>
+    <li><strong>نشانی <code>127.0.0.1:5174</code></strong> فقط برای اتصال داخلی الکترون به رندرر است؛ باز کردن مستقیم آن در مرورگر خطای بالا را می‌دهد.</li>
+    <li>از این نسخه، اگر رابط کاربری بیرون از الکترون باز شود، به‌جای صفحه خطای قدیمی کارتی فارسی نشان می‌دهد که همین توضیح را می‌دهد («در مرورگر باز شده، نه در برنامه دسکتاپ»).</li>
+  </ul>
+
+  <h3 id="dev-workflow">اجرای برنامه در حالت توسعه (<code>npm run dev</code>)</h3>
+  <pre><code>cd apps/desktop
+npm run dev</code></pre>
+  <ul class="plain">
+    <li><code>npm run dev</code> هر دو نیمه را با هم بالا می‌آورد: سرور Vite روی پورت <code>5174</code> و سپس پنجره الکترون که خودش به آن وصل می‌شود.</li>
+    <li>اولین اجرا ممکن است چند دقیقه طول بکشد (ساخت باندل‌ها و راه‌اندازی باک‌اند)؛ پنجره با صفحه پیشرفت «راه‌اندازی Hermes Desktop…» نشان می‌دهد.</li>
+    <li>اگر فقط سرور Vite بالا باشد و پنجره الکترون باز نشود، دوباره <code>npm run dev</code> را اجرا کنید — یا در ترمینال دیگری <code>npm run dev:electron</code> تا فقط پوسته دسکتاپ به سرور در حال اجرا وصل شود.</li>
+    <li>تغییر کد رندرر با HSL/HMR فوراً در پنجره اعمال می‌شود؛ اگر تغییری اعمال نشد، پنجره را با <kbd>Ctrl+R</kbd> بازخوانی کنید.</li>
+    <li>برای تست بدون کلید API واقعی: <code>npm run dev:mock</code> یک سرور ساختگی پاسخ‌های آماده می‌سازد.</li>
+  </ul>
+
+  <table>
+    <tr><th>مشکل</th><th>راه‌حل</th></tr>
+    <tr><td>«پل IPC دسکتاپ در دسترس نیست»</td><td>نشانی سرور توسعه را در مرورگر باز کرده‌اید. پنجره برنامه دسکتاپ Hermes را باز کنید (بخش «تفاوت مرورگر و برنامه دسکتاپ» بالا).</td></tr>
+    <tr><td>راه‌اندازی دسکتاپ ناموفق بود</td><td>از صفحه خطا «تلاش دوباره»، «تعمیر نصب» یا «استفاده از دروازه محلی» را امتحان کنید؛ هیچ‌کدام گفتگوها یا تنظیمات را حذف نمی‌کنند. لاگ‌ها از دکمه «باز کردن لاگ‌ها» در دسترس‌اند.</td></tr>
+    <tr><td>«Hermes couldn't start the desktop UI» با کد <strong>(-6)</strong> و مسیر <code>apps\desktop\dist\index.html</code></td><td>یعنی برنامه بدون متغیر محیطیِ سرور توسعه اجرا شده: الکترون به‌جای اتصال به سرور Vite به‌دنبال باندل نسخه ساخته‌شده (<code>dist</code>) می‌گردد که در مخزن توسعه وجود ندارد (-6 = فایل پیدا نشد). برنامه را با <code>cd apps/desktop</code> و سپس <code>npm run dev</code> اجرا کنید؛ اجرای مستقیم <code>electron .</code> دقیقاً همین خطا را می‌دهد. گزینه <code>hermes desktop --force-build</code> فقط برای نسخه نصب‌شده کاربرد دارد، نه مخزن توسعه.</td></tr>
+    <tr><td>«Backend exited before it became ready» همراه با خطای «rejected the session token»</td><td>پیامِ توکن گمراه‌کننده است — علت واقعی تقریباً همیشه ناهم‌خوانی وابستگی‌های پایتون است: هنگام بررسی WebSocket، باک‌اند زنجیره import مسیر ws را بارگیری می‌کند و می‌شکند (رایج‌ها: <code>uvicorn</code> قدیمی‌تر از <span dir="ltr">0.31</span> بدون <code>capture_signals</code>، نسخه اصلی ناسازگار <code>websockets</code>، یا نبودن ماژول <code>concurrent_log_handler</code>). در <code>desktop.log</code> دنبال Traceback واقعی بگردید، روی همان مفسر پایتونِ باک‌اند <code>pip install -e ".[web]"</code> (یا <code>uv sync --extra web</code>) را اجرا کنید و برنامه را دوباره باز کنید؛ <code>hermes doctor</code> نیز وضعیت محیط را می‌سنجد.</td></tr>
+    <tr><td>چک‌لیست ناهم‌خوانی محیط پایتون (خطاهای import یا نسخه هنگام بوت باک‌اند)</td><td>چهار گام به‌ترتیب: <strong>۱)</strong> <span dir="ltr">pip check</span> — باید «No broken requirements found» بدهد؛ هر خطی که «requires X, but you have Y» گفت یعنی آن بسته را با نسخه خواسته‌شده نصب کنید. <strong>۲)</strong> نسخه‌های نصی را با پین‌های پروژه بسنجید: نسخه دقیق هر وابستگی در <code>pyproject.toml</code> (بخش <code>[project.optional-dependencies]</code> برای وب: <code>uvicorn</code>، <code>fastapi</code>، <code>starlette</code>، <code>websockets</code>، <code>python-multipart</code>) و <code>[project.dependencies]</code> برای بقیه؛ هم‌ترازی کامل با <code>pip install -e ".[web]"</code> روی همان مفسرِ باک‌اند. <strong>۳)</strong> اگر pip هشدار «Ignoring invalid distribution ~xyz» داد، پوشه باقی‌ماندهٔ نصب نیمه‌کاره را حذف کنید — در <code>Lib/site-packages</code> هر پوشه‌ای که با <code>~</code> شروع می‌شود (مثل <code>~vicorn</code> یا <code>~qlalchemy</code>) خرده‌نصبِ خراب است و باید پاک شود. <strong>۴)</strong> سلامت زنجیره ورود ماژول‌ها را مستقیم بیازمایید: <span dir="ltr">python -c "import uvicorn, fastapi, websockets; from tui_gateway.ws import handle_ws"</span> — اگر این بدون خطا گذشت، محیط سالم است.</td></tr>
+    <tr><td>چک‌لیست ناهم‌خوانی محیط npm/Node (خطاهای نصب، EENGINE)</td><td>چهار گام به‌ترتیب: <strong>۱)</strong> نصب‌های تکراری را با <code>npm ci</code> انجام دهید — این دستور درخت <code>node_modules</code> را حذف و دقیقاً مطابق <code>package-lock.json</code> بازسازی می‌کند؛ <code>npm install</code> برای نصب روزمره است و ممکن است lockfile را جابه‌جا کند. <strong>۲)</strong> بهداشت lockfile: این مخزن تک‌قفل‌نامه است — همه کارهای نصب از ریشه مخزن انجام شود و <code>package-lock.json</code> را همراه هر تغییر وابستگی کامیت کنید؛ پراکندگیِ <code>npm install</code> در زیرپوشه‌ها (مثل <code>ui-tui</code>) رزولوشن پکیج‌های داخلی را می‌شکند. <strong>۳)</strong> خطای <code>EENGINE</code> یعنی npm نصب‌شده در بازه مجاز <code>engines</code> پروژه نیست (<code>&lt;11.10.0 || &gt;=11.17.0</code>) — نسخه سازگار نصب کنید (مثل <code>npm i -g npm@12</code>) و از دورزدن با <code>--engine-strict=false</code> جز در مواقع ضروری خودداری کنید، چون <code>.npmrc</code> پروژه این را عمداً سخت‌گیرانه کرده است.</td></tr>
+    <tr><td>خطای <code>EALLOWSCRIPTS</code> یا اجرا نشدن اسکریپت‌های postinstall</td><td>این خطا یعنی postinstallهای بسته‌ها (مثل دانلود باینری الکترون) اجرا نشده‌اند. علت رایج: خط <code>allow-scripts</code> در <code>~/.npmrc</code> کاربر — آن خط را حذف کنید تا پیکربندی پروژه حاکم شود. اگر ممنوعیت اسکریپت عمدی است (سیاست امنیتی)، به‌جای غیرفعال‌سازی سراسری از <code>npm ci --ignore-scripts</code> آگاهانه استفاده کنید. آزمون سلامت: باینری الکترون باید در <code>node_modules/electron/dist</code> باشد؛ نبودش یعنی postinstall اجرا نشده است.</td></tr>
+    <tr><td>اولین اجرا طول می‌کشد</td><td>در اولین اجرا، برنامه باک‌اند را از صفر راه می‌اندازد (نصب وابستگی‌ها)؛ صفحه پیشرفت را باز بگذارید. اجراهای بعدی سریع‌اند.</td></tr>
+    <tr><td>اتصال با دروازه قطع شد</td><td>برنامه خودش در پس‌زمینه تلاش مجدد می‌کند؛ اگر باقی ماند، تنظیمات دروازه را باز کنید و برای دروازه راه دور دوباره وارد شوید.</td></tr>
+    <tr><td>«باک‌اند قدیمی است»</td><td>زمان اجرای Hermes از برنامه دسکتاپ عقب است — از اعلان «به‌روزرسانی Hermes» استفاده کنید.</td></tr>
+    <tr><td>متن فارسی به‌هم‌ریخته در ترمینال</td><td>فونت ترمینال را در تنظیمات ← ظاهر به یک فونت پشتیبان RTL (مثل Vazirmatn یا JetBrains Mono) تغییر دهید.</td></tr>
+    <tr><td>فارسی اعمال نشد</td><td>در ترمینال: <code>hermes config get display.language</code> — مقدار باید <code>fa</code> باشد. متغیر <code>HERMES_LANGUAGE</code> بر پیکربندی اولویت دارد.</td></tr>
+    <tr><td>خطای کلی</td><td>از ترمینال <code>hermes doctor</code> را اجرا کنید؛ برای ارسال گزارش به Nous از «ارسال عیب‌یابی» استفاده کنید (اسرار سانسور و بسته پس از ۱۴ روز حذف می‌شود).</td></tr>
+    <tr><td>اعتبار تمام شد</td><td>از هشدار «افزودن اعتبار» یا بخش صورت‌حساب در Portal ادامه دهید؛ مدل‌های جایگزین در تنظیمات مدل توقف‌گاه میانی می‌سازند.</td></tr>
+    <tr><td>سرویس MCP در دسترس نیست</td><td>از تنظیمات ← MCP حالت سرور را ببینید؛ اگر «نیازمند احراز هویت» است دوباره وارد شوید و «بارگذاری مجدد MCP» را بزنید.</td></tr>
+  </table>
+
+  <h3>جایگاه‌های امنیتی مهم</h3>
+  <ul class="plain">
+    <li>دستورهای خطرناک همیشه پیش از اجرا پرش تأیید می‌گیرند: <strong>o</strong> یک‌بار، <strong>s</strong> این نشست، <strong>a</strong> همیشه، <strong>d</strong> رد.</li>
+    <li>توکن‌های دروازه با keychain سیستم‌عامل (Windows DPAPI، macOS Keychain، GNOME Keyring) رمزنگاری می‌شوند اگر «رمزنگاری اسرار» روشن باشد.</li>
+    <li>نصب افزونه همیشه پیش از نصب مخزن را بازبینی می‌کند؛ فقط از منابع مورد اعتماد نصب کنید.</li>
+  </ul>
+</section>
+
+</div>
+
+<footer>
+  <p><strong>Hermes Desktop</strong> — ساخته <a href="https://nousresearch.com" target="_blank" rel="noopener">Nous Research</a> · مجوز MIT</p>
+  <p>این راهنما از روی منبع برنامه (نسخه شاخه <code class="en">localization/fa-ir</code>) نوشته شده است.</p>
+</footer>
+
+<a class="back-top" href="#top" title="بازگشت به بالا">↑</a>
+
+</body>
+</html>

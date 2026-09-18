@@ -26,16 +26,24 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { chatActivationStore } from "@/lib/chat-activation";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
-import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
@@ -221,9 +229,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
   // PTY alive across later tab switches (the persistence UX) — once true it
   // stays true.
-  const [hasActivated, setHasActivated] = useState(isActive);
+  // Activation latch via an external store (react-hooks/set-state-in-effect
+  // rejects both an in-effect setState and a render-phase setState here):
+  // `hasActivated` is sticky — once the chat tab has been active, the PTY
+  // stays alive across later tab switches. The effect below calls
+  // `chatActivationStore.activate()`; React re-renders from the subscription.
+  const hasActivated = useSyncExternalStore(
+    chatActivationStore.subscribe,
+    chatActivationStore.getSnapshot,
+    () => isActive,
+  );
   useEffect(() => {
-    setHasActivated((prev) => latchChatActivation(prev, isActive));
+    if (isActive) chatActivationStore.activate();
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
@@ -1156,14 +1173,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         finishResumeHydration();
       }
     };
+    // The hydration overlay for a resumed PTY is armed inside the connect
+    // continuation (post-ticket, pre-socket) rather than here in the effect
+    // body: setState may not run synchronously in an effect
+    // (react-hooks/set-state-in-effect), and a microtask defer here would
+    // re-render before the socket even starts opening. The max-duration
+    // timer still arms now — it must start before any await so a wedged
+    // ticket request cannot leave the overlay up forever.
     if (resumeParam) {
-      setResumeHydrating(true);
       resumeMaxTimer = setTimeout(
         finishResumeHydration,
         PTY_RESUME_LOADING_MAX_MS,
       );
-    } else {
-      setResumeHydrating(false);
     }
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
@@ -1280,6 +1301,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting || ticketSuperseded) return;
       clearTicketTimer();
 
+      // Arm the resume-hydration overlay now: we are committed to opening
+      // the socket (post-ticket) and the replay that follows can arrive any
+      // moment. Setting it here (a promise continuation) rather than in the
+      // effect body keeps the rule happy without a microtask re-render.
+      if (resumeParam && !unmounting && !ticketSuperseded) {
+        setResumeHydrating(true);
+      }
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -1636,6 +1664,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    searchParams,
+    setSearchParams,
+    terminalTheme,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
@@ -1830,8 +1861,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
+            "font-mondwest fixed top-0 end-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "border-s border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background,var(--background-base))]",
@@ -1839,7 +1870,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "[border-image:var(--component-sidebar-border-image)]",
             mobilePanelOpen
               ? "translate-x-0"
-              : "pointer-events-none translate-x-full",
+              : "pointer-events-none ltr:translate-x-full rtl:-translate-x-full",
           )}
         >
           <div
@@ -1930,7 +1961,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           />
 
           {showReconnectOverlay && (
-            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:end-3 sm:justify-end">
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
@@ -1945,7 +1976,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                     outlined
                     onClick={reconnectPty}
                     prefix={<RotateCcw className="h-4 w-4" />}
-                    aria-label="Reconnect chat"
+                    aria-label={t.chat?.reconnect}
                   >
                     Reconnect now
                   </Button>
@@ -1954,9 +1985,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                       size="sm"
                       ghost
                       onClick={() => navigate("/system")}
-                      aria-label="Check server status"
+                      aria-label={t.chat?.checkServerStatus}
                     >
-                      Check server status
+                      {t.chat?.checkServerStatus}
                     </Button>
                   )}
                 </div>
@@ -1991,7 +2022,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 <Button
                   onClick={startFreshPty}
                   prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Start a new chat session"
+                  aria-label={t.chat?.newSession}
                 >
                   Start new session
                 </Button>
@@ -1999,20 +2030,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   <Button
                     outlined
                     onClick={() => navigate("/logs")}
-                    aria-label="Open logs"
+                    aria-label={t.chat?.openLogs}
                   >
-                    Open logs
+                    {t.chat?.openLogs}
                   </Button>
-                )}
+                )}                </div>
               </div>
-            </div>
           )}
 
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+        title={t.chat?.copyLastTooltip}
+        aria-label={t.chat?.copyLast}
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",
@@ -2020,15 +2050,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "bottom-2 end-2 px-2 py-1 text-xs sm:bottom-3 sm:end-3 sm:px-2.5 sm:py-1.5",
+              "lg:bottom-4 lg:end-4",
             )}
             style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? t.chat?.copied : t.chat?.copyLastShort}
               </span>
             </span>
           </Button>
@@ -2037,8 +2067,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Button
               ghost
               onClick={toggleChatPanel}
-              title="Show side panel (model + sessions)"
-              aria-label="Show chat side panel"
+              title={t.chat?.showSidePanelTitle ?? "Show side panel (model + sessions)"}
+              aria-label={t.chat?.showSidePanel}
               className={cn(
                 "absolute z-10",
                 "normal-case tracking-normal font-normal",
@@ -2046,7 +2076,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 "bg-black/20",
                 "opacity-70 hover:opacity-100 hover:border-current/60",
                 "transition-opacity duration-150",
-                "top-2 right-2 px-2 py-1 text-xs sm:top-3 sm:right-3",
+                "top-2 end-2 px-2 py-1 text-xs sm:top-3 sm:end-3",
               )}
               style={{ color: terminalFg }}
             >
@@ -2067,13 +2097,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             aria-label={modelToolsLabel}
             className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
-            <div className="flex h-8 shrink-0 items-center justify-end pr-1">
+            <div className="flex h-8 shrink-0 items-center justify-end pe-1">
               <Button
                 ghost
                 size="icon"
                 onClick={toggleChatPanel}
-                aria-label="Collapse chat side panel"
-                title="Collapse side panel"
+        aria-label={t.chat?.collapseSidePanel}
+        title={t.chat?.collapseSidePanelTitle}
                 className="text-text-secondary hover:text-midground"
               >
                 <X />

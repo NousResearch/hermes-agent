@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: skip the first-run film (HERMES_SKIP_INTRO=1 or
   // --skip-intro). Rehearsal aid for the guided chat behind it.
   skipIntro: launchFlags?.skipIntro === true,
+  // Renderer → main: active UI locale, so the native macOS menu can render in
+  // the user's language. Fire-and-forget; main ignores unknown locales.
+  setMenuLocale: locale => ipcRenderer.send('hermes:menu-locale', locale),
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),

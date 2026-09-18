@@ -18,6 +18,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Locale parity gate. Dependency-free (plain Node, no npm ci needed),
+      # so it runs before the setup steps and fails in seconds, not minutes.
+      # Fails on any key missing from/added to a locale that its English source
+      # does not allow — full parity for locales/*.yaml, deep-merge parity (no
+      # stale keys, no string<->interpolator drift) for web + desktop locales.
+      - name: Check i18n locale key parity
+        run: node scripts/check_i18n_parity.mjs --all
+
+      # Guide walkthrough sync gate. Dependency-free (stdlib-only Python,
+      # preinstalled on the runner), so it also fails in seconds before any
+      # setup step. Fails when the first-run walkthrough captions in the
+      # standalone guide.html and the in-dashboard Persian guide
+      # (PersianGuide.tsx WALKTHROUGH) drift apart: caption edits, added or
+      # removed figures, or reorders.
+      - name: Check guide walkthrough caption sync
+        run: python3 scripts/check_guide_walkthrough_sync.py
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 26
@@ -94,4 +112,12 @@ jobs:
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        # --expect-workspaces is the silent-skip assertion: discovery is
+        # dynamic (npm query), so a workspace whose check scripts are renamed,
+        # removed, or no longer npm-resolved would drop out of the run and the
+        # job would still report green having checked one workspace fewer. The
+        # pinned list fails the job naming the workspace instead. Add every NEW
+        # workspace to it.
+        run: >-
+          node .github/scripts/run-workspace-checks.mjs
+          --expect-workspaces apps/desktop,apps/shared,ui-tui,ui-tui/packages/hermes-ink,web

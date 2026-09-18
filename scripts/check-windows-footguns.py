@@ -60,6 +60,13 @@ GUARD_HINTS = (
     "if sys.platform != \"win32\"",
     "if sys.platform == 'win32'",
     "if sys.platform != 'win32'",
+    # asyncio.start_unix_server/start_server(..., unix_like=) is POSIX-only
+    # (AttributeError on Windows); a same-line hasattr gate means the
+    # programmer already knew. Multi-line `if hasattr(asyncio, ...)` blocks
+    # rely on the line-based scanner's false-negative policy instead.
+    "hasattr(asyncio,",
+    "if os.name ==",
+    "if os.name !=",
     "IS_WINDOWS",
     "is_windows",
 )
@@ -349,6 +356,50 @@ FOOTGUNS: list[Footgun] = [
             "except NotImplementedError:\n"
             "    pass  # Windows asyncio doesn't support signal handlers"
         ),
+    ),
+    Footgun(
+        name="asyncio.start_unix_server / start_server(unix_like=True) without a platform gate",
+        # asyncio.start_unix_server exists ONLY on POSIX (it binds an
+        # AF_UNIX socket); calling it on Windows raises AttributeError
+        # (there is no AF_UNIX in the Windows socket module), and the
+        # Proactor loop can't serve unix-socket listeners anyway.
+        # Two call shapes exist:
+        #   asyncio.start_unix_server(handler, path=...)   — POSIX-only symbol
+        #   asyncio.start_server(handler, unix_like=True)  — POSIX-only kwarg
+        # The receiver must be ``asyncio``/``loop``/``server`` so plain
+        # ``X.start_server(`` helpers on unrelated objects don't match.
+        # The post_filter decides which shapes are REAL footguns:
+        #   * the symbol form (``start_unix_server``) always is;
+        #   * ``start_server(..., unix_like=True)`` is, via the kwarg.
+        # A plain TCP ``asyncio.start_server(`` (no unix_like kwarg) is fine.
+        # String-literal mentions (assert-based contract tests, docs) are
+        # skipped the same way the text=True rule skips them.
+        pattern=re.compile(
+            r"\b(?:asyncio|loop|server)\.start_(?:unix_)?server\s*\("
+        ),
+        message=(
+            "asyncio.start_unix_server (and start_server's unix_like= "
+            "kwarg) is POSIX-only — it binds an AF_UNIX socket and "
+            "raises AttributeError on Windows. Gate the call behind a "
+            "platform check and provide a Windows fallback (TCP loopback "
+            "on 127.0.0.1:0, or a named pipe via "
+            "loop.start_serving_pipe)."
+        ),
+        fix=(
+            "if os.name == 'posix':\n"
+            "    srv = await asyncio.start_unix_server(handler, path=str(sock))\n"
+            "else:\n"
+            "    srv = await asyncio.start_server(handler, host='127.0.0.1', port=0)"
+        ),
+        post_filter=lambda m, line: (
+            # Symbol form: the matched call IS start_unix_server.
+            "start_unix_server" in line
+            # Kwarg form: start_server(..., unix_like=True).
+            or "unix_like" in line
+        )
+        # Docstrings/assert-string contract tests mention the symbol in
+        # prose — skip matches inside quoted regions.
+        and not _looks_like_string_literal(line, m),
     ),
     Footgun(
         name="subprocess text=True without explicit encoding=",

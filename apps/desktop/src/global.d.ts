@@ -19,6 +19,9 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      // Renderer → main: active UI locale for the native macOS application
+      // menu. Fire-and-forget; main ignores locales without menu copy.
+      setMenuLocale?: (locale: string) => void
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.

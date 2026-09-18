@@ -77,7 +77,7 @@ _FONT_DEFAULT_ID = "theme"
 _FONT_CHOICES = frozenset({
     "system-sans", "system-serif", "system-mono",
     "inter", "ibm-plex-sans", "work-sans", "atkinson-hyperlegible", "dm-sans",
-    "spectral", "fraunces", "source-serif",
+    "spectral", "fraunces", "source-serif", "vazirmatn",
     "jetbrains-mono", "ibm-plex-mono", "space-mono",
 })
 

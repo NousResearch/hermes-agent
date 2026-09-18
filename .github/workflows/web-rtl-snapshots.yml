@@ -1,0 +1,117 @@
+# .github/workflows/web-rtl-snapshots.yml
+name: Web RTL Snapshots
+
+# Visual regression for the web dashboard under locale=fa (Persian RTL).
+# Same policy as the desktop visual suite (e2e-desktop.yml): baselines are
+# generated on `main` via --update-snapshots and cached; PRs compare against
+# them but do NOT fail on pixel diffs — diff/actual images are uploaded as
+# artifacts for review. A diff means an RTL regression: dir flip, logical
+# (ps/pe/start/end) → physical (pl/pr/left/right) class drift, mirrored-icon
+# loss, or Vazirmatn font fallback.
+#
+# The suite needs no Python backend: the spec stubs every /api endpoint and
+# serves the bundled Vazirmatn woff2 locally, so a plain Chromium is enough.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rtl-snapshots:
+    name: Playwright RTL visual (fa)
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+
+      # Same node_modules cache family as js-tests.yml — an exact lockfile hit
+      # skips the install entirely.
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
+
+      - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          command: npm ci
+
+      # ── Chromium for Playwright ─────────────────────────────────────────
+      # The desktop E2E job (e2e-desktop.yml) installs browsers with deps for
+      # Electron; here plain Chromium suffices (no Electron, no xvfb).
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      # ── Restore RTL baselines from main ─────────────────────────────────
+      - name: Restore RTL baselines
+        id: restore-baselines
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: web/e2e/__rtl-snapshots__
+          key: rtl-baselines-${{ github.ref_name }}
+          restore-keys: |
+            rtl-baselines-main
+
+      # On main: regenerate baselines. On PRs: compare against them. The spec
+      # asserts the RTL contract (dir=rtl, lang=fa, fonts loaded) before every
+      # screenshot, so a broken page fails the test outright — only genuine
+      # pixel diffs are soft.
+      - name: Run RTL visual snapshots
+        working-directory: web
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "On main — regenerating RTL baselines"
+            npx playwright test --reporter=list --update-snapshots
+          else
+            echo "On PR — comparing against cached baselines"
+            npx playwright test --reporter=list
+          fi
+        env:
+          CI: 'true'
+
+      # ── Save regenerated baselines (main only) ──────────────────────────
+      - name: Save RTL baselines to cache
+        if: github.ref_name == 'main' && always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: web/e2e/__rtl-snapshots__
+          key: rtl-baselines-main
+
+      # ── Artifacts: always upload actuals; diffs on PRs ──────────────────
+      - name: Upload RTL snapshot results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rtl-snapshots-${{ github.sha }}
+          path: |
+            web/test-results/**/*-actual.png
+            web/test-results/**/*-diff.png
+            web/test-results/**/*-expected.png
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rtl-playwright-report-${{ github.sha }}
+          path: web/playwright-report
+          retention-days: 14
+          overwrite: true

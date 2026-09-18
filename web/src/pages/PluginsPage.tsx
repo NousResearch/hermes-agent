@@ -340,8 +340,11 @@ export default function PluginsPage() {
     const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
     let cancelled = false;
 
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
+    // Await-first: every setState below runs in a promise continuation, never
+    // synchronously inside the effect body (react-hooks/set-state-in-effect).
+    async function loadMemoryConfig() {
+      // Leading await = the boundary; the effect body itself stays synchronous.
+      await Promise.resolve();
       setSecretVisible({});
       setMemorySetupResults(null);
 
@@ -353,28 +356,25 @@ export default function PluginsPage() {
       }
 
       setMemoryConfigBusy(true);
-      api
-        .getMemoryProviderConfig(provider)
-        .then((config) => {
-          if (cancelled) return;
-          setMemoryConfig(config);
-          setMemoryValues(
-            Object.fromEntries(
-              config.fields.map((field) => [field.key, fieldInitialValue(field)]),
-            ),
-          );
-        })
-        .catch((e) => {
-          if (!cancelled) {
-            setMemoryConfig(null);
-            setMemoryValues({});
-            showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setMemoryConfigBusy(false);
-        });
-    });
+      try {
+        const config = await api.getMemoryProviderConfig(provider);
+        if (cancelled) return;
+        setMemoryConfig(config);
+        setMemoryValues(
+          Object.fromEntries(
+            config.fields.map((field) => [field.key, fieldInitialValue(field)]),
+          ),
+        );
+      } catch (e) {
+        if (cancelled) return;
+        setMemoryConfig(null);
+        setMemoryValues({});
+        showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
+      } finally {
+        if (!cancelled) setMemoryConfigBusy(false);
+      }
+    }
+    void loadMemoryConfig();
 
     return () => {
       cancelled = true;
@@ -1001,7 +1001,7 @@ export default function PluginsPage() {
                   {!m.tab?.hidden ? (
 
 
-                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
+                    <Link className="ms-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
 
 
                       <ExternalLink className="h-3 w-3 opacity-65" />

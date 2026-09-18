@@ -19,7 +19,10 @@ describe('terminalParityHints', () => {
 
     const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
       fileOps: { readFile },
-      homeDir: '/tmp/fake-home'
+      homeDir: '/tmp/fake-home',
+      // Pin POSIX: the default platform resolves the VS Code config dir via
+      // APPDATA on Windows, which the fixture env does not provide.
+      platform: 'linux'
     })
 
     expect(hints.some(h => h.key === 'ide-setup')).toBe(true)
@@ -119,7 +122,8 @@ describe('terminalParityHints', () => {
 
     const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
       fileOps: { readFile },
-      homeDir: '/tmp/fake-home'
+      homeDir: '/tmp/fake-home',
+      platform: 'linux'
     })
 
     // Legacy bindings don't match current CSI u targets, so setup is still needed

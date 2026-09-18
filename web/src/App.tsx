@@ -63,7 +63,8 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { gatewayLine } from "@/lib/gateway-line";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -104,7 +105,6 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { latchChatActivation } from "@/lib/chat-activation";
 import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -191,7 +191,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -208,14 +208,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -406,9 +406,11 @@ export default function App() {
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
-  useEffect(() => {
-    setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
-  }, [isChatRoute]);
+  // Render-phase latch (docs-recommended instead of setState-in-effect):
+  // once the chat host has mounted it stays mounted for the session.
+  if (isChatRoute && !chatHostMounted) {
+    setChatHostMounted(true);
+  }
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -527,7 +529,7 @@ export default function App() {
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "lg:hidden fixed top-0 start-0 end-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base",
@@ -583,11 +585,11 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
-              "border-r border-current/20",
+              "fixed top-0 start-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+              "border-e border-current/20",
               "bg-background-base",
               "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
+              mobileOpen ? "translate-x-0" : "max-lg:ltr:-translate-x-full max-lg:rtl:translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",
@@ -913,13 +915,13 @@ function SidebarNavLink({
 
             <span
               aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
+              className="absolute inset-y-0.5 start-1.5 end-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
             />
 
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                className="absolute start-0 top-0 bottom-0 w-px bg-midground"
               />
             )}
           </>
@@ -952,13 +954,18 @@ function SidebarSystemActions({
     useState<UpdateCheckResponse | null>(null);
   const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
 
+  // Reset the payload the moment the dialog closes (render-phase reset — the
+  // docs-recommended pattern instead of setState-in-effect). The check itself
+  // is kicked off by the open handler below; it must not live in an effect,
+  // whose sync body may not setState.
+  if (!updateConfirmOpen && (updateConfirmInfo !== null || updateConfirmChecking)) {
+    setUpdateConfirmInfo(null);
+    setUpdateConfirmChecking(false);
+  }
+
   useEffect(() => {
-    if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
-      return;
-    }
+    if (!updateConfirmOpen) return;
     let cancelled = false;
-    setUpdateConfirmChecking(true);
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -1014,6 +1021,8 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
+      setUpdateConfirmInfo(null);
+      setUpdateConfirmChecking(true);
       setUpdateConfirmOpen(true);
       return;
     }
@@ -1183,13 +1192,13 @@ function SystemActionButton({
 
         <span
           aria-hidden
-          className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-5"
+          className="absolute inset-y-0.5 start-1.5 end-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-5"
         />
 
         {busy && (
           <span
             aria-hidden
-            className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+            className="absolute start-0 top-0 bottom-0 w-px bg-midground"
           />
         )}
       </button>

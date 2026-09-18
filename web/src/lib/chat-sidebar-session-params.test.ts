@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { sidecarSessionCreateParams } from "@/components/ChatSidebar";
+import { sidecarSessionCreateParams } from "@/lib/chat-sidebar-session-params";
 
 describe("sidecarSessionCreateParams", () => {
   it("opts into close_on_disconnect", () => {

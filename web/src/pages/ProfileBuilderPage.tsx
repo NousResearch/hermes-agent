@@ -10,6 +10,7 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import type {
   McpHttpAuth,
   McpServerCreate,
@@ -59,6 +60,7 @@ interface ModelChoice {
  * bundle" toggle keeps everything (sends no keep list).
  */
 export default function ProfileBuilderPage() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { toast, showToast } = useToast();
 
@@ -244,7 +246,7 @@ export default function ProfileBuilderPage() {
   const handleCreate = async () => {
     const n = name.trim();
     if (!PROFILE_NAME_RE.test(n)) {
-      showToast("Invalid profile name (lowercase, digits, - and _)", "error");
+      showToast(t.profileBuilder.invalidName, "error");
       setStep("identity");
       return;
     }
@@ -271,7 +273,10 @@ export default function ProfileBuilderPage() {
       );
       navigate("/profiles");
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(
+        t.profileBuilder.createFailed.replace("{error}", errorMessage(e)),
+        "error",
+      );
     } finally {
       setCreating(false);
     }
@@ -283,7 +288,7 @@ export default function ProfileBuilderPage() {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
       <div className="flex items-center justify-between">
-        <H2>New profile</H2>
+        <H2>{t.fields.newProfile}</H2>
         <Button ghost onClick={() => navigate("/profiles")}>
           Cancel
         </Button>
@@ -317,7 +322,7 @@ export default function ProfileBuilderPage() {
           {step === "identity" && (
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="pb-name">Profile name</Label>
+                <Label htmlFor="pb-name">{t.fields.profileName}</Label>
                 <Input
                   id="pb-name"
                   placeholder="coder"
@@ -337,7 +342,7 @@ export default function ProfileBuilderPage() {
                 <Label htmlFor="pb-desc">Description (optional)</Label>
                 <Input
                   id="pb-desc"
-                  placeholder="What this agent profile is for"
+                  placeholder={t.fields.whatFor}
                   value={description}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setDescription(e.target.value)
@@ -354,7 +359,7 @@ export default function ProfileBuilderPage() {
                 default.
               </p>
               <Input
-                placeholder="Filter models…"
+                placeholder={t.profileBuilder.filterModels}
                 value={modelFilter}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setModelFilter(e.target.value)
@@ -367,7 +372,7 @@ export default function ProfileBuilderPage() {
                   <button
                     onClick={() => setModelChoice("")}
                     className={cn(
-                      "block w-full rounded px-3 py-2 text-left text-sm",
+                      "block w-full rounded px-3 py-2 text-start text-sm",
                       modelChoice === "" ? "bg-primary/10" : "hover:bg-muted",
                     )}
                   >
@@ -380,7 +385,7 @@ export default function ProfileBuilderPage() {
                         key={key}
                         onClick={() => setModelChoice(key)}
                         className={cn(
-                          "block w-full rounded px-3 py-2 text-left text-sm",
+                          "block w-full rounded px-3 py-2 text-start text-sm",
                           modelChoice === key
                             ? "bg-primary/10"
                             : "hover:bg-muted",
@@ -411,7 +416,7 @@ export default function ProfileBuilderPage() {
                     Unchecked skills are disabled in the new profile.
                   </p>
                   <Input
-                    placeholder="Filter skills…"
+                    placeholder={t.profileBuilder.filterSkills}
                     value={skillFilter}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setSkillFilter(e.target.value)
@@ -435,7 +440,7 @@ export default function ProfileBuilderPage() {
                           <span className="flex-1">
                             <span className="font-medium">{s.name}</span>
                             {s.category && (
-                              <Badge tone="secondary" className="ml-2">
+                              <Badge tone="secondary" className="ms-2">
                                 {s.category}
                               </Badge>
                             )}
@@ -454,10 +459,10 @@ export default function ProfileBuilderPage() {
 
               {/* Skills hub */}
               <div className="space-y-2 border-t pt-4">
-                <Label>Add from the skills hub</Label>
+                <Label>{t.fields.addFromSkillsHub}</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Search the hub (e.g. linear, hyperliquid)…"
+                    placeholder={t.profileBuilder.searchHub}
                     value={hubQuery}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setHubQuery(e.target.value)
@@ -483,7 +488,7 @@ export default function ProfileBuilderPage() {
                       >
                         <span className="flex-1">
                           <span className="font-medium">{r.name}</span>
-                          <Badge tone="secondary" className="ml-2">
+                          <Badge tone="secondary" className="ms-2">
                             {r.source}
                           </Badge>
                           {r.description && (
@@ -505,7 +510,7 @@ export default function ProfileBuilderPage() {
                       <Badge key={r.identifier} className="gap-1">
                         {r.name}
                         <button
-                          className="ml-1 text-xs"
+                          className="ms-1 text-xs"
                           onClick={() => removeHubSkill(r.identifier)}
                           aria-label={`Remove ${r.name}`}
                         >
@@ -540,14 +545,14 @@ export default function ProfileBuilderPage() {
               </div>
 
               <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
-                <h4 className="font-medium">Add server</h4>
+                <h4 className="font-medium">{t.actions.addServer}</h4>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-1.5">
-                    <Label htmlFor="pb-mcp-name">Server name</Label>
+                    <Label htmlFor="pb-mcp-name">{t.fields.serverName}</Label>
                     <Input
                       id="pb-mcp-name"
-                      placeholder="Enter server name"
+                      placeholder={t.fields.enterServerName}
                       value={mcpDraft.name}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                         setMcpDraft({ ...mcpDraft, name: e.target.value })
@@ -555,11 +560,11 @@ export default function ProfileBuilderPage() {
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label>Transport</Label>
+                    <Label>{t.fields.transport}</Label>
                     <div
                       className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
                       role="group"
-                      aria-label="MCP transport"
+                      aria-label={t.profileBuilder.mcpTransport}
                     >
                       {(
                         [
@@ -600,11 +605,11 @@ export default function ProfileBuilderPage() {
                       />
                     </div>
                     <div className="grid gap-1.5">
-                      <Label>Authentication</Label>
+                      <Label>{t.fields.authentication}</Label>
                       <div
                         className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
-                        aria-label="HTTP authentication"
+                        aria-label={t.profileBuilder.httpAuthentication}
                       >
                         {(
                           [
@@ -639,7 +644,7 @@ export default function ProfileBuilderPage() {
                           id="pb-mcp-bearer-token"
                           type="password"
                           autoComplete="new-password"
-                          placeholder="Token or Bearer token"
+                          placeholder={t.mcp.bearerTokenPlaceholder}
                           value={mcpDraft.bearerToken}
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                             setMcpDraft({
@@ -665,7 +670,7 @@ export default function ProfileBuilderPage() {
                   <>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-command">Command</Label>
+                        <Label htmlFor="pb-mcp-command">{t.fields.command}</Label>
                         <Input
                           id="pb-mcp-command"
                           placeholder="npx"
@@ -679,7 +684,7 @@ export default function ProfileBuilderPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-args">Arguments</Label>
+                        <Label htmlFor="pb-mcp-args">{t.fields.arguments}</Label>
                         <Input
                           id="pb-mcp-args"
                           placeholder="-y @modelcontextprotocol/server"
@@ -708,7 +713,7 @@ export default function ProfileBuilderPage() {
                 )}
 
                 <div className="flex justify-end">
-                  <Button onClick={addMcpDraft}>Add server</Button>
+                  <Button onClick={addMcpDraft}>{t.actions.addServer}</Button>
                 </div>
               </div>
 
@@ -752,41 +757,48 @@ export default function ProfileBuilderPage() {
           )}
           {step === "review" && (
             <div className="space-y-3 text-sm">
-              <ReviewRow label="Name" value={name.trim() || "—"} />
+              <ReviewRow label={t.fields.name} value={name.trim() || "—"} />
               <ReviewRow
-                label="Description"
+                label={t.fields.description}
                 value={description.trim() || "—"}
               />
               <ReviewRow
-                label="Model"
-                value={pickedModel ? pickedModel.label : "Default (set later)"}
+                label={t.fields.model}
+                value={
+                  pickedModel ? pickedModel.label : t.profileBuilder.defaultModelLater
+                }
               />
               <ReviewRow
-                label="Skills"
+                label={t.fields.skills}
                 value={
                   keepAll
-                    ? "Full default bundle"
-                    : `${keptSkills.size} built-in/optional kept` +
-                      (hubSkills.length ? ` + ${hubSkills.length} hub` : "")
+                    ? t.profileBuilder.fullDefaultBundle
+                    : t.profileBuilder.keptSkillsCount.replace("{n}", String(keptSkills.size)) +
+                      (hubSkills.length
+                        ? t.profileBuilder.plusHub.replace("{n}", String(hubSkills.length))
+                        : "")
                 }
               />
               {!keepAll && hubSkills.length > 0 && (
-                <p className="pl-24 text-xs text-muted-foreground">
-                  Hub: {hubSkills.map((s) => s.name).join(", ")}
+                <p className="ps-24 text-xs text-muted-foreground">
+                  {t.profileBuilder.hubLabel.replace(
+                    "{names}",
+                    hubSkills.map((s) => s.name).join(", "),
+                  )}
                 </p>
               )}
               {keepAll && hubSkills.length > 0 && (
                 <ReviewRow
-                  label="Hub skills"
+                  label={t.fields.hubSkills}
                   value={hubSkills.map((s) => s.name).join(", ")}
                 />
               )}
               <ReviewRow
-                label="MCP servers"
+                label={t.profileBuilder.mcpServers}
                 value={
                   mcpServers.length
                     ? mcpServers.map((s) => s.name).join(", ")
-                    : "None"
+                    : t.common.none
                 }
               />
             </div>
@@ -801,11 +813,11 @@ export default function ProfileBuilderPage() {
           disabled={stepIndex === 0}
           onClick={() => setStep(STEPS[Math.max(0, stepIndex - 1)].id)}
         >
-          Back
+          {t.profileBuilder.back}
         </Button>
         {step === "review" ? (
           <Button onClick={handleCreate} disabled={creating || !nameValid}>
-            {creating ? "Creating…" : "Create profile"}
+            {creating ? t.profileBuilder.creating : t.profileBuilder.createProfile}
           </Button>
         ) : (
           <Button
@@ -814,7 +826,7 @@ export default function ProfileBuilderPage() {
               setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)
             }
           >
-            Next
+            {t.profileBuilder.next}
           </Button>
         )}
       </div>

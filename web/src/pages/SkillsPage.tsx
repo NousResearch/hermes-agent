@@ -332,9 +332,9 @@ export default function SkillsPage() {
     );
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 rounded-none pl-8 pr-7 text-xs"
+          className="h-8 rounded-none ps-8 pe-7 text-xs"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -343,7 +343,7 @@ export default function SkillsPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearch("")}
             aria-label={t.common.clear}
           >
@@ -434,7 +434,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={t.skills.browseHub}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -549,7 +549,7 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {t.skills.learnASkill}
                     </Button>
                     <Button
                       size="sm"
@@ -557,7 +557,7 @@ export default function SkillsPage() {
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
-                      New skill
+                      {t.skills.newSkill}
                     </Button>
                   </div>
                 </div>
@@ -704,7 +704,7 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{t.skills.learnASkill}</DialogTitle>
             <DialogDescription>
               Point Hermes at anything and it will distill a reusable skill —
               following the house authoring standards. Fill in any combination
@@ -727,7 +727,7 @@ export default function SkillsPage() {
                 URL
               </label>
               <Input
-                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                placeholder={t.skills?.learnUrlPlaceholder ?? "https://docs.example.com/api  (fetched with web_extract)"}
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />
@@ -739,7 +739,7 @@ export default function SkillsPage() {
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="e.g. how I file an expense report: open the portal, …"
+                placeholder={t.skills?.learnTextPlaceholder ?? "e.g. how I file an expense report: open the portal, …"}
                 value={learnText}
                 onChange={(e) => setLearnText(e.target.value)}
               />
@@ -771,6 +771,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+  const { t } = useI18n();
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -798,7 +799,7 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
+        title={t.skills?.editSkillMd ?? "Edit SKILL.md"}
         aria-label={`Edit ${skill.name}`}
         onClick={onEdit}
       >
@@ -828,7 +829,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
 interface PanelItemProps {
   active: boolean;
   icon: React.ComponentType<{ className?: string }>;
-  label: string;
+  label: string | undefined;
   onClick: () => void;
 }
 
@@ -894,6 +895,7 @@ function HubBrowser({
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1037,9 +1039,9 @@ function HubBrowser({
         <CardContent className="py-4 flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                className="h-8 pl-8 text-sm"
+                className="h-8 ps-8 text-sm"
                 placeholder="Search the skill hub (GitHub, official, community)…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -1089,7 +1091,7 @@ function HubBrowser({
                   size="xs"
                   className="ml-auto text-muted-foreground"
                   onClick={() => setAction(null)}
-                  aria-label="Dismiss"
+                  aria-label={t.app?.dismiss ?? "Dismiss"}
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
@@ -1177,9 +1179,11 @@ function HubBrowser({
         </>
       )}
 
-      {/* ── Detail dialog: preview + scan ── */}
+      {/* ── Detail dialog: preview + scan. The key remounts the dialog per
+          skill, so its preview state resets without a setState-in-effect. ── */}
       {detail && (
         <SkillDetailDialog
+          key={detail.identifier}
           result={detail}
           installed={isInstalled(detail.identifier)}
           onClose={() => setDetail(null)}
@@ -1300,7 +1304,7 @@ function HubResultCard({
       <CardContent className="py-3 flex items-start gap-3">
         <button
           type="button"
-          className="flex-1 min-w-0 text-left"
+          className="flex-1 min-w-0 text-start"
           onClick={onOpen}
           aria-label={`Open ${result.name}`}
         >
@@ -1381,21 +1385,26 @@ function SkillDetailDialog({
 }) {
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(true);
+  // `null` preview = the fetch still owns the region (spinner); a settled
+  // fetch hands ownership to the render (data or the failure note).
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
   const trust = trustVisual(result.trust_level);
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
-      .then((p) => !cancelled && setPreview(p))
-      .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${errorMessage(e)}`, "error");
+      .then((p) => {
+        if (cancelled) return;
+        setPreview(p);
       })
-      .finally(() => !cancelled && setPreviewLoading(false));
+      .catch((e) => {
+        if (cancelled) return;
+        setPreviewFailed(true);
+        showToast(`Preview failed: ${errorMessage(e)}`, "error");
+      });
     return () => {
       cancelled = true;
     };
@@ -1502,7 +1511,7 @@ function SkillDetailDialog({
         {/* Body */}
         <div className="mt-3 max-h-[55vh] overflow-auto">
           {tab === "readme" ? (
-            previewLoading ? (
+            preview === null && !previewFailed ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="text-xl text-primary" />
               </div>
@@ -1534,7 +1543,9 @@ function SkillDetailDialog({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
+                {previewFailed
+                  ? "Couldn't load the skill source."
+                  : "No preview available."}
               </p>
             )
           ) : (

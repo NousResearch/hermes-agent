@@ -11,6 +11,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
@@ -100,6 +101,7 @@ function isPrintable(data: string): boolean {
 }
 
 export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
+  const { t } = useI18n();
   const modalRef = useModalBehavior({ open, onClose });
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XtermTerminal | null>(null);
@@ -531,9 +533,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
                     setConnectionState("connecting");
                     setConnectNonce((n) => n + 1);
                   }}
-                  aria-label="Reconnect console"
+                  aria-label={t.actions.reconnectConsole}
                 >
-                  Reconnect
+                  {t.actions.reconnectConsole}
                 </Button>
               )}
             </div>
@@ -543,7 +545,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
             size="icon"
             onClick={onClose}
             className="text-muted-foreground hover:text-foreground"
-            aria-label="Close console"
+            aria-label={t.actions.closeConsole}
           >
             <X />
           </Button>

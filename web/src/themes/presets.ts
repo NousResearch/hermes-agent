@@ -223,6 +223,55 @@ export const nousBlueTheme: DashboardTheme = {
 };
 
 /**
+ * Persian-themed dashboard — a dark lapis-lazuli night evoking the cobalt
+ * domes of Isfahan and the deep blue of Persian miniature painting, lit by
+ * turquoise (فیروزه‌ای) accents like the tilework of Persian mosques, with
+ * saffron-gold highlights and a subtle geometric tile glow. Serif body
+ * (Vazirmatn pairs well with RTL too) and a soft 0.75rem radius echoing
+ * the pointed arches of Persian architecture.
+ */
+export const persianTheme: DashboardTheme = {
+  name: "persian",
+  label: "Persian Tiles",
+  description: "Lapis night with turquoise tilework and saffron-gold accents",
+  palette: {
+    background: { hex: "#0a1230", alpha: 1 },
+    midground: { hex: "#cfe3ff", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(64, 224, 208, 0.28)",
+    noiseOpacity: 0.8,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Vazirmatn", "Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap",
+    letterSpacing: "0",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+  },
+  colorOverrides: {
+    primary: "#40e0d0",
+    primaryForeground: "#0a1230",
+    accent: "#1a8f9c",
+    ring: "#40e0d0",
+    success: "#4ade80",
+    warning: "#fbbf24",
+    destructive: "#f43f5e",
+  },
+  seriesColors: {
+    inputTokenAccent: "#40e0d0",
+    outputTokenAccent: "#fbbf24",
+  },
+  swatchColors: ["#0a1230", "#40e0d0", "#fbbf24"],
+  terminalBackground: "#060b1e",
+  terminalForeground: "#cfe3ff",
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -252,4 +301,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  persian: persianTheme,
 };

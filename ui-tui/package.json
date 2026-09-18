@@ -34,12 +34,16 @@
     }
   },
   "devDependencies": {
+    "@types/lodash-es": "^4.17.12",
     "@types/node": "22.20.1",
     "@types/react": "19.2.17",
+    "@types/react-reconciler": "^0.33.0",
+    "@types/semver": "^7.8.0",
+    "@types/stack-utils": "^2.0.3",
     "esbuild": "0.28.1",
     "prettier": "3.9.5",
     "tsx": "4.23.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

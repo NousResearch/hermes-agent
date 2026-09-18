@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "tsc -b",
     "test": "vitest run",
+    "test:rtl": "playwright test",
+    "test:rtl:update": "playwright test --update-snapshots",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
@@ -53,6 +55,6 @@
     "three": "0.180.0",
     "typescript": "6.0.3",
     "vite": "8.2.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

@@ -133,9 +133,9 @@ export default function ConfigPage() {
     }
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 pl-8 pr-7 text-xs"
+          className="h-8 ps-8 pe-7 text-xs"
           placeholder={t.common.search}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -144,7 +144,7 @@ export default function ConfigPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearchQuery("")}
             aria-label={t.common.clear}
           >
@@ -203,27 +203,41 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Set active category when categories load
-  useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
-    }
-  }, [categoryOrder, activeCategory]);
+  // Set active category when categories load. Render-phase default (docs-
+  // recommended instead of setState-in-effect): first non-empty category wins
+  // while nothing is selected.
+  if (categoryOrder.length > 0 && !activeCategory) {
+    setActiveCategory(categoryOrder[0]);
+  }
 
-  // Load YAML when switching to YAML mode
+  // Load YAML when switching to YAML mode. The loading flag is set in the
+  // open handler (setState may not run in the sync effect body —
+  // react-hooks/set-state-in-effect); the effect only performs the fetch.
   useEffect(() => {
-    if (yamlMode) {
-      setYamlLoading(true);
-      api
-        .getConfigRaw()
-        .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
-        .finally(() => setYamlLoading(false));
-    }
-  }, [yamlMode]);
+    if (!yamlMode) return;
+    let cancelled = false;
+    api
+      .getConfigRaw()
+      .then((resp) => {
+        if (!cancelled) setYamlText(resp.yaml);
+      })
+      .catch(() => {
+        if (!cancelled) showToast(t.config.failedToLoadRaw, "error");
+      })
+      .finally(() => {
+        if (!cancelled) setYamlLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [yamlMode, showToast, t.config.failedToLoadRaw]);
 
   /* ---- Categories ---- */
-  const categories = useMemo(() => {
+  // No manual useMemo: the React Compiler memoizes this off schema/
+  // categoryOrder itself, and the compiler bail-out above (preserve-
+  // manual-memoization) is triggered when this memo can't be preserved
+  // past the render-phase category default.
+  const categories = (() => {
     if (!schema) return [];
     const allCats = [
       ...new Set(
@@ -233,7 +247,7 @@ export default function ConfigPage() {
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+  })();
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -496,7 +510,11 @@ export default function ConfigPage() {
           <Button
             size="sm"
             outlined={!yamlMode}
-            onClick={() => setYamlMode(!yamlMode)}
+            onClick={() => {
+              const entering = !yamlMode;
+              if (entering) setYamlLoading(true);
+              setYamlMode(entering);
+            }}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
             {yamlMode ? t.common.form : "YAML"}

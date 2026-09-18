@@ -45,6 +45,7 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   gatewayStateNeedsLogs,
@@ -116,6 +117,7 @@ function ActionLogViewer({
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
+  const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -163,7 +165,7 @@ function ActionLogViewer({
               </Badge>
             )}
           </div>
-          <Button ghost size="icon" onClick={onClose} aria-label="Close log">
+          <Button ghost size="icon" onClick={onClose} aria-label={t.system.closeLog}>
             <X />
           </Button>
         </div>
@@ -202,6 +204,7 @@ const MEMORY_STATUS_TONE: Record<
 };
 
 export default function SystemPage() {
+  const { t } = useI18n();
   const { toast, showToast } = useToast();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -752,7 +755,7 @@ export default function SystemPage() {
         open={memoryReset.isOpen}
         onCancel={memoryReset.cancel}
         onConfirm={memoryReset.confirm}
-        title="Reset memory"
+        title={t.system.resetMemory}
         description="This permanently erases the selected built-in memory files. This cannot be undone."
         loading={memoryReset.isDeleting}
       />
@@ -760,7 +763,7 @@ export default function SystemPage() {
         open={credDelete.isOpen}
         onCancel={credDelete.cancel}
         onConfirm={credDelete.confirm}
-        title="Remove credential"
+        title={t.system.removeCredential}
         description="Remove this pooled API key? The agent will no longer rotate through it."
         loading={credDelete.isDeleting}
       />
@@ -768,7 +771,7 @@ export default function SystemPage() {
         open={checkpointsPrune.isOpen}
         onCancel={checkpointsPrune.cancel}
         onConfirm={checkpointsPrune.confirm}
-        title="Prune checkpoints"
+        title={t.system.pruneCheckpoints}
         description="Delete the rollback checkpoint shadow store? Existing /rollback points will be lost."
         loading={checkpointsPrune.isDeleting}
       />
@@ -776,7 +779,7 @@ export default function SystemPage() {
         open={hookDelete.isOpen}
         onCancel={hookDelete.cancel}
         onConfirm={hookDelete.confirm}
-        title="Remove shell hook"
+        title={t.system.removeShellHook}
         description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
         loading={hookDelete.isDeleting}
       />
@@ -799,8 +802,8 @@ export default function SystemPage() {
               ghost
               size="icon"
               onClick={() => setHookModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label={t.system.close}
             >
               <X />
             </Button>
@@ -811,7 +814,7 @@ export default function SystemPage() {
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="hook-event">Event</Label>
+                <Label htmlFor="hook-event">{t.system.hookEventLabel}</Label>
                 <Select
                   id="hook-event"
                   value={hookEvent}
@@ -1260,7 +1263,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
-                <Label htmlFor="cred-provider">Provider</Label>
+                <Label htmlFor="cred-provider">{t.system.credProviderLabel}</Label>
                 <Input id="cred-provider" value={credProvider} onChange={(e) => setCredProvider(e.target.value)} placeholder="openrouter" />
               </div>
               <div className="grid gap-2 sm:col-span-2">
@@ -1268,7 +1271,7 @@ export default function SystemPage() {
                 <Input id="cred-key" type="password" value={credKey} onChange={(e) => setCredKey(e.target.value)} placeholder="sk-…" />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="cred-label">Label</Label>
+                <Label htmlFor="cred-label">{t.system.credLabelLabel}</Label>
                 <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder="optional" />
               </div>
             </div>
@@ -1293,7 +1296,7 @@ export default function SystemPage() {
                     <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
                     {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label={t.system.removeCredential} onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
                       <Trash2 />
                     </Button>
                   </div>
@@ -1339,7 +1342,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Full backup</Label>
+                <Label>{t.system.fullBackup}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     size="sm"
@@ -1376,7 +1379,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Restore from backup upload</Label>
+                <Label>{t.system.restoreFromBackupUpload}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     type="button"
@@ -1412,7 +1415,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Label htmlFor="import-path">{t.system.restoreFromBackupsPath}</Label>
                 <Input
                   id="import-path"
                   value={importPath}
@@ -1633,7 +1636,7 @@ export default function SystemPage() {
                 ghost
                 size="icon"
                 className="text-destructive"
-                aria-label="Remove hook"
+                aria-label={t.system.removeHook}
                 onClick={() =>
                   hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)
                 }

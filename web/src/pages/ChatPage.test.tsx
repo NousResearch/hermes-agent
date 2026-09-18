@@ -127,6 +127,14 @@ vi.mock("@/i18n", () => ({
         modelToolsSheetSubtitle: "Tools",
         modelToolsSheetTitle: "Model",
       },
+      // The side-panel collapse/show buttons read their aria-labels from the
+      // chat namespace (i18n sweep); the assertions below match these strings.
+      chat: {
+        collapseSidePanel: "Collapse chat side panel",
+        showSidePanel: "Show chat side panel",
+        checkServerStatus: "Check server status",
+        openLogs: "Open logs",
+      },
     },
   }),
 }));

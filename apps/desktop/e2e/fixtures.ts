@@ -311,11 +311,82 @@ export function findElectron(): string {
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
   //
+<<<<<<< HEAD
   // The desktop package is searched first: npm workspaces only hoist
   // `electron` to the repo root when nothing conflicts, so a workspace-local
   // install is just as ordinary an outcome as a hoisted one. The rules live in
   // ./electron-binary so they can be unit-tested per platform.
   return resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT])
+=======
+  // Platform note: the binary inside electron's dist folder carries a
+  // platform suffix — `electron` on POSIX, `electron.exe` on Windows. The
+  // bare name is only correct on POSIX; on win32 the .exe must be probed
+  // first, or every launch dies with "The system cannot find the path
+  // specified.". `which` is also POSIX-only, and in a Git-Bash host shell it
+  // resolves to node_modules/.bin/electron — a POSIX shell shim that a
+  // Windows-spawned process cannot execute at all.
+  const binName = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const candidates = [
+    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', binName),
+    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', binName),
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  // Fall back to PATH lookup — platform-appropriate.
+  const result = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['electron'], {
+    encoding: 'utf8',
+  })
+
+  const found = result.status === 0 && result.stdout.trim()
+    ? result.stdout.trim().split(/\r?\n/)[0].trim()
+    : ''
+
+  // On Windows, `where electron` may surface a POSIX shell shim (e.g. from a
+  // Git-Bash PATH entry) — those cannot be spawned directly. Accept only a
+  // real executable.
+  if (found && (process.platform !== 'win32' || /\.exe$/.test(found) || /\.cmd$/.test(found))) {
+    return found
+  }
+
+  throw new Error(
+    'Electron binary not found. Run "npm install" from the repo root to install devDependencies.',
+  )
+>>>>>>> 02e6f9a4250 (fix(desktop-e2e): platform-aware electron resolution and robust teardown on Windows)
+}
+
+/**
+ * Close an Electron app without letting a hung graceful quit stall the
+ * worker. `app.close()` has been observed to hang past 90s on Windows
+ * (quit path waits on the spawned backend); after a grace period we force
+ * kill the process so teardown always completes.
+ */
+async function teardownApp(app: ElectronApplication): Promise<void> {
+  await Promise.race([
+    app.close().catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 15_000)),
+  ])
+  // If close() already succeeded, the app is disposed and process() can
+  // throw or return undefined — treat "gone" as success.
+  try {
+    const proc = app.process()
+    if (proc && proc.exitCode === null && !proc.killed) {
+      // Tree-kill: killing only the electron root orphans its spawned
+      // backend child, which keeps inherited stdio handles open and stalls
+      // the Playwright worker teardown past its 90s timeout.
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'])
+      } else {
+        proc.kill()
+      }
+    }
+  } catch {
+    // app already torn down; nothing to kill
+  }
 }
 
 /**
@@ -415,7 +486,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       await mock.close()
       sandbox.cleanup()
     },
@@ -445,7 +516,7 @@ export async function setupNoProvider(): Promise<NoProviderFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }
@@ -506,7 +577,7 @@ providers:
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }
@@ -592,7 +663,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }

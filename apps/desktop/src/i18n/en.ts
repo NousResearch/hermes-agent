@@ -243,7 +243,16 @@ export const en: Translations = {
       signInFailed: 'Sign-in failed',
       signInToRemoteGateway: 'Sign in to remote gateway',
       signInWithProvider: provider => `Sign in with ${provider}`,
-      identityProvider: 'your identity provider'
+      identityProvider: 'your identity provider',
+      // Renderer loaded OUTSIDE the Electron shell (dev server URL opened in a
+      // regular browser). window.hermesDesktop only exists under Electron, so
+      // the recovery buttons would all be no-ops — tell the user what actually
+      // happened instead.
+      browserModeTitle: 'Opened in a browser, not the desktop app',
+      browserModeDescription:
+        'This address is only the interface. Hermes Desktop must run in its own window, where the desktop bridge is available. Nothing is broken — open the Hermes Desktop app instead.',
+      browserModeHint: 'Start the desktop app with “npm run dev” (development) or from the Start menu / Applications folder (installed build).',
+      browserModeDocs: 'Developer docs'
     }
   },
 
@@ -4371,6 +4380,27 @@ export const en: Translations = {
         web_search: { done: 'Searched web', pending: 'Searching web', pendingAction: 'Searching' },
         write_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' }
       }
+    },
+
+    toolDetails: {
+      payloadDisclosure: 'Tool payload',
+      argumentsHeading: 'Arguments',
+      resultHeading: 'Result',
+      searchLabel: 'Search',
+      searchResultsLabel: 'Search results',
+      errorDetailsLabel: 'Error details',
+      webSearchDetailsLabel: 'Details',
+      browserSnapshotLabel: 'Snapshot summary'
+    },
+
+    viewer: {
+      openFullView: 'Open full view',
+      zoomIn: 'Zoom in',
+      zoomOut: 'Zoom out',
+      reset: 'Reset',
+      copied: 'Copied',
+      copy: 'Copy',
+      close: 'Close'
     }
   },
 

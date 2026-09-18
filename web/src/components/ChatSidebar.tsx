@@ -25,6 +25,7 @@
  * terminal pane keeps working unimpaired.
  */
 
+import { sidecarSessionCreateParams } from "@/lib/chat-sidebar-session-params";
 import { Button } from '@nous-research/ui/ui/components/button'
 import { Badge } from '@nous-research/ui/ui/components/badge'
 import { Card } from '@nous-research/ui/ui/components/card'
@@ -87,20 +88,7 @@ interface ChatSidebarProps {
   onSessionTitleChange?: (title: string | null) => void
 }
 
-/** Build the ``session.create`` params for the sidecar session.
- *
- * Extracted from the effect below so the invariant — close_on_disconnect
- * is set, source is "tool", and the profile is forwarded when present —
- * can be tested without reading component source text. See
- * ``chat-sidebar-session-params.test.ts``.
- */
-export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
-  return {
-    close_on_disconnect: true,
-    source: 'tool',
-    ...(profile ? { profile } : {})
-  }
-}
+
 
 export function ChatSidebar({
   channel,
@@ -376,7 +364,7 @@ export function ChatSidebar({
   return (
     <aside
       className={cn(
-        'flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1',
+        'flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pe-1',
         className
       )}
     >

@@ -332,13 +332,19 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
 
 def build_subprocess_env(
     base: "Mapping[str, str] | None" = None, *, inherit_profile_home: bool = True,
-    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None) -> dict[str, str]:
+    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None,
+    strip_launch_profile: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
     byte-for-byte (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win."""
+    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
+    ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
+    (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
+    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
+    if strip_launch_profile:
+        strip_launch_profile_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:

@@ -433,7 +433,12 @@ class MemoryManager:
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
+        """Merge non-empty prefetch context from all providers (failures are non-fatal).
+
+        The query is scrubbed with ``redact_for_egress`` before it leaves the process, so a query
+        containing a secret is retrieved against (and archived by providers that log queries) in
+        its redacted form — retrieval semantics follow egress, not just archival.
+        """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
@@ -503,7 +508,11 @@ class MemoryManager:
         return "  ".join(segments)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
+        """Queue background prefetch on all providers for the next turn (see ``sync_all``).
+
+        The query is scrubbed with ``redact_for_egress`` before it leaves the process
+        (same retrieval-semantics note as ``prefetch_all``).
+        """
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query:
@@ -731,9 +740,11 @@ class MemoryManager:
         ``messages`` is the raw v1 transcript; ``evidence_messages`` is the host-normalized list handed
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
+        Both lists are scrubbed with ``redact_for_egress`` on a copy before the fan-out (caller-owned
+        rows are never mutated); providers see the redacted form.
         """
-        messages = _redact_rows_for_provider(messages)
-        evidence_messages = _redact_rows_for_provider(evidence_messages)
+        scrubbed_messages = _redact_rows_for_provider(messages)
+        scrubbed_evidence = _redact_rows_for_provider(evidence_messages)
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:
@@ -741,8 +752,8 @@ class MemoryManager:
             if version is None:
                 version = _LEGACY_PRE_COMPRESS_API_VERSION
             is_checkpoint_provider = version >= checkpoint_api_version
-            use_evidence = is_checkpoint_provider and evidence_messages is not None
-            provider_messages = evidence_messages if use_evidence else messages
+            use_evidence = is_checkpoint_provider and scrubbed_evidence is not None
+            provider_messages = scrubbed_evidence if use_evidence else scrubbed_messages
             kwargs: Dict[str, Any] = {}
             # v1 providers and bare-shape v2 providers never see the signal.
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):

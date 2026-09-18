@@ -27,7 +27,11 @@ export function buildChatOnboardingSeedMessages(
   role: 'assistant' | 'user'
 }[] {
   return [
-    { content: buildChatOnboardingPrompt(machineUserName(), signedIn, capabilities), display_kind: 'hidden', role: 'user' },
+    {
+      content: buildChatOnboardingPrompt(machineUserName(), signedIn, capabilities),
+      display_kind: 'hidden',
+      role: 'user'
+    },
     { content: greeting, role: 'assistant' }
   ]
 }

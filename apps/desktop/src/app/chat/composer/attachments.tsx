@@ -55,8 +55,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
 
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
 
-  const detail =
-    attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
+  const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
 
   // Keep full image bytes out of composer state. New chips read their path only
   // when clicked; previewUrl remains a compatibility fallback for older drafts.

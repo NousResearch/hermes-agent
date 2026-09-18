@@ -984,10 +984,10 @@ def cleanup_bot_delivery_queue(max_age_hours: float | None = None) -> int:
     """
     del max_age_hours
     try:
-        from tools.bot_mode_probe import _default_home, _hermes_root, _roster
+        from tools.bot_mode_probe import _default_home, _delivery_homes, _hermes_root
 
         root = _hermes_root(Path(_default_home()))
-        return sum(sweep_delivery_queue(profile_home) for _name, profile_home in _roster(root))
+        return sum(sweep_delivery_queue(profile_home) for _name, profile_home in _delivery_homes(root))
     except Exception:  # pragma: no cover - housekeeping must not raise
         logger.debug("bot_delivery sweep failed", exc_info=True)
         return 0

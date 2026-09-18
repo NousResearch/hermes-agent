@@ -2406,8 +2406,10 @@ class TelegramAdapter(BasePlatformAdapter):
             elif "not a forum" in error_text or "forums_disabled" in error_text:
                 logger.warning(
                     "[%s] Cannot create DM topic '%s' in chat %s: Topics mode is not enabled. "
-                    "The user must open the DM with this bot in Telegram, tap the bot name "
-                    "at the top, and enable 'Topics' in chat settings before topics can be created.",
+                    "The bot owner must open the BotFather Mini App (search for BotFather in "
+                    "Telegram and tap Open), then go to My bots > this bot > Bot Settings > "
+                    "Threads Settings and enable Threaded Mode. This setting is not available "
+                    "in the bot DM or BotFather's /mybots text menu.",
                     self.name, name, chat_id)
             else:
                 logger.warning(

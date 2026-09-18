@@ -142,6 +142,22 @@ async def test_create_dm_topic_handles_generic_error():
 
 
 @pytest.mark.asyncio
+async def test_create_dm_topic_forum_error_points_to_threaded_mode(caplog):
+    """The prerequisite warning should point to Telegram's actual settings surface."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("Bad Request: chat is not a forum")
+
+    result = await adapter._create_dm_topic(chat_id=111, name="General")
+
+    assert result is None
+    assert "BotFather Mini App" in caplog.text
+    assert "Threads Settings" in caplog.text
+    assert "enable Threaded Mode" in caplog.text
+    assert "tap the bot name" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_ensure_dm_topic_creates_on_demand_and_persists():
     """Named delivery targets should create missing private DM topics on demand."""
     adapter = _make_adapter()
@@ -476,5 +492,4 @@ def test_group_topic_skill_binding_second_topic():
 
 
 # ── _build_message_event: from_user=None fallback in DMs ──
-
 

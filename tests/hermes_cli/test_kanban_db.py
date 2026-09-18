@@ -427,6 +427,261 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+# ---------------------------------------------------------------------------
+# t_ca4db688 — a 429 that exits ``crashed`` must not fall through
+# rate_limit_cooldown into a permanent ``blocker_auth`` park. Three concrete
+# defects proven live on the board (see task body / comment thread):
+#
+#   1. A worker the provider kills outright records ``crashed``, not
+#      ``rate_limited`` — the guard used to gate the quota-wall branch on
+#      ``latest_run.outcome == "rate_limited"``, so a crashed exit skipped it
+#      entirely and fell into the no-expiry blocker_auth arm.
+#   2. ``_RESPAWN_BLOCKER_RE`` bare-word-matched "subscription" inside
+#      transient vendor prose ("ChatGPT or Codex Subscription rate-limited"),
+#      misclassifying a quota wall as a billing failure.
+#   3. The dispatcher's OWN healthy-requeue bookkeeping note ("pid N exited
+#      rate-limited (quota wall) — requeued without counting a failure") is
+#      itself quota-flavored text; on the next tick it matched the blocker
+#      pattern and permanently parked a card that had NEVER had a single
+#      counted failure (consecutive_failures stayed 0 throughout).
+# ---------------------------------------------------------------------------
+
+
+def test_respawn_guard_treats_provider_killed_crash_as_quota_wall(
+    kanban_home, monkeypatch,
+):
+    """Defect 1. The provider can kill a worker mid-run (HTTP 429, all
+    credentials cooling down); that lands as a ``crashed`` run, not
+    ``rate_limited``. Before the fix, ``check_respawn_guard`` gated the
+    cooldown branch on ``latest_run.outcome == "rate_limited"`` alone, so this
+    crashed run skipped straight to blocker_auth — which never expires."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    provider_kill = (
+        'pid 33044 not alive Worker\'s last output: "one of 3 attempts — it looks '
+        "temporarily unavailable. Provider said: HTTP 429: All credentials for model "
+        "claude-sonnet-5 are cooling down via provider claude (last error: "
+        'rate_limit_error: This request would exceed your account\'s rate limit.)"'
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="provider-kill", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (provider_kill, tid),
+        )
+        conn.commit()
+
+        # Within cooldown → self-heals via the cooldown reason, not blocker_auth.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        # Past cooldown → dispatchable again, never blocker_auth.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_still_parks_a_real_credential_failure(
+    kanban_home, monkeypatch,
+):
+    """A genuine auth failure (no quota/rate-limit/429 token anywhere in the
+    text) must still park under blocker_auth regardless of exit shape — the
+    quota carve-out must not turn a dead credential into a spawn loop."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="bad-key", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 not alive: HTTP 401 invalid api key — unauthorized", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
+def test_respawn_guard_does_not_misfire_on_subscription_product_name(
+    kanban_home, monkeypatch,
+):
+    """Defect 2. ``_RESPAWN_BLOCKER_RE`` bare-word-matches "subscription", but
+    a real vendor message can carry that word as PART OF A PRODUCT NAME inside
+    an otherwise 100%-transient quota message: "ChatGPT or Codex Subscription
+    rate-limited every one of 3 attempts". That must self-heal like any other
+    quota wall, not park as a billing failure — regardless of whether the
+    latest run outcome happens to be ``crashed`` or ``rate_limited``."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    subscription_text = (
+        "HTTP 429: The usage limit has been reached ChatGPT or Codex "
+        "Subscription rate-limited every one of 3 attempts"
+    )
+
+    for outcome in ("crashed", "rate_limited"):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title=f"sub-{outcome}", assignee="a")
+            kb.claim_task(conn, tid)
+            run_id = kb.get_task(conn, tid).current_run_id
+            conn.execute(
+                "UPDATE task_runs SET outcome=?, status=?, ended_at=? WHERE id=?",
+                (outcome, outcome, now, run_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=NULL, "
+                "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+                "last_failure_error=? WHERE id=?",
+                (subscription_text, tid),
+            )
+            conn.commit()
+
+            monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+            reason = kbd.check_respawn_guard(conn, tid)
+            assert reason == "rate_limit_cooldown", (
+                f"outcome={outcome}: expected the quota wall to self-heal via "
+                f"the cooldown, got {reason!r} (subscription false-positive "
+                "would return blocker_auth here)"
+            )
+
+            monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+            assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_healthy_requeue_note_does_not_poison_itself(
+    kanban_home, monkeypatch,
+):
+    """Defect 3 (the worst one): named test case from the coordinator's
+    comment thread. The dispatcher's OWN bookkeeping text — written by the
+    healthy rate-limit requeue path specifically to say "this was transient, I
+    am deliberately not counting it against you" — must not defeat itself on
+    the very next tick. ``consecutive_failures`` stays 0 throughout (no
+    counted failure ever happened), so no breaker can ever trip and no status
+    sweep can ever show a problem; the guard is the ONLY thing standing
+    between this card and a permanent, invisible park."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    dispatcher_note = (
+        "pid 65508 exited rate-limited (quota wall) — requeued without "
+        "counting a failure"
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="self-heal-note", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "consecutive_failures=0, last_failure_error=? WHERE id=?",
+            (dispatcher_note, tid),
+        )
+        conn.commit()
+
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 0, (
+            "fixture sanity: this card must never have had a counted failure"
+        )
+
+        # Past cooldown → MUST dispatch. Must never be blocker_auth: that
+        # would be the guard's own reassurance note defeating the guard.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        reason = kbd.check_respawn_guard(conn, tid)
+        assert reason is None, (
+            f"the dispatcher's own 'requeued without counting a failure' note "
+            f"poisoned the guard: got {reason!r}, expected None (dispatchable)"
+        )
+
+
+def test_respawn_guard_ordering_latest_crashed_older_rate_limited_quota_text(
+    kanban_home, monkeypatch,
+):
+    """Acceptance-criteria ordering case: latest run ``crashed`` + an OLDER
+    run ``rate_limited`` + quota text on the task row must self-heal, and the
+    cooldown clock must key off the LATEST ended run (the crash), not the
+    older rate_limited one."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    older_ended = 5_000_000
+    latest_ended = 5_000_200  # 200s after the older run
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ordering", assignee="a")
+
+        # Older run: rate_limited, closed first.
+        kb.claim_task(conn, tid)
+        run1 = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (older_ended, run1),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+
+        # Latest run: crashed, closed after, with the quota text stamped.
+        kb.claim_task(conn, tid)
+        run2 = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (latest_ended, run2),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (
+                "HTTP 429: All credentials for model claude-sonnet-5 are "
+                "cooling down via provider claude",
+                tid,
+            ),
+        )
+        conn.commit()
+
+        # Cooldown measured from the LATEST (crashed) run's ended_at, not the
+        # older rate_limited run's — 100s after latest_ended is still within
+        # a 300s cooldown even though it's 300s after older_ended.
+        monkeypatch.setattr(_kb.time, "time", lambda: latest_ended + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        monkeypatch.setattr(_kb.time, "time", lambda: latest_ended + 400)
+        assert kbd.check_respawn_guard(conn, tid) is None
 
 
 

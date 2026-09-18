@@ -12063,6 +12063,7 @@ def test_rollback_restore_resolves_number_and_file_path():
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "aaa111"}, {"hash": "bbb222"}]
@@ -12095,6 +12096,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
@@ -12151,6 +12153,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
@@ -12211,6 +12214,7 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]

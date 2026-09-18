@@ -613,11 +613,8 @@ class CheckpointManager:
 
         Classifies the task's backend at call time (nothing is remembered), so /rollback is
         refused before the first mutation and follows a backend change within the session."""
-        try:
-            from tools.file_tools_paths import container_backend_for_task
-            backend = container_backend_for_task(task_id)
-        except Exception:
-            backend = None
+        from tools.file_tools_paths import container_backend_for_task
+        backend = container_backend_for_task(task_id)
         if backend is None:
             return None
         return (

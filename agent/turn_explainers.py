@@ -253,11 +253,8 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                backend = None
-                with suppress(Exception):
-                    from tools.file_tools_paths import container_backend_for_task
-                    backend = container_backend_for_task(task_id or "default")
-                if backend is None:  # container paths carry no host ledger entry
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
                     for _p in landed_paths:
                         with suppress(Exception):
                             mgr.record_agent_write(_p)

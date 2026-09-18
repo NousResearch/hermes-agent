@@ -309,3 +309,144 @@ def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
         assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
     finally:
         clear_session_vars(tokens)
+
+
+# ---------------------------------------------------------------------------
+# Release side: cleanup_vm() must pop the key the env was cached under.
+#
+# The collapse logic above decides where an env is STORED; these cover where it
+# is RELEASED. They drifted apart: envs are cached under
+# ``_resolve_container_task_id(task_id)`` while ``cleanup_vm()`` popped the raw
+# ``task_id``, so a gateway session's ``session:<key>`` entry never matched and
+# the whole call became a silent no-op.
+#
+# Re-resolving at teardown does not fix it on its own — the resolver reads the
+# session ContextVar, which is unbound there, so it answers ``default``. Popping
+# that would be worse than the miss: ``default``/``profile:``/``shared:`` are
+# shared by every live session of a profile, and a non-persistent local env
+# unlinks its snapshot and cwd on cleanup. So the resolved key is accepted only
+# when it is provably this task's.
+# ---------------------------------------------------------------------------
+
+
+class _DummyEnv:
+    def __init__(self):
+        self.cleanup_calls = 0
+
+    def cleanup(self):
+        self.cleanup_calls += 1
+
+
+@pytest.fixture
+def clean_registry(monkeypatch):
+    from tools import terminal_tool_lifecycle as lifecycle
+
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    monkeypatch.setattr(lifecycle, "_clear_file_ops_cache", lambda task_id: None)
+    return lifecycle
+
+
+def test_cleanup_vm_releases_session_scoped_entry(clean_registry, monkeypatch):
+    """Env cached as ``session:<key>``, cleanup called with the key."""
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: "session:abc"
+    )
+    env = _DummyEnv()
+    terminal_tool._active_environments["session:abc"] = env
+    terminal_tool._last_activity["session:abc"] = 123.0
+    terminal_tool._creation_locks["session:abc"] = object()
+
+    clean_registry.cleanup_vm("abc")
+
+    assert "session:abc" not in terminal_tool._active_environments
+    assert "session:abc" not in terminal_tool._last_activity
+    assert "session:abc" not in terminal_tool._creation_locks
+    assert env.cleanup_calls == 1
+
+
+def test_cleanup_vm_bare_session_key_matches_prefixed_entry(clean_registry, monkeypatch):
+    """``tui_gateway`` passes ``session["session_key"]`` with no prefix.
+
+    The resolver cannot help: on the teardown path the session ContextVar is
+    unbound, so it answers ``default``. The bare key must be tried directly.
+    """
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: "default"
+    )
+    env = _DummyEnv()
+    terminal_tool._active_environments["session:sk-1"] = env
+
+    clean_registry.cleanup_vm("sk-1")
+
+    assert terminal_tool._active_environments == {}
+    assert env.cleanup_calls == 1
+
+
+def test_cleanup_vm_does_not_release_shared_container(clean_registry, monkeypatch):
+    """A shared key must never be inferred: other live sessions still use it."""
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: "default"
+    )
+    env = _DummyEnv()
+    terminal_tool._active_environments["default"] = env
+    terminal_tool._last_activity["default"] = 123.0
+
+    clean_registry.cleanup_vm("some-session-id")
+
+    assert terminal_tool._active_environments["default"] is env
+    assert terminal_tool._last_activity["default"] == 123.0
+    assert env.cleanup_calls == 0
+
+
+def test_cleanup_vm_unbound_contextvar_does_not_clean_wrong_entry(clean_registry, monkeypatch):
+    """The dangerous case: a session-scoped env AND a shared entry coexist.
+
+    With the ContextVar unbound the resolver answers ``default`` for a
+    ``session:<key>`` env. Accepting that answer would unlink the shared entry's
+    snapshot and cwd — a miss plus a wrong cleanup, worse than the miss alone.
+    """
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: "default"
+    )
+    shared, scoped = _DummyEnv(), _DummyEnv()
+    terminal_tool._active_environments["default"] = shared
+    terminal_tool._active_environments["session:other"] = scoped
+
+    clean_registry.cleanup_vm("some-session-id")
+
+    assert terminal_tool._active_environments["default"] is shared
+    assert terminal_tool._active_environments["session:other"] is scoped
+    assert shared.cleanup_calls == 0 and scoped.cleanup_calls == 0
+
+
+@pytest.mark.parametrize("shared_key", ["default", "profile:work", "shared:team"])
+def test_cleanup_vm_releases_shared_key_named_explicitly(
+    clean_registry, monkeypatch, shared_key
+):
+    """``cleanup_all_environments`` iterates the cache and passes keys verbatim."""
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: shared_key
+    )
+    env = _DummyEnv()
+    terminal_tool._active_environments[shared_key] = env
+
+    clean_registry.cleanup_vm(shared_key)
+
+    assert terminal_tool._active_environments == {}
+    assert env.cleanup_calls == 1
+
+
+def test_cleanup_vm_isolation_override_task_id_still_released(clean_registry, monkeypatch):
+    """RL/benchmark rollouts register an override; the key stays the raw task_id."""
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: task_id
+    )
+    env = _DummyEnv()
+    terminal_tool._active_environments["rollout-7"] = env
+
+    clean_registry.cleanup_vm("rollout-7")
+
+    assert terminal_tool._active_environments == {}
+    assert env.cleanup_calls == 1

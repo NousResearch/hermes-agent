@@ -240,6 +240,10 @@ def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(
         db.close()
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    # A model_routes alias for the virtual model must apply to the wake turn as it does to the
+    # HTTP self-post's /v1/chat/completions turn.
+    aliased_route = {"provider": "custom", "model": "wake-model", "base_url": "http://r"}
+    adapter._model_routes = {adapter._model_name: aliased_route}
     seen = {}
 
     async def fake_run_agent(**kwargs):
@@ -257,6 +261,7 @@ def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(
     assert "live turn" in str(seen["conversation_history"])
     assert seen["user_message"] == "wake"
     assert seen["session_history_delivery"] == "1"
+    assert seen["route"] == aliased_route  # resolved like the HTTP wake path, not route=None
     assert seen["home"] == str(served.builder)
     assert seen["request_profile"] == "builder"
     assert _api_request_profile.get() is None  # binding restored, never leaked

@@ -460,10 +460,18 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
                 raise RuntimeError(
                     f"internal wake target session {resolved!r} is not in the active profile store")
             history = await self._conversation_history_for_session(resolved)
+            # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
+            # alias for the virtual model applies to the wake turn too.
+            route, overrides, err = self._select_request_route(
+                {"model": self._model_name}, session_id=resolved, gateway_session_key=None,
+                model_alias=self._model_name)
+            if err is not None:
+                raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
             await self._run_agent(
                 user_message=text, conversation_history=history, session_id=resolved,
-                gateway_session_key=None, requested_runtime={}, route_source="global",
-                session_history_delivery="1", notification_category=notification_category,
+                gateway_session_key=None, **overrides, route=route, requested_runtime={},
+                route_source="global", session_history_delivery="1",
+                notification_category=notification_category,
             )
             return
         raise RuntimeError(

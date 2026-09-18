@@ -23,6 +23,14 @@ vi.mock('@/hermes', () => ({
 }))
 
 beforeEach(() => {
+  vi.stubGlobal('hermesDesktop', {
+    ...window.hermesDesktop,
+    getConnectionFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...$connection.get(),
+      connectionId,
+      profile
+    })
+  })
   $activeProfile.set('default')
   $connection.set({ mode: 'local' } as never)
   getEnvVars.mockResolvedValue({})
@@ -34,6 +42,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
 

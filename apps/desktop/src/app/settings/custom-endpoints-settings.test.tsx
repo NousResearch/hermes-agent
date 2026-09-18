@@ -49,6 +49,14 @@ function profile(name: string, isDefault = false) {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('hermesDesktop', {
+    ...window.hermesDesktop,
+    getConnectionFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...$connection.get(),
+      connectionId,
+      profile
+    })
+  })
   $activeGatewayProfile.set('alpha')
   $profiles.set([profile('alpha', true), profile('beta')])
   $settingsScopeOverride.set(null)
@@ -67,6 +75,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   $settingsScopeOverride.set(null)
   $profiles.set([])
   $connection.set(null)
@@ -98,11 +107,7 @@ describe('CustomEndpointsSettings owner isolation', () => {
 
     expect(scope).toBeTruthy()
     render(
-      <CustomEndpointsSettings
-        onConfigSaved={onConfigSaved}
-        onMainModelChanged={onMainModelChanged}
-        scope={scope!}
-      />
+      <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} scope={scope!} />
     )
     await screen.findByDisplayValue('Fixture')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -131,17 +136,14 @@ describe('CustomEndpointsSettings owner isolation', () => {
 
   it('does not publish callbacks while editing a non-active profile owner', async () => {
     $settingsScopeOverride.set('beta')
+    await waitFor(() => expect($settingsOwner.get()?.profile).toBe('beta'))
     const scope = $settingsOwner.get()
     const onConfigSaved = vi.fn()
     const onMainModelChanged = vi.fn()
 
     expect(scope?.profile).toBe('beta')
     render(
-      <CustomEndpointsSettings
-        onConfigSaved={onConfigSaved}
-        onMainModelChanged={onMainModelChanged}
-        scope={scope!}
-      />
+      <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} scope={scope!} />
     )
     await screen.findByDisplayValue('Fixture')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))

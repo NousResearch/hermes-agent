@@ -105,6 +105,10 @@ function setup() {
   $settingsScopeOverride.set(null)
 }
 
+async function getConnectionFor({ connectionId, profile }: { connectionId: string; profile: string }) {
+  return { ...$connection.get(), connectionId, profile }
+}
+
 afterEach(() => {
   cleanup()
   queryClient.clear()
@@ -115,7 +119,7 @@ afterEach(() => {
 it('unknown and missing descriptors never send Settings requests to local', async () => {
   setup()
   const api = vi.fn(async (_request: HermesApiRequest) => ({}))
-  vi.stubGlobal('hermesDesktop', { api })
+  vi.stubGlobal('hermesDesktop', { getConnectionFor, api })
 
   for (const connection of [
     null,
@@ -177,7 +181,7 @@ it('keeps a pending autosave mounted across an equivalent legacy reconnect', asy
     return { available: false }
   })
 
-  vi.stubGlobal('hermesDesktop', { api })
+  vi.stubGlobal('hermesDesktop', { getConnectionFor, api })
   $connection.set(descriptor)
   render(page('safety'))
   await flush()
@@ -214,7 +218,7 @@ it('the production pinned model child can restart its exact owner after code ske
     return modelResponse(request.path)
   })
 
-  vi.stubGlobal('hermesDesktop', { api, recycleBackend })
+  vi.stubGlobal('hermesDesktop', { getConnectionFor, api, recycleBackend })
   render(page())
   await flush()
   await flush()
@@ -252,7 +256,7 @@ it('same-name source switches isolate an unavailable owner’s late config error
           return Promise.resolve(modelResponse(request.path))
         })
 
-        vi.stubGlobal('hermesDesktop', { api })
+        vi.stubGlobal('hermesDesktop', { getConnectionFor, api })
         setApiRequestConnection(unavailable)
         const view = render(page())
         await flush()
@@ -338,7 +342,7 @@ it.each([
     return Promise.resolve({ available: false })
   })
 
-  vi.stubGlobal('hermesDesktop', { api })
+  vi.stubGlobal('hermesDesktop', { getConnectionFor, api })
   setApiRequestConnection(origin)
 
   if (origin === 'legacy') {
@@ -449,6 +453,7 @@ it('model confirmation keeps its originating HTTP owner after switching hosts', 
     // Substitute only IPC: real renderer API helpers feed two real HTTP
     // origins. Assertions below are server-side receipts, not mock calls.
     vi.stubGlobal('hermesDesktop', {
+      getConnectionFor,
       api: (request: HermesApiRequest) =>
         new Promise((resolve, reject) => {
           const owner = request.connectionId

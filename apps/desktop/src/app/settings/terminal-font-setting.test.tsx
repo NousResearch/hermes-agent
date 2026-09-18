@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
+import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { $settingsOwner } from '@/store/settings-scope'
 
@@ -9,12 +12,13 @@ import { $terminalFontFamily } from '../right-sidebar/terminal/terminal-font'
 
 import { TerminalFontSetting } from './terminal-font-setting'
 
+const $configRevision = atom(0)
+
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
   configUpdatedAt: 1,
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
-  profileSwitch: null as null | (() => void),
   save: vi.fn()
 }))
 
@@ -46,12 +50,10 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   hermesConfigCacheWriter: (scope: unknown) => (config: Record<string, unknown>) => mocks.cache(config, scope),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig, dataUpdatedAt: mocks.configUpdatedAt })
-}))
+  useHermesConfigRecord: () => {
+    useStore($configRevision)
 
-vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: (callback: () => void) => {
-    mocks.profileSwitch = callback
+    return { data: mocks.loadedConfig, dataUpdatedAt: mocks.configUpdatedAt }
   }
 }))
 
@@ -66,13 +68,13 @@ async function flushAutosave() {
 describe('TerminalFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    $activeGatewayProfile.set('default')
     mocks.configUpdatedAt = 1
     mocks.loadedConfig = {
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: '' }
     }
     mocks.save.mockResolvedValue({ ok: true })
-    mocks.profileSwitch = null
     $connection.set({ baseUrl: 'http://127.0.0.1:3000', connectionId: 'local', mode: 'local' } as never)
     $terminalFontFamily.set('')
   })
@@ -153,7 +155,6 @@ describe('TerminalFontSetting', () => {
       target: { value: 'MesloLGS NF' }
     })
     act(() => {
-      mocks.profileSwitch?.()
       $connection.set({
         baseUrl: 'https://replacement.example',
         connectionId: 'replacement',
@@ -171,11 +172,22 @@ describe('TerminalFontSetting', () => {
     const view = render(<TerminalFontSetting />)
 
     expect($terminalFontFamily.get()).toBe('MesloLGS NF')
-    act(() => mocks.profileSwitch?.())
+    act(() => {
+      mocks.loadedConfig = undefined as never
+      $activeGatewayProfile.set('research')
+      $connection.set({
+        baseUrl: 'http://127.0.0.1:3001',
+        connectionId: 'local',
+        mode: 'local',
+        profile: 'research'
+      } as never)
+    })
     expect($terminalFontFamily.get()).toBe('')
     expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).disabled).toBe(true)
 
     mocks.configUpdatedAt = 2
+    mocks.loadedConfig = sharedConfig
+    act(() => $configRevision.set($configRevision.get() + 1))
     view.rerender(<TerminalFontSetting />)
 
     expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).value).toBe('MesloLGS NF')

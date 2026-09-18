@@ -139,6 +139,7 @@ import {
   resolveProfileBackendRoute,
   resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
+  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
@@ -15377,10 +15378,14 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute(
-    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority
-  )
+  const resolve = (targetProfile: string) =>
+    connectDesktopProfileRoute({ connectionId: id, profile: targetProfile }, spawnPriority)
+
+  const targetProfile = String(profile ?? '').trim() || 'default'
+
+  return payload && Object.hasOwn(payload, 'expectedOwner')
+    ? resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
+    : resolve(targetProfile)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()

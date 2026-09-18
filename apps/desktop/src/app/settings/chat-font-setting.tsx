@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { profileScopeKey } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
@@ -11,8 +12,6 @@ import { CHAT_FONT_SUGGESTIONS, normalizeChatFontFamily, setChatFontFamilyFromCo
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
-import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
 import { getNested, setNested } from './helpers'
 import { ListRow } from './primitives'
@@ -30,19 +29,22 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
  * so the theme paint (`--dt-font-sans`) follows every keystroke.
  */
 export function ChatFontSetting() {
-  const { t } = useI18n()
-  const copy = t.settings.appearance
   const settingsOwner = useStore($settingsOwner)
 
-  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord(
-    settingsOwner ?? undefined,
-    Boolean(settingsOwner)
+  // ponytail: a draft lives exactly as long as its full connection/profile owner.
+  return (
+    <ChatFontSettingInner
+      key={settingsOwner ? profileScopeKey(settingsOwner) : 'unavailable'}
+      settingsOwner={settingsOwner}
+    />
   )
+}
+
+function ChatFontSettingInner({ settingsOwner }: { settingsOwner: ReturnType<typeof $settingsOwner.get> }) {
+  const { t } = useI18n()
+  const copy = t.settings.appearance
+  const { data: loadedConfig } = useHermesConfigRecord(settingsOwner ?? undefined, Boolean(settingsOwner))
   const [draft, setDraft] = useState<string | null>(null)
-  // The seed effect refuses to reseed while the query still carries the
-  // previous profile's stamp. A structurally-shared refetch keeps the object
-  // reference but bumps the stamp.
-  const { arm: armProfileLatch, pending: profilePending } = useProfileSwitchLatch({ dataUpdatedAt })
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
 
@@ -51,28 +53,27 @@ export function ChatFontSetting() {
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || profilePending) {
+    if (!settingsOwner || !loadedConfig) {
+      setChatFontFamilyFromConfig('')
+
+      return
+    }
+
+    if (draft !== null) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setChatFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, profilePending])
-
-  useOnProfileSwitch(() => {
-    saveVersionRef.current += 1
-    setDraft(null)
-    armProfileLatch()
-    setSaveVersion(0)
-    setChatFontFamilyFromConfig('')
-  })
+  }, [draft, loadedConfig, settingsOwner])
 
   useEffect(() => {
-    if (draft === null || saveVersion === 0 || !loadedConfig) {
+    if (!settingsOwner || draft === null || saveVersion === 0 || !loadedConfig) {
       return
     }
 
+    let cancelled = false
     const version = saveVersion
     const value = normalizeChatFontFamily(draft)
 
@@ -83,24 +84,28 @@ export function ChatFontSetting() {
     const rollback = fontFamilyFromConfig(loadedConfig)
 
     const timeout = window.setTimeout(() => {
+      if ($settingsOwner.get() !== settingsOwner || saveVersionRef.current !== version) {
+        return
+      }
+
       const next = setNested(loadedConfig, CONFIG_PATH, value)
 
       // Sparse patch: PUT /api/config deep-merges; echoing the cached snapshot
       // would overwrite keys other surfaces changed since it loaded.
-      void saveHermesConfig(setNested({}, CONFIG_PATH, value), writeScope)
+      void saveHermesConfig(setNested({}, CONFIG_PATH, value), settingsOwner ?? undefined)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)
           }
 
-          if (saveVersionRef.current !== version) {
+          if (cancelled || $settingsOwner.get() !== settingsOwner || saveVersionRef.current !== version) {
             return
           }
 
           hermesConfigCacheWriter(settingsOwner ?? undefined)(next)
         })
         .catch(error => {
-          if (saveVersionRef.current !== version) {
+          if (cancelled || $settingsOwner.get() !== settingsOwner || saveVersionRef.current !== version) {
             return
           }
 
@@ -112,8 +117,11 @@ export function ChatFontSetting() {
         })
     }, AUTOSAVE_DELAY_MS)
 
-    return () => window.clearTimeout(timeout)
-  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed, writeScope])
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [draft, loadedConfig, saveVersion, settingsOwner, t.settings.config.autosaveFailed])
 
   const update = (value: string) => {
     saveVersionRef.current += 1

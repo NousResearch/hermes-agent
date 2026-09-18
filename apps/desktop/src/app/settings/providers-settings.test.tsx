@@ -74,6 +74,14 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('hermesDesktop', {
+    ...window.hermesDesktop,
+    getConnectionFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...$connection.get(),
+      connectionId,
+      profile
+    })
+  })
   $connection.set({ mode: 'local' } as never)
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
@@ -85,6 +93,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   $confirmRequest.set(null)
   vi.restoreAllMocks()
   vi.clearAllMocks()

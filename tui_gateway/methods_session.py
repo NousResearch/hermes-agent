@@ -7,6 +7,7 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 import contextlib
 from pathlib import Path
 
+from agent.replay_cleanup import sanitize_replay_history
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

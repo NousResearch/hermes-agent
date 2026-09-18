@@ -120,6 +120,28 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
+    """Use a cached model without contacting the Hub, downloading only on a cache miss."""
+    from faster_whisper import WhisperModel
+
+    kwargs = {"device": device, "compute_type": compute_type}
+    try:
+        return WhisperModel(model_name, local_files_only=True, **kwargs)
+    except (_hub_cache_miss_error(), RuntimeError) as exc:
+        if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
+            raise
+        logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
+
+    try:
+        return WhisperModel(model_name, local_files_only=False, **kwargs)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to download faster-whisper model '{model_name}': {exc}. "
+            "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "
+            "when using a mirror with hf-xet installed, also set HF_HUB_DISABLE_XET=1."
+        ) from exc
+
+
 def _load_local_whisper_model(
     model_name: str, device: str = "auto", compute_type: str = "auto", *, force_cpu: Optional[bool] = None,
 ):

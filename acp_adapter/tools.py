@@ -213,8 +213,9 @@ def _title_delegate(args: Args) -> str:
 
 
 def _title_execute_code(args: Args) -> str:
-    first_line = next((line.strip() for line in _arg(args, "code").splitlines() if line.strip()), "")
-    return _fmt(_clip(first_line, 70), "python: {}", "python code")
+    from agent.display import build_tool_preview
+    preview = build_tool_preview("execute_code", args, max_len=0)
+    return f"python: {_clip(preview, 80)}" if preview else "python code"
 
 
 def _title_skill_manage(args: Args) -> str:
@@ -225,7 +226,10 @@ def _title_skill_manage(args: Args) -> str:
 
 _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
     "terminal": lambda a: f"terminal: {_clip(a.get('command', ''), 80)}",
-    "read_file": lambda a: f"read: {a.get('path', '?')}",
+    "read_file": lambda a: (
+        f"read: {a.get('path', '?')}"
+        + (f" L{a['offset']}" if isinstance(a.get('offset'), int) and a.get('offset', 0) > 0 else "")
+    ),
     "write_file": lambda a: f"write: {a.get('path', '?')}",
     "patch": lambda a: f"patch ({a.get('mode', 'replace')}): {a.get('path', '?')}",
     "search_files": lambda a: f"search: {a.get('pattern', '?')}",
@@ -241,7 +245,7 @@ _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
     "execute_code": _title_execute_code,
     "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
     "todo_list": lambda a: f"todo_list ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo_list",
-    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), '/{}', '')})",
+    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), ' → {}', '')})",
     "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
     "skill_manage": _title_skill_manage,
     "browser_navigate": lambda a: f"navigate: {a.get('url', '?')}",

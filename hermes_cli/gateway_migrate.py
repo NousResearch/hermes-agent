@@ -742,6 +742,36 @@ def _restore_default_gateway(default_home: Path, default_rec: dict) -> None:
         raise RuntimeError("could not restore the default gateway (detached)")
 
 
+def _preflight_apply(plan: "MigrationPlan", target: "Optional[tuple[str, bool]]", run_as_user: "Optional[str]") -> "Optional[str]":
+    """A failure of the destructive phase that is knowable from the plan alone, refused BEFORE any
+    working per-profile gateway is stopped: rollback is the fallback for surprises, not the plan."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.config import require_readable_config_before_write
+    try:
+        require_readable_config_before_write(plan.default_home / "config.yaml")
+    except Exception as exc:
+        return f"default: config.yaml cannot be updated ({exc})"
+    touches_system_unit = target == ("systemd", True) or any(p.has_system_unit for p in plan.standalone_secondaries)
+    if touches_system_unit:
+        try:
+            gw._require_root_for_system_service("migration")
+        except Exception as exc:
+            return str(exc)
+    if plan.default.service is None and target == ("systemd", True):
+        if run_as_user is None:
+            try:
+                gw._system_service_identity()
+            except ValueError as exc:
+                return f"default: {exc}"
+        else:
+            import pwd
+            try:
+                pwd.getpwnam(run_as_user)
+            except KeyError:
+                return f"default: the recorded service user '{run_as_user}' does not exist on this host"
+    return None
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Flip the flag, stop/uninstall every secondary gateway, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile.

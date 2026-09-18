@@ -36,12 +36,17 @@ _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"
 
 
 def _unusable_invoke_jwt_error(reason: str, *, no_refresh_token: bool = False) -> AuthError:
-    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT."""
+    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT.
+
+    With no refresh token the failure is a state-shape one (nothing to redeem), so it carries the
+    terminal ``nous_auth_missing_refresh_token`` code the pool recognises instead of the JWT
+    ``reason``, which would bench the row as a transient outage (#113718).
+    """
     detail = " and no refresh token is available" if no_refresh_token else ""
     return _nous_err(
         f"Nous Portal access token is not a usable inference JWT ({reason}){detail}. "
         f"{_UNUSABLE_JWT_RELOGIN}",
-        reason, relogin=True)
+        "nous_auth_missing_refresh_token" if no_refresh_token else reason, relogin=True)
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:

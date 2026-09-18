@@ -284,7 +284,9 @@ def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     with pytest.raises(AuthError) as exc:
         auth_mod.resolve_nous_runtime_credentials()
 
-    assert exc.value.code == "missing_inference_invoke_scope"
+    # No refresh token to redeem: the terminal state-shape code, with the JWT reason in the message.
+    assert exc.value.code == "nous_auth_missing_refresh_token"
+    assert "missing_inference_invoke_scope" in str(exc.value)
     assert exc.value.relogin_required is True
     payload = json.loads((hermes_home / "auth.json").read_text())
     assert payload["providers"]["nous"]["agent_key"] is None

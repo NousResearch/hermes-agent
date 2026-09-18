@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/tmp/test-project",
+  "scanned_at": "2026-05-30T12:00:00Z",
+  "total_files": 5,
+  "total_lines": 300,
+  "languages": {"python": 5},
+  "categories": {"code": 5},
+  "frameworks": [],
+  "warnings": [],
+  "files": [
+    {
+      "path": "/tmp/test-project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 80,
+      "size_bytes": 2048,
+      "functions": ["main", "parse_config"],
+      "classes": ["ConfigParser"]
+    },
+    {
+      "path": "/tmp/test-project/src/utils.py",
+      "relative_path": "src/utils.py",
+      "language": "python",
+      "category": "code",
+      "lines": 60,
+      "size_bytes": 1536,
+      "functions": ["helper_func", "format_output"]
+    },
+    {
+      "path": "/tmp/test-project/src/models.py",
+      "relative_path": "src/models.py",
+      "language": "python",
+      "category": "code",
+      "lines": 70,
+      "size_bytes": 1800,
+      "functions": ["build_model"],
+      "classes": ["DataModel", "ConfigModel"]
+    },
+    {
+      "path": "/tmp/test-project/tests/test_main.py",
+      "relative_path": "tests/test_main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 50,
+      "size_bytes": 1200,
+      "functions": ["test_main", "test_parse_config"]
+    },
+    {
+      "path": "/tmp/test-project/tests/test_utils.py",
+      "relative_path": "tests/test_utils.py",
+      "language": "python",
+      "category": "code",
+      "lines": 40,
+      "size_bytes": 1000,
+      "functions": ["test_helper"]
+    }
+  ]
+}

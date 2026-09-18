@@ -24,8 +24,9 @@ interface HideSweepContext {
 /** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
  *  and Bot Chats created before this policy (or while the old pref was off)
  *  left visible rows behind. On every plugin load, sweep the session ids we
- *  own by id (each group room's member sessions) through the core
- *  session.set_hidden RPC, then run the TITLE-based ownership sweep for
+ *  own by id (each group room's member sessions) through the source
+ *  primary's REST PATCH /api/sessions/{id} (a 404 prunes the seat), then
+ *  run the TITLE-based ownership sweep for
  *  everything else — canonical Bot Chats are identified by name (the
  *  registry row titled "Bot Chat"), so the title sweep is what hides them;
  *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op

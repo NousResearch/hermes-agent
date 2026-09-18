@@ -475,17 +475,39 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
+# Opt-in escape hatch for a dashboard published to an explicitly trusted network
+# (e.g. a tailnet) through a loopback-bound reverse proxy that already performs
+# access control. Off by default: a non-loopback ``dashboard.public_url`` keeps
+# the extra auth layer unless the operator sets this variable.
+_TRUSTED_PROXY_NO_AUTH_ENV = "HERMES_DASHBOARD_TRUSTED_PROXY_NO_AUTH"
+
+
+def _trusted_proxy_no_auth_enabled() -> bool:
+    """True when the operator opted into serving a trusted proxy without the gate."""
+    return os.getenv(_TRUSTED_PROXY_NO_AUTH_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def should_require_dashboard_auth(
     host: str,
     trusted_public_hosts: Optional[frozenset[str]] = None,
 ) -> bool:
     """Gate required for a non-loopback bind OR a non-loopback ``dashboard.public_url``.
 
-    Callers may pass the already-resolved host set so startup and request
-    validation share one snapshot.
+    The browser-facing URL is part of the exposure boundary: a non-loopback
+    ``dashboard.public_url`` requires authentication even when a reverse proxy
+    reaches a backend bound to loopback. Callers may pass the already-resolved
+    host set so startup and request validation use the same snapshot.
+
+    Extra (OPTIONAL, off by default): when the operator explicitly trusts the
+    network in front of the proxy, setting ``HERMES_DASHBOARD_TRUSTED_PROXY_NO_AUTH``
+    drops the extra auth layer for a loopback-bound backend so that trusted proxy
+    can reach it. This weakens the exposure boundary and is intentionally an
+    operator decision, never a default.
     """
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
+    if _trusted_proxy_no_auth_enabled():
+        return should_require_auth(host)
     return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES for h in trusted_public_hosts)
 
 

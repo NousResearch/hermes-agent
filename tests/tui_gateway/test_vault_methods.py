@@ -199,7 +199,11 @@ def test_settings_unlock_is_private_to_its_live_transport_and_profile(external_v
                                         if row["name"] == "bitwarden")["unlocked"]
     assert status(a)
     assert len(_result(rpc(a, "vault.list"))["items"]) == 1
-    assert not status(b, session_id="forged-owner", owner="forged-owner")
+    # Unknown ownership fields must fail validation, not grant access or be silently ignored.
+    rejected = rpc(b, "vault.sources", session_id="forged-owner", owner="forged-owner")
+    assert _error(rejected)["code"] == 4000
+    assert not status(b)
+    assert status(a), "Rejected ownership spoofing must not revoke the legitimate transport"
     assert _result(rpc(b, "vault.list"))["items"] == []
     assert not status(a, profile="other")
     assert _result(rpc(a, "vault.lock", profile="other"))["locked"]

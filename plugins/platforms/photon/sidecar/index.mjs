@@ -291,13 +291,11 @@ try {
       `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
     );
   }
-} catch (e) {
-  console.error(
-    "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
-      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
-      "Original error: " +
-      (e && e.stack ? e.stack : String(e))
+} catch {
+  // Fixed diagnostic only: arbitrary SDK and exception values remain redacted.
+  originalConsoleError(
+    "photon-sidecar: spectrum mixed attachment patch failed; continuing without compatibility patch. " +
+      "Reinstall or upgrade the sidecar for the pinned spectrum-ts version."
   );
 }
 let Spectrum,

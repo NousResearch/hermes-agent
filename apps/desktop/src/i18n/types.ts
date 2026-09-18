@@ -1597,6 +1597,12 @@ export interface Translations {
       installAgentHereNoOrigin: string
       desktopHalfPending: string
       desktopHalfPendingTip: string
+      installDesktopHalf: string
+      installDesktopHalfBusy: string
+      installDesktopHalfDone: (name: string) => string
+      installDesktopHalfFailed: string
+      installDesktopHalfTip: string
+      installDesktopHalfUnavailable: string
       emptyAll: string
       empty: string
       emptyHint: string

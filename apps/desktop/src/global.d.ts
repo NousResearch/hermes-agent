@@ -543,6 +543,30 @@ declare global {
         repo?: string
         force?: boolean
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+      /** Install a Desktop half the CONNECTED gateway serves into this app's
+       *  app-level `desktop-plugins` root. `text`/`sha256` come from the
+       *  session-authenticated `plugins.manage desktop_half` RPC; the main
+       *  process VERIFIES the digest and writes both files, so an unrelated
+       *  folder is never replaced unless `force`. */
+      installDesktopPluginFromGateway?: (payload: {
+        force?: boolean
+        key?: null | string
+        name: string
+        sha256?: null | string
+        source?: null | string
+        text: string
+      }) => Promise<{
+        error?: string
+        ok: boolean
+        path?: string
+        reason?: 'already-current' | 'exists' | 'integrity' | 'invalid' | 'io' | 'oversize' | 'unavailable'
+        sha256?: string
+        unchanged?: boolean
+      }>
+      /** Every half this app pulled from a gateway, keyed by folder name. */
+      installedGatewayHalves?: () => Promise<
+        Record<string, { bytes: number; installedAt: string; key?: string; name: string; sha256: string; source?: string }>
+      >
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void

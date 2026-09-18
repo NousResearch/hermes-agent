@@ -7,6 +7,7 @@ import path from 'node:path'
 
 import { ipcMain, shell } from 'electron'
 
+import { installGatewayDesktopHalf, readInstalledGatewayHalves } from './desktop-plugin-gateway-install'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import {
   DESKTOP_PLUGINS_DIR,
@@ -148,6 +149,43 @@ export function registerFsIpc({
       Boolean(payload?.force)
     )
   })
+
+  // Install a Desktop half the CONNECTED gateway serves. The bytes are fetched
+  // by the renderer over the session-authenticated `plugins.manage desktop_half`
+  // RPC (no transport lives here — see desktop-plugin-gateway-install.ts for why
+  // the dashboard's unauthenticated asset route must not be the source) and only
+  // VERIFIED + written here, into the app-level root. Nothing is written without
+  // the user's click, and a folder this path did not install is never replaced
+  // unless the caller forces it.
+  ipcMain.handle('hermes:plugin:installDesktopFromGateway', async (_event, payload) => {
+    const name = String(payload?.name || '').trim()
+    const text = typeof payload?.text === 'string' ? payload.text : ''
+
+    if (!name) {
+      return { ok: false, reason: 'invalid', error: 'name is required' }
+    }
+
+    if (!text) {
+      return { ok: false, reason: 'unavailable', error: 'text is required' }
+    }
+
+    return installGatewayDesktopHalf({
+      force: Boolean(payload?.force),
+      key: payload?.key ?? null,
+      name,
+      root: await desktopPluginsRoot(),
+      sha256: payload?.sha256 ?? null,
+      source: payload?.source ?? null,
+      text
+    })
+  })
+
+  // The revision this app last pulled for a gateway-served half (null when the
+  // folder was not installed from a gateway) — what makes the Plugins row say
+  // "installed" / "update available" instead of offering a blind re-install.
+  ipcMain.handle('hermes:plugin:installedGatewayHalves', async () =>
+    readInstalledGatewayHalves(await desktopPluginsRoot())
+  )
 
   // Rename a file/folder in place. The renderer passes the existing path + a new
   // base name; the destination is resolved in the SAME parent dir so a rename can

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, useEffect, useMemo } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ import {
   $agentPluginBusy,
   $agentPlugins,
   type AgentPluginRow,
+  fetchAgentPluginDesktopHalf,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
@@ -175,15 +176,20 @@ function PackageRow({
   scope,
   scopeLabel,
   busy,
+  desktopHalfBusy,
   onAgentToggle,
-  onAgentUpdate
+  onAgentUpdate,
+  onInstallDesktopHalf
 }: {
   pkg: PluginPackage
   scope: null | string
   scopeLabel: string
   busy: boolean
+  /** A gateway pull for THIS package's desktop half is in flight. */
+  desktopHalfBusy: boolean
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
+  onInstallDesktopHalf: () => void
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
@@ -250,8 +256,18 @@ function PackageRow({
             }}
           />
         ) : pkg.desktopMissing ? (
-          <Tip label={p.desktopHalfPendingTip}>
-            <span className="text-[0.65rem] text-(--ui-text-tertiary)">{p.desktopHalfPending}</span>
+          <Tip label={p.installDesktopHalfTip}>
+            <span>
+              <Button
+                className="h-5 px-1.5 text-[0.65rem]"
+                disabled={desktopHalfBusy}
+                onClick={onInstallDesktopHalf}
+                size="xs"
+                variant="outline"
+              >
+                {desktopHalfBusy ? p.installDesktopHalfBusy : p.installDesktopHalf}
+              </Button>
+            </span>
           </Tip>
         ) : (
           <Dash />
@@ -354,6 +370,8 @@ export const PluginsTab = memo(function PluginsTab({
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
   const busyKey = useStore($agentPluginBusy)
+  /** Package key whose gateway desktop-half install is in flight. */
+  const [halfBusyKey, setHalfBusyKey] = useState<null | string>(null)
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
@@ -370,6 +388,60 @@ export const PluginsTab = memo(function PluginsTab({
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+
+  /** Pull one package's Desktop half off the CONNECTED gateway into this app's
+   *  local desktop-plugins root. The bytes ride the session-authenticated
+   *  `plugins.manage desktop_half` RPC; the main process re-verifies the digest
+   *  before writing, and the root is fs-watched, so the half loads without a
+   *  reload ceremony. The user's click is the consent — nothing is installed
+   *  silently. */
+  const installDesktopHalf = async (pkg: PluginPackage) => {
+    const install = window.hermesDesktop?.installDesktopPluginFromGateway
+
+    if (!install) {
+      notifyError(p.installDesktopHalfUnavailable, p.installDesktopHalfFailed)
+
+      return
+    }
+
+    setHalfBusyKey(pkg.key)
+
+    try {
+      const half = await fetchAgentPluginDesktopHalf(requestGateway, {
+        key: pkg.agent?.key,
+        name: pkg.name,
+        profile: scope
+      })
+
+      if (!half.ok) {
+        notifyError(half.error ?? p.installDesktopHalfFailed, p.installDesktopHalfFailed)
+
+        return
+      }
+
+      const result = await install({
+        key: half.key,
+        name: half.name,
+        sha256: half.sha256,
+        source: half.source,
+        text: half.text
+      })
+
+      if (!result?.ok) {
+        notifyError(result?.error ?? p.installDesktopHalfFailed, p.installDesktopHalfFailed)
+
+        return
+      }
+
+      notify({ kind: 'success', message: p.installDesktopHalfDone(half.name) })
+      await rescanAll(requestGateway, scope)
+    } catch (error) {
+      notifyError(error, p.installDesktopHalfFailed)
+    } finally {
+      setHalfBusyKey(null)
+    }
+  }
+
   const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
     name: pkg.name,
     identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
@@ -409,6 +481,7 @@ export const PluginsTab = memo(function PluginsTab({
 
           return <PackageRow
             busy={pkg.agent ? agentBusy(pkg.agent) : false}
+            desktopHalfBusy={halfBusyKey === pkg.key}
             key={pkg.key}
             onAgentToggle={(row, enable) => {
               if (row.key) {
@@ -423,6 +496,7 @@ export const PluginsTab = memo(function PluginsTab({
                 }
               })
             }}
+            onInstallDesktopHalf={() => void installDesktopHalf(pkg)}
             pkg={pkg}
             scope={scope}
             scopeLabel={label}

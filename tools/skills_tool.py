@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -73,6 +74,7 @@ def _skills_dir() -> Path:
 
 _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
+_CURATOR_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def _skill_lookup_path_error(name: str) -> Optional[str]:
@@ -499,7 +501,27 @@ def _provably_same_skill(candidates) -> bool:
         return False
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
+def _find_archived_skill_dir(name: str, active_skills_dir: Path) -> Optional[Path]:
+    """Archived package matching a bare skill name.
+
+    Archives remain outside normal discovery.  This lookup only supplies recovery metadata for
+    an explicit miss; it never reads archived content or makes an archived skill active.
+    """
+    # Curator-managed names use the same shell-safe identifier grammar as skill_manage.
+    # Manually-authored legacy directories may not; do not turn those names into commands.
+    if not _CURATOR_SKILL_NAME_RE.fullmatch(name):
+        return None
+    archived_dir = active_skills_dir / ".archive" / name
+    return archived_dir if (archived_dir / "SKILL.md").is_file() else None
+
+
+def _locate_skill(
+    name: str,
+    local_category_name: Optional[str],
+    project_dirs: list,
+    all_dirs,
+    active_skills_dir: Path,
+):
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
     precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
     skill_md set iff no error."""
@@ -547,6 +569,18 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        if archived_dir := _find_archived_skill_dir(name, active_skills_dir):
+            archived_path = str(PurePosixPath(".archive", archived_dir.name))
+            restore_command = f"hermes curator restore {name}"
+            return _fail(
+                f"Skill '{name}' not found.",
+                available_skills=available,
+                archived=True,
+                archived_path=archived_path,
+                restore_command=restore_command,
+                hint=f"Restore it with `{restore_command}`, or inspect it without restoring via "
+                f"`skill_view(name=\"{archived_path}\")`.",
+            ), None, None
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
@@ -591,7 +625,7 @@ def skill_view(
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
         error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+            name, local_category_name, project_dirs, all_dirs, active_skills_dir)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content

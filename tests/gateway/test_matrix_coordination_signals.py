@@ -108,7 +108,10 @@ async def test_custom_event_roundtrip_uses_authenticated_sender_and_never_chat(m
     assert kind != EventType.ROOM_MESSAGE
     assert content == {**payload, "started": str(payload["started"])}
     # Real mautrix deserialization yields nested Obj/List, not plain dicts.
-    await transport.handlers[kind](event(content=content))
+    # Syncer normalizes timeline event classes before selecting a handler.
+    incoming = event(content=content)
+    incoming.type = incoming.type.with_class(EventType.Class.MESSAGE)
+    await transport.handlers[incoming.type](incoming)
     received.assert_awaited_once_with(ROOM, PEER, payload)
     assert type(received.await_args.args[2]) is dict
     assert type(received.await_args.args[2]["nested"]) is dict

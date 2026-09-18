@@ -1385,7 +1385,8 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(
-            EventType.find(_COORDINATION_EVENT_TYPE), self._on_coordination_signal, wait_sync=True)
+            EventType.find(_COORDINATION_EVENT_TYPE, EventType.Class.MESSAGE),
+            self._on_coordination_signal, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(getattr(EventType, "TYPING", "m.typing"), self._on_typing, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)

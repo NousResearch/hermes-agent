@@ -3660,10 +3660,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
         # configured profile whose credential is benched or signed out gets the reason instead.
         try:
-            if sys.stdin.isatty():
-                ready, error = self._probe_runtime_credentials()
-                if not ready and not self._explain_unusable_credentials(error):
-                    self._offer_first_run_setup()
+            self._maybe_offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)
 

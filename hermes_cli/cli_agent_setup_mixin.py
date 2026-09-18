@@ -382,8 +382,9 @@ class CLIAgentSetupMixin:
         return self._probe_runtime_credentials()[0]
 
     def _probe_runtime_credentials(self) -> tuple:
-        """``(ready, error)``: *error* is the exception that stopped resolution, ``None`` when a
-        provider resolved (usable or merely keyless). Never prints or mutates CLI state."""
+        """``(ready, error)``: *error* is the exception that stopped resolution — raised, or
+        swallowed by the "auto" ladder and stamped on a keyless fallback — ``None`` when a provider
+        resolved (usable or merely keyless). Never prints or mutates CLI state."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
         try:
             runtime = resolve_runtime_provider(
@@ -397,7 +398,16 @@ class CLIAgentSetupMixin:
         base_url = runtime.get("base_url")
         if callable(api_key) or (isinstance(api_key, str) and api_key):
             return bool(base_url), None
-        return _keyless_custom_base(base_url), None
+        return _keyless_custom_base(base_url), runtime.get("auth_error")
+
+    def _maybe_offer_first_run_setup(self) -> None:
+        """Interactive startup gate: a blank install goes to the provider wizard; a configured
+        profile whose credential is benched or signed out gets the reason instead (#113720)."""
+        if not sys.stdin.isatty():
+            return
+        ready, error = self._probe_runtime_credentials()
+        if not ready and not self._explain_unusable_credentials(error):
+            self._offer_first_run_setup()
 
     def _explain_unusable_credentials(self, error) -> bool:
         """A configured profile whose credential is benched, quarantined or signed out is not a

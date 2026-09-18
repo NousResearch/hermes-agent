@@ -680,17 +680,10 @@ _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
 
 
 def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
-    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec. On AuthError: re-raise for an explicit
-    request; for "auto" (auto-detected but credentials stale/revoked) log and return None so the
-    ladder falls through to env-var providers (e.g. OpenRouter)."""
+    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
+    stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
-    try:
-        creds = spec.resolve()
-    except AuthError:
-        if requested_provider != "auto":
-            raise
-        logger.info("%s; falling through to next provider.", spec.failure_msg)
-        return None
+    creds = spec.resolve()
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),
@@ -858,7 +851,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
       5. ``auth.resolve_provider`` → OpenCode free tier → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
-      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError and logs) → minimax-oauth
+      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
+         keyless fallback as ``auth_error``) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
@@ -909,8 +903,17 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                     target_model=target_model)
     yield _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    swallowed_auth_error = None
     if provider in _OAUTH_RUNTIME_PROVIDERS:
-        yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        try:
+            yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        except AuthError as exc:
+            # Auto-detected login with stale/revoked/benched credentials: fall through to the env-var
+            # providers, but keep the error so a keyless fallback can still say what is wrong.
+            if requested_provider != "auto":
+                raise
+            logger.info("%s; falling through to next provider.", _OAUTH_RUNTIME_PROVIDERS[provider].failure_msg)
+            swallowed_auth_error = exc
     if provider == "minimax-oauth":
         yield _minimax_oauth_runtime(provider, requested_provider)
     if _is_external_process_provider(provider):
@@ -922,7 +925,10 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
-    yield _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    if swallowed_auth_error is not None and not fallback.get("api_key"):
+        fallback["auth_error"] = swallowed_auth_error
+    yield fallback
 
 
 def format_runtime_provider_error(error: Exception) -> str:

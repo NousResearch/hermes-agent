@@ -1,0 +1,72 @@
+name: Windows smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-smoke.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "hermes_cli/**"
+      - "agent/**"
+      - "tools/**"
+      - "tests/**"
+      - "*.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-smoke:
+    name: Windows smoke / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Show platform diagnostics
+        shell: pwsh
+        run: |
+          python -VV
+          python -c "import os, platform, sys; print(sys.platform); print(platform.platform()); print(os.getcwd())"
+          Get-ChildItem Env: | Where-Object { $_.Name -match '^(OS|PROCESSOR_ARCHITECTURE|SYSTEMROOT|WINDIR|COMSPEC|USERPROFILE|TEMP|TMP)$' } | Sort-Object Name
+
+      - name: Install Hermes in editable mode
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: CLI import and help smoke
+        shell: pwsh
+        run: |
+          hermes --help
+          hermes config --help
+          hermes doctor --help
+          python -c "import hermes_cli.main, run_agent, model_tools; print('imports ok')"
+
+      - name: Targeted Windows-safe tests
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python -m pytest `
+            tests/test_hermes_constants.py `
+            tests/test_timezone.py `
+            tests/test_utils_truthy_values.py `
+            tests/test_packaging_metadata.py `
+            -o addopts= `
+            -q

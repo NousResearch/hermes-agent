@@ -317,7 +317,9 @@ export class VoiceLiveSession {
       return []
     }
 
-    const floor = last.endMs - CONTEXT_WINDOW_MS
+    // Arrival timestamps share the local clock; silence must age them out too.
+    // API audio timestamps use a separate clock, so retain their existing window.
+    const floor = (this.subscription ? performance.now() : last.endMs) - CONTEXT_WINDOW_MS
 
     return this.transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
   }

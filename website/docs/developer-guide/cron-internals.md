@@ -12,7 +12,8 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 
 | File | Purpose |
 |------|---------|
-| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json`, definition/runtime split |
+| `cron/runtime_state.py` | Per-profile `runtime.db`: scheduler state and the interrupted-save journal |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
@@ -33,7 +34,37 @@ The model-facing surface is a single `cronjob` tool with action-style operations
 
 ## Job Storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write to temp file, then rename). Each job record contains:
+A job lives in two per-profile files under `<HERMES_HOME>/cron/`:
+
+- `jobs.json` — the **definition**: what the operator declared (prompt, schedule, delivery, skills,
+  model pins, `enabled`, `repeat.times`, ...). Written atomically (temp file, then rename), and only
+  when a definition actually changes — creating, editing, pausing/resuming or retiring a job.
+- `runtime.db` — **scheduler state**: `next_run_at`, `last_*`, `state`, pause markers, fire/run
+  claims, `pending_slot`, `failure_streak`, `repeat.completed` and the other per-fire bookkeeping
+  (`cron.jobs._RUNTIME_JOB_FIELDS`). An ordinary fire writes only here, so `jobs.json` stays a stable
+  artifact to back up, review or keep in source control.
+
+`load_jobs()` merges the two into one record per job and `save_jobs()` splits it again, so callers
+see a single dict. The contracts:
+
+- **Unclassified fields are declarative.** A field not listed as runtime stays in `jobs.json`, so a
+  new field can at worst churn the file as it did before the split — never be lost.
+- **Migration is lossless.** A scheduler field found in a `jobs.json` record (a pre-split store, an
+  older Hermes after a downgrade, or a hand edit) wins for that field; `runtime.db` supplies every
+  field the record does not carry. The next load moves the carried fields into `runtime.db` and
+  strips them from `jobs.json` in one save.
+- **A save that changes both files is crash-recoverable.** Runtime rows and the new definitions
+  commit together in `runtime.db` (a one-row journal) before `jobs.json` is replaced; the journal is
+  acknowledged afterwards. The next load finishes an interrupted save — unless `jobs.json` changed
+  after that save began, in which case the newer file wins and the journal is dropped.
+- **Hand-editing a schedule is safe.** Each runtime row records a digest of the schedule it was
+  computed for; if `jobs.json`'s schedule no longer matches, `next_run_at` and `pending_slot` are
+  dropped and the due scan recomputes them.
+- **Degraded-lock writers stay narrow.** Within one `_jobs_lock()` section a save rewrites only the
+  runtime rows it changed and deletes only `removed_ids`, mirroring the `jobs.json` shrink-merge.
+
+Quick snapshots (`hermes backup --quick`, the pre-update snapshot) capture both files. The merged
+record looks like this:
 
 ```json
 {
@@ -99,7 +130,7 @@ The scheduler runs on a periodic tick (default: every 60 seconds):
 ```text
 tick()
   1. Acquire scheduler lock (prevents overlapping ticks)
-  2. Load all jobs from jobs.json
+  2. Load all jobs (jobs.json definitions merged with runtime.db state)
   3. Filter to due jobs (next_run <= now AND state == "scheduled")
   4. For each due job:
      a. Set state to "running"
@@ -110,7 +141,7 @@ tick()
      f. Update run_count, compute next_run
      g. If repeat count exhausted → state = "completed"
      h. Otherwise → state = "scheduled"
-  5. Write updated jobs back to jobs.json
+  5. Save: scheduler state to runtime.db (jobs.json only if a definition changed)
   6. Release scheduler lock
 ```
 

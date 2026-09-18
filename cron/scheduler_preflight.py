@@ -312,6 +312,60 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     return None
 
 
+# (job id, server name) pairs already warned about as reconnecting; see _empty_requested_mcp_toolsets.
+_RECONNECTING_WARNED: set = set()
+
+
+def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
+    """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
+
+    Runs AFTER cron MCP discovery. The server's toolset alias is process-global while its tools
+    are registered per profile overlay, so under a multiplexer a job can name a server that is
+    connected for another profile and build a tool-less agent that ``quiet_mode`` never reports.
+    Only servers the job explicitly asked for count; the implicit enabled-server merge does not.
+    """
+    requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
+    if not requested:
+        return None
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from toolsets import resolve_toolset
+    from tools.mcp_tool_discovery import mcp_server_reconnecting
+    missing = [name for name in requested
+               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    # A server that worked in this process and is parked/self-probing after a network blip
+    # (router reboot, DNS failure) is recovering, not misconfigured: the job runs with the tools
+    # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a
+    # server that never connected for this profile is judged below.
+    reconnecting = sorted(name for name in missing if mcp_server_reconnecting(name))
+    job_id = str(job.get("id", "?"))
+    # One WARNING per job+server per outage (like the one-shot blocked_config alert), not one per
+    # tick; the entry drops once the server is back so the next outage warns again.
+    _RECONNECTING_WARNED.difference_update(
+        key for key in list(_RECONNECTING_WARNED) if key[0] == job_id and key[1] not in reconnecting)
+    unwarned = [name for name in reconnecting if (job_id, name) not in _RECONNECTING_WARNED]
+    if unwarned:
+        _RECONNECTING_WARNED.update((job_id, name) for name in unwarned)
+        logger.warning(
+            "Job '%s': MCP server(s) %s named in enabled_toolsets are reconnecting — running "
+            "without their tools until they recover (a server parked on a permanent error blocks "
+            "the job instead)", job_id, ", ".join(unwarned))
+    if reconnecting:
+        missing = [name for name in missing if name not in reconnecting]
+    if not missing:
+        return None
+    # The reason is what the operator reads in the gateway log and the alert. It must say the
+    # block is not sticky: a server whose first connection failed on a network blip is parked and
+    # self-probed by the MCP layer, and this check re-runs on every dispatch, so the job resumes
+    # on its own — two operators misread the old text as a config error to repair by hand (#112871).
+    return (
+        f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
+        "resolved to zero tools for this profile (never connected for this profile, or connected "
+        "for another profile only). If the server is only temporarily unreachable this clears by itself — "
+        "the check re-runs on every dispatch and the job resumes once the server reconnects. "
+        "If the name is wrong or belongs to another profile, fix the server or remove it from "
+        "the job's toolsets.")
+
+
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """Pre-dispatch validation: return a reason (missing key, unconfigured delivery, unready skill)
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails

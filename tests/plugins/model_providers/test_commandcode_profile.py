@@ -100,9 +100,11 @@ class TestCommandCodeReasoningWireControls:
         from plugins.model_providers.deepseek import deepseek
 
         rc = {"enabled": True, "effort": "low"}
+        expected = deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        assert expected[1].get("reasoning_effort") == "low"  # equality below must not be ({}, {}) == ({}, {})
         assert commandcode_profile.build_api_kwargs_extras(
             reasoning_config=rc, model="deepseek/deepseek-v4.1-flash"
-        ) == deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        ) == expected
         assert commandcode_profile.build_api_kwargs_extras(
             reasoning_config=rc, model="Qwen/Qwen3.7-Max"
         ) == ({}, {})
@@ -353,9 +355,7 @@ class TestCommandCodeBaseUrlOverride:
             captured["url"] = req.full_url
             return _FakeResp()
 
-        with mock_patch.object(
-            cc_mod.urllib.request, "urlopen", side_effect=fake_urlopen
-        ):
+        with mock_patch.object(cc_mod, "open_credentialed_url", side_effect=fake_urlopen):
             result = commandcode_profile.fetch_models(
                 api_key="k", base_url=cc_mod._COMMANDCODE_BASE + "/"
             )

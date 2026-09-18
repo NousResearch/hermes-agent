@@ -179,9 +179,33 @@ class TestRuntimeFailedSweep:
         _record(platform="telegram")
         dl.mark_failed("ob-1", "Forbidden: bot was blocked by the user")
 
-        assert dl.sweep_failed_for_runtime("telegram") == []
+        assert dl.sweep_failed_for_runtime("telegram", now=time.time() + 10_000) == []
         assert _row("ob-1")["state"] == "failed"
         assert _row("ob-1")["attempts"] == 0
+
+    def test_other_rejection_is_claimed_only_after_its_backoff(self):
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "503 Service Unavailable")
+        with dl._connect() as conn:
+            conn.execute("UPDATE delivery_obligations SET attempts=1, updated_at=1000.0 WHERE obligation_id='ob-1'")
+
+        assert dl.sweep_failed_for_runtime("telegram", now=1000.0 + 60) == []
+        assert dl.pending_retries(now=1000.0 + 60) == [
+            {"platform": "telegram", "profile": "default", "not_before": 1000.0 + 120}]
+        claimed = dl.sweep_failed_for_runtime("telegram", now=1000.0 + 121)
+        assert [row["obligation_id"] for row in claimed] == ["ob-1"]
+        assert claimed[0]["needs_marker"] is True
+        assert _row("ob-1")["state"] == "attempting"
+
+    def test_other_rejection_at_attempt_cap_is_abandoned_not_claimed(self):
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "503 Service Unavailable")
+        with dl._connect() as conn:
+            conn.execute("UPDATE delivery_obligations SET attempts=?, updated_at=1000.0 WHERE obligation_id='ob-1'",
+                         (dl.MAX_ATTEMPTS,))
+
+        assert dl.sweep_failed_for_runtime("telegram", now=1000.0 + 10_000) == []
+        assert _row("ob-1")["state"] == "abandoned"
 
     def test_claim_is_platform_scoped_and_not_reclaimed_while_attempting(self):
         _record(platform="telegram")

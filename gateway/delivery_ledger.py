@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_hermes_home
 
@@ -48,9 +49,13 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
 
-# Runtime replay is fail-closed: only errors whose send contract proves they are transient reconnect
-# failures. Permanent rejects (blocked bot, bad auth, missing chat) must not be retried on reconnect.
+# Errors whose send contract proves the platform never saw the request: retried as soon as the adapter
+# is back, no backoff. Every other rejection is retried too (#91653: a 5xx or a transient parse error
+# used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
+# with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
+# A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
 _RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+_RETRY_BACKOFF_SECONDS = (30.0, 120.0, 600.0)
 
 # A final send the platform refused with flood control is the other transient case: a 429 means the
 # refused request was never accepted, and the platform said how long to wait. Adapters fail such sends
@@ -122,20 +127,33 @@ def flood_retry_delay(seconds: Any) -> float:
     return min(max(wait, 0.0), FLOOD_RETRY_CAP_SECONDS) + FLOOD_RETRY_SLACK_SECONDS
 
 
+def _failed_stamp(updated_at: Any) -> float:
+    try:
+        return float(updated_at or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def flood_not_before(updated_at: Any, last_error: Any) -> float:
     """Earliest moment a flood-refused row may be resent: the refusal's timestamp (``mark_failed`` sets
     ``updated_at``) plus the platform's wait. Enforced by the sweeps so neither an early timer nor a
     reconnect sweep spends a redelivery attempt inside the penalty window."""
-    try:
-        stamp = float(updated_at or 0.0)
-    except (TypeError, ValueError):
-        stamp = 0.0
-    return stamp + flood_wait_seconds(last_error)
+    return _failed_stamp(updated_at) + flood_wait_seconds(last_error)
 
 
-def _runtime_retryable(last_error: Any) -> bool:
+def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optional[float]:
+    """Earliest moment a failed row may be resent, or ``None`` for a row that must never be: a flood
+    refusal keeps the platform's own wait, an allowlisted reconnect error is due at once, a whole-chat
+    death is final, and any other rejection backs off by the attempts already spent."""
+    if is_flood_error(last_error):
+        return flood_not_before(updated_at, last_error)
     text = str(last_error or "").strip().lower()
-    return text in _RUNTIME_RETRYABLE_ERRORS or is_flood_error(text)
+    if text in _RUNTIME_RETRYABLE_ERRORS:
+        return _failed_stamp(updated_at)
+    if classify_dead_error(text):
+        return None
+    backoff = _RETRY_BACKOFF_SECONDS[min(int(attempts or 0), len(_RETRY_BACKOFF_SECONDS) - 1)]
+    return _failed_stamp(updated_at) + backoff
 
 
 def _db_path():
@@ -386,15 +404,15 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                              profile: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Claim this process's reconnect-retryable failed rows for one adapter.
+    """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
     primary/default adapter); unowned rows and rows owned by another process are left for the
     startup/dead-owner sweep. Startup recovery ignores rows owned by a live gateway, so a response
     rejected with ``send_path_degraded`` would stay stranded when only the adapter reconnects; this closes
-    that gap without weakening ownership: only rows stamped to this exact process instance, only
-    allowlisted transient errors, same attempts/staleness bounds, every update guarded by the prior owner
-    stamp and ``failed`` state. Claimed rows always carry a marker (the failed send's ack is not safe to
+    that gap without weakening ownership: only rows stamped to this exact process instance, only rows
+    past their ``retry_not_before`` deadline, same attempts/staleness bounds, every update guarded by the
+    prior owner stamp and ``failed`` state. Claimed rows always carry a marker (the failed send's ack is not safe to
     infer): the reconnect one, or the rate-limit one for a flood-refused row."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:  # PID alone cannot distinguish this process from a stale row left after PID
@@ -411,8 +429,9 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
              owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
+            due = retry_not_before(updated_at, last_error, attempts)
             if (adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started
-                    or not _runtime_retryable(last_error)):
+                    or due is None):
                 continue
             owner_guard = (now, oid, owner_pid, owner_started_at)
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -422,8 +441,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                        WHERE obligation_id=? AND state='failed'
                          AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
                 continue
-            if is_flood_error(last_error) and now < flood_not_before(updated_at, last_error):
-                continue  # the platform's wait has not passed; the flood timer comes back for it
+            if now < due:
+                continue  # the platform's wait or the backoff has not passed; the timer comes back for it
             # The claim clears the stale error: this is a fresh attempt, and if it is interrupted the next
             # boot must see 'attempting' with no proof of non-delivery, hence the marker.
             cursor = conn.execute(
@@ -441,11 +460,11 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     return claimed
 
 
-def pending_flood_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
-    """This process's flood-refused rows that still await redelivery, one entry per adapter identity
-    with the earliest deadline (``not_before``). The runner arms one redelivery timer per entry, so a
-    row adopted at boot, skipped because its wait had not passed, or refused again is never stranded.
-    Rows past the attempts cap or stale cutoff are left for the sweeps to abandon."""
+def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """This process's failed rows that still await redelivery, one entry per adapter identity with the
+    earliest deadline (``not_before``). The runner arms one redelivery timer per entry, so a row adopted
+    at boot, skipped because its wait had not passed, or rejected again is never stranded. Rows past the
+    attempts cap or stale cutoff are left for the sweeps to abandon."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:
         return []
@@ -456,9 +475,9 @@ def pending_flood_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
                WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
     earliest: Dict[tuple, float] = {}
     for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
-        if not is_flood_error(last_error) or attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
+        due = retry_not_before(updated_at, last_error, attempts)
+        if due is None or attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
             continue
-        due = flood_not_before(updated_at, last_error)
         key = (platform, adapter_profile or "default")
         if key not in earliest or due < earliest[key]:
             earliest[key] = due

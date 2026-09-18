@@ -199,6 +199,19 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+
+
+def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
+    """Host/port the adapter binds: config.yaml ``platforms.api_server`` wins over the env fallbacks.
+
+    Shared with the CLI restart path, which must wait on the SAME address the replacement will
+    bind — an env-only reading missed every config.yaml port (#91547).
+    """
+    host = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+    raw_port = extra.get("port")
+    if raw_port is None:
+        raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
+    return host, _coerce_port(raw_port, DEFAULT_PORT)
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
@@ -1142,11 +1155,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
-        self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        raw_port = extra.get("port")
-        if raw_port is None:
-            raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
-        self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
+        self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
@@ -4018,25 +4027,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
             # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
             # (enabled) for instant restart rebinds.
-            self._site = web.TCPSite(
-                self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
             try:
-                last_exc: OSError | None = None
+                # A restart's predecessor may still hold the port for a moment after its PID is gone;
+                # a fresh TCPSite per attempt (a failed one stays registered in the runner) bounds the
+                # retry before the conflict is treated as a real config error.
                 for attempt in range(5):
+                    self._site = web.TCPSite(
+                        self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
                     try:
                         await self._site.start()
-                        last_exc = None
                         break
                     except OSError as exc:
-                        last_exc = exc
-                        if (
-                            getattr(exc, "errno", None) != errno.EADDRINUSE
-                            or attempt == 4
-                        ):
-                            break
+                        self._runner._unreg_site(self._site)
+                        if getattr(exc, "errno", None) != errno.EADDRINUSE or attempt == 4:
+                            raise
                         await asyncio.sleep(0.2 * (attempt + 1))
-                if last_exc is not None:
-                    raise last_exc
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

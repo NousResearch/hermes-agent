@@ -4328,44 +4328,37 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
-def _wait_for_tcp_port_free(
-    host: str,
-    port: int,
-    *,
-    timeout: float = 10.0,
-    clock=time.monotonic,
-    sleeper=time.sleep,
-    connect=None,
-) -> bool:
+def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
     """Wait until nothing accepts TCP connections on host:port.
 
-    PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a
-    restart that wins the race logs EADDRINUSE and keeps running with no API.
-    Connection-refused means the listener is gone.
+    PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
+    the race logs EADDRINUSE and keeps running with no API. Only connection-refused means the
+    listener is gone; a timed-out connect is a live listener with a slow accept queue.
     """
-    probe = connect
-    if probe is None:
-        def probe(target_host: str, target_port: int) -> bool:
-            with socket.create_connection((target_host, target_port), timeout=0.2):
-                return True
-
-    deadline = clock() + timeout
-    while clock() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
-            probe(host, port)
-        except OSError:
+            with socket.create_connection((host, port), timeout=0.2):
+                pass
+        except ConnectionRefusedError:
             return True
-        sleeper(0.1)
+        except OSError:
+            pass
+        time.sleep(0.1)
     return False
 
 
 def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
-    """Wait for the configured api_server listen address to stop accepting."""
-    host = os.getenv("API_SERVER_HOST", "127.0.0.1") or "127.0.0.1"
-    try:
-        port = int(os.getenv("API_SERVER_PORT", "8642"))
-    except ValueError:
-        port = 8642
+    """Wait for the configured api_server listen address to stop accepting.
+
+    Only when api_server is enabled: with the platform off, a foreign listener on the default
+    port is nobody's race and must not delay the restart."""
+    from gateway.config import Platform
+    from gateway.platforms.api_server import listen_address
+    pconfig = load_gateway_config().platforms.get(Platform.API_SERVER)
+    if pconfig is None or not pconfig.enabled:
+        return True
+    host, port = listen_address(pconfig.extra or {})
     freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
     if not freed:
         print(

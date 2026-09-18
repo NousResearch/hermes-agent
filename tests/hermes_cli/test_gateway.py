@@ -529,37 +529,42 @@ class TestWaitForGatewayExit:
         assert calls == [(22, True)]
 
 
-class TestWaitForTcpPortFree:
-    def test_returns_true_once_connect_fails(self):
-        attempts = {"n": 0}
+class TestRestartWaitsForApiServerPort:
+    """Regression for #91547: ``hermes gateway restart`` waited only for the old PID; on macOS the
+    replacement then hit EADDRINUSE and ran with no API server."""
 
-        def connect(_host, _port):
-            attempts["n"] += 1
-            if attempts["n"] < 3:
-                return True
-            raise OSError("refused")
+    def test_port_is_reported_free_once_the_old_listener_closes(self):
+        import socket
+        import threading
 
-        times = iter([0.0, 0.0, 0.1, 0.2, 0.3])
-        assert gateway._wait_for_tcp_port_free(
-            "127.0.0.1",
-            8642,
-            timeout=1.0,
-            clock=lambda: next(times),
-            sleeper=lambda _: None,
-            connect=connect,
-        )
-        assert attempts["n"] == 3
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        threading.Timer(0.3, listener.close).start()
 
-    def test_times_out_while_port_stays_busy(self):
-        times = iter([0.0, 0.0, 0.5, 1.5])
-        assert gateway._wait_for_tcp_port_free(
-            "127.0.0.1",
-            8642,
-            timeout=1.0,
-            clock=lambda: next(times),
-            sleeper=lambda _: None,
-            connect=lambda _h, _p: True,
-        ) is False
+        assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
+
+    def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
+        import socket
+
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        cfg = GatewayConfig()
+        cfg.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True, extra={"port": port})
+        monkeypatch.setattr(gateway, "load_gateway_config", lambda: cfg)
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
+        try:
+            # config.yaml port wins over the env default: the busy configured port is what we wait on
+            assert gateway._wait_for_api_server_port_free(timeout=0.3) is False
+            cfg.platforms[Platform.API_SERVER].enabled = False
+            assert gateway._wait_for_api_server_port_free(timeout=0.3) is True
+        finally:
+            listener.close()
 
 
 class TestStopProfileGateway:

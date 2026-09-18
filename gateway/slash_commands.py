@@ -436,14 +436,21 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
-        # shaped key. Narrowest tier first (another participant's run in the caller's own thread),
-        # then any run in the chat; both are authorization-gated. See `_chat_scoped_run_keys` for the
-        # shapes it covers and its isolation bounds.
-        fallback_keys = self._sibling_thread_run_keys(source, session_key)
-        reason = "stop_command_thread_sibling"
-        if not fallback_keys:
-            fallback_keys = self._chat_scoped_run_keys(source, session_key)
-            reason = "stop_command_chat_scope"
+        # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
+        # tier (a sibling needs the caller's own thread slot, which satisfies the chat predicate), so
+        # it is the set to act on — acting on the sibling subset alone would reply "Stopped" while a
+        # same-thread run under a differently shaped key kept going. See `_chat_scoped_run_keys` for
+        # the shapes and isolation bounds; both tiers are authorization-gated.
+        runs = self._same_chat_runs(source, session_key)
+        sibling_keys = self._sibling_thread_run_keys(source, runs)
+        fallback_keys = self._chat_scoped_run_keys(source, runs)
+        # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps its own
+        # label for hook consumers, anything wider is a chat-scope stop.
+        reason = (
+            "stop_command_thread_sibling"
+            if fallback_keys == sibling_keys
+            else "stop_command_chat_scope"
+        )
         if fallback_keys and self._is_user_authorized_for_source(source):
             for fallback_key in fallback_keys:
                 await _stop(fallback_key, reason)

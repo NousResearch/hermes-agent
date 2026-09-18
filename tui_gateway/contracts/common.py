@@ -42,6 +42,24 @@ class Usage(OpenModel):
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None
     cost_status: str | None = None
+    cache_ttl_s: int | None = None
+    cache_refreshed_at: float | None = None
+
+
+class TurnStats(OpenModel):
+    """``tui_gateway/prompt_turn.py::_build_turn_stats`` — one turn's usage deltas. Every
+    figure is omitted rather than zeroed when the turn did not produce it."""
+
+    duration_s: int | None = None
+    input: int | None = None
+    output: int | None = None
+    reasoning: int | None = None
+    cache_read: int | None = None
+    cache_write: int | None = None
+    calls: int | None = None
+    cost_usd: float | None = None
+    model: str | None = None
+    provider: str | None = None
 
 
 class ProjectRef(Result):

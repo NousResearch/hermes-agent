@@ -427,6 +427,20 @@ class SessionMessagesMixin:
             return reactions
         return self._execute_write(_do)
 
+    def update_message_display_metadata(self, session_id: str, message_row_id: int, key: str, value: Any) -> None:
+        """Merge ``meta[key] = value`` into one message row's ``display_metadata`` (decode→merge→encode)."""
+        if not session_id or message_row_id is None or not key:
+            return
+        def _do(conn):
+            row = conn.execute(_DISPLAY_META_ROW_SQL, (message_row_id, session_id)).fetchone()
+            if row is None:
+                return None
+            meta = self._decode_display_metadata(row[0]) or {}
+            meta[key] = value
+            conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta) if meta else None, message_row_id))
+            return None
+        self._execute_write(_do)
+
     def get_message_reactions(self, session_id: str, message_row_id: int) -> List[Dict[str, Any]]:
         """Reaction list persisted on one message row (never ``None``)."""
         if not session_id or message_row_id is None:

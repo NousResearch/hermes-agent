@@ -579,6 +579,8 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  cache_ttl_s?: number | null
+  cache_refreshed_at?: number | null
   [key: string]: unknown
 }
 export interface McpServerStatus {
@@ -2987,6 +2989,8 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  cache_ttl_s?: number | null
+  cache_refreshed_at?: number | null
   credits_lines?: string[] | null
   [key: string]: unknown
 }
@@ -4095,6 +4099,7 @@ export interface MessageInterimPayload {
 export interface MessageCompletePayload {
   text?: string | unknown
   usage?: Usage | null
+  turn_stats?: TurnStats | null
   status?: TurnStatus | null
   reasoning?: string | null
   warning?: string | null
@@ -4106,6 +4111,20 @@ export interface MessageCompletePayload {
   recoverable?: boolean | null
   error_surface?: ErrorSurface | null
   partial?: boolean | null
+}
+/** ``tui_gateway/prompt_turn.py::_build_turn_stats`` — one turn's usage deltas. Every figure is omitted rather than zeroed when the turn did not produce it. */
+export interface TurnStats {
+  duration_s?: number | null
+  input?: number | null
+  output?: number | null
+  reasoning?: number | null
+  cache_read?: number | null
+  cache_write?: number | null
+  calls?: number | null
+  cost_usd?: number | null
+  model?: string | null
+  provider?: string | null
+  [key: string]: unknown
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'

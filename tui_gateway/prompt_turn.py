@@ -9,7 +9,9 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import time
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -493,6 +495,8 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    usage_before: dict | None = None
+    assistant_row_before: int | None = None
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -680,6 +684,20 @@ def _invoke_agent(
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
         "session.title", sid, {"session_id": _k, "title": t})
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+    if session.get("agent") is not None and not session.get("_compute_host_active"):
+        st.usage_before = _get_usage(agent)
+        with contextlib.suppress(Exception):
+            _cost = getattr(agent, "session_estimated_cost_usd", None)
+            if _cost is not None:
+                st.usage_before["_cost_usd"] = float(_cost)
+        # Newest assistant row before the turn: a turn that writes no assistant text (API
+        # error, interrupt, tool-only tail) would otherwise stamp its stats onto the
+        # previous turn's message and overwrite that turn's numbers.
+        with contextlib.suppress(Exception):
+            with _session_db(session) as _row_db:
+                if _row_db is not None:
+                    st.assistant_row_before = _row_db.latest_message_row_id(
+                        str(session.get("session_key") or ""), role="assistant")
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
@@ -754,6 +772,54 @@ def _absorb_turn_result(
     return status_note
 
 
+_TURN_STATS_USAGE_KEYS = ("input", "output", "reasoning", "cache_read", "cache_write", "calls")
+
+
+def _turn_stats_delta(before: dict, after: dict) -> dict:
+    """Per-turn usage deltas. Negative deltas are dropped (compression resets counters)."""
+    delta: dict = {}
+    for key in _TURN_STATS_USAGE_KEYS:
+        try:
+            d = int(after.get(key) or 0) - int(before.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if d > 0:
+            delta[key] = d
+    return delta
+
+
+def _build_turn_stats(session: dict, st: _TurnRun, after_usage: dict) -> dict | None:
+    """Assemble ``turn_stats`` for message.complete, or None when there is nothing to report."""
+    usage_before = getattr(st, "usage_before", None)
+    if session.get("agent") is None or session.get("_compute_host_active") or not usage_before:
+        return None
+    # A turn that moved no tokens has nothing worth reporting: duration alone would render
+    # a strip reading "0s", and it would make the payload differ between the local and
+    # compute-host paths for a turn where nothing happened either way.
+    stats = _turn_stats_delta(usage_before, after_usage or {})
+    if not stats:
+        return None
+    inflight = session.get("inflight_turn")
+    if isinstance(inflight, dict) and inflight.get("started_at") is not None:
+        try:
+            stats["duration_s"] = max(0, round(time.time() - float(inflight["started_at"])))
+        except (TypeError, ValueError):
+            pass
+    agent = st.agent
+    try:
+        before_cost = usage_before.get("_cost_usd")
+        after_cost = getattr(agent, "session_estimated_cost_usd", None)
+        if before_cost is not None and after_cost is not None:
+            cost_delta = float(after_cost) - float(before_cost)
+            if cost_delta >= 0:
+                stats["cost_usd"] = cost_delta
+    except (TypeError, ValueError):
+        pass
+    stats["model"] = str(getattr(agent, "model", "") or "")
+    stats["provider"] = str(getattr(agent, "provider", "") or "")
+    return stats
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -773,6 +839,10 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    # Inflight started_at must be read before _clear_inflight_turn. Error/interrupted turns still emit.
+    turn_stats = _build_turn_stats(session, st, payload["usage"])
+    if turn_stats:
+        payload["turn_stats"] = turn_stats
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:
@@ -820,7 +890,24 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         st.receipt_committed = True
     if st.receipt_committed:
         _retire_turn_marker(session, st.marker_key)
+    if turn_stats:
+        _persist_turn_stats(session, st, turn_stats)
     return payload, raw, status
+
+
+def _persist_turn_stats(session: dict, st: _TurnRun, turn_stats: dict) -> None:
+    """Best-effort stamp of turn_stats onto the latest assistant row's display_metadata."""
+    with contextlib.suppress(Exception):
+        session_key = str(session.get("session_key") or getattr(st.agent, "session_id", "") or "")
+        if not session_key:
+            return
+        with _session_db(session) as db:
+            if db is None:
+                return
+            row_id = db.latest_message_row_id(session_key, role="assistant")
+            if row_id is None or row_id == getattr(st, "assistant_row_before", None):
+                return
+            db.update_message_display_metadata(session_key, row_id, "turn_stats", turn_stats)
 
 
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:

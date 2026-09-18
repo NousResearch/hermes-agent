@@ -51,6 +51,27 @@ HERMES_LANGFUSE_CAPTURE=sanitized    # content capture mode (see below)
 HERMES_LANGFUSE_DEBUG=true           # verbose plugin logging
 ```
 
+## Trace auxiliary LLM calls
+
+By default Langfuse only traces the main agent call chain. Auxiliary LLM
+calls — context compression, vision, web_extract, MoA, session search, etc. —
+are invisible, so Langfuse totals diverge from your provider's own billing.
+To account for them, enable aux tracking in `config.yaml` (behavioral flags
+live in config, not `.env`, per project policy):
+
+```yaml
+plugins:
+  entries:
+    observability/langfuse:
+      track_aux: true   # default: false
+```
+
+Each auxiliary call is then traced as a standalone `Hermes aux: <task>`
+trace with token usage attached (including cache hit/miss), so Langfuse
+totals reconcile against provider usage reports. Both the synchronous
+`call_llm` path and the asynchronous `async_call_llm` path (used by vision)
+are covered.
+
 ## Capture modes
 
 `HERMES_LANGFUSE_CAPTURE` controls how much *content* (prompts, responses,

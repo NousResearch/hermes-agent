@@ -874,7 +874,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     </div>
                     <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{`Catalog from ${caps.source} — unchecked skills are disabled after creation.`}</div>
                     <HubSkillsSection
-                      forProfile={null}
                       onInstalled={name =>
                         setCaps(prev =>
                           !prev || prev.skills.some(s => s.name === name)

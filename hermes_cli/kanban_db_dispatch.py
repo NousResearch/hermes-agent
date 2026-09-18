@@ -1243,6 +1243,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
+    breaker_hook_reason: Optional[str] = None
     with _kb.write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
@@ -1327,7 +1328,42 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        # Audit-trail parity (post-mortem 260822-critic-lane-orphan-blindspot
+        # action #3): the status flip above used to be invisible to the
+        # event stream — no ``blocked`` row, NULL ``block_kind``/reason —
+        # which stranded every event-keyed detector (critic lane,
+        # kanban-block-watcher) while stall-naggers spammed the orphan.
+        # Events are the audit trail; status is state. The payload kind
+        # marker keeps ``_has_sticky_block`` treating this as an
+        # auto-recoverable breaker block rather than a sticky human one;
+        # ``retry_status`` rides along so ``_resume_status_from_events``
+        # can still recover the review-resume signal from the newest row.
+        _kb._append_event(
+            conn, task_id, "blocked",
+            {
+                "kind": _kb.CIRCUIT_BREAKER_BLOCK_KIND,
+                "trigger_outcome": outcome,
+                "failures": failures,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "retry_status": retry_status,
+                "error": error,
+            },
+            run_id=run_id,
+        )
+        # Deferred until after the write txn commits (same convention as
+        # block_task): plugin code must never observe board state under an
+        # open SQLite write lock.
+        breaker_hook_reason = f"circuit_breaker: {outcome} x{failures}"
+    if breaker_hook_reason is not None:
+        # Fire AFTER the write txn commits — mirrors block_task's convention
+        # so lifecycle plugins observe durable board state, never an open txn.
+        _kb._fire_task_hook(
+            "kanban_task_blocked", _kb.get_task(conn, task_id), task_id, run_id,
+            reason=breaker_hook_reason,
+        )
         return True
+    return False
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:

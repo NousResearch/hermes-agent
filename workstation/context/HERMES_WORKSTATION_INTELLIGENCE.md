@@ -25,6 +25,59 @@ routing. Não se reivindica geração automática de digest visual, eliminação
 I/O de leitura, cobertura de aplicações reais de browser ou economia de tokens
 medida com provider pago. A arquitetura não adiciona stores paralelas.
 
+## Correção arquitetural: execução adaptativa e compilação progressiva — 2026-09-18
+
+Dogfood real do Browser nativo revelou um excesso na fronteira criada para
+economizar tokens. O objetivo continua correto: o LLM deve planejar, interpretar e
+resolver exceções; runtime determinístico deve carregar IDs, checkpoints, polling,
+retries, reconciliação e repetição mecânica. O erro foi deixar o sinal de
+repetibilidade atuar como permissão global: uma solicitação reconhecida como
+batch podia fazer qualquer mutação posterior exigir work_execute, inclusive
+interações stateful necessárias para descobrir o próprio procedimento.
+
+A regra canônica passa a ser: **determinismo é destino do aprendizado, não
+pré-requisito da exploração**.
+
+A execução evolui por níveis:
+
+~~~text
+ADAPTIVE/DISCOVERY
+  -> COMPILED SEGMENT
+  -> COMPILED WORK (work_execute)
+  -> PROMOTED ROUTINE
+  -> drift => NEEDS_REASONING => adaptação localizada
+~~~
+
+ALLOW_ADAPTIVE | SUGGEST_COMPILE | REQUIRE_COMPILE | REQUIRE_HUMAN substitui
+conceitualmente o latch binário. REQUIRE_COMPILE continua obrigatório para
+fan-out mutável homogêneo, mas deve pertencer a uma assinatura/operação concreta
+e não contaminar toda a sessão.
+
+No Browser nativo, observar/raciocinar/agir/observar é legítimo durante descoberta
+limitada. BrowserTask, TaskRun, lease de mutação, approvals e uncertain-effect
+protocol continuam valendo. Procedimentos conhecidos passam a distinguir
+PREPARE/INTERACT/COMMIT/VERIFY e escolher evidência proporcional ao efeito:
+E0 tool ACK, E1 observação semântica na sessão, E2 readback semântico persistente,
+E3 readback persistente independente. E0 nunca prova efeito externo durável.
+
+tools.effects é a taxonomia canônica; browser_console permanece potencialmente
+mutante. Tools do Workstation Browser devem normalizar para a rota native_browser
+antes de comparar constraints.
+
+O aprendizado deve capturar a experiência adaptativa no
+ExecutionJournal/ArtifactStore, gerar candidatos no RecipeStore/ProceduralMemory,
+validar/replay, promover via RoutinePromotionService e voltar ao Hermes apenas
+quando houver novidade/drift. O runtime deve auto-reusar receitas/rotinas
+verificadas quando scope/preconditions/fingerprint coincidirem.
+
+Nova métrica de harness: Guardrail Obstruction Rate — proporção de tarefas com um
+caminho seguro/autorizado que foram impedidas pela política do harness. O alvo é
+zero sem relaxar canary, uncertainty, fencing, acceptance ou circuit breaker.
+
+Especificação detalhada:
+workstation/context/ADAPTIVE_EXECUTION_COMPILATION.md.
+
+
 Este documento atua como a **base de conhecimento canônica e fonte única da verdade (inteligência centralizada)** sobre o funcionamento, a arquitetura de baixo nível, os contratos de persistência e a integração do **Hermes Workstation (Hermes Work)** nesta branch/fork downstream do repositório Hermes Agent.
 
 Qualquer desenvolvedor ou agente de IA que for trabalhar neste domínio **DEVE** ler este documento para se situar sobre os conceitos, invariantes arquiteturais, armadilhas conhecidas e restrições estabelecidas antes de modificar qualquer código em `apps/desktop/`, `workstation/`, `tools/browser_workstation.py` ou superfícies de integração associadas.

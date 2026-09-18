@@ -41,22 +41,6 @@ class _ProviderEntry:
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
 
 
-def _default_auth_request_user_agent() -> str:
-    """``Hermes-Agent/<version>`` for SDK-built OAuth discovery/registration
-    requests that would otherwise carry no User-Agent at all (see
-    ``_ensure_auth_request_user_agent``). Versioned so server operators
-    debugging a WAF block can tell which client they are looking at — same
-    shape as ``tools.xai_http.hermes_xai_user_agent``."""
-    try:
-        from hermes_cli import __version__
-    except Exception:  # pragma: no cover — defensive
-        __version__ = "unknown"
-    return f"Hermes-Agent/{__version__}"
-
-
-DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
-
-
 class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     """OAuthClientProvider with pre-flow disk-mtime reload (external refreshes become visible to
     a running session), expiry seeding on cold load, pre-flight metadata discovery, dead-client
@@ -87,24 +71,6 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
         logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
-
-    def _ensure_auth_request_user_agent(self, outgoing, original) -> None:
-        """Give SDK-built auth requests a User-Agent if they have none.
-
-        The SDK constructs discovery (``/.well-known/...``) and dynamic
-        client registration requests as bare ``httpx.Request`` objects, so
-        the client's default headers never apply and they leave with NO
-        User-Agent at all. Some WAFs reject header-less requests outright
-        (coda.io returns 403 on every one, which Hermes then misreports as
-        "only allows pre-approved OAuth clients").
-
-        Only requests the SDK built itself are touched — never the caller's
-        MCP request — and only when the header is absent, so an
-        ``oauth.user_agent`` stamped on token requests still wins.
-        """
-        if outgoing is original or "user-agent" in outgoing.headers:
-            return
-        outgoing.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
 
     async def _initialize(self) -> None:
         """Load stored state, seed ``token_expiry_time``, restore/prefetch metadata. The SDK's
@@ -144,11 +110,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
             handle_auth_metadata_response, handle_protected_resource_response)
+        from tools.mcp_oauth_provider import stamp_default_user_agent
         server_url = self.context.server_url
 
         async def _send(client, url: str, label: str):
             try:
-                return await client.send(create_oauth_metadata_request(url))
+                return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
@@ -260,7 +227,6 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         try:
             outgoing = await inner.__anext__()
             while True:
-                self._ensure_auth_request_user_agent(outgoing, request)
                 # The SDK holds context.lock for its whole generator, even while HTTPX waits on
                 # the MCP request. Release it for that request only; OAuth transitions stay serialized.
                 if outgoing is request:

@@ -868,7 +868,11 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
             "context); skipping browser authorization without binding a callback listener.")
         handler_cls, result = _make_callback_handler()
         server = _start_callback_server(port, handler_cls)
-        threading.Thread(target=server.handle_request, daemon=True).start()
+        # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
+        # select() keeps the listening socket alive past server_close() (the kernel holds the file for
+        # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
+        # left the port bound and the retry on the same pinned/cached port died with EADDRINUSE (#113771).
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
         # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
         # under a dashboard flow — the gateway's stdin is not the user's).
         if _is_interactive() and dashboard_flow is None:
@@ -883,6 +887,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
+            server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
             server.server_close()
         return _callback_outcome(result, cimd_url)
 
@@ -1164,6 +1169,9 @@ def humanize_oauth_registration_error(
     when the user overrode it or an older Hermes is running."""
     msg = str(exc)
     lowered = msg.lower()
+    from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
+    if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
+        return None
     looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
         any(k in lowered for k in ("regist", "dcr", "dynamic client"))
         or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}

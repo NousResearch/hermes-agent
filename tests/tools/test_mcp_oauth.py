@@ -1249,6 +1249,32 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     assert "timed out" not in msg
 
 
+def test_cancelled_waiter_releases_pinned_port_for_retry(monkeypatch):
+    """A flow cancelled mid-wait (handshake timeout) must leave its pinned/cached port bindable: the
+    retry reuses the same port and previously died with EADDRINUSE because the listener thread parked
+    in select() kept the closed socket alive (#113771)."""
+    import socket
+    import tools.mcp_oauth as mo
+
+    monkeypatch.setattr(mo, "_is_interactive", lambda: False)
+    monkeypatch.setattr(mo, "_raise_if_non_interactive", lambda lead: None)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    waiter = mo._make_callback_waiter(port, timeout=30)
+
+    async def drive():
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0.3)  # listener bound and parked in its poll
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with socket.socket() as again:  # what the retry's _start_callback_server does
+            again.bind(("127.0.0.1", port))
+
+    asyncio.run(drive())
+
+
 # ---------------------------------------------------------------------------
 # Figma remote MCP DCR allowlist workarounds
 # ---------------------------------------------------------------------------

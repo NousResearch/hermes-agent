@@ -20,6 +20,7 @@ _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
+_ACCOUNT_USAGE_TIMEOUT_S = 10.0
 
 
 def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> str:
@@ -85,7 +86,39 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines += [f"{label:<30}{value}" for label, value in rows]
+
+    # Match the CLI's account-limits block on the live TUI/Desktop /usage path.
+    # Keep the RPC pool free while a provider call runs, and cap the wall-clock wait.
+    provider = getattr(agent, "provider", "") if agent is not None else ""
+    if provider:
+        with contextlib.suppress(Exception):
+            import concurrent.futures
+            import contextvars
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+
+            def _fetch():
+                with _session_profile_runtime_scope(session):
+                    return fetch_account_usage(
+                        provider,
+                        base_url=getattr(agent, "base_url", "") or "",
+                        api_key=getattr(agent, "api_key", "") or "",
+                    )
+
+            pool = DaemonThreadPoolExecutor(max_workers=1)
+            future = pool.submit(contextvars.copy_context().run, _fetch)
+            try:
+                snapshot = future.result(timeout=_ACCOUNT_USAGE_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                future.add_done_callback(lambda f: f.exception())
+                raise
+            finally:
+                pool.shutdown(wait=False)
+            if snapshot is not None:
+                lines.append("")
+                lines += render_account_usage_lines(snapshot)
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:

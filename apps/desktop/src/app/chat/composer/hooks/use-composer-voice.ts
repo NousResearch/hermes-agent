@@ -77,11 +77,11 @@ export function useComposerVoice({
       computed($messages, messages => {
         const last = messages.findLast(message => message.role === 'assistant' && !message.hidden)
 
-        if (!last?.pending || !chatMessageText(last).trim()) {
-          return null
-        }
-
-        return last.id
+        // Runs on every streamed flush: test the parts in place instead of
+        // joining the whole reply into a string just to check it is non-blank.
+        return last?.pending && last.parts.some(part => part.type === 'text' && /\S/.test(part.text))
+          ? last.id
+          : null
       }),
     [$messages]
   )

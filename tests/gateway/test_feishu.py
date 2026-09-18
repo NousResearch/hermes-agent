@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from gateway.platforms.event import ProcessingOutcome
 
 if TYPE_CHECKING:
@@ -23,6 +25,15 @@ try:
     _HAS_LARK_OAPI = True
 except ImportError:
     _HAS_LARK_OAPI = False
+
+# Guard against aiohttp mock pollution: other test files (e.g. test_slack_*.py)
+# set sys.modules["aiohttp"] = MagicMock() at module level. When this file is
+# collected afterwards, pytest.importorskip("aiohttp") sees the mock as
+# "available" and doesn't skip — then webhook tests fail because
+# adapter.web.Response is a MagicMock instead of a real response.
+_aio_skip = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(_aio_skip, "__version__", None), str):
+    pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 
 
 class _FakeRequestContent:

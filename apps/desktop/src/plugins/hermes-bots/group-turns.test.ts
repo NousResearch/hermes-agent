@@ -1051,6 +1051,111 @@ describe('clarify and approvals (#90694)', () => {
   })
 })
 
+// The marker goes down at SUBMIT, not only at the deadline: a turn this Desktop
+// abandons (quit or crash mid-turn) keeps running on the member's gateway — a
+// remote member's most of all — and only a persisted marker lets the next
+// boundary harvest that reply instead of dropping it and re-driving a live
+// session. While the poll that wrote it is still running here, the marker is
+// "live": not harvested, and no reason to skip the member (#93127 re-drive).
+describe('in-flight marker', () => {
+  it('marks a turn in flight at submit and clears the marker with its reply', async () => {
+    const room = await loadRoom({ pollsBusy: 1, turn: () => 'the answer' })
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    const seen: { marker?: unknown; live?: boolean } = {}
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = await request(method, params)
+
+      if (method === 'session.resume' && room.gateway.rpcFor('prompt.submit').length && seen.marker === undefined) {
+        seen.marker = room.chat.$groupChats.get().Room?.stranded?.helper
+        seen.live = room.turns.strandedMarkerIsLive(seen.marker)
+      }
+
+      return result
+    }
+
+    const reply = await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])
+
+    expect(reply).toBe('the answer')
+    expect(seen.marker).toMatchObject({ before: 0, thread: 't1' })
+    expect(typeof (seen.marker as { turn?: unknown }).turn).toBe('string')
+    expect(seen.live).toBe(true)
+    expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+  })
+
+  it('a poll still running here owns its marker: the harvest leaves the turn to it', async () => {
+    const room = await loadRoom({ pollsBusy: 1, turn: () => 'late answer' })
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    // Park the poll on its first post-submit resume so the in-flight window is observable.
+    let release!: () => void
+
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    let parked = false
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'session.resume' && room.gateway.rpcFor('prompt.submit').length && !parked) {
+        parked = true
+        await gate
+      }
+
+      return request(method, params)
+    }
+
+    const turn = room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])
+
+    await drain(() => !parked)
+    const marker = room.chat.$groupChats.get().Room?.stranded?.helper
+    const resumes = room.gateway.rpcFor('session.resume').length
+
+    expect(room.turns.strandedMarkerIsLive(marker)).toBe(true)
+    await room.turns.harvestStrandedGroupReply('Room', LOCAL_MEMBER)
+    expect(log(room, 'Room')).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBe(marker)
+    expect(room.gateway.rpcFor('session.resume')).toHaveLength(resumes) // the harvest never touched the session
+
+    release()
+    expect(await turn).toBe('late answer')
+    expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+    expect(room.turns.strandedMarkerIsLive(marker)).toBe(false)
+  })
+
+  it('harvests a remote member\'s turn that a previous Desktop process left in flight', async () => {
+    const room = await loadRoom()
+    const { groupSessionKey } = await import('./group-membership')
+
+    // What the durable room looks like after a restart: the marker persisted with a
+    // token no poll in THIS process owns, and the member's session on ITS machine
+    // finished the turn in the meantime.
+    room.chat.updateGroupChat('Fleet', current => {
+      current.sessions = { [groupSessionKey('t1', ROUTED_MEMBER)]: 'sid-mini-helper' }
+      current.stranded = { 'mini::helper': { before: 1, thread: 't1', turn: 'rt-gone:abandoned' } }
+
+      return current
+    })
+    room.gateway.sessions.set('sid-mini-helper', {
+      messages: [
+        { content: 'the turn prompt', role: 'user' },
+        { content: 'Finished on the mini after the Desktop went away.', role: 'assistant' }
+      ],
+      profile: 'helper',
+      runtime: 'rt-mini-helper',
+      stored: 'sid-mini-helper',
+      title: 'Group: Fleet · t1'
+    })
+
+    expect(room.turns.strandedMarkerIsLive(room.chat.$groupChats.get().Fleet.stranded?.['mini::helper'])).toBe(false)
+    await room.turns.harvestStrandedGroupReply('Fleet', ROUTED_MEMBER)
+
+    expect(log(room, 'Fleet')).toHaveLength(1)
+    expect(log(room, 'Fleet')[0].from).toMatchObject({ name: 'helper', source: 'mini' })
+    expect(log(room, 'Fleet')[0].text).toMatch(/Finished on the mini/)
+    expect(room.chat.$groupChats.get().Fleet.stranded?.['mini::helper']).toBeUndefined()
+  })
+})
+
 // A turn that outlives its deadline leaves a "stranded" marker. The member is
 // still working; the next round harvests whatever landed instead of throwing
 // the finished work away.
@@ -1115,6 +1220,39 @@ describe('stranded harvest', () => {
     expect(log(room, 'Rescue')).toHaveLength(1)
     expect(log(room, 'Rescue')[0].text).toMatch(/delivered late/)
     expect(room.chat.$groupChats.get().Rescue.stranded?.research).toBeUndefined()
+  })
+
+  it('drops a marker whose session is genuinely gone, but keeps one whose source is unreachable', async () => {
+    const room = await loadRoom()
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+
+    room.chat.updateGroupChat('Gone', current => {
+      current.sessions = { research: 'sid-deleted', ops: 'sid-ops' }
+      current.stranded = { ops: 1, research: 1 }
+
+      return current
+    })
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'session.resume' && params.session_id === 'sid-deleted') {
+        throw Object.assign(new Error('session not found'), { code: 4007 })
+      }
+
+      if (method === 'session.resume' && params.session_id === 'sid-ops') {
+        throw new Error('socket closed')
+      }
+
+      return request(method, params)
+    }
+
+    await room.turns.harvestStrandedGroupReply('Gone', { name: 'research', title: '' })
+    await room.turns.harvestStrandedGroupReply('Gone', { name: 'ops', title: '' })
+
+    expect(log(room, 'Gone')).toHaveLength(0)
+    // 4007: nothing will ever land — a marker that cannot resolve would silence the member for good.
+    expect(room.chat.$groupChats.get().Gone.stranded?.research).toBeUndefined()
+    // Unreachable: the turn may still be running there — leave it for the next boundary.
+    expect(room.chat.$groupChats.get().Gone.stranded?.ops).toBe(1)
   })
 
   it('consumes the marker without posting when the late reply is a pass', async () => {

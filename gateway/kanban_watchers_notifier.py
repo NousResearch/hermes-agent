@@ -128,6 +128,21 @@ def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
     )
 
 
+_UNROUTABLE_WARNED: set[tuple] = set()
+
+
+def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_args: Any) -> None:
+    """A routed subscription the credential gate fail-closes is a permanent dead-end: delivery
+    rewinds every tick with only a DEBUG line. Say so ONCE per row at WARNING, mirroring
+    ``_warn_anchorless_thread_sub_once`` (#115460)."""
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _UNROUTABLE_WARNED:
+        return
+    _UNROUTABLE_WARNED.add(key)
+    logger.warning(message, sub.get("task_id"), getattr(platform, "value", platform),
+                   sub.get("chat_id"), *extra_args)
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -148,6 +163,13 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # Empty maps are startup placeholders for route-only profiles; a connected
     # secondary on ANY platform establishes an independent credential boundary.
     if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
+        _warn_unroutable_sub_once(
+            sub, platform,
+            "kanban notifier: subscription for %s on %s chat %s is pinned to profile %s, which runs "
+            "other-platform adapters but none for %s; it will not be delivered. Give that profile a %s "
+            "adapter or make it route-only, then re-subscribe with `hermes kanban notify-subscribe ... "
+            "--notifier-profile <a profile that holds a %s credential>`.",
+            profile, platform.value, platform.value, platform.value)
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")
@@ -165,6 +187,12 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
         if route.matches(platform.value, guild_id=guild, chat_id=chat,
                          thread_id=thread, parent_chat_id=parent, user_id=user_id):
             if route.profile != profile:
+                _warn_unroutable_sub_once(
+                    sub, platform,
+                    "kanban notifier: subscription for %s on %s chat %s is stamped with profile %s but a "
+                    "profile_routes entry pins that chat to profile %s; it will not be delivered. "
+                    "Re-subscribe with `hermes kanban notify-subscribe ... --notifier-profile %s`.",
+                    profile, route.profile, route.profile)
                 return None
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}

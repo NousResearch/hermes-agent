@@ -254,11 +254,7 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
 
 
 def test_macos_mktemp_dot_separator_records_ad_hoc_evidence(tmp_path, monkeypatch):
-    """`mktemp -t hermes-verify` produces a DOT separator on macOS, not a hyphen.
-
-    The agent is only ever told to use a `hermes-verify-` prefix, so a hyphen-only
-    matcher records no evidence on macOS and the agent is nudged to verify forever.
-    """
+    """BSD `mktemp -t` uses a dot separator, not a hyphen."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     script = Path(tempfile.gettempdir()) / f"hermes-verify.{tmp_path.name}.py"

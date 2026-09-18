@@ -13623,10 +13623,11 @@ const instanceWindows = new Set<any>()
 // when there's no live source window (e.g. all windows closed on macOS). The
 // pure cascade math lives in session-windows.ts (instanceWindowBounds).
 function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
-  const fallback = computeWindowOptions(readWindowState(), screen.getAllDisplays())
+  const displays = screen.getAllDisplays()
+  const fallback = computeWindowOptions(readWindowState(), displays)
   const base = source && !source.isDestroyed() ? source.getBounds() : null
 
-  return instanceWindowBounds(base, fallback)
+  return instanceWindowBounds(base, fallback, displays)
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window

@@ -130,6 +130,14 @@ test('instanceWindowBounds cascades a new window off its source bounds', () => {
   assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
 })
 
+test('instanceWindowBounds keeps the cascaded window inside the work area it lands on', () => {
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]
+  // Source docked at the bottom-right: a raw +32/+32 cascade would overshoot both edges.
+  const bounds = instanceWindowBounds({ x: 700, y: 240, width: 1220, height: 800 }, { width: 1, height: 1 }, displays)
+
+  assert.deepEqual(bounds, { width: 1220, height: 800, x: 700, y: 240 })
+})
+
 test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {
   const fallback = { width: 1280, height: 800 }
 

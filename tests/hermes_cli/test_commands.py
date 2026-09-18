@@ -462,6 +462,30 @@ class TestSubcommandCompletion:
         texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
         assert texts == {"telegram", "discord"}
 
+    def test_resume_completes_session_names_and_ids_without_model_arguments(self):
+        sessions = [
+            {"id": "sess-alpha", "title": "Alpha project", "preview": "deploy service"},
+            {"id": "sess-untitled", "title": "", "preview": "quick note"},
+        ]
+        completer = SlashCommandCompleter(session_provider=lambda: sessions)
+
+        assert {c.text for c in _completions(completer, "/resume ")} == {
+            "Alpha project", "sess-alpha", "sess-untitled",
+        }
+        # /model was intentionally removed from the interactive CLI; it must not
+        # gain an argument provider as a side effect of session completion.
+        assert _completions(completer, "/model ") == []
+
+    def test_rollback_completes_diff_and_checkpoint_numbers(self):
+        checkpoints = [
+            {"short_hash": "abc1234", "reason": "before edit"},
+            {"short_hash": "def5678", "reason": "after edit"},
+        ]
+        completer = SlashCommandCompleter(checkpoint_provider=lambda: checkpoints)
+
+        assert {c.text for c in _completions(completer, "/rollback ")} == {"diff", "1", "2"}
+        assert {c.text for c in _completions(completer, "/rollback diff ")} == {"1", "2"}
+
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 

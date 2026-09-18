@@ -29,7 +29,6 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 # Unicode TAG chars (U+E0000–U+E007F) render as nothing but LLM tokenizers see them:
 # the "ASCII smuggling" injection channel. Emoji tag sequences (TR51: U+1F3F4 base +
-# tag spec + U+E007F CANCEL TAG, e.g. Scotland/Wales flags) are the only legit use.
 # Deprecated as language tags, these render as nothing in every terminal and chat UI but are perfectly
 # visible to an LLM tokenizer — the classic "ASCII smuggling" prompt-injection channel (hide
 # `\u{E0069}\u{E0067}\u{E006E}...` = invisible instructions inside otherwise benign tool output). Ported
@@ -40,6 +39,17 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _UNICODE_TAG_SUB_RE = re.compile(
     r"(\U0001F3F4[\U000E0020-\U000E007E]+\U000E007F)"  # valid emoji tag seq (kept)
     r"|[\U000E0000-\U000E007F]"                        # any other tag char (stripped)
+)
+
+# Bidi control characters (RLO/LRO/RLE/LRE/PDF/pop overrides + embeddings),
+# direction marks, zero-width space/word-joiner and BOM: they reorder or occupy
+# no space on screen, so rendered text can LOOK benign while the model reads a
+# different string ("trojan source" — CVE-2021-42574). Stripped alongside TAG
+# chars by ``strip_unicode_tags``. The JOINERS (ZWNJ U+200C, ZWJ U+200D) are
+# deliberately NOT here: they are legitimate inside emoji sequences and complex
+# scripts, and carry no display-trick payload — the existing ZWJ test pins that.
+_BIDI_INVISIBLE_RE = re.compile(
+    r"[\u202a-\u202e\u2066-\u2069\u200b\u200e\u200f\u2060\ufeff]"
 )
 
 
@@ -72,12 +82,16 @@ def sanitize_display_text(text: str) -> str:
 
 
 def strip_unicode_tags(text: str) -> str:
-    """Remove invisible Unicode TAG chars (a prompt-injection smuggling channel in
-    untrusted tool output); valid emoji tag sequences are preserved.
+    """Remove invisible TAG/bidi/zero-width unicode from untrusted text before it
+    reaches a model or a rendered display (vault metadata, MCP tool output):
+    plane-14 TAG characters — the "ASCII smuggling" prompt-injection channel —
+    plus bidi controls (RLO/LRO/overrides, CVE-2021-42574 reordering) and
+    zero-width/BOM invisibles. Valid emoji tag sequences are preserved.
 
-    Returns the input unchanged (fast path) when no plane-14 tag characters are present. Ported from
-    block/goose#10746.
+    Returns the input unchanged (fast path) when no candidate characters are
+    present. Ported from block/goose#10746; bidi/zero-width coverage follows
+    the repo's own ``INVISIBLE_CHARS`` catalog in ``tools/threat_patterns.py``.
     """
-    if not text or not _HAS_UNICODE_TAG.search(text):
+    if not text or not (_HAS_UNICODE_TAG.search(text) or _BIDI_INVISIBLE_RE.search(text)):
         return text
-    return _UNICODE_TAG_SUB_RE.sub(lambda m: m.group(1) or "", text)
+    return _UNICODE_TAG_SUB_RE.sub(lambda m: m.group(1) or "", _BIDI_INVISIBLE_RE.sub("", text))

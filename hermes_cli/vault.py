@@ -113,6 +113,7 @@ def _cmd_list(args) -> None:
     """Local items always; external managers only for the lifetime of this CLI process (a
     `hermes vault list` unlock does not carry into a chat session — unlock there when asked)."""
     from agent.vault_backends import enabled_backends
+    from agent.vault_store import sanitize_vault_metadata
 
     c = _console()
     rows, locked = [], []
@@ -131,7 +132,8 @@ def _cmd_list(args) -> None:
         for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
             table.add_column(col, style="bold" if col == "Handle" else None)
         for source, meta in rows:
-            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+            table.add_row(meta.id, source, meta.kind, sanitize_vault_metadata(meta.label),
+                          sanitize_vault_metadata(meta.identifier) or "-", meta.origin or "-")
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
     for name in locked:

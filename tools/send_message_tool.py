@@ -203,6 +203,9 @@ def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+    # Email Subject header override (meaningful for email targets only;
+    # carried through to the email sender; other platforms ignore it).
+    subject = (args.get("subject") or "").strip() or None
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
@@ -258,7 +261,7 @@ def _handle_send(args):
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+                                              subject=subject, **handler_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -587,7 +590,7 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None, subject=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -623,7 +626,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
-        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
+        # Only the email sender declares `subject`; other text senders keep
+        # their exact 4-arg call contract.
+        if platform_name == "email" and subject is not None:
+            send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id, subject=subject)  # noqa: E731
+        else:
+            send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
@@ -685,6 +693,10 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "subject": {
+                "type": "string",
+                "description": "For action='send' to email targets: the email Subject header. Omit to keep the thread-context subject (replies) or the default. Ignored by non-email platforms."
             }
         },
         "required": []

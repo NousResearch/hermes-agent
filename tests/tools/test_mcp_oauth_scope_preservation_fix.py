@@ -87,6 +87,15 @@ class TestRestoreConfiguredScope:
         provider._restore_configured_scope()
         assert provider.context.client_metadata.scope == "server_scope"
 
+    def test_restores_when_step3_yields_empty_string(self, provider_cls):
+        """A PRM-only server advertising an empty scope list leaves Step 3 with ""
+        rather than None; the configured scope must still be restored. Palantir
+        Foundry needs exactly this to receive ``offline_access`` — the scope that
+        makes it issue a refresh token — while never advertising it."""
+        provider = _build(provider_cls, "offline_access", "")
+        provider._restore_configured_scope()
+        assert provider.context.client_metadata.scope == "offline_access"
+
     def test_survives_missing_context_metadata(self, provider_cls):
         """Defensive: context without client_metadata must not raise."""
         provider = _build(provider_cls, "some_scope", None)

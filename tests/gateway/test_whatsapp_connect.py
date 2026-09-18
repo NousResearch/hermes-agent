@@ -587,11 +587,20 @@ class TestHttpSessionLifecycle:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
             await adapter.disconnect()
 
+        # LOCAL PATCH: CREATE_NO_WINDOW is passed (deliberately WITHOUT
+        # DETACHED_PROCESS, so stdout capture keeps working) because taskkill is
+        # a console app and the gateway that spawns it runs under pythonw.exe
+        # with no console of its own -- Windows would allocate a new console and
+        # flash a visible window on the user's desktop.  Assert the flag matches
+        # the helper instead of freezing the kwarg set.
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         mock_run.assert_called_once_with(
             ["taskkill", "/PID", "12345", "/T"],
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=windows_hide_flags(),
         )
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()

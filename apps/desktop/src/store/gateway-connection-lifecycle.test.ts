@@ -769,7 +769,7 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     const { requestGatewayForAgent } = await import('./gateway')
     const parkedDials = getConnectionFor.mock.calls.length
     await expect(openGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
-    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list')).rejects.toThrow(/retired/i)
+    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list', {})).rejects.toThrow(/retired/i)
     await expect(retainGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
     expect(getConnectionFor.mock.calls.length).toBe(parkedDials)
 
@@ -868,14 +868,14 @@ it('keeps background auth rejection after socket disposal until recovery or conn
   }))
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
   pruneSecondaryGateways(new Set())
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(1)
 
   // Removing/replacing a connection must not leave a stale rejection behind.
   disposeSecondariesForConnection('cloud')
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
 
   getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' } as never)
@@ -894,12 +894,12 @@ it('does not let a removed connection repopulate the auth rejection', async () =
   const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-  const pending = requestGatewayForAgent('cloud', 'default', 'session.list')
+  const pending = requestGatewayForAgent('cloud', 'default', 'session.list', {})
   const rejected = expect(pending).rejects.toThrow()
   await vi.waitFor(() => expect(getGatewayWsUrlFor).toHaveBeenCalledOnce())
   disposeSecondariesForConnection('cloud')
   rejectTicket(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
   await rejected
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
 })

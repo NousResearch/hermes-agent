@@ -303,14 +303,20 @@ _SPECS = [
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: block a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: schedule a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
-        _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
+        _reason("Optional reason/note — recorded atomically with unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [

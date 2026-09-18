@@ -891,8 +891,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
-                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
-                                 f"--force to close its run and complete anyway.")
+                                 "worker to finish or ask the operator to review its ownership.")
                 return False
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
@@ -908,13 +907,20 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return _ok_or_err(ok, f"cannot edit {args.task_id} (unknown id or task is not done)", f"Edited {args.task_id}")
 
 
-def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
-    def run(tid):
-        if reason:
-            kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
-    return run
+def _block_one(conn, tid: str, reason: Optional[str], kind: Optional[str], *,
+               force: bool = False, comment_author: Optional[str] = None) -> bool:
+    """block_task with the live-claim guard surfaced as an actionable error."""
+    try:
+        return kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid), force=force,
+            comment_author=comment_author,
+        )
+    except kb.LiveClaimError:
+        _err(
+            f"cannot block {tid}: a live worker is running it. Wait for the worker "
+            "to finish or ask the operator to review its ownership. Nothing changed."
+        )
+        return False
 
 
 def _cmd_block(args: argparse.Namespace) -> int:
@@ -936,9 +942,27 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+        def op(tid):
+            return _block_one(conn, tid, reason, kind,
+                              force=bool(getattr(args, "force", False)), comment_author=author)
+
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+
+
+def _schedule_one(conn, tid: str, reason: Optional[str], *,
+                  force: bool = False, comment_author: Optional[str] = None) -> bool:
+    """schedule_task with the live-claim guard surfaced as an actionable error."""
+    try:
+        return kb.schedule_task(
+            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid), force=force,
+            comment_author=comment_author,
+        )
+    except kb.LiveClaimError:
+        _err(
+            f"cannot schedule {tid}: a live worker is running it. Wait for the worker "
+            "to finish or ask the operator to review its ownership. Nothing changed."
+        )
+        return False
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
@@ -947,8 +971,10 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
+        def op(tid):
+            return _schedule_one(conn, tid, reason,
+                                 force=bool(getattr(args, "force", False)), comment_author=author)
+
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 
@@ -962,7 +988,9 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        def op(tid):
+            return kb.unblock_task(conn, tid, reason=reason, comment_author=author)
+
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 

@@ -223,3 +223,69 @@ async def test_new_command_still_discards_parked_internal():
     )
 
     assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_stop_internal_head_discards_human_overflow():
+    """Finding 3 (inverse ordering): an accepted internal wake occupies the primary
+    pending slot while an accepted HUMAN follow-up waits in
+    SessionState.conversation.queued_events (overflow). /stop must restart the
+    internal wake ONLY -- the queued user turn was explicitly cancelled, but the
+    post-turn promotion (``_run_agent_drain_pending`` -> ``_promote_queued_event``)
+    would otherwise replay it right after the wake runs.
+
+    Red before the fix: the human event survives in overflow and the next
+    promotion replays the cancelled user turn.
+    """
+    source = _make_source()
+    session_key = build_session_key(source)
+    adapter = _make_adapter()
+    runner = _make_runner(adapter)
+
+    wake = MessageEvent(
+        text="[ASYNC DELEGATION BATCH COMPLETE] 1 task done",
+        source=source,
+        internal=True,
+    )
+    wake._gateway_accepted = True
+    adapter._pending_messages[session_key] = wake
+
+    human = MessageEvent(text="follow-up question", source=source)
+    human._gateway_accepted = True
+    overflow_wake = MessageEvent(
+        text="[ASYNC DELEGATION BATCH COMPLETE] 2 tasks done",
+        source=source,
+        internal=True,
+    )
+    overflow_wake._gateway_accepted = True
+    runner._session_state(session_key).conversation.queued_events.extend(
+        [human, overflow_wake]
+    )
+
+    # Mirror _dispatch_active_session_command: a command guard is installed while
+    # the runner handles /stop; the drain below releases it.
+    command_guard = asyncio.Event()
+    adapter._active_sessions[session_key] = command_guard
+
+    restarted = []
+    adapter._start_session_processing = (
+        lambda event, key: restarted.append((event, key)) or True
+    )
+
+    await runner._busy_stop_command(MessageEvent(text="/stop", source=source), session_key, source)
+    await adapter._drain_pending_after_session_command(session_key, command_guard)
+
+    # The internal wake restarts...
+    assert [key for _, key in restarted] == [session_key], (
+        "internal wake never reached _start_session_processing after /stop"
+    )
+    assert restarted[0][0] is wake
+    # ...and the cancelled human turn is gone from overflow while the accepted
+    # internal overflow wake is preserved.
+    remaining = list(runner._session_state(session_key).conversation.queued_events)
+    assert human not in remaining, "cancelled human turn survived /stop in overflow"
+    assert remaining == [overflow_wake], (
+        "accepted internal overflow wake not preserved across /stop"
+    )
+    # The post-turn promotion path must yield the internal wake, never the human.
+    assert runner._promote_queued_event(session_key, adapter, None) is overflow_wake

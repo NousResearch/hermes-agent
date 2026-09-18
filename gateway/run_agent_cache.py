@@ -523,8 +523,7 @@ class GatewayAgentCacheMixin:
                     # (SessionState.conversation.queued_events). The pop above discarded the
                     # human head and the drain only reads the primary slot, so promote the
                     # accepted overflow wake — otherwise it is orphaned until the next user
-                    # message. Unaccepted events were never admitted; human overflow items
-                    # keep existing behavior.
+                    # message. Unaccepted events were never admitted.
                     overflow_state = self._peek_session_state(session_key)
                     overflow = overflow_state.conversation.queued_events if overflow_state else None
                     if overflow:
@@ -534,6 +533,16 @@ class GatewayAgentCacheMixin:
                             ):
                                 pending_slot[session_key] = overflow.pop(_i)
                                 break
+                # Inverse ordering (/stop with an internal wake in the primary slot and an
+                # accepted HUMAN follow-up in overflow): the command drain restarts the
+                # wake, then the post-turn promotion would replay the cancelled user turn
+                # right after it. /stop cancels queued user input, so drop human events
+                # from the overflow FIFO while keeping accepted internal wakes in both
+                # stores. /new and /reset keep the full discard above. See #114456.
+                overflow_state = self._peek_session_state(session_key)
+                overflow = overflow_state.conversation.queued_events if overflow_state else None
+                if overflow and any(not getattr(_q, "internal", False) for _q in overflow):
+                    overflow[:] = [_q for _q in overflow if getattr(_q, "internal", False)]
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

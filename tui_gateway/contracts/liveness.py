@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import MethodParams, Params, Result
+from .base import MethodParams, Result
 from .registry import method
 
 
@@ -26,7 +26,7 @@ method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResu
        doc="What THIS build enforces (a client withholds a feature unless advertised).")
 
 
-class ClientCapabilitiesParams(Params):
+class ClientCapabilitiesParams(MethodParams):
     #: The client answers server→client requests (clarify, approval, sudo, …) — with a result or a -32601
     #: error for methods it has no handler for. A WebSocket client that never says so is treated as a
     #: build older than server→client requests and every such request fails fast for it.

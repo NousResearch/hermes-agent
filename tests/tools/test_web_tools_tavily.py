@@ -92,7 +92,7 @@ class TestNormalizeTavilySearchResults:
     """Test search result normalization."""
 
     def test_basic_normalization(self):
-        from tools.web_tools import _normalize_tavily_search_results
+        from plugins.web.tavily.provider import _normalize_tavily_search_results
         raw = {
             "results": [
                 {"title": "Python Docs", "url": "https://docs.python.org", "content": "Official docs", "score": 0.9},
@@ -111,7 +111,7 @@ class TestNormalizeTavilySearchResults:
 
 
     def test_missing_fields(self):
-        from tools.web_tools import _normalize_tavily_search_results
+        from plugins.web.tavily.provider import _normalize_tavily_search_results
         result = _normalize_tavily_search_results({"results": [{}]})
         web = result["data"]["web"]
         assert web[0]["title"] == ""
@@ -125,7 +125,7 @@ class TestNormalizeTavilyDocuments:
     """Test extract document normalization."""
 
     def test_basic_document(self):
-        from tools.web_tools import _normalize_tavily_documents
+        from plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {
             "results": [{
                 "url": "https://example.com",
@@ -142,11 +142,57 @@ class TestNormalizeTavilyDocuments:
         assert docs[0]["metadata"]["sourceURL"] == "https://example.com"
 
 
-    def test_fallback_url(self):
-        from tools.web_tools import _normalize_tavily_documents
+    def test_missing_result_url_is_not_attributed_to_requested_url(self):
+        from plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {"results": [{"content": "data"}]}
-        docs = _normalize_tavily_documents(raw, fallback_url="https://fallback.com")
-        assert docs[0]["url"] == "https://fallback.com"
+        docs = _normalize_tavily_documents(raw)
+        assert docs[0]["url"] == ""
+
+
+class TestWebExtractCacheAttribution:
+    """Only cache content under the URL reported by the extract provider."""
+
+    def test_partial_result_caches_under_its_own_requested_url(self):
+        from tools import web_tools_extract as wte
+
+        class _PartialProvider:
+            name = "tavily"
+
+            async def extract(self, urls, format=None):
+                return [
+                    {"url": "https://unrequested.example/page", "raw_content": "foreign page"},
+                    {"url": urls[1], "raw_content": "second page", "title": "Second"},
+                ]
+
+        urls = ["https://example.com/first", "https://example.com/second"]
+        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+            asyncio.run(wte._dispatch_extract(_PartialProvider(), urls, None))
+
+        cache_put.assert_called_once_with(
+            "https://example.com/second", "second page", "Second", format=None, provider="tavily"
+        )
+
+    def test_redirected_page_caches_under_requested_source_url(self):
+        """Keenable/Firecrawl report the post-redirect address in ``url`` and the requested URL in
+        ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target.
+        The first requested page is omitted, so positional pairing would file the redirected page
+        under the wrong requested URL."""
+        from tools import web_tools_extract as wte
+
+        class _RedirectProvider:
+            name = "keenable"
+
+            async def extract(self, urls, format=None):
+                return [{"url": "https://www.example.com/moved", "raw_content": "moved page", "title": "Moved",
+                         "metadata": {"sourceURL": urls[1]}}]
+
+        urls = ["https://example.com/failed", "https://example.com/old"]
+        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+            asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
+
+        cache_put.assert_called_once_with(
+            "https://example.com/old", "moved page", "Moved", format=None, provider="keenable"
+        )
 
 
 # ─── availability / auto-detect ───────────────────────────────────────────────
@@ -256,17 +302,13 @@ class TestWebSearchTavily:
             assert result["data"]["web"][0]["title"] == "Result"
 
     def test_search_keyless_dispatch(self):
-        """Keyless Tavily routes through the ring; pinned tavily starts at
-        tavily and the ring searcher sends the keyless headers."""
-        from plugins.web import keyless_mcp
-
+        """Opt-in keyless Tavily hits Tavily's own endpoint, not the ring."""
         mock_response = _ok_response({
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc"}]
         })
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch.object(keyless_mcp, "_vendor_pinned", lambda n: n == "tavily"), \
-             patch("requests.post", return_value=mock_response) as mock_post, \
+             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
              patch("tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             from tools.web_tools import web_search_tool
@@ -275,6 +317,14 @@ class TestWebSearchTavily:
             headers = mock_post.call_args.kwargs["headers"]
             assert headers["X-Tavily-Access-Mode"] == "keyless"
             assert headers["X-Client-Name"] == "hermes-agent"
+            assert "Authorization" not in headers
+            assert "api.tavily.com/search" in mock_post.call_args.args[0]
+
+    def test_tavily_is_not_in_keyless_ring(self):
+        from plugins.web.keyless_mcp import _KEYLESS_RING, _KEYLESS_SEARCHERS, _KEYLESS_EXTRACTORS
+        assert "tavily" not in _KEYLESS_RING
+        assert "tavily" not in _KEYLESS_SEARCHERS
+        assert "tavily" not in _KEYLESS_EXTRACTORS
 
 
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────

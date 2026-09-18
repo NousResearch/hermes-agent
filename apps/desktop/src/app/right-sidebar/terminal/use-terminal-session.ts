@@ -9,6 +9,7 @@ import type { CSSProperties } from 'react'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
@@ -19,7 +20,6 @@ import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
-  isAddSelectionShortcut,
   isMacPlatform,
   resolveSurfaceColor,
   terminalSelectionAnchor,
@@ -476,7 +476,7 @@ export function useTerminalSession({
   // must reach the shell as clear-screen.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
+      if (!isComposerChord(event) || !readSelection().trim()) {
         return
       }
 
@@ -854,7 +854,7 @@ export function useTerminalSession({
         // user last `cd`'d; the main side falls back to the launch cwd (then
         // home) if that dir no longer exists.
         .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
-        .then(session => {
+        .then(async session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
 
@@ -870,8 +870,6 @@ export function useTerminalSession({
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
-
-          setStatus('open')
 
           cleanup.push(
             terminalApi.onData(session.id, data => {
@@ -891,6 +889,14 @@ export function useTerminalSession({
               }
             })
           )
+
+          const attached = await terminalApi.attach(session.id)
+
+          if (!attached) {
+            throw new Error('Terminal session disappeared before its output stream attached')
+          }
+
+          setStatus('open')
 
           window.requestAnimationFrame(() => {
             term.clearSelection() // drop any selection painted over transient boot rows

@@ -11,11 +11,13 @@ Covers:
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 import hermes_cli.update_receipt as ur
+from hermes_cli import update_cmd
 
 
 @pytest.fixture()
@@ -23,9 +25,9 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
+    # ``hermes_cli.config`` — patch where production reads.
+    monkeypatch.setenv("HERMES_HOME", str(home))
     # ensure no receipt bleeds between tests
     ur._current = None
     yield home
@@ -64,6 +66,43 @@ class TestReceiptLifecycle:
         assert gr["killed_pids"] == [123]
         assert gr["incomplete"] is False
         assert payload["fleet"][0]["profile"] == "default"
+
+    def test_fresh_recovery_result_reaches_persisted_receipt(self, receipt_home):
+        recovery = {
+            "requested": ["coder", "default", "ops"],
+            "verified": ["default"],
+            "relaunch_attempted": ["ops"],
+            "failed": ["coder"],
+            "skipped": [
+                {
+                    "profile": "desk",
+                    "kind": "serve",
+                    "supervisor": "desktop",
+                    "reason": "desktop app owns and respawns this serve backend",
+                }
+            ],
+        }
+
+        ur.begin_update_receipt()
+        ur.record_gateway_restart(
+            restarted_services=[],
+            incomplete=True,
+            phase_error="boom: module vanished mid-pull",
+            fresh_recovery=recovery,
+        )
+        path = _finalize("partial")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        persisted = payload["gateway_restart"]["fresh_recovery"]
+        assert {key: persisted[key] for key in recovery} == recovery
+        # Serve coverage is always persisted, even when the pass had nothing
+        # to report, so a reader can tell "no serve runtime" from "the field
+        # predates #92145".
+        assert persisted["serve_units"] == {"verified": [], "failed": []}
+        assert persisted["stale_runtimes"] == []
+        # The conservative vocabulary is the persisted contract: no bucket may
+        # rebrand an unverified relaunch as supervisor-backed success.
+        assert "succeeded" not in persisted
 
     def test_latest_pointer_written_and_readable(self, receipt_home):
         ur.begin_update_receipt()
@@ -121,13 +160,124 @@ class TestReceiptLifecycle:
         assert ur.read_latest_receipt() is None
 
 
+class TestCommandBoundaryFinalization:
+    """Receipt lifetime is owned by the update-command boundary (#91283 review).
+
+    Early sys.exit paths (concurrent-instance preflight exit-2, venv-holder
+    refusal, fetch failure) predate the inner finalize sites; the boundary
+    safety net must persist the receipt exactly once with the stop reason,
+    while inner-finalized runs are untouched.
+    """
+
+    def test_pending_receipt_persisted_on_exit_2_refusal(self, receipt_home):
+        ur.begin_update_receipt()
+        ur.record_step("windows_preflight", False, "another hermes.exe running")
+        path = ur.finalize_pending_update_receipt(2, "sys.exit(2)")
+        assert path is not None and path.is_file()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "refused"
+        assert payload["exit_code"] == 2
+        assert payload["stop_reason"] == "sys.exit(2)"
+        assert payload["finished_at"] is not None
+        assert ur._current is None
+
+    def test_pending_receipt_persisted_on_exit_1_failure(self, receipt_home):
+        ur.begin_update_receipt()
+        path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "failed"
+        assert payload["exit_code"] == 1
+
+    def test_noop_when_inner_path_already_finalized(self, receipt_home):
+        """Exactly-once: boundary call after an inner finalize writes nothing."""
+        ur.begin_update_receipt()
+        first = ur.finalize_update_receipt("success")
+        assert first is not None
+        second = ur.finalize_pending_update_receipt(0, "boundary")
+        assert second is None
+        directory = receipt_home / "logs" / "update_receipts"
+        assert len(list(directory.glob("update_*.json"))) == 1
+
+    def test_noop_when_never_begun(self, receipt_home):
+        assert ur.finalize_pending_update_receipt(2, "sys.exit(2)") is None
+        assert ur.read_latest_receipt() is None
+
+    def test_cmd_update_boundary_finalizes_on_early_exit(
+        self, receipt_home, monkeypatch
+    ):
+        """End-to-end through the real cmd_update wrapper: an impl that begins
+        a receipt then sys.exit(2)s (the concurrent-instance shape) must leave
+        a finalized 'refused' receipt, preserve the exit code, and clear the
+        singleton."""
+        from types import SimpleNamespace
+
+        from hermes_cli import main as hermes_main
+
+        def _fake_impl(args, gateway_mode):
+            ur.begin_update_receipt()
+            ur.record_step("windows_preflight", False, "hermes.exe holds venv")
+            sys.exit(2)
+
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", _fake_impl)
+        monkeypatch.setattr(
+            hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
+        )
+        monkeypatch.setattr(
+            hermes_main,
+            "_install_hangup_protection",
+            lambda gateway_mode: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            hermes_main, "_finalize_update_output", lambda state: None, raising=False
+        )
+
+        class _FakeLock:
+            holder = None
+
+            def acquire(self):
+                return True
+
+            def release(self):
+                pass
+
+        import hermes_cli.update_lock as update_lock_mod
+
+        monkeypatch.setattr(update_lock_mod, "UpdateLock", _FakeLock)
+
+        args = SimpleNamespace(
+            check=False, gateway=False, branch=None, yes=False,
+            force=False, force_venv=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            hermes_main.cmd_update(args)
+
+        assert exc_info.value.code == 2  # exit code preserved
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "refused"
+        assert latest["exit_code"] == 2
+        assert latest["stop_reason"] == "sys.exit(2)"
+        assert latest["steps"][0]["name"] == "windows_preflight"
+        assert ur._current is None
+        # exactly-once: exactly one receipt file
+        directory = receipt_home / "logs" / "update_receipts"
+        assert len(list(directory.glob("update_*.json"))) == 1
+
+
 class TestFleetClassification:
     def _fleet_with(self, monkeypatch, tmp_path, record, expected_sha="a" * 40):
         """Run collect_fleet_versions against one fake default profile."""
         home = tmp_path / "fleet_home"
         home.mkdir()
+        gateway_record = {
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            **record,
+        }
         (home / "gateway_state.json").write_text(
-            json.dumps(record), encoding="utf-8"
+            json.dumps(gateway_record), encoding="utf-8"
         )
         monkeypatch.setattr(
             "hermes_cli.build_info.get_code_identity",
@@ -141,8 +291,42 @@ class TestFleetClassification:
             "hermes_cli.profiles._get_profiles_root",
             lambda: tmp_path / "nonexistent_profiles_root",
         )
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr(ur, "_socket_identity", lambda home: None)
+        monkeypatch.setattr(
+            "gateway.status.live_gateway_pid_for_home",
+            lambda candidate_home: gateway_record["pid"],
+        )
         return ur.collect_fleet_versions()
+
+    def test_live_non_gateway_state_writer_is_unknown(self, monkeypatch, tmp_path):
+        """A state file written by this non-gateway pytest process proves no gateway is current."""
+        from gateway.status import write_runtime_status
+
+        home = tmp_path / "fleet_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(
+            "hermes_cli.build_info.get_code_identity",
+            lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8,
+                                   "version": "1.0", "source": "git"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_default_hermes_home", lambda: home
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_profiles_root",
+            lambda: tmp_path / "nonexistent_profiles_root",
+        )
+
+        write_runtime_status(gateway_state="running")
+
+        fleet = ur.collect_fleet_versions()
+
+        assert len(fleet) == 1
+        assert fleet[0]["pid"] == os.getpid()
+        assert fleet[0]["state"] == "unknown"
+        assert fleet[0]["code_sha"] is None
+        assert fleet[0]["code_version"] is None
 
     def test_current_gateway(self, monkeypatch, tmp_path):
         sha = "a" * 40
@@ -186,6 +370,38 @@ class TestFleetClassification:
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         assert ur.collect_fleet_versions() == []
 
+    def test_live_runtime_record_without_verified_gateway_is_unknown(
+        self, monkeypatch, tmp_path
+    ):
+        """A live status record alone cannot make a profile current."""
+        home = tmp_path / "fleet_home"
+        home.mkdir()
+        monkeypatch.setattr(
+            ur,
+            "_code_identity",
+            lambda refresh=False: {"sha": "a" * 40},
+        )
+        record = {
+            "pid": 4242,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "code_sha": "a" * 40,
+            "code_version": "1.0",
+        }
+        monkeypatch.setattr(ur, "_profile_homes", lambda: [("default", home)])
+        monkeypatch.setattr(ur, "_socket_identity", lambda home: None)
+        monkeypatch.setattr("gateway.status.read_runtime_status", lambda path: record)
+        monkeypatch.setattr("gateway.status.runtime_status_pid_is_live", lambda record: True)
+        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda home: None)
+
+        fleet = ur.collect_fleet_versions()
+
+        assert len(fleet) == 1
+        assert fleet[0]["state"] == "unknown"
+        assert fleet[0]["code_sha"] is None
+        assert fleet[0]["code_version"] is None
+
     def test_matrix_returns_true_only_on_stale(self, capsys):
         assert ur.print_fleet_version_matrix([]) is False
         ok = ur.print_fleet_version_matrix(
@@ -209,6 +425,17 @@ class TestFleetClassification:
         )
         assert ok is False
         assert "version unknown" in capsys.readouterr().out
+
+    def test_identity_pending_row_gets_restart_aware_copy(self, capsys):
+        """#112634: a gateway this update relaunched that has not stamped yet must not be told to
+        restart — it was just restarted on the new code. Still non-fatal."""
+        ok = ur.print_fleet_version_matrix(
+            [{"profile": "default", "pid": 34516, "code_sha": None, "state": "unknown", "identity_pending": True}]
+        )
+        assert ok is False
+        out = capsys.readouterr().out
+        assert "code identity not published yet" in out and "hermes gateway status" in out
+        assert "predates version stamping" not in out
 
 
 class TestGatewayStatusStamping:

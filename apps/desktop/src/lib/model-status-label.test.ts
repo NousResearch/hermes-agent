@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelStatusLabel } from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
@@ -16,6 +16,18 @@ describe('model-status-label', () => {
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
   })
 
+  it('renders local GGUF ids as a clean name with a quant tag', () => {
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
+    expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({
+      name: 'Nemotron 3 Nano 30B A3B',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
+    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
+    // Cloud ids keep their existing behavior.
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
   it('maps reasoning effort to compact labels', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
     expect(reasoningEffortLabel('xhigh')).toBe('XHigh')
@@ -24,26 +36,11 @@ describe('model-status-label', () => {
     expect(reasoningEffortLabel('')).toBe('')
   })
 
-  it('appends fast + effort session state to the status label', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
-      'GPT-5.5 · Fast High'
-    )
-  })
-
-  it('falls back to the profile default effort, then to medium', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
-    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
-    // No session-level effort → the configured profile default is advertised,
-    // not Hermes' built-in medium.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high' })).toBe('GPT-5.5 · High')
-    // An explicit session effort still wins over the profile default.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
-      'GPT-5.5 · Low'
-    )
-  })
-
-  it('returns just the placeholder name when there is no model', () => {
-    expect(formatModelStatusLabel('')).toBe('No model')
+  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(formatModelPillLabel('')).toBe('No model')
   })
 
   describe('currentPickerSelection', () => {

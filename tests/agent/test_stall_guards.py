@@ -2,7 +2,7 @@
 
 Two guards, both notice/re-prompt-only:
 
-1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_identical_call``
+1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_call``
    appends a compact notice to the tool RESULT on the 3rd consecutive call
    with identical (tool, canonical args) AND an identical result. It never
    blocks execution, exempts legitimately-repeatable pollers, and resets on
@@ -31,7 +31,7 @@ def _observe_n(controller, n, tool="web_search", args=None, result="same result"
     notices = []
     for _ in range(n):
         notices.append(
-            controller.observe_identical_call(tool, args or {"query": "x"}, result)
+            controller.observe_call(tool, args or {"query": "x"}, result).notice
         )
     return notices
 
@@ -60,18 +60,18 @@ def test_keeps_firing_past_threshold():
 def test_does_not_fire_when_arguments_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "web_search", {"query": f"q{i}"}, "same result"
-        )
+        ).notice
         assert notice is None
 
 
 def test_does_not_fire_when_results_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "terminal", {"command": "poll-status"}, f"output {i}"
-        )
+        ).notice
         assert notice is None
 
 
@@ -83,9 +83,9 @@ def test_explicit_unchanged_result_continues_streak_across_result_jitter():
         '"content_returned":false,"message":"already returned"}'
     )
 
-    assert c.observe_identical_call("read_file", args, "full contents") is None
-    assert c.observe_identical_call("read_file", args, unchanged) is None
-    notice = c.observe_identical_call("read_file", args, unchanged)
+    assert c.observe_call("read_file", args, "full contents").notice is None
+    assert c.observe_call("read_file", args, unchanged).notice is None
+    notice = c.observe_call("read_file", args, unchanged).notice
 
     assert notice is not None
     assert "3rd" in notice
@@ -100,9 +100,9 @@ def test_full_result_after_unchanged_stub_matches_original_anchor():
         '"content_returned":false,"message":"already returned"}'
     )
 
-    assert c.observe_identical_call("read_file", args, "version one") is None
-    assert c.observe_identical_call("read_file", args, unchanged) is None
-    notice = c.observe_identical_call("read_file", args, "version one")
+    assert c.observe_call("read_file", args, "version one").notice is None
+    assert c.observe_call("read_file", args, unchanged).notice is None
+    notice = c.observe_call("read_file", args, "version one").notice
 
     assert notice is not None
     assert "3rd" in notice
@@ -116,11 +116,11 @@ def test_changed_result_after_unchanged_stub_restarts_streak():
         '"content_returned":false,"message":"already returned"}'
     )
 
-    assert c.observe_identical_call("read_file", args, "version one") is None
-    assert c.observe_identical_call("read_file", args, unchanged) is None
-    assert c.observe_identical_call("read_file", args, "version two") is None
-    assert c.observe_identical_call("read_file", args, "version two") is None
-    assert c.observe_identical_call("read_file", args, "version two") is not None
+    assert c.observe_call("read_file", args, "version one").notice is None
+    assert c.observe_call("read_file", args, unchanged).notice is None
+    assert c.observe_call("read_file", args, "version two").notice is None
+    assert c.observe_call("read_file", args, "version two").notice is None
+    assert c.observe_call("read_file", args, "version two").notice is not None
 
 
 def test_explicit_unchanged_contract_is_scoped_to_known_emitters():
@@ -131,10 +131,10 @@ def test_explicit_unchanged_contract_is_scoped_to_known_emitters():
         '"content_returned":false,"message":"already returned"}'
     )
 
-    assert c.observe_identical_call("other_tool", args, "full result") is None
-    assert c.observe_identical_call("other_tool", args, unchanged) is None
-    assert c.observe_identical_call("other_tool", args, unchanged) is None
-    assert c.observe_identical_call("other_tool", args, unchanged) is not None
+    assert c.observe_call("other_tool", args, "full result").notice is None
+    assert c.observe_call("other_tool", args, unchanged).notice is None
+    assert c.observe_call("other_tool", args, unchanged).notice is None
+    assert c.observe_call("other_tool", args, unchanged).notice is not None
 
 
 def test_skill_view_unchanged_envelope_continues_streak():
@@ -154,9 +154,9 @@ def test_skill_view_unchanged_envelope_continues_streak():
         }
     )
 
-    assert c.observe_identical_call("skill_view", args, "full skill content") is None
-    assert c.observe_identical_call("skill_view", args, unchanged) is None
-    notice = c.observe_identical_call("skill_view", args, unchanged)
+    assert c.observe_call("skill_view", args, "full skill content").notice is None
+    assert c.observe_call("skill_view", args, unchanged).notice is None
+    notice = c.observe_call("skill_view", args, unchanged).notice
 
     assert notice is not None
     assert "3rd" in notice
@@ -167,17 +167,17 @@ def test_lookalike_unchanged_payload_does_not_inherit_prior_streak():
     args = {"path": "README.md"}
     lookalike = '{"status":"unchanged","content_returned":false}'
 
-    assert c.observe_identical_call("read_file", args, "full contents") is None
-    assert c.observe_identical_call("read_file", args, lookalike) is None
-    assert c.observe_identical_call("read_file", args, lookalike) is None
-    assert c.observe_identical_call("read_file", args, lookalike) is not None
+    assert c.observe_call("read_file", args, "full contents").notice is None
+    assert c.observe_call("read_file", args, lookalike).notice is None
+    assert c.observe_call("read_file", args, lookalike).notice is None
+    assert c.observe_call("read_file", args, lookalike).notice is not None
 
 
 def test_streak_resets_when_a_different_call_intervenes():
     c = ToolCallGuardrailController()
     assert _observe_n(c, 2)[-1] is None
     # Different tool breaks the consecutive streak.
-    assert c.observe_identical_call("read_file", {"path": "/a"}, "data") is None
+    assert c.observe_call("read_file", {"path": "/a"}, "data").notice is None
     # Two more of the original are a fresh streak of 2 — still no notice.
     assert all(n is None for n in _observe_n(c, 2))
 
@@ -185,9 +185,9 @@ def test_streak_resets_when_a_different_call_intervenes():
 def test_arg_canonicalization_ignores_key_order():
     c = ToolCallGuardrailController()
     r = "same"
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is None
-    assert c.observe_identical_call("t", {"b": 2, "a": 1}, r) is None
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is not None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is None
+    assert c.observe_call("t", {"b": 2, "a": 1}, r).notice is None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is not None
 
 
 def test_todo_merge_jitter_still_fires_on_third_identical_result():
@@ -197,12 +197,34 @@ def test_todo_merge_jitter_still_fires_on_third_identical_result():
         {"id": "2", "content": "fix", "status": "in_progress"},
     ]
 
-    assert c.observe_identical_call("todo", {"todos": todos, "merge": True}, "same") is None
-    assert c.observe_identical_call("todo", {"todos": todos, "merge": False}, "same") is None
-    notice = c.observe_identical_call("todo", {"todos": todos, "merge": True}, "same")
+    assert c.observe_call("todo_list", {"todos": todos, "merge": True}, "same").notice is None
+    assert c.observe_call("todo_list", {"todos": todos, "merge": False}, "same").notice is None
+    notice = c.observe_call("todo_list", {"todos": todos, "merge": True}, "same").notice
 
     assert notice is not None
     assert "3rd" in notice
+
+
+def test_todo_merge_jitter_also_normalizes_under_the_legacy_tool_name():
+    """``_LEGACY_TOOL_ALIASES`` maps todo -> todo_list before the guardrail sees the
+    call, but a pre-alias caller must not silently lose the normalization."""
+    c = ToolCallGuardrailController()
+    todos = [{"id": "1", "content": "inspect", "status": "completed"}]
+
+    assert c.observe_call("todo", {"todos": todos, "merge": True}, "same").notice is None
+    assert c.observe_call("todo", {"todos": todos, "merge": False}, "same").notice is None
+    assert c.observe_call("todo", {"todos": todos, "merge": True}, "same").notice is not None
+
+
+def test_stall_arg_normalizers_cover_the_canonical_and_legacy_tool_names():
+    """Every registered normalizer key must be a name the guardrail can actually
+    observe: either a live registered tool or its ``_LEGACY_TOOL_ALIASES`` source."""
+    from agent.tool_guardrails import STALL_GUARD_ARG_NORMALIZERS
+
+    assert set(STALL_GUARD_ARG_NORMALIZERS) == {"todo_list", "todo"}
+    for name, (required_list_arg, jitter_args) in STALL_GUARD_ARG_NORMALIZERS.items():
+        assert required_list_arg == "todos", name
+        assert jitter_args == frozenset({"merge"}), name
 
 
 def test_todo_item_order_remains_significant_for_stall_detection():
@@ -217,22 +239,32 @@ def test_todo_item_order_remains_significant_for_stall_detection():
         {"todos": list(reversed(todos)), "merge": False},
         {"todos": todos, "merge": True},
     ):
-        assert c.observe_identical_call("todo", args, "same") is None
+        assert c.observe_call("todo", args, "same").notice is None
 
 
 def test_stall_arg_normalization_is_scoped_to_todo():
     c = ToolCallGuardrailController()
     for merge in (True, False, True):
-        assert c.observe_identical_call(
+        assert c.observe_call(
             "other_tool", {"todos": [{"id": "1"}], "merge": merge}, "same"
-        ) is None
+        ).notice is None
+
+
+def test_stall_arg_normalizer_requires_a_list_payload_to_apply():
+    """The normalizer is anchored on ``todos`` being a list: with no end-state
+    payload to re-assert, ``merge`` stays significant and the alternating
+    signatures keep resetting the streak. Widening this would let a caller that
+    never states a desired list slip past the guard."""
+    c = ToolCallGuardrailController()
+    for merge in (True, False, True, False, True):
+        assert c.observe_call("todo_list", {"merge": merge}, "same").notice is None
 
 
 def test_allowlisted_pollers_never_fire():
     c = ToolCallGuardrailController()
-    for tool in ("process", "bfl_flux3_get_result", "vendor_get_result", "job_poll"):
+    for tool in ("process_manage", "vendor_get_result", "job_poll"):
         for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD + 2):
-            assert c.observe_identical_call(tool, {"id": "j1"}, "Generating") is None
+            assert c.observe_call(tool, {"id": "j1"}, "Generating").notice is None
 
 
 def test_allowlist_membership_contract():
@@ -404,7 +436,7 @@ def test_pollers_get_stub_but_never_loop_notice():
     agent = _fake_agent()
     args = {"id": "job1"}
     results = [
-        agent._append("bfl_flux3_get_result", args, _BIG, tool_call_id=f"c{i}")
+        agent._append("vendor_get_result", args, _BIG, tool_call_id=f"c{i}")
         for i in range(4)
     ]
     assert results[0] == _BIG
@@ -484,13 +516,6 @@ def test_multimodal_content_never_stubbed_and_breaks_streak():
     assert c.observe_call("vision", args, _BIG, tool_call_id="c3").stub is None
 
 
-def test_observe_identical_call_backcompat_notice_still_fires():
-    c = ToolCallGuardrailController()
-    for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD - 1):
-        assert c.observe_identical_call("web_search", {"q": 1}, "r") is None
-    assert c.observe_identical_call("web_search", {"q": 1}, "r") is not None
-
-
 def test_extract_persisted_path_round_trip():
     # The stub's spillover reference is parsed from the <persisted-output>
     # block that maybe_persist_tool_result builds — assert the round trip.
@@ -550,3 +575,84 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+
+
+# ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
+
+
+def test_repeating_two_call_cycle_fires_notice_and_halts_under_hard_stop():
+    """An A,B,A,B,... cycle of identical (args, result) pairs defeats the
+    consecutive streak (every alternation resets it) but must still be caught:
+    notice at the threshold-th lap, halt at no_progress_block_after laps."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    pairs = (({"command": "make build"}, "error: X\n"),
+             ({"command": "tail -5 build.log"}, "still broken\n"))
+    first_notice_call = None
+    calls = 0
+    for _ in range(30):
+        for args, result in pairs:
+            calls += 1
+            notice = c.observe_call("terminal", args, result).notice
+            if notice is not None and first_notice_call is None:
+                first_notice_call = calls
+                assert "cycle" in notice
+        if c.halt_decision is not None:
+            break
+    # Notice on the last call of the threshold-th lap (period 2 × threshold 3).
+    assert first_notice_call == 2 * STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+    assert c.halt_decision is not None
+    assert c.halt_decision.code == "identical_cycle_halt"
+
+
+def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
+    """A cycle whose results change every lap is real work; a cycle made only
+    of poller-exempt tools is legitimate waiting. Neither may fire."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    progressing = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(20):
+        for args in ({"command": "make"}, {"command": "tail log"}):
+            assert progressing.observe_call("terminal", args, f"output {i}").notice is None
+    assert progressing.halt_decision is None
+
+    pollers = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for _ in range(20):
+        for args in ({"action": "poll", "session_id": "a"}, {"action": "poll", "session_id": "b"}):
+            assert pollers.observe_call("process_manage", args, "running").notice is None
+    assert pollers.halt_decision is None
+
+
+# ── promoted-reasoning plan-tail detector (#111761) ─────────────────────────
+
+
+def test_promoted_reasoning_detector_catches_first_person_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Verbatim tails from the #111761 thread — none match the narrow visible-content detector.
+    for tail in (
+        "Let me batch the terminal calls and run them in parallel.",
+        "...Let me load the doctrine skill first, then run checks.",
+        "Initial hypothesis: the config is stale. I need to check the log.",
+        "I'm going to run the tests now",
+        "嗯，长度合适。Let me check the file first.",
+    ):
+        assert not trailing_continue_intent(tail), tail
+        assert promoted_reasoning_announces_action(tail), tail
+    # Long monologue: only the tail decides (no 400-char cap on this path).
+    assert promoted_reasoning_announces_action(("Thinking about the task. " * 60) + "Let me read the file.")
+
+
+def test_promoted_reasoning_detector_ignores_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "The answer is 42.",
+        "Let me check the arithmetic. 6 times 7 is 42, so the answer is 42.",
+        "If you want, I will happily review the PR once CI is green. Just say so!",
+        "structured reasoning answer",
+        "",
+        None,
+    ):
+        assert not promoted_reasoning_announces_action(text), text

@@ -1,5 +1,6 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -122,6 +123,38 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
+        """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
+        _write_config(tmp_path, {
+            "providers": {
+                "b-ai": {
+                    "name": "B.AI",
+                    "base_url": "https://api.b.ai/v1",
+                },
+            },
+        })
+        auth_path = tmp_path / ".hermes" / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "b-ai": [
+                    {
+                        "id": "k1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-real-b-ai-pool-key-12345",
+                    }
+                ]
+            },
+        }))
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("b-ai", "b-ai-model")
+        assert client is not None
+        assert "api.b.ai" in str(client.base_url)
+        assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
 
 class TestResolveProviderClientModelNormalization:
@@ -183,7 +216,44 @@ class TestResolveVisionProviderClientModelNormalization:
 
         assert provider == "zai"
         assert client is not None
-        assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
+        assert model == "glm-5.3-flash"  # zai coding endpoints support this vision-capable fallback
+
+
+class TestAutoClientCacheModelCompatibility:
+    """Auto client cache should not keep OpenRouter-format model overrides on non-OR clients."""
+
+    def test_first_auto_cache_miss_drops_openrouter_model_for_named_custom_runtime(self, tmp_path):
+        from agent import auxiliary_client as ac
+
+        ac._client_cache.clear()
+        try:
+            fake_client = MagicMock()
+            fake_client.base_url = "https://aixj.vip/v1"
+            fake_client.api_key = "test-key"
+
+            runtime = {
+                "provider": "custom:aixj.vip",
+                "model": "gpt-5.4",
+                "base_url": "https://aixj.vip/v1",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            }
+
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "gpt-5.4"),
+            ) as mock_resolve:
+                client, model = ac._get_cached_client(
+                    "auto",
+                    "google/gemini-3-flash-preview",
+                    main_runtime=runtime,
+                )
+
+            assert client is fake_client
+            assert model == "gpt-5.4"
+            mock_resolve.assert_called_once()
+        finally:
+            ac._client_cache.clear()
 
 
 class TestVisionPathApiMode:
@@ -242,7 +312,8 @@ class TestProvidersDictApiModeAnthropicMessages:
 
     def test_resolve_provider_client_returns_anthropic_client(self, tmp_path, monkeypatch):
         """Named custom provider with api_mode=anthropic_messages must
-        route through AnthropicAuxiliaryClient."""
+        route through AnthropicAuxiliaryClient, carrying the entry's extra_headers
+        like the OpenAI-wire arms do (#109595)."""
         monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
         _write_config(tmp_path, {
             "providers": {
@@ -252,6 +323,7 @@ class TestProvidersDictApiModeAnthropicMessages:
                     "key_env": "MYRELAY_API_KEY",
                     "api_mode": "anthropic_messages",
                     "default_model": "claude-opus-4-7",
+                    "extra_headers": {"X-Gateway-Token": "gw-1"},
                 },
             },
         })
@@ -265,6 +337,9 @@ class TestProvidersDictApiModeAnthropicMessages:
             f"expected AnthropicAuxiliaryClient, got {type(sync_client).__name__}"
         )
         assert sync_model == "claude-opus-4-7"
+        sdk_headers = sync_client._real_client._custom_headers
+        assert sdk_headers.get("X-Gateway-Token") == "gw-1"
+        assert "anthropic-beta" in sdk_headers, "entry headers must merge onto, not replace, the builder's headers"
 
         async_client, async_model = resolve_provider_client("myrelay", async_mode=True)
         assert isinstance(async_client, AsyncAnthropicAuxiliaryClient), (
@@ -408,3 +483,56 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
+    """#109595: a bare-named ``providers:`` entry pinned by ``auxiliary.<task>`` must reach the wire
+    with its key_cmd bearer AND its extra_headers on the async path too. The SDK parks a callable
+    key in ``_api_key_provider`` and leaves ``.api_key`` empty, so a rebuild from the snapshot
+    alone sends no Authorization header at all."""
+
+    def _cfg(self):
+        import sys
+        return {
+            "model": {"provider": "hermes-gw", "default": "main-model"},
+            "providers": {
+                "hermes-gw": {
+                    "base_url": "http://127.0.0.1:1/openai/v1",
+                    "api_mode": "chat_completions",
+                    "key_cmd": f'"{sys.executable}" -c "print(\'vk-test-1234\')"',
+                    "extra_headers": {"x-gw-session": "aux-session-tag"},
+                },
+            },
+            "auxiliary": {"compression": {"provider": "hermes-gw", "model": "aux-model"}},
+        }
+
+    @staticmethod
+    def _wire_headers(client):
+        """Headers the SDK would put on a request (after its own auth refresh), not the config view."""
+        from openai._models import FinalRequestOptions
+        return client._build_headers(FinalRequestOptions(method="post", url="/chat/completions"))
+
+    def test_async_task_client_carries_key_cmd_bearer_and_extra_headers(self, tmp_path):
+        import asyncio
+        _write_config(tmp_path, self._cfg())
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("hermes-gw", "aux-model", async_mode=True, task="compression")
+        assert client is not None
+        asyncio.run(client._refresh_api_key())
+        headers = self._wire_headers(client)
+        assert headers["authorization"] == "Bearer vk-test-1234"
+        assert headers["x-gw-session"] == "aux-session-tag"
+
+    def test_sync_to_async_rebuild_keeps_credential_and_headers(self, tmp_path):
+        """The fallback-candidate ladder rebuilds a resolved sync client through ``_to_async_client``."""
+        import asyncio
+        _write_config(tmp_path, self._cfg())
+        from agent.auxiliary_client import _to_async_client, resolve_provider_client
+        sync_client, model = resolve_provider_client("hermes-gw", "aux-model", task="compression")
+        sync_client._refresh_api_key()  # what the SDK does in _prepare_options before each request
+        assert self._wire_headers(sync_client)["authorization"] == "Bearer vk-test-1234"
+        async_client, _ = _to_async_client(sync_client, model)
+        asyncio.run(async_client._refresh_api_key())
+        headers = self._wire_headers(async_client)
+        assert headers["authorization"] == "Bearer vk-test-1234"
+        assert headers["x-gw-session"] == "aux-session-tag"

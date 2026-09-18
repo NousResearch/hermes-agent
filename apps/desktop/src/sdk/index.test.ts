@@ -1,9 +1,71 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+// The warm path must route through the guarded prewarm resolver, not dial the
+// gateway directly: gateway.ts's openSecondaryCount and pool-limits' cap atom
+// are the two signals prewarmProfileBackend consults, so mocking them lets the
+// tests observe the guard's decision through the ONLY side effect that matters
+// — whether openGatewayForProfile was dialed.
+const warmMocks = vi.hoisted(() => ({
+  openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined),
+  openSecondaryCount: vi.fn(() => 0)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  openGatewayForAgent: warmMocks.openGatewayForAgent,
+  openGatewayForProfile: warmMocks.openGatewayForProfile,
+  openSecondaryCount: warmMocks.openSecondaryCount
+}))
+
+vi.mock('@/store/pool-limits', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
+
+describe('host.warmProfile pool-saturation contract', () => {
+  beforeEach(() => {
+    warmMocks.openGatewayForProfile.mockClear()
+    warmMocks.openSecondaryCount.mockReturnValue(0)
+  })
+
+  it('dials through the guarded path when a pool slot is free', () => {
+    warmMocks.openSecondaryCount.mockReturnValue(2)
+
+    host.warmProfile('warm-free-slot')
+
+    expect(warmMocks.openGatewayForProfile).toHaveBeenCalledWith('warm-free-slot')
+  })
+
+  it('skips the speculative spawn when every pool slot is occupied', () => {
+    warmMocks.openSecondaryCount.mockReturnValue(3)
+
+    host.warmProfile('warm-saturated')
+
+    expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('warmAgent (multi-source rows) honours the same saturation guard', () => {
+    warmMocks.openGatewayForAgent.mockClear()
+    warmMocks.openSecondaryCount.mockReturnValue(3)
+
+    host.warmAgent('conn-vps', 'warm-agent-saturated')
+
+    expect(warmMocks.openGatewayForAgent).not.toHaveBeenCalled()
+
+    warmMocks.openSecondaryCount.mockReturnValue(2)
+
+    host.warmAgent('conn-vps', 'warm-agent-free')
+
+    expect(warmMocks.openGatewayForAgent).toHaveBeenCalledWith('conn-vps', 'warm-agent-free')
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {
@@ -171,5 +233,63 @@ describe('host.connections', () => {
     desktopWindow.hermesDesktop = undefined
 
     await expect(host.connections()).rejects.toThrow('This Desktop build has no connection registry')
+  })
+})
+
+describe('host workspace scope', () => {
+  afterEach(async () => {
+    host.setWorkspaceScope('sessions')
+    const tree = await import('@/components/pane-shell/tree/store')
+    tree.$newSessionTabAction.set(null)
+    tree.removeTreePane('plugin-workspace:scope-test')
+  })
+
+  it('registers plugin workspace chrome options', async () => {
+    const { registry } = await import('@/contrib/registry')
+
+    const close = host.openWorkspace('scope-test', {
+      dock: { pane: 'workspace', pos: 'right' },
+      headerVeto: true,
+      render: () => null,
+      title: 'Scoped',
+      uncloseable: true
+    })
+
+    expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
+      data: {
+        dock: { pane: 'workspace', pos: 'right' },
+        headerVeto: true,
+        uncloseable: true
+      }
+    })
+
+    close()
+  })
+
+  it('publishes the active workspace scope through one host seam', async () => {
+    const { $workspaceMode, $workspaceOwnerKey } = await import('@/components/pane-shell/workspace-scope')
+
+    expect(host.setWorkspaceScope('bots', 'connection-b::default')).toBe(true)
+    expect($workspaceMode.get()).toBe('bots')
+    expect($workspaceOwnerKey.get()).toBe('connection-b::default')
+  })
+
+  it('uses the shared tab action for an exact Bot owner without moving Sessions', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const { $workspaceNewSessionTarget } = await import('@/components/pane-shell/workspace-scope')
+    const opened: string[] = []
+
+    const route = {
+      connectionId: 'connection-b',
+      mode: 'remote' as const,
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+
+    tree.$newSessionTabAction.set(() => opened.push('tab'))
+    host.newChat(route, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:connection-b::writer' })
+
+    expect(opened).toEqual(['tab'])
+    expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })

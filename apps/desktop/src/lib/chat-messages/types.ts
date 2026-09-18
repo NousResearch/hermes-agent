@@ -1,14 +1,20 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
+import type { ErrorSurface } from '@/lib/error-surface'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
+  toolResultMetadata?: ToolResultMetadata
   /** Unix seconds when this visible activity segment began. Fractional values
    * preserve the millisecond precision available on live gateway events. */
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
+   * so the next delta re-renders from the source instead of the render. */
+  mediaSource?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -17,10 +23,17 @@ export type ChatMessage = {
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
+  /** Result body only; the system text remains the compact completion label. */
+  asyncResult?: string
+  asyncResultKind?: 'process'
   timestamp?: number
   completedAt?: number
   pending?: boolean
   error?: string
+  /** Structured layer descriptor for a failed turn (parsed error_surface).
+   *  Drives the error card's layer label + actions; absent on older
+   *  backends, where the card falls back to generic copy. */
+  errorSurface?: ErrorSurface
   branchGroupId?: string
   hidden?: boolean
   /** Sealed mid-turn commentary (`message.interim`) — rendered without the
@@ -59,9 +72,14 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // message.complete with status "error" — structured {layer, code, retryable}
+  // descriptor naming which stack layer failed (agent/error_surface.py).
+  // Absent on older gateways; consumers must fall back to string heuristics.
+  error_surface?: unknown
   inline_diff?: string
   duration_s?: number
   todos?: unknown
+  revision?: number
   model?: string
   provider?: string
   reasoning_effort?: string
@@ -84,17 +102,21 @@ export type GatewayEventPayload = {
   // clarify.request
   request_id?: string
   question?: string
+  // btw.complete / background.complete — id of the side/background task
+  task_id?: string
   choices?: string[] | null
   multi_select?: boolean
   // clarify.request batch form: questions replaces question/choices, and
   // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
-  // mcp.setup.request (setup_mcp tool — inline MCP consent card)
-  server?: string
+  // connection request (manage_connections MCP targets — inline approval card)
+  op_id?: string
+  deadline_at?: number
+  targets?: unknown
   action?: string
   reason?: string
-  // approval.request (dangerous command / execute_code) — session-keyed
+  // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.
@@ -103,6 +125,13 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // vault.unlock.request (external password-manager unlock)
+  backend?: string
+  display_name?: string
+  /** vault.save_login.request / vault.code.request */
+  origin?: string
+  site?: string
+  hint?: string
   // terminal.read.request / preview.read.request (GUI agent reading the
   // in-app terminal pane or the browser/preview pane)
   start?: number
@@ -115,7 +144,10 @@ export type GatewayEventPayload = {
   preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
-  // own DOM vs the preview pane's guest page.
+  // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent
+  // bubble with an arrow, no overlay) adds no fields of its own: it reuses
+  // `selector`/`side` here plus `text`/`title`, and carries no request_id
+  // because a tip is fire-and-forget.
   surface?: string
   selector?: string
   side?: string
@@ -154,6 +186,8 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — history-commit note the gateway surfaced instead of dropping.
+  warning?: string
   // message.complete with status "error" — `text` is streamed partial output
   // (keep it visible), not the error string.
   partial?: boolean

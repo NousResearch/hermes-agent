@@ -605,6 +605,47 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
 
 
+def test_active_pr_guard_allows_explicit_pr_abandonment_marker(
+    kanban_home: Path,
+) -> None:
+    """An operator's post-PR abandonment marker permits a fresh ready run."""
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="abandoned PR", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=pr_comment)
+        kb.add_comment(
+            conn,
+            tid,
+            author="operator",
+            body="kanban: pr-abandoned — continue from the current repository path",
+        )
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_keeps_newer_pr_guarded_after_abandonment_marker(
+    kanban_home: Path,
+) -> None:
+    """A marker retires only the PR that precedes it, never a newer PR."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="replacement PR", assignee="worker")
+        kb.add_comment(
+            conn,
+            tid,
+            author="worker",
+            body="Opened https://github.com/example/repo/pull/123 for review.",
+        )
+        kb.add_comment(conn, tid, author="operator", body="kanban: pr-superseded")
+        kb.add_comment(
+            conn,
+            tid,
+            author="worker",
+            body="Replacement is https://github.com/example/repo/pull/124.",
+        )
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

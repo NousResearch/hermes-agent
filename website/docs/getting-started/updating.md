@@ -116,6 +116,34 @@ git stash apply stash@{0}
 
 You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
 
+### Pre-update checkout hygiene: the untracked/stash audit
+
+Every `hermes update` audits the checkout **before** it fetches or touches anything. Two kinds of
+silent accumulation have a hard limit — and passing either refuses the update (exit 2, recorded in
+the receipt) with the exact commands to clean up:
+
+- **Untracked files** (`updates.max_untracked_files`, default 25). A checkout collecting hundreds
+  of untracked files almost always means a previous update's fast-forward stalled or its stash
+  restore conflicted, leaving fetched-but-never-merged files in the tree. Cleaning the mess up
+  *before* the next update is dramatically cheaper than after — the next update's
+  `--include-untracked` autostash would sweep them all in and start conflicting forever.
+- **Stale `hermes-update-autostash-*` stashes** (`updates.max_stale_autostashes`, default 2).
+  Parked autostashes are orphaned snapshots of your local work; more than a couple older than a
+  week means updates keep failing to restore them.
+
+Ignored files (`.gitignore`'d build output, `node_modules`, worktrees) never count, a checkout
+exactly at a limit passes, and a git failure is never a refusal. Override the audit for one
+reviewed run with `hermes update --force`, or configure it:
+
+```yaml
+updates:
+  checkout_hygiene: enforce   # enforce (default) | warn | off
+  max_untracked_files: 25
+  max_stale_autostashes: 2
+```
+
+`warn` prints the full refusal text but continues; `off` skips the audit entirely.
+
 ### Preview-only: `hermes update --check`
 
 Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".

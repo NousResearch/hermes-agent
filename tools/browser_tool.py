@@ -32,6 +32,11 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSER_USE_API_KEY",
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
+    # Launch settings are non-secret, but must still be resolved through the
+    # active profile scope. agent-browser receives this scrubbed environment;
+    # omitting these here made AGENT_BROWSER_ARGS appear to compose in memory
+    # while the real Chromium command never received the user flag.
+    "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS", "AGENT_BROWSER_IDLE_TIMEOUT_MS",
 )
 
 

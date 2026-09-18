@@ -129,6 +129,7 @@ def _make_update_side_effect(
     update_ref_fails=False,
     pre_pull_sha_unavailable=False,
     existing_rescue_refs=None,
+    local_commit_count="0",
 ):
     """Build a subprocess.run side_effect for cmd_update tests.
 
@@ -181,6 +182,8 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            if "..HEAD" in joined:
+                return SimpleNamespace(stdout=f"{local_commit_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "merge-base" in joined:
             if merge_base_exists:
@@ -255,6 +258,39 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "preserved in stash" in out
+
+
+# ---------------------------------------------------------------------------
+# Local commits must never be reset away when main and origin/main diverge.
+# ---------------------------------------------------------------------------
+
+def test_diverged_main_with_local_commits_refuses_reset(monkeypatch, capsys):
+    """The production incident shape: a local main commit plus new upstream
+    work makes ff-only fail, but is not evidence of a remote force-push.
+    Refuse before reset so the local commits stay reachable."""
+    calls = []
+
+    def fake_git_run(_git_cmd, args, **_kwargs):
+        calls.append(args)
+        if args == ["branch", "--show-current"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if args == ["rev-list", "origin/main..HEAD", "--count"]:
+            return SimpleNamespace(stdout="5\n", stderr="", returncode=0)
+        if args == ["merge-base", "HEAD", "origin/main"]:
+            return SimpleNamespace(stdout="ancestor\n", stderr="", returncode=0)
+        if args == ["reset", "--hard", "origin/main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(update_cmd, "_git_run", fake_git_run)
+
+    with pytest.raises(SystemExit, match="1"):
+        update_cmd._reconcile_diverged_checkout(["git"], "main", "abc123")
+
+    out = capsys.readouterr().out
+    assert "Refusing to reset" in out
+    assert "5 local commit(s)" in out
+    assert ["reset", "--hard", "origin/main"] not in calls
 
 
 # ---------------------------------------------------------------------------

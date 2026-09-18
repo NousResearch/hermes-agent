@@ -13,6 +13,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -527,6 +528,44 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
+@contextlib.contextmanager
+def _managed_browser_session_heartbeat(cache_key: str):
+    """Keep a Hermes-owned browser alive while Browser Use drives it directly over CDP.
+
+    The harness bypasses agent-browser's control socket, so neither the daemon nor the
+    Python inactivity janitor sees page activity during a long ``browser_exec``. Only
+    cached Hermes-owned sessions are touched: an operator-supplied CDP endpoint remains
+    outside Hermes lifecycle management.
+    """
+    try:
+        from tools import browser_tool as browser_tool
+        from tools.browser_tool_lifecycle import _update_session_activity
+    except Exception:  # pragma: no cover - import degradation must not block browser use
+        yield
+        return
+
+    with browser_tool._cleanup_lock:
+        if cache_key not in browser_tool._active_sessions:
+            yield
+            return
+
+    _update_session_activity(cache_key)
+    stop = threading.Event()
+
+    def _touch_until_done() -> None:
+        while not stop.wait(30):
+            _update_session_activity(cache_key)
+
+    from agent.memory_provider import spawn_context_thread
+    worker = spawn_context_thread(_touch_until_done, name="browser-use-activity", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
@@ -650,7 +689,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+        with _managed_browser_session_heartbeat(_backend_cache_key(task_id, session)):
+            proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "

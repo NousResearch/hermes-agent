@@ -30,6 +30,19 @@ def test_browser_env_appends_loopback_to_operator_no_proxy(stub_sanitized_env):
     assert env["no_proxy"] == "127.0.0.1,localhost,::1"
 
 
+def test_browser_env_forwards_non_secret_chromium_launch_settings(stub_sanitized_env, monkeypatch):
+    """The scrubbed agent-browser child must retain profile-owned launch settings."""
+    monkeypatch.setenv("AGENT_BROWSER_ARGS", "--run-all-compositor-stages-before-draw")
+    monkeypatch.setenv("AGENT_BROWSER_CHROME_FLAGS", "--disable-gpu")
+    monkeypatch.setenv("AGENT_BROWSER_IDLE_TIMEOUT_MS", "12345")
+
+    env = bt._build_browser_env()
+
+    assert env["AGENT_BROWSER_ARGS"] == "--run-all-compositor-stages-before-draw"
+    assert env["AGENT_BROWSER_CHROME_FLAGS"] == "--disable-gpu"
+    assert env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "12345"
+
+
 def test_operator_no_proxy_wildcard_is_left_alone():
     # ``*,127.0.0.1,...`` is no longer the wildcard for urllib/requests: appending would flip a
     # bypass-everything config into proxy-everything-but-loopback.

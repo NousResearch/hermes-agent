@@ -8,8 +8,9 @@ the provider overlay itself declares.
 
 Contract pinned here: when URL detection has no opinion, the runtime falls
 back to ``providers.determine_api_mode(provider, base_url, model)`` (the
-provider's declared transport), and only lands on ``chat_completions`` for
-genuinely unknown providers/endpoints. Covers the explicit-runtime path and
+provider's declared transport), and lands on ``chat_completions`` for
+genuinely unknown providers/endpoints and for a declared ``anthropic_messages``
+off the provider's own endpoint (#76836). Covers the explicit-runtime path and
 the API-key-provider path; the pool-entry path shares the same helper.
 """
 
@@ -43,10 +44,33 @@ class TestFallbackApiMode:
             == "codex_responses"
         )
 
+    @pytest.fixture
+    def catalog_defaults(self, monkeypatch):
+        """Pin the models.dev default endpoints the predicate compares against, so the contract
+        holds without the network (a cold cache leaves ``ProviderDef.base_url`` empty)."""
+        import dataclasses
+        from hermes_cli import runtime_provider
+        defaults = {
+            "minimax": "https://api.minimax.io/anthropic/v1",
+            "minimax-cn": "https://api.minimaxi.com/anthropic/v1",
+            "tencent-tokenplan": "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        }
+        real = runtime_provider.get_provider
+
+        def seeded(name, *, allow_network=True):
+            pdef = real(name, allow_network=False)
+            if pdef is not None and not pdef.base_url and name in defaults:
+                pdef = dataclasses.replace(pdef, base_url=defaults[name])
+            return pdef
+
+        monkeypatch.setattr(runtime_provider, "get_provider", seeded)
+
+    @pytest.mark.usefixtures("catalog_defaults")
     @pytest.mark.parametrize("provider, base_url", [
         ("minimax", "http://127.0.0.1:8787/v1"),        # OpenAI-compatible relay in front of MiniMax
         ("minimax-cn", "https://egress.corp.test/v1"),  # corporate egress gateway
         ("minimax", "https://api.minimax.io/v1"),       # provider's own OpenAI-compatible path
+        ("minimax", "https://api.minimax.io/anthropic-compat/v1"),  # lookalike path, not /anthropic/
     ])
     def test_anthropic_transport_is_not_assumed_off_the_provider_endpoint(self, provider, base_url):
         # #76836: the declared anthropic_messages transport is a statement about the provider's
@@ -54,10 +78,14 @@ class TestFallbackApiMode:
         # shaped requests with x-api-key there 401 on every turn (or silently reroute to a fallback).
         assert _fallback_api_mode(provider, base_url, "MiniMax-M3") == "chat_completions"
 
+    @pytest.mark.usefixtures("catalog_defaults")
     @pytest.mark.parametrize("provider, base_url", [
         ("minimax", "https://api.minimax.io"),             # bare host, no /anthropic hint (#53054 kept)
         ("minimax", "https://api.minimax.io/anthropic"),   # URL-detected native path
         ("minimax-cn", "https://api.minimaxi.com/anthropic/v1"),
+        ("minimax", "https://api.minimax.io/anthropic/v1/messages"),  # under the default path
+        ("tencent-tokenplan", "https://api.lkeap.cloud.tencent.com/plan/anthropic/v2"),  # non-/anthropic default
+        ("minimax", ""),  # nothing to compare: keep the declared transport
     ])
     def test_anthropic_transport_holds_on_the_provider_endpoint(self, provider, base_url):
         assert _fallback_api_mode(provider, base_url, "MiniMax-M3") == "anthropic_messages"

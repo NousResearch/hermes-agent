@@ -118,7 +118,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     mandated = _HOST_MANDATED_API_MODES.get(hostname) or ("codex_responses" if is_official_openai_host(base_url) else None)
     if mandated:
         return mandated
-    path = urlparse(normalized).path.rstrip("/")
+    path = _base_url_path(normalized)
     if path.endswith(("/anthropic", "/anthropic/v1")) or (hostname == "api.kimi.com" and "/coding" in normalized):
         # Direct native Anthropic host: realign with providers.determine_api_mode, which already maps this
         # host to anthropic_messages. The exact-hostname match rejects lookalike subdomains
@@ -140,7 +140,8 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     """api_mode when no explicit/persisted mode applies: URL detection (host-mandated wire shapes)
     first, then the transport the provider overlay declares via ``providers.determine_api_mode``
     (``openai-api`` pointed at us.api.openai.com 400'd on every tool call without it), then
-    ``chat_completions``."""
+    ``chat_completions``. A declared ``anthropic_messages`` is kept only on the provider's own
+    endpoint (#76836)."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
     detected = _detect_api_mode_for_url(base_url)
@@ -158,15 +159,25 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
 
 def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
     """True when ``base_url`` is the provider's own Anthropic-protocol endpoint: same host as the
-    catalog default and either the bare host or a path under ``/anthropic``. Unknown default ⇒ True
-    (nothing to compare against, keep the declared transport)."""
-    default = (getattr(get_provider(provider), "base_url", "") or "").strip()
-    if not default:
+    catalog default and either the bare host or the default's path (``/anthropic`` for MiniMax,
+    ``/plan/anthropic`` for Tencent) with or without a ``/v1`` tail. With nothing to compare —
+    no URL, or an overlay-only provider whose models.dev default is not cached (offline) — keep
+    the declared transport: demoting the provider's own default endpoint would be the worse
+    failure."""
+    pdef = get_provider(provider, allow_network=False)
+    default = (pdef.base_url if pdef else "").strip()
+    if not default or not (base_url or "").strip():
         return True
     if not base_url_host_matches(base_url, base_url_hostname(default)):
         return False
-    path = urlparse((base_url or "").strip().lower()).path.rstrip("/")
-    return path == "" or path.startswith("/anthropic")
+    path = _base_url_path(base_url)
+    default_path = _base_url_path(default).removesuffix("/v1")
+    return path == "" or path == default_path or path.startswith(default_path + "/")
+
+
+def _base_url_path(base_url: str) -> str:
+    """Lower-cased URL path without the trailing slash (``""`` for a bare host)."""
+    return urlparse((base_url or "").strip().lower()).path.rstrip("/")
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:

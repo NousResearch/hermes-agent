@@ -392,7 +392,13 @@ def resolve_startup_model_route(
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943).
     from hermes_cli.models import parse_model_input
     qualified_provider, qualified_model = parse_model_input(raw, "")
-    if qualified_provider and qualified_model != raw:
+    if qualified_provider == "custom" and ":" in qualified_model:
+        # ``custom:<typo>:<model>`` — no such named provider; a bare-custom request with a garbage
+        # model id would be as silent as the default-provider egress this decode prevents.
+        logger.warning("No providers.%s entry configured; ignoring provider prefix in %r",
+                       qualified_model.split(":", 1)[0], raw)
+        return None
+    if qualified_provider:
         return StartupModelRoute(model=qualified_model, provider=qualified_provider)
     if "/" not in raw:
         return None

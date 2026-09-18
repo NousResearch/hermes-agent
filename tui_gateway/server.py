@@ -1432,10 +1432,17 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if not (explicit_model := _env_model_seed()):
         return model, None
     with contextlib.suppress(Exception):
+        from hermes_cli.model_switch import resolve_startup_model_route
         from hermes_cli.models import detect_static_provider_for_model
-        cfg = _load_cfg().get("model") or {}
+        full_cfg = _load_cfg()
+        cfg = full_cfg.get("model") or {}
         current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
                             or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
+        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
+        if route := resolve_startup_model_route(
+                explicit_model, current_provider=current_provider,
+                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
+            return route.model, route.provider
         if detected := detect_static_provider_for_model(explicit_model, current_provider):
             provider, detected_model = detected
             return detected_model, provider

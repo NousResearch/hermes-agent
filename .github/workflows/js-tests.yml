@@ -27,6 +27,15 @@ jobs:
       - name: Check i18n locale key parity
         run: node scripts/check_i18n_parity.mjs --all
 
+      # Guide walkthrough sync gate. Dependency-free (stdlib-only Python,
+      # preinstalled on the runner), so it also fails in seconds before any
+      # setup step. Fails when the first-run walkthrough captions in the
+      # standalone guide.html and the in-dashboard Persian guide
+      # (PersianGuide.tsx WALKTHROUGH) drift apart: caption edits, added or
+      # removed figures, or reorders.
+      - name: Check guide walkthrough caption sync
+        run: python3 scripts/check_guide_walkthrough_sync.py
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 26

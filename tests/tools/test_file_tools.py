@@ -60,17 +60,18 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
-    def test_writes_content(self, mock_get):
+    def test_writes_content(self, mock_get, tmp_path):
+        out = str(tmp_path / "out.txt")
         mock_ops = MagicMock()
         result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 13}
+        result_obj.to_dict.return_value = {"status": "ok", "path": out, "bytes": 13}
         mock_ops.write_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
+        result = json.loads(write_file_tool(out, "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(out, "hello world!\n")
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -148,7 +149,8 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_calls_patch_replace(self, mock_get):
+    def test_replace_mode_calls_patch_replace(self, mock_get, tmp_path):
+        target = str(tmp_path / "f.py")
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "replacements": 1}
@@ -157,11 +159,11 @@ class TestPatchHandler:
 
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(
-            mode="replace", path="/tmp/f.py",
+            mode="replace", path=target,
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(target, "foo", "bar", False)
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -1037,9 +1039,16 @@ class TestSSHConfigWriteGateSingleQuery:
 
         src = _inspect.getsource(ft)
         idx = src.find("_approval._run_approval_gate(")
-        assert idx != -1, "ssh_config_write gate call not found"
+        assert idx != -1, "approval gate call not found"
         block = src[idx:idx + 900]
-        assert "pattern_key=\"ssh_config_write\"" in block
+        # Inspect the full function body so the pattern_key selection
+        # (above the _run_approval_gate call, outside a fixed window)
+        # is checked too. Both approval keys must appear so a session
+        # approval for SSH client config cannot silently authorize a
+        # shell rc write (independent execution risks).
+        func_src = _inspect.getsource(ft._check_approval_required_write)
+        assert "shell_rc_write" in func_src
+        assert "ssh_config_write" in func_src
 
         from tools.approval import _run_approval_gate
         required = [
@@ -1051,7 +1060,7 @@ class TestSSHConfigWriteGateSingleQuery:
         missing = [k for k in required if not _re.search(
             rf"\b{k}\s*=", block)]
         assert missing == [], (
-            f"_run_approval_gate call at ssh_config_write gate is missing "
+            f"_run_approval_gate call at approval gate is missing "
             f"required kwargs {missing}; it would raise TypeError instead "
             f"of showing an approval prompt"
         )

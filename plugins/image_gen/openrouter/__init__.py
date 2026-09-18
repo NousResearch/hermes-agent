@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio, save_b64_image,
     save_url_image, success_response)
-from plugins.image_gen._common import error_factory, load_image_gen_config, post_json
+from plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -692,7 +692,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             return _fail(f"Could not save generated image: {exc}", "io_error")
         if not saved:
             return _fail(f"{self._display} response carried neither b64_json nor url.", "empty_response")
-        _record_image_api_usage(body, model_id, provider=self._name)
+        record_token_usage(_dict_at(body, "usage"), model=model_id, provider=self._name, base_url=base_url)
         return success_response(
             image=saved[0], model=model_id, prompt=prompt, aspect_ratio=semantic_aspect, provider=self._name,
             modality="image" if usable_refs else "text",
@@ -741,6 +741,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 saved_path = save_url_image(first, prefix=f"{self._name}_gen")
         except Exception as exc:  # noqa: BLE001
             return fail(f"Could not save generated image: {exc}", "io_error"), None
+        record_token_usage(_dict_at(result, "usage"), model=model_id, provider=self._name, base_url=base_url)
         return success_response(
             image=str(saved_path), model=model_id, prompt=prompt, aspect_ratio=aspect, provider=self._name,
         ), None
@@ -801,30 +802,6 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             error=f"{self._display} image generation failed after trying all candidate models.",
             error_type="api_error", provider=self._name,
             model=model_chain[-1] if model_chain else "", prompt=prompt, aspect_ratio=aspect)
-
-
-def _record_image_api_usage(body: Any, model_id: str, *, provider: str) -> None:
-    """Record a token-billed Image API call against the ambient session (#114324).
-
-    Best-effort: accounting must never break image generation. No-ops outside
-    an agent turn or when the response carries no token usage.
-    """
-    try:
-        usage = _dict_at(body, "usage")
-        if not isinstance(usage.get("total_tokens"), int):
-            return
-        from agent.aux_accounting import record_aux_usage
-        from types import SimpleNamespace
-
-        record_aux_usage(
-            SimpleNamespace(model=model_id, usage=SimpleNamespace(
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-            )),
-            "image_gen", provider=provider)
-    except Exception:  # noqa: BLE001
-        logger.debug("%s: image usage recording failed (non-fatal)", provider, exc_info=True)
 
 
 def _build_providers() -> List[OpenRouterCompatImageProvider]:

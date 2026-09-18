@@ -14,7 +14,7 @@ from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio,
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
     StaticImageGenProvider, collect_source_images, error_factory, import_openai, materialize_image,
-    openai_importable, prompt_required_error, resolve_static_model, size_for)
+    openai_importable, prompt_required_error, record_token_usage, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,8 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             model=tier_id, prompt=prompt, aspect=aspect, log=logger)
         if err:
             return err
+        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
+        record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt

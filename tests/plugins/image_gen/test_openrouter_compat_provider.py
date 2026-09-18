@@ -703,58 +703,48 @@ class TestImageApiSurface:
         assert result["exact_aspect_ratio"] == "9:16"
         assert result["image"] == "/tmp/i.png"
 
-    def test_token_billed_call_records_session_usage(self):
-        """#114324: an OpenRouter token-billed call must reach session_model_usage."""
+    _USAGE = {"prompt_tokens": 1000, "completion_tokens": 128, "total_tokens": 1128}
+
+    @pytest.mark.parametrize("surface, model, usage", [
+        ("chat", "openai/gpt-5.4-image-2", _USAGE),      # default chain: token-billed via /chat/completions
+        ("images", "krea/krea-2-medium", _USAGE),         # curated Image API model
+        ("images", "krea/krea-2-medium", None),           # flat-fee body without usage: no write
+    ])
+    def test_token_usage_reaches_session_accounting(self, surface, model, usage):
+        """A response carrying token usage records one ``image_generation`` row on the ambient
+        session; a body without usage records nothing."""
         from agent import aux_accounting
 
         recorded = []
 
         class _DB:
             def record_auxiliary_usage(self, *args, **kwargs):
-                recorded.append(kwargs)
+                recorded.append((args, kwargs))
 
+        if surface == "chat":
+            response = _mock_chat_response([_PNG_DATA_URI])
+            response.json.return_value["usage"] = dict(usage)
+        else:
+            response = _mock_image_api_response(usage=usage)
         token = aux_accounting.set_accounting_context(_DB(), "sess-1")
         try:
             with patch(_RUNTIME, return_value=_runtime_ok()), \
-                 patch("requests.post", return_value=_mock_image_api_response(
-                     usage={"total_tokens": 1128, "prompt_tokens": 1000,
-                            "completion_tokens": 128})), \
+                 patch("requests.post", return_value=response), \
                  patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
-                result = _openrouter_image_api().generate(
-                    prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
-                )
+                result = _openrouter_image_api().generate(prompt="p", aspect_ratio="portrait", model=model)
         finally:
             aux_accounting.reset_accounting_context(token)
 
         assert result["success"] is True
-        assert len(recorded) == 1
-        assert recorded[0]["input_tokens"] == 1000
-        assert recorded[0]["output_tokens"] == 128
-        assert recorded[0]["model"] == "krea/krea-2-medium"
+        if usage is None:
+            assert recorded == []
+            return
+        ((session_id, task), kwargs), = recorded
+        assert (session_id, task) == ("sess-1", "image_generation")
+        assert kwargs["model"] == model
+        assert kwargs["billing_provider"] == "openrouter"
+        assert (kwargs["input_tokens"], kwargs["output_tokens"]) == (1000, 128)
 
-    def test_untokened_call_records_nothing(self):
-        """No token usage in the body: no session write (flat-fee image models)."""
-        from agent import aux_accounting
-
-        recorded = []
-
-        class _DB:
-            def record_auxiliary_usage(self, *args, **kwargs):
-                recorded.append(kwargs)
-
-        token = aux_accounting.set_accounting_context(_DB(), "sess-1")
-        try:
-            with patch(_RUNTIME, return_value=_runtime_ok()), \
-                 patch("requests.post", return_value=_mock_image_api_response()), \
-                 patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
-                result = _openrouter_image_api().generate(
-                    prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
-                )
-        finally:
-            aux_accounting.reset_accounting_context(token)
-
-        assert result["success"] is True
-        assert recorded == []
 
     def test_multiple_images_land_in_additional_images(self):
         entries = [

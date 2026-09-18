@@ -277,6 +277,11 @@ export interface Translations {
     newJob: string;
     nameOptional: string;
     namePlaceholder: string;
+    /** Optional — English fallback until translated. Grouping control on the
+     *  Jobs list; `uncategorised` labels jobs with no category. */
+    groupNone?: string;
+    groupCategory?: string;
+    uncategorised?: string;
     prompt: string;
     promptPlaceholder: string;
     schedule: string;

@@ -198,6 +198,27 @@ When `workdir` is set:
 Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
+## Grouping jobs by category
+
+Every job takes an optional free-form `category` label (`category` on the job record, editable in the
+dashboard's create/edit dialog). It is presentation-only: the scheduler ignores it, so it cannot
+affect when or whether a job runs.
+
+When at least one job carries a label, the dashboard's **Cron → Jobs** list offers a grouping toggle
+next to the profile filter. Grouped, the list renders one heading per category — with the jobs that
+belong to it underneath, sorted alphabetically, and jobs with no label collected under
+*Uncategorised* last. Labels merge on an exact trimmed match, so `family` and `" family "` are one
+group.
+
+Setting it from the API is the same field name:
+
+```bash
+curl -X POST localhost:9119/api/cron/jobs -H 'Content-Type: application/json' \
+  -d '{"prompt":"Piano practice","schedule":"every 1d","category":"Family"}'
+```
+
+An empty string clears the label (same as `workdir`).
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

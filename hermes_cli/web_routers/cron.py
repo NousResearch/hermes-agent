@@ -47,7 +47,7 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
     core functions already accept.
     """
     normalized = dict(updates or {})
-    for key in ("model", "provider", "workdir"):
+    for key in ("model", "provider", "workdir", "category"):
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])
     if "script" in normalized:

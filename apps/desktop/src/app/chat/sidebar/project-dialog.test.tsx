@@ -26,7 +26,10 @@ vi.mock('@/i18n', () => ({
           namePlaceholder: 'Project name',
           noFolders: 'No folders yet',
           primaryBadge: 'Primary',
-          removeFolder: 'Remove folder'
+          removeFolder: 'Remove folder',
+          typePath: 'Type a path',
+          typePathPlaceholder: '/home/user/project — resolved on the backend host',
+          typePathAdd: 'Add'
         }
       }
     }
@@ -155,5 +158,49 @@ describe('ProjectDialog', () => {
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
 
     expect(createProject.mock.calls[0]?.[0]).toMatchObject({ dropPlacement: undefined })
+  })
+
+  // A remote backend's workspace can't be browsed with the native (local FS)
+  // picker, so the dialog also accepts a typed path (#112957). The path is
+  // resolved by the backend host, not this client — no local existence check.
+  it('accepts a typed folder path without a local existence check', async () => {
+    const { createProject } = vi.mocked(await import('@/store/projects'))
+
+    vi.mocked(createProject).mockClear()
+    render(<ProjectDialog />)
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'Remote' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Type a path' }))
+    const input = screen.getByPlaceholderText('/home/user/project — resolved on the backend host')
+    fireEvent.change(input, { target: { value: '/home/remote/proj' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getByText('/home/remote/proj')).toBeTruthy()
+
+    const create = screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement
+    await waitFor(() => expect(create.disabled).toBe(false))
+    fireEvent.click(create)
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
+    expect(createProject.mock.calls[0]?.[0]).toMatchObject({ folders: ['/home/remote/proj'] })
+  })
+
+  it('ignores an empty or duplicate typed path', async () => {
+    render(<ProjectDialog />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Type a path' }))
+    const input = screen.getByPlaceholderText('/home/user/project — resolved on the backend host')
+
+    // Empty submit adds nothing and keeps the inline field open.
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+
+    // Adding the same path twice yields a single folder row.
+    fireEvent.change(input, { target: { value: '/home/remote/proj' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.change(input, { target: { value: '/home/remote/proj' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(screen.getAllByText('/home/remote/proj')).toHaveLength(1)
   })
 })

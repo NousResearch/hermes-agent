@@ -405,8 +405,9 @@ def credit(models, *, metric="ok", guardrails=credit_mod.DEFAULT_GUARDRAILS,
             model=model)
         _print_verdict(row, mdir, n_reps)
         credit_mod.write_verdicts(mdir / "verdicts.jsonl", [row])
-        print(f"artifact appended: {mdir / 'verdicts.jsonl'} "
-              f"(total rows: {sum(1 for _ in open(mdir / 'verdicts.jsonl', encoding='utf-8'))})")
+        with open(mdir / "verdicts.jsonl", encoding="utf-8") as _vf:
+            _total = sum(1 for _ in _vf)
+        print(f"artifact appended: {mdir / 'verdicts.jsonl'} (total rows: {_total})")
 
 
 def _flag(name, default=None):

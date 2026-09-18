@@ -587,3 +587,184 @@ class TestReviewRepros:
         assert after["next_run_at"] == next_before
         assert (after.get("repeat") or {}).get("completed", 0) == completed_before
         assert claim_job_for_fire(job["id"], event_rerun=True, return_job=True) is False
+
+
+class TestReviewR3InflightTrigger:
+    """Review-r3 R1: trigger_job while a real fire_claim is live must not
+    become a phantom scheduled occurrence of the manual instant."""
+
+    def _trigger_during_inflight(self, monkeypatch, *, mode, with_pending):
+        import threading
+
+        from cron import jobs as jobs_mod
+        from cron.jobs import (
+            admit_job_event,
+            create_job,
+            get_job,
+            load_jobs,
+            save_jobs,
+            trigger_job,
+        )
+        from tools.cronjob_tools import _run_claimed_job
+        import cron.scheduler as sched
+
+        operator = "op-during-run"
+        pending_ctx = "ctx-ONE"
+        inflight_ctx = "running"
+        started = threading.Event()
+        release = threading.Event()
+        prompts = []
+        thread_errors = []
+
+        def fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            started.set()
+            assert release.wait(15)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        job = create_job(prompt="x", schedule="every 5m", name="q", repeat=5)
+        job_id = job["id"]
+
+        if mode == "event":
+            claimed = admit_job_event(
+                job_id, delivery_id="d-run", context=inflight_ctx
+            )
+            assert claimed["status"] == "claimed"
+            snap = claimed["job"]
+
+            def _run_event():
+                try:
+                    _run_claimed_job(snap, extra_prompt=inflight_ctx)
+                except Exception as exc:
+                    thread_errors.append(exc)
+                    started.set()
+
+            worker = threading.Thread(target=_run_event)
+        else:
+            records = load_jobs()
+            for record in records:
+                if record["id"] == job_id:
+                    record["next_run_at"] = jobs_mod._hermes_now().isoformat()
+            save_jobs(records)
+
+            def _run_scheduled():
+                try:
+                    sched.tick(verbose=False, sync=True)
+                except Exception as exc:
+                    thread_errors.append(exc)
+                    started.set()
+
+            worker = threading.Thread(target=_run_scheduled)
+
+        worker.start()
+        assert started.wait(15), f"in-flight run never started ({mode}); errors={thread_errors!r}"
+        assert not thread_errors
+
+        if with_pending:
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+
+        mid = get_job(job_id)
+        assert mid.get("fire_claim")
+        triggered = trigger_job(job_id, extra_prompt=operator)
+        assert triggered is not None
+        manual_at = triggered.get("manual_run_at")
+        assert manual_at
+        assert triggered.get("manual_run_prompt") == operator
+        assert triggered.get("fire_claim")
+
+        inflight_prompts = list(prompts)
+        release.set()
+        worker.join(30)
+        assert not worker.is_alive()
+        assert not thread_errors
+        after = get_job(job_id)
+        assert after.get("fire_claim") in (None, {})
+        assert after.get("manual_run_prompt") == operator
+        assert after.get("manual_run_at") == after.get("next_run_at") == manual_at
+
+        ticks = []
+        for _ in range(3):
+            prompts.clear()
+            n = sched.tick(verbose=False, sync=True)
+            ticks.append((n, list(prompts)))
+        final = get_job(job_id)
+        return {
+            "job_id": job_id,
+            "operator": operator,
+            "pending_ctx": pending_ctx,
+            "inflight_ctx": inflight_ctx,
+            "inflight_prompts": inflight_prompts,
+            "after": after,
+            "ticks": ticks,
+            "final": final,
+            "manual_at": manual_at,
+        }
+
+    def _assert_no_phantom(self, result, *, scheduled_counted):
+        from datetime import datetime
+
+        from cron import jobs as jobs_mod
+
+        operator = result["operator"]
+        pending_ctx = result["pending_ctx"]
+        ticks = result["ticks"]
+        final = result["final"]
+        after = result["after"]
+        manual_at = result["manual_at"]
+        completed_after = (after.get("repeat") or {}).get("completed", 0)
+        completed_final = (final.get("repeat") or {}).get("completed", 0)
+
+        if scheduled_counted:
+            assert completed_after == 1
+        else:
+            assert completed_after == 0
+
+        assert ticks[0][0] >= 1
+        assert ticks[0][1] == [operator]
+        pending_events = (after.get("pending_event_batch") or {}).get("events") or []
+        if pending_events:
+            assert ticks[1][0] >= 1
+            assert len(ticks[1][1]) == 1
+            assert pending_ctx in str(ticks[1][1][0])
+            assert operator not in str(ticks[1][1][0])
+            assert ticks[2][0] == 0
+            assert ticks[2][1] == []
+            assert completed_final == completed_after
+            assert not (final.get("pending_event_batch") or {}).get("events")
+        else:
+            assert ticks[1][0] == 0
+            assert ticks[1][1] == []
+            assert ticks[2][0] == 0
+
+        bare = [tick for tick in ticks if tick[0] >= 1 and tick[1] == [None]]
+        assert bare == []
+        dispatch = final.get("last_dispatch") or {}
+        assert dispatch.get("scheduled_at") != manual_at
+        assert datetime.fromisoformat(final["next_run_at"]) > jobs_mod._hermes_now()
+
+    def test_trigger_during_event_run_with_pending(self, temp_home, monkeypatch):
+        result = self._trigger_during_inflight(
+            monkeypatch, mode="event", with_pending=True
+        )
+        assert result["inflight_ctx"] in str(result["inflight_prompts"])
+        assert result["operator"] not in "".join(str(p) for p in result["inflight_prompts"])
+        self._assert_no_phantom(result, scheduled_counted=False)
+
+    def test_trigger_during_event_run_without_pending(self, temp_home, monkeypatch):
+        result = self._trigger_during_inflight(
+            monkeypatch, mode="event", with_pending=False
+        )
+        assert result["inflight_ctx"] in str(result["inflight_prompts"])
+        self._assert_no_phantom(result, scheduled_counted=False)
+
+    def test_trigger_during_scheduled_run_with_pending(self, temp_home, monkeypatch):
+        result = self._trigger_during_inflight(
+            monkeypatch, mode="sched", with_pending=True
+        )
+        assert result["inflight_prompts"] == [None]
+        self._assert_no_phantom(result, scheduled_counted=True)

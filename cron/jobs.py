@@ -2361,13 +2361,14 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
 
 def _record_run_outcome(
     job: Dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
-    status: Optional[str], now: str,
+    status: Optional[str], now: str, *, consume_manual: bool = True,
 ) -> None:
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
     job["last_run_at"] = now
-    job.pop("manual_run_at", None)
-    # The transient manual-run context is single-fire: the run that just completed consumed it.
-    job.pop("manual_run_prompt", None)
+    if consume_manual:
+        job.pop("manual_run_at", None)
+        # The transient manual-run context is single-fire: the run that just completed consumed it.
+        job.pop("manual_run_prompt", None)
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
@@ -2468,22 +2469,27 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
-        event_run = bool(
-            _coerce_event_items((job.get("fire_claim") or {}).get("event_batch"))
-        )
-        # Stamp is still present until _record_run_outcome pops it. Do not require
-        # equality with next_run_at: interval claims re-anchor next_run_at first.
-        was_manual = bool(job.get("manual_run_at"))
+        claim = job.get("fire_claim") if isinstance(job.get("fire_claim"), dict) else {}
+        event_run = bool(_coerce_event_items(claim.get("event_batch")))
+        # Ownership is on the claim, not stamp presence and not fire_claim.at
+        # (heartbeats refresh at in place). trigger_job may stamp during an
+        # in-flight run; only that in-flight claim (no consumed_manual) leaves
+        # the stamp. A completion with no live claim still consumes it.
+        consumed_manual = bool(claim.get("consumed_manual")) or not claim
+        leftover_manual_at = None if consumed_manual else job.get("manual_run_at")
         scheduled_next = job.get("next_run_at")
         now = _hermes_now().isoformat()
-        _record_run_outcome(job, success, error, delivery_error, status, now)
+        _record_run_outcome(
+            job, success, error, delivery_error, status, now,
+            consume_manual=consumed_manual,
+        )
         pending_after = _coerce_event_items(job.get("pending_event_batch"))
         if event_run:
             # Event reruns must not consume or re-anchor future scheduled occurrences.
             job["next_run_at"] = scheduled_next
             if job.get("state") != "paused" and job.get("next_run_at"):
                 job["state"] = "scheduled"
-        elif was_manual and pending_after:
+        elif consumed_manual and pending_after:
             # Run-now while events are still queued: occurrence-free, no repeat bump.
             # next_run_at was already re-anchored at claim time for interval jobs.
             job["next_run_at"] = scheduled_next
@@ -2508,6 +2514,15 @@ def mark_job_run(
             job.pop("event_rerun_due", None)
             if event_run:
                 _complete_event_run_if_exhausted(job)
+        if leftover_manual_at:
+            # In-flight completion did not own this run-now: keep the operator
+            # stamp due for the next tick's manual-precedence fire.
+            job["next_run_at"] = leftover_manual_at
+            if is_terminal_job(job):
+                job["enabled"] = True
+                job["state"] = "scheduled"
+            elif job.get("state") != "paused" and job.get("next_run_at"):
+                job["state"] = "scheduled"
         save_jobs(jobs)
         return True
 
@@ -2700,6 +2715,7 @@ def advance_next_runs(job_ids) -> int:
             if (
                 job["id"] not in ids
                 or job.get("event_rerun_due")
+                or (job.get("manual_run_at") and job.get("manual_run_at") == job.get("next_run_at"))
                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
             ):
@@ -2782,7 +2798,10 @@ def claim_job_for_fire(
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
         # stamping it would make completed_occurrence() skip that slot when it arrives.
-        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
+        live_manual_stamp = bool(
+            job.get("manual_run_at") and job.get("manual_run_at") == job.get("next_run_at")
+        )
+        manual_fire = force or manual or live_manual_stamp
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
         # A scheduled tick only ever fires when now >= next_run_at
         # (_evaluate_due_job returns False while the stored occurrence is still
@@ -2811,6 +2830,8 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        if live_manual_stamp:
+            job["fire_claim"]["consumed_manual"] = True
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:

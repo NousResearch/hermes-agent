@@ -100,6 +100,27 @@ class TestDashboardStop:
         assert "stop" in kwargs["reason"].lower()
         assert exc.value.code == 0
 
+    def test_stop_scopes_scan_and_kill_to_the_invoking_hermes_home(self, tmp_path, monkeypatch, capsys):
+        """``--stop`` targets only this profile's backends (#113978): both the pre-check and the
+        kill run with ``scope_home`` = the invoking home, and an empty scan says so."""
+        own_home = tmp_path / "profiles" / "work"
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as scan, \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+                   return_value={"matched": [12345], "killed": [12345], "failed": [], "unrecovered": []}) as kill, \
+             pytest.raises(SystemExit):
+            cmd_dashboard(_ns(stop=True))
+        assert scan.call_args.kwargs["scope_home"] == str(own_home)
+        assert kill.call_args.kwargs["scope_home"] == str(own_home)
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes") as kill, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(stop=True))
+        kill.assert_not_called()
+        assert exc.value.code == 0
+        assert "for this profile" in capsys.readouterr().out
+
     def test_stop_exits_nonzero_if_kill_leaves_survivors(self):
         """A pid the kill path could not stop (e.g. permission denied) -> exit 1 so
         scripts can detect that the stop didn't succeed."""

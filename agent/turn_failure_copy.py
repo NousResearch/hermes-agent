@@ -282,6 +282,23 @@ def oauth_relogin_command(provider: Any) -> str:
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
 
 
+def relogin_command_hint(provider: Any) -> str:
+    """Re-sign-in command for a rejected credential on surfaces that may not know the provider:
+    the exact OAuth command for a known OAuth slug, ``hermes auth add <slug>`` for a known API-key
+    slug, and the ``<provider>`` placeholder when the slug is unknown — always carrying the
+    ``-p <profile>`` selector so a profile user never re-signs the ROOT store (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if not slug:
+        return f"hermes {profile_cli_selector()}auth add <provider>"
+    from agent.error_surface import auth_kind
+
+    if auth_kind(slug) == "oauth":
+        return oauth_relogin_command(slug)
+    return f"hermes {profile_cli_selector()}auth add {slug}"
+
+
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
 ) -> str:

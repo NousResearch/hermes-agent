@@ -37,7 +37,7 @@ def windows_kill_env(monkeypatch):
     overridden by passing kwargs to the fixture.
     """
 
-    state = {"os_kill_calls": [], "taskkill_calls": [], "raise_on_kill": None, "taskkill_returncode": 0}
+    state = {"os_kill_calls": [], "taskkill_calls": [], "raise_on_kill": None, "raise_on_taskkill": None, "taskkill_returncode": 0}
 
     def _mock_os_kill(pid, sig):
         state["os_kill_calls"].append((pid, sig))
@@ -47,6 +47,8 @@ def windows_kill_env(monkeypatch):
     def _mock_subprocess_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
         state["taskkill_calls"].append(list(cmd))
+        if state["raise_on_taskkill"] is not None:
+            raise state["raise_on_taskkill"]
         result = MagicMock()
         result.returncode = state["taskkill_returncode"]
         result.stderr = ""
@@ -54,7 +56,7 @@ def windows_kill_env(monkeypatch):
         return result
 
     monkeypatch.setattr(status.os, "kill", _mock_os_kill)
-    monkeypatch.setattr(status, "subprocess", MagicMock(run=_mock_subprocess_run))
+    monkeypatch.setattr(status.subprocess, "run", _mock_subprocess_run)
     return state
 
 
@@ -107,3 +109,18 @@ def test_force_false_taskkill_fallback_failure_reraises(windows_kill_env):
 
     assert len(windows_kill_env["os_kill_calls"]) == 1
     assert len(windows_kill_env["taskkill_calls"]) == 1
+
+
+def test_force_false_taskkill_fallback_timeout_raises_oserror(windows_kill_env):
+    """When taskkill fallback times out after PermissionError, OSError is raised (not raw TimeoutExpired)."""
+    import subprocess
+    _raise_kill(windows_kill_env, PermissionError("access denied"))
+    windows_kill_env["raise_on_taskkill"] = subprocess.TimeoutExpired(cmd=["taskkill"], timeout=10)
+    windows_kill_env["taskkill_calls"] = []
+
+    with pytest.raises(OSError, match="timed out"):
+        status.terminate_pid(1234, force=False)
+
+    assert len(windows_kill_env["os_kill_calls"]) == 1
+    assert len(windows_kill_env["taskkill_calls"]) == 1
+

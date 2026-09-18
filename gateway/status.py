@@ -271,6 +271,8 @@ def terminate_pid(
                 )
             except FileNotFoundError:
                 raise exc from None
+            except subprocess.TimeoutExpired as timeout_exc:
+                raise OSError(f"taskkill fallback timed out for PID {pid}") from timeout_exc
             if result.returncode != 0:
                 details = (result.stderr or result.stdout or "").strip()
                 raise OSError(details or f"taskkill fallback failed for PID {pid}") from exc
@@ -286,6 +288,8 @@ def terminate_pid(
     except FileNotFoundError:
         os.kill(pid, signal.SIGTERM)
         return
+    except subprocess.TimeoutExpired as timeout_exc:
+        raise OSError(f"taskkill timed out for PID {pid}") from timeout_exc
     if result.returncode != 0:
         details = (result.stderr or result.stdout or "").strip()
         raise OSError(details or f"taskkill failed for PID {pid}")

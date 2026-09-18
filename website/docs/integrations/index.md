@@ -23,6 +23,7 @@ Hermes supports multiple AI inference providers out of the box. Use `hermes mode
 ## Tool Servers (MCP)
 
 - **[MCP Servers](/user-guide/features/mcp)** — Connect Hermes to external tool servers via Model Context Protocol. Access tools from GitHub, databases, file systems, browser stacks, internal APIs, and more without writing native Hermes tools. Supports both stdio and SSE transports, per-server tool filtering, and capability-aware resource/prompt registration.
+- **[Barycenters](/integrations/barycenters)** — Optional third-party. Admit a tool call in shadow before the tool runs. MCP at the admit host is a side door (`admit`, `check_readiness`), not a wrap of every Hermes tool.
 
 ## Web Search Backends
 

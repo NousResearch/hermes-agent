@@ -155,7 +155,7 @@ class GatewayControlServer:
         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
         old_umask = os.umask(0o177)
         try:
-            self._server = await asyncio.start_unix_server(self._handle_connection, path=str(bind_path))
+            self._server = await asyncio.start_unix_server(self._handle_connection, path=str(bind_path))  # windows-footgun: ok — reached only via _start_posix(); Windows uses _start_windows() (named pipe)
         finally:
             os.umask(old_umask)
         with contextlib.suppress(OSError):

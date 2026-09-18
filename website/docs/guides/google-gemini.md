@@ -109,8 +109,22 @@ appends `/v1beta` for you, so `GEMINI_BASE_URL=https://generativelanguage.google
 works the same as spelling out the `/v1beta` suffix. The same normalization
 applies to the Gemini TTS base URL (`tts.gemini.base_url`). Chat requests only
 take the native Gemini path when the base URL points at
-`generativelanguage.googleapis.com`; a proxy on another host is treated as an
-OpenAI-compatible endpoint, so configure it with its `/openai`-style URL.
+`generativelanguage.googleapis.com` or the Vertex AI express host below; a proxy on
+another host is treated as an OpenAI-compatible endpoint, so configure it with its
+`/openai`-style URL.
+
+### Vertex AI Express Mode Keys
+
+Google issues two Gemini key families. AI Studio keys start with `AIza…`; **Vertex AI
+express-mode** keys start with `AQ.…` and only authenticate against
+`aiplatform.googleapis.com` (they get 403 on the AI Studio host). Hermes detects the
+`AQ.` prefix and routes those keys to
+`https://aiplatform.googleapis.com/v1beta1/publishers/google` automatically — set
+`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset. If you set
+`GEMINI_BASE_URL` to `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
+Hermes completes it to the `publishers/google` form; a base URL on any other host (a
+proxy) is never rewritten. Express keys are separate from the OAuth-based
+[Vertex AI provider](/guides/google-vertex), which needs no API key.
 
 ## Available Models
 

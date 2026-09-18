@@ -273,6 +273,35 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
+    """Cwd to write into a LIVE cached env, or None to leave it untouched.
+
+    On container backends a raw host path (a desktop/TUI session registering its
+    workspace, e.g. ``C:\\Users\\me`` or ``/Users/me/workspace``) cannot be the
+    in-sandbox workdir: every file-tools ``_exec`` wrapper does
+    ``builtin cd -- <env.cwd> || exit 126``, so a host cwd poisons all later
+    file operations with an unrelated ``cd:`` error. The creation paths already
+    sanitize this (``_is_unusable_container_cwd`` guards); the live-env write
+    here is the one remaining unsanitized site. When the host path is the one
+    mounted at ``/workspace`` (docker cwd passthrough), the session's directory
+    is still reachable — remap instead of discarding, mirroring the env-creation
+    remap in ``terminal_tool()``. Non-container backends apply the override
+    verbatim (ACP project-root switching must keep working).
+    """
+    env_type = getattr(env, "env_type", None)
+    if not env_type or not _is_container_backend(env_type):
+        return new_cwd
+    if not _is_unusable_container_cwd(new_cwd):
+        return new_cwd
+    host_mount = getattr(env, "host_cwd", None)
+    if isinstance(host_mount, str) and host_mount:
+        candidate = os.path.abspath(os.path.expanduser(new_cwd))
+        mounted = os.path.abspath(os.path.expanduser(host_mount))
+        if candidate == mounted:
+            return "/workspace"
+    return None
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """Register per-task sandbox overrides (``docker_image``/``modal_image``/
     ``singularity_image``/``daytona_image``, ``env_type``, ``cwd``) before the
@@ -281,7 +310,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     A ``cwd`` override takes effect immediately: it becomes the session's
     recorded cwd (until a ``cd`` changes it) and any live env's cwd is updated
     too, so env-side seeding stays consistent (ACP switching project root
-    mid-session via ``session/load``).
+    mid-session via ``session/load``). The session record keeps the RAW path
+    (host workspaces are tracked there on purpose); only the live-env write is
+    sanitized, since a host cwd can never be a container workdir.
     """
     _task_env_overrides[task_id] = overrides
 
@@ -295,7 +326,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            sanitized = _sanitize_cwd_for_live_env(env, new_cwd)
+            if sanitized is not None:
+                env.cwd = sanitized
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1353,6 +1386,8 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from agent.terminal_approval_batch import validate_prepared_terminal
+    validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray
     # argument and the right tool instead of failing on command=None.
     if "command" not in args and "code" in args:

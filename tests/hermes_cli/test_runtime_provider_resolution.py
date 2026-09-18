@@ -72,7 +72,7 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -97,7 +97,7 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -129,7 +129,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, **_kwargs):
                 return entry
 
         return _Pool()
@@ -443,7 +443,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -473,7 +473,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -988,7 +988,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -1080,6 +1080,31 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
+    """End-to-end for #112600: a ``model.base_url`` pinned to the Zen relay must follow the
+    resolved provider family. The CLI inherits that pinned override across a switch, and the Zen
+    relay does not serve Go-subscription models, so the client was built against
+    ``https://opencode.ai/zen/v1`` and every request 401'd ("Model mimo-v2.5 is not supported").
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "mimo-v2.5",
+            "base_url": "https://opencode.ai/zen/v1",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 # ------------------------------------------------------------------
@@ -1345,7 +1370,7 @@ class TestAzureAnthropicEnvVarHint:
         })
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
         called = {"resolve_anthropic_token": False}
-        def _fake_resolve():
+        def _fake_resolve(**_kwargs):
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
@@ -1464,7 +1489,7 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
@@ -1817,61 +1842,6 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["requested_provider"] == "custom:lmstudio"
 
 
-def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
-    """OpenCode Free is keyless: an exhausted credential pool must not raise
-    a missing-credential error. The provider resolves with the keyless
-    placeholder + empty-Authorization headers so the request goes out
-    anonymously."""
-    class _ExhaustedPool:
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return None
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _ExhaustedPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["default_headers"]["Authorization"] == ""
-
-
-def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monkeypatch):
-    """OpenCode Free resolves keylessly with no env var configured at all —
-    the provider declares no credentials."""
-    class _NoPool:
-        def has_credentials(self):
-            return False
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
-    )
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoPool())
-
-    resolved = rp.resolve_runtime_provider(
-        requested="opencode-free", target_model="x-preview-f-free"
-    )
-
-    assert resolved["provider"] == "opencode-free"
-    assert resolved["api_key"] == "opencode-zen-free-keyless"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
-
-
 def test_custom_provider_explicit_target_model_wins(monkeypatch):
     """An explicit target_model must not be silently replaced by the custom
     provider's configured default model (regression: auxiliary slots such as
@@ -1940,3 +1910,18 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+@pytest.mark.parametrize("name", ["opencode-free", "free", "opencode_free"])
+def test_removed_keyless_free_provider_points_at_its_replacements(name):
+    """The keyless OpenCode free tier is gone (the relay 403s anonymous traffic), so a persisted
+    ``model.provider`` — or ``--provider`` — still naming it must fail with the removal hint
+    naming both surviving OpenCode providers, not a bare "Unknown provider"."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    with pytest.raises(AuthError) as excinfo:
+        resolve_provider(name)
+
+    assert excinfo.value.code == "invalid_provider"
+    message = str(excinfo.value)
+    assert "opencode-zen" in message and "opencode-go" in message

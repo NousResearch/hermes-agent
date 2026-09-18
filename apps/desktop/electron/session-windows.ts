@@ -5,6 +5,8 @@
 
 import { pathToFileURL } from 'node:url'
 
+import type { DesktopWindowLaunch } from './desktop-profile'
+
 // Secondary windows open at the minimum usable size — a compact side panel for
 // subagent watch / cmd-click session pop-out, not a second full desktop.
 const SESSION_WINDOW_MIN_WIDTH = 420
@@ -87,8 +89,13 @@ function buildSessionWindowUrl(sessionId: string, { devServer, profile, renderer
 // separate marker lets the renderer distinguish a peer from the one primary
 // app window: app-launch source restoration belongs to the primary only, while
 // a peer keeps the already-running backend it joined during boot.
-function buildInstanceWindowUrl({ devServer, rendererIndexPath }: any = {}) {
-  const query = '?peer=1'
+interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
+  devServer?: string
+  rendererIndexPath?: string
+}
+
+function buildInstanceWindowUrl({ connectionId, devServer, profile, profileWindow, rendererIndexPath }: InstanceWindowUrlOptions = {}) {
+  const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer

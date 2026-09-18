@@ -108,6 +108,22 @@ test('buildInstanceWindowUrl marks a packaged full peer', () => {
   assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
 })
 
+test('full peers carry their boot owner but only explicit profile windows pin future chats', () => {
+  for (const source of [{ devServer: 'http://localhost:5173/' }, { rendererIndexPath: '/opt/app/index.html' }]) {
+    for (const connectionId of [null, 'remote&work']) {
+      for (const profileWindow of [false, true]) {
+        const url = new URL(buildInstanceWindowUrl({ ...source, connectionId, profile: 'work', profileWindow }))
+        assert.equal(url.searchParams.get('peer'), '1')
+        assert.equal(url.searchParams.get('profile'), 'work')
+        assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+        assert.equal(url.searchParams.get('profileWindow'), profileWindow ? '1' : null)
+        assert.equal(url.searchParams.has('win'), false)
+        assert.equal(url.hash, '')
+      }
+    }
+  }
+})
+
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
   const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 

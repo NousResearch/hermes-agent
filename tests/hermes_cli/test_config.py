@@ -1,5 +1,6 @@
 """Tests for hermes_cli configuration management."""
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -1932,7 +1933,7 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
     assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
@@ -1958,3 +1959,73 @@ def test_empty_dict_default_sections_are_open_containers():
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
     assert known is False
     assert suggestion == "compression.model_thresholds"
+
+
+class TestSaveConfigExplicitPathAuthority:
+    """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
+    must come from the fail-closed read, not from a second cached read that can yield ``{}``."""
+
+    def test_save_config_on_intact_file_preserves_explicit_defaults(self, tmp_path):
+        # The intact case: an explicit user-set key survives even when its value equals the
+        # schema default, because the raw read supplies the preserve set (#113301's 32→32 row).
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model:\n  provider: test/p\nskills:\n  write_approval: true\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = "test/other"
+            save_config(config)
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["model"] == "test/other"
+        assert saved["skills"]["write_approval"] is True
+
+    def test_save_survives_cached_raw_read_returning_empty(self, tmp_path):
+        # Real schema sections, each pinned to its (scalar) default value, so the file survives
+        # only if save_config still sees them as explicitly set. ``agent`` is skipped because
+        # canonicalisation rewrites its max_turns shape and would mask the collapse signal.
+        # Only sections whose first value is a scalar: a nested dict/list default would be
+        # stripped element-wise and blur the per-section survival check.
+        sections = {k: v for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict) and v and k != "agent"}
+        chosen = {}
+        for k, v in sections.items():
+            ik, iv = next(iter(v.items()))
+            if not isinstance(iv, (dict, list)):
+                chosen[k] = {ik: iv}
+        assert len(chosen) >= 10, sorted(chosen)  # modest floor: a schema reorder must not fail this
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(chosen), encoding="utf-8")
+
+        with (patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+              patch("hermes_cli.config.read_raw_config", return_value={})):
+            save_config(load_config())
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert set(chosen) <= set(saved), sorted(set(chosen) - set(saved))
+
+
+class TestCompatibleProvidersMalformedLegacyKey:
+    """A non-list ``custom_providers`` must not wipe the merged view (#114605)."""
+
+    def test_string_custom_providers_keeps_providers_view_and_warns(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": "- name: broken",
+            "providers": {"exl3": {"api": "http://127.0.0.1:8290/v1", "default_model": "m"}},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["exl3"]
+        assert any("custom_providers is a str" in r.getMessage() for r in caplog.records)
+
+    def test_list_custom_providers_is_silent(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [{"name": "legacy", "base_url": "http://h/v1"}], "providers": {}}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy"]
+        assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]

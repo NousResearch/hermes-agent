@@ -115,7 +115,7 @@ def _write_valid_ssh_backend_lock(tmp_path, monkeypatch) -> int:
 def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is not None
         assert pid in exclude_pids
         return []
@@ -135,7 +135,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 ):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_not_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_not_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is None or pid not in exclude_pids
         return []
 
@@ -320,14 +320,18 @@ class TestBackCompatAlias:
 class TestDashboardUpdateCleanup:
     """The git and Windows ZIP update paths share this final cleanup."""
 
-    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys):
+    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys, monkeypatch, tmp_path):
+        own_home = tmp_path / "profiles" / "work"
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
         with patch(
             "hermes_cli.main._kill_stale_dashboard_processes",
             return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
                           "unrecovered": []},
-        ):
+        ) as kill:
             _finish_dashboard_update_cleanup([])
 
+        # The sweep only touches this home's backends (#113978).
+        assert kill.call_args.kwargs["scope_home"] == str(own_home)
         assert "stopped during update" not in capsys.readouterr().out
 
 
@@ -857,88 +861,34 @@ class TestCmdlineCapture:
         assert main_dashboard._dashboard_cmdline_for_pid(123) is None
 
 
-class TestPostUpdateStaleModuleReload:
-    """Regression tests for the post-update stale-module ImportError.
+class TestPostUpdateDashboardCleanupIsolation:
+    """Post-update dashboard cleanup is one isolated step among the others."""
 
-    ``hermes update`` runs in the PRE-pull Python process. When the update
-    adds a new symbol to ``hermes_cli._subprocess_compat`` (as #87134 added
-    ``bounded_probe_run``), the post-update dashboard cleanup's lazy
-    ``from hermes_cli._subprocess_compat import bounded_probe_run`` hits the
-    stale cached module and crashes with ImportError — after the code update
-    itself already succeeded. The cleanup entry point must force-reload the
-    process-scan modules first (PR #87757 + ZIP-path widening).
-    """
-
-    def test_cleanup_reloads_before_scanning(self):
-        """_finish_dashboard_update_cleanup must reload the process-scan
-        modules BEFORE calling _kill_stale_dashboard_processes, on every
-        call path (git update and ZIP fallback both route here)."""
+    def test_cleanup_failure_is_isolated_and_recorded(self, capsys):
+        """A failure inside the dashboard scan (#112604) must not abort the fleet-verification
+        tail (matrix, reconciliation, inner receipt finalize): contained, visible, recorded as
+        a failed step on the open receipt."""
+        import hermes_cli.update_receipt as ur
         from hermes_cli import update_cmd
 
-        order: list[str] = []
-        with patch.object(
-            update_cmd, "_reload_process_scan_modules",
-            side_effect=lambda: order.append("reload"),
-        ), patch(
-            "hermes_cli.main._kill_stale_dashboard_processes",
-            side_effect=lambda **kw: order.append("kill") or {"unrecovered": []},
-        ):
-            update_cmd._finish_dashboard_update_cleanup([])
-
-        assert order == ["reload", "kill"]
-
-    def test_node_failures_skip_reload_and_kill(self):
-        """A failed Node refresh leaves the running dashboard untouched —
-        no reload, no kill (existing safety rule preserved)."""
-        from hermes_cli import update_cmd
-
-        with patch.object(update_cmd, "_reload_process_scan_modules") as mock_reload, \
-             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill:
-            update_cmd._finish_dashboard_update_cleanup(["dashboard"])
-
-        mock_reload.assert_not_called()
-        mock_kill.assert_not_called()
-
-    def test_reload_restores_missing_symbol(self):
-        """Simulate the stale-module state: strip ``bounded_probe_run`` off
-        the cached module object (what an old pre-#87134 module looks like)
-        and verify the reload restores it from disk — the exact state the
-        Windows update crash came from."""
-        import hermes_cli._subprocess_compat as compat
-        from hermes_cli import update_cmd
-
-        assert hasattr(compat, "bounded_probe_run")
+        ur._current = None
         try:
-            delattr(compat, "bounded_probe_run")
-            assert not hasattr(compat, "bounded_probe_run")
+            ur.begin_update_receipt()
+            with patch(
+                "hermes_cli.main._kill_stale_dashboard_processes",
+                side_effect=AttributeError(
+                    "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
+                ),
+            ):
+                update_cmd._finish_dashboard_update_cleanup([])  # must not raise
 
-            update_cmd._reload_process_scan_modules()
-
-            stale = sys.modules["hermes_cli._subprocess_compat"]
-            assert hasattr(stale, "bounded_probe_run")
+            steps = {s["name"]: s for s in ur._current.data["steps"]}
         finally:
-            importlib.reload(sys.modules["hermes_cli._subprocess_compat"])
-            importlib.reload(sys.modules["hermes_cli.dashboard_procs"])
+            ur._current = None
 
-    def test_reload_failure_is_nonfatal(self):
-        """A reload failure must log and continue, never raise — the cleanup
-        step runs after the update already succeeded."""
-        from hermes_cli import update_cmd
-
-        with patch("importlib.reload", side_effect=RuntimeError("boom")):
-            update_cmd._reload_process_scan_modules()  # must not raise
-
-    def test_config_reload_list_includes_process_scan_modules(self):
-        """PR #87757's half: the git-path pre-cleanup reload also refreshes
-        the process-scan modules (belt to the entry-point suspenders)."""
-        from hermes_cli import update_cmd
-
-        reloaded: list[str] = []
-        with patch("importlib.reload", side_effect=lambda m: reloaded.append(m.__name__)):
-            update_cmd._reload_config_modules()
-
-        assert "hermes_cli._subprocess_compat" in reloaded
-        assert "hermes_cli.dashboard_procs" in reloaded
+        assert steps["dashboard_cleanup"]["ok"] is False
+        assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]
+        assert "_loaded_launchd_backend_jobs" in capsys.readouterr().out
 
 
 class TestLaunchdSupervisedBackends:

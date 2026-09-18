@@ -225,3 +225,20 @@ export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMI
     }
   }
 }
+
+/**
+ * Exit line for a supervised backend child, carrying the buffered output tail
+ * so the reason the child died reaches desktop.log. Every exit surface uses
+ * this shape — including the "stale" classification, where the line is the
+ * only evidence left: the child is gone and nothing else will say why it
+ * exited. `signal` wins over `code` (null code on signal death and vice
+ * versa); an empty tail keeps the line exactly as it was before.
+ */
+export function formatBackendExitLine(
+  label: string,
+  code: number | null,
+  signal: string | null,
+  outputTail: BackendOutputTail | null
+): string {
+  return `${label} (${signal || code})${outputTail?.describe() ?? ''}`
+}

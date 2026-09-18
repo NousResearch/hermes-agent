@@ -469,7 +469,7 @@ Poll the current run state. This is useful for dashboards that need status witho
 }
 ```
 
-Statuses are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation.
+Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it.
 
 ### GET /v1/runs/\{run_id\}/events
 
@@ -716,7 +716,7 @@ gateway:
 
 ### Concurrent-run cap
 
-The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
+The API server limits how many agent runs may execute at once across the endpoints that start one directly: the OpenAI-compatible endpoints, the Runs endpoints, and the session-chat endpoints (`POST /api/sessions/{id}/chat` and its `/stream` variant, which carry cross-machine agent DMs). Cron-triggered runs (`POST /api/jobs/{id}/run`, `POST /api/cron/fire`) go through the cron scheduler and are governed by cron's own limits, not this cap. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
 
 ## Security Headers
 

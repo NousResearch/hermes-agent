@@ -107,6 +107,116 @@ def test_aux_sync_legacy_tail_follows_lowered_threshold():
     assert compressor.tail_token_budget == int(compressor.threshold_tokens * compressor.summary_target_ratio)
 
 
+def test_fallback_activation_on_never_probed_session_stays_lazy():
+    """A session that never ran the feasibility probe does not resolve an auxiliary client while a
+    fallback is being activated; the compaction-time probe still owns the first verdict (#114707)."""
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+
+    agent = _make_agent(main_context=200_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
+    agent._config_context_length = None
+    agent.model = "fallback-model"
+    with patch("agent.auxiliary_client.get_text_auxiliary_client") as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000):
+        _update_fallback_context_compressor(agent)
+    aux_client.assert_not_called()
+    assert getattr(agent, "_compression_feasibility_checked", False) is False
+
+
+def test_fallback_activation_reprobes_aux_ceiling_and_keeps_it_durable():
+    """Every main-runtime change re-probes the summariser and the clamp survives later window
+    corrections; a failed probe leaves the latch unset for the lazy compaction-time probe (#114707)."""
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+
+    agent = _make_agent(main_context=200_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
+    notices = 0
+
+    def _count(_message):
+        nonlocal notices
+        notices += 1
+
+    agent._emit_status = _count
+    agent._config_context_length = None
+    agent._compression_feasibility_checked = True  # probed on the primary; aux fit there
+    agent.model = "fallback-model"
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[1_000_000, 80_000]):
+        _update_fallback_context_compressor(agent)
+    assert compressor.context_length == 1_000_000
+    assert compressor.threshold_tokens == 80_000
+    assert agent._compression_feasibility_checked is True
+    # Same-runtime window correction (provider-reported limit) keeps the ceiling.
+    compressor.update_model(
+        "fallback-model", context_length=800_000, base_url=agent.base_url, api_key=agent.api_key,
+        provider=agent.provider, api_mode=agent.api_mode,
+    )
+    assert compressor.threshold_tokens == 80_000
+    # An unchanged verdict is not re-announced on the next runtime change (fallback/restore cycles).
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[1_000_000, 80_000]):
+        agent.base_url = "https://other-route.example/v1"  # runtime change, identical verdict text
+        _update_fallback_context_compressor(agent)
+    assert compressor.threshold_tokens == 80_000
+    assert notices == 1
+
+
+def test_unclamp_clears_stale_clamp_warning():
+    """When a re-probe finds the summariser fits again, the stale 'auto-lowered' text must not survive
+    for ``replay_compression_warning`` to resend on a session that is no longer clamped (#114707)."""
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+
+    agent = _make_agent(main_context=200_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._config_context_length = None
+    agent._compression_feasibility_checked = True
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    for main_ctx, aux_ctx, label in ((1_000_000, 80_000, "big"), (100_000, 80_000, "small")):
+        agent.model = label
+        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=[main_ctx, aux_ctx]):
+            _update_fallback_context_compressor(agent)
+    assert compressor._aux_context_ceiling is None
+    assert compressor.threshold_tokens == 75_000
+    assert agent._compression_warning is None
+    assert agent._last_feasibility_notice is None
+
+
+def test_near_threshold_probe_clamps_before_first_compaction():
+    """A fresh instance probes once its request first reaches the smallest window any summariser may
+    have, so the aux clamp lands before the first compaction fires on the main-window threshold (#114707);
+    requests below that stay probe-free (#28957)."""
+    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", return_value=80_000):
+        ensure_compression_feasibility_checked(agent, MINIMUM_CONTEXT_LENGTH - 1)
+        aux_client.assert_not_called()
+        assert agent._compression_feasibility_checked is False
+        ensure_compression_feasibility_checked(agent, MINIMUM_CONTEXT_LENGTH)
+        ensure_compression_feasibility_checked(agent, 200_000)
+    assert aux_client.call_count == 1
+    assert agent._compression_feasibility_checked is True
+    assert compressor.threshold_tokens == 80_000
+    assert compressor.should_compress(200_000) is True
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 
@@ -205,6 +315,7 @@ def test_feasibility_check_passes_live_main_runtime():
             "api_key": "codex-token",
             "api_mode": "codex_responses",
             "auth_mode": "",
+            "session_id": "",
         },
     )
 

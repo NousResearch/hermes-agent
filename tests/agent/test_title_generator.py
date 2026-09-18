@@ -8,6 +8,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    wait_for_title_upgrades,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -69,7 +70,52 @@ class TestGenerateTitle:
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
 
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            # #83903: a token cap cutting the JSON mid-value or right after the fence opener must not
+            # persist the fragment; the derived title survives instead.
+            ('{"title":"Investigate and fix the login butt', None),
+            ("```json", None),
+            ('{"title"', None),
+            # Legit titles the structural check must keep: emphasized/quoted prose, non-Latin, numeric.
+            ("*Fix the login flow*", "*Fix the login flow*"),
+            ("修复登录按钮", "修复登录按钮"),
+            ("42", "42"),
+            ('```json\n{"title": "Fix login button"', "Fix login button"),
+            # Bracket/brace-prefixed prose and a literal fence inside a sentence are titles, not
+            # truncated JSON — a provider that ignores response_format still gets its title kept.
+            ("[WIP] Fix login flow", "[WIP] Fix login flow"),
+            ("Fix ``` rendering in chat", "Fix ``` rendering in chat"),
+        ],
+    )
+    def test_truncated_structured_output_never_becomes_the_title(self, content, expected):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("login is broken") == expected
 
+    def test_json_in_reasoning_content_is_used_but_reasoning_prose_is_not(self):
+        """#82291: glm-5/minimax under json_schema return content='' with the JSON in reasoning_content /
+        reasoning. That payload titles the session; chain-of-thought prose never does."""
+        def response(content, **reasoning):
+            resp = MagicMock(spec=["choices"])
+            resp.choices = [MagicMock(spec=["message"])]
+            resp.choices[0].message = MagicMock(spec=["content", *reasoning])
+            resp.choices[0].message.content = content
+            for k, v in reasoning.items():
+                setattr(resp.choices[0].message, k, v)
+            return resp
+
+        cases = [
+            (response("", reasoning_content='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
+            (response(None, reasoning='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
+            (response("", reasoning_content="The user wants ffmpeg checked. A short title would be"), None),
+        ]
+        for resp, expected in cases:
+            with patch("agent.title_generator.call_llm", return_value=resp):
+                assert generate_title("check ffmpeg") == expected
 
     def test_strips_think_blocks(self):
         """Reasoning-model output wrapped in <think>...</think> must not
@@ -406,6 +452,21 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "Kanban task t_missing"
         mock_auto.assert_not_called()
 
+    def test_delegated_child_of_a_worker_is_not_named_after_the_card(self, tmp_path, monkeypatch):
+        """A delegate_task child inherits ``HERMES_KANBAN_TASK`` but is not the card's session;
+        it takes the ordinary title path instead of the parent's card title (#112817)."""
+        from agent.delegation_context import delegated_child_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="child-1", source="kanban")
+
+        with delegated_child_context(), patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "child-1", "research the auth flow for the parent", [])
+
+        assert db.get_session_title("child-1") != "Kanban task t_parent"
+        mock_auto.assert_called_once()
+
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")
@@ -416,6 +477,47 @@ class TestMaybeAutoTitle:
             )
         assert db.get_session_title("sess-1") == "fix the flaky auth test in login"
         assert db.get_session_title_source("sess-1") == "derived"
+
+    def test_model_upgrade_disabled_keeps_derived_title_and_spawns_no_thread(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        config = {
+            "auxiliary": {"title_generation": {
+                "enabled": True, "model_upgrade_enabled": False,
+            }}
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.memory_provider.spawn_context_thread") as thread, \
+             patch("agent.title_generator.call_llm") as call_llm:
+            maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
+        assert db.get_session_title("sess-1") == "repair startup memory routing"
+        assert db.get_session_title_source("sess-1") == "derived"
+        thread.assert_not_called()
+        call_llm.assert_not_called()
+        # The toggle only silences the automatic upgrade: an explicit ``generate_title`` call
+        # (``hermes sessions retitle-skills``) still asks the model.
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"title": "Repair startup memory routing"}'
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.title_generator.call_llm", return_value=resp):
+            assert generate_title("repair startup memory routing") == "Repair startup memory routing"
+
+    def test_enabled_false_still_disables_derived_and_model_titles(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        config = {
+            "auxiliary": {"title_generation": {
+                "enabled": False, "model_upgrade_enabled": True,
+            }}
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.memory_provider.spawn_context_thread") as thread, \
+             patch("agent.title_generator.call_llm") as call_llm:
+            maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
+        assert db.get_session_title("sess-1") is None
+        thread.assert_not_called()
+        call_llm.assert_not_called()
 
     def test_skips_machine_authored_opening_messages(self, tmp_path):
         """A compaction handoff is not a user request and must not title."""
@@ -506,6 +608,62 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "and now something else", history)
         assert db.get_session_title("sess-1") == "Existing name"
         mock_auto.assert_not_called()
+
+    @pytest.mark.parametrize("title, provisional", [
+        ("Friendly greeting", True),
+        ("'Friendly greeting in chat'", True),
+        ("Friendly greeting card design", False),
+        ("Friendly greetings and pleasantries", False),
+    ])
+    def test_only_the_exact_greeting_placeholder_is_provisional(self, title, provisional):
+        """A topical title that merely starts with the phrase keeps its ``llm`` rank."""
+        from agent.title_generator import _is_provisional_greeting_title
+        assert _is_provisional_greeting_title(title) is provisional
+
+    def test_upgrades_a_provisional_greeting_on_a_substantive_second_turn(self, tmp_path):
+        """A bare "hi" opener leaves only placeholders (instant slice / the model's greeting title);
+        the next real request must still be allowed to name the session."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        answers = iter(["Friendly greeting", "Debug scheduler failures"])
+
+        def stub_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices[0].message.content = next(answers)
+            resp.choices[0].message.reasoning = None
+            return resp
+
+        history = [{"role": "user", "content": "hi how are you"}]
+        with patch("agent.title_generator.call_llm", side_effect=stub_call_llm), \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "hi how are you", history)
+            wait_for_title_upgrades(10)
+            assert db.get_session_title_source("sess-1") == "derived"
+            history += [{"role": "assistant", "content": "Well, thanks."},
+                        {"role": "user", "content": "help me debug the scheduler"}]
+            maybe_auto_title(db, "sess-1", "help me debug the scheduler", history)
+            wait_for_title_upgrades(10)
+
+        assert db.get_session_title("sess-1") == "Debug scheduler failures"
+        assert db.get_session_title_source("sess-1") == "llm"
+
+    def test_a_placeholder_title_stops_retrying_after_the_third_turn(self, tmp_path):
+        """A derived name gets turns 2-3 to upgrade, not a model call on every later turn."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "hi", source="derived")
+        history = [{"role": "user", "content": f"turn {n}"} for n in range(3)]
+        with patch("agent.title_generator.auto_title_session") as mock_auto, \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+            assert mock_auto.call_count == 1  # turn 3: the placeholder still gets a model shot
+            history.append({"role": "user", "content": "turn 3"})
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+        assert mock_auto.call_count == 1  # turn 4: capped, no call
 
     def test_instant_title_declines_a_name_collision(self, tmp_path):
         """A colliding derived title is skipped, not scanned into 'hi #2'.

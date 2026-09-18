@@ -384,7 +384,10 @@ registry and the selected profile's actual agent-plugin state, combining both
 halves in one row where appropriate. It is not a list of catalog entries
 assumed to be installed. **Browse** is a native catalog view, not an embedded
 website; it uses the same **Installed / Browse** tabs as Skills, with search
-at the top and the tab switch and actions on one row.
+at the top and the tab switch and actions on one row. Browse defaults to cards,
+with list and card icons at the right of the filters. The layout choice is shared
+with Skills and remembered. Click a card to read its details; Install opens the
+existing review-then-install dialog.
 
 Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
 snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
@@ -690,6 +693,11 @@ there is capped at **caution**: their fixtures deliberately hold hostile
 strings to prove the plugin rejects them, so it asks for confirmation and
 `--force` overrides it instead of blocking the install outright. The same
 finding in any other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
+Likewise, a generic sample token (`hardcoded_secret`) inside a runtime `.py`
+file's `if __name__ == "__main__":` self-test block is capped at **caution**
+— the loader imports plugins and never runs that block — while every other
+finding inside it (destructive commands, provider-shaped keys such as `sk-…`)
+and the same token anywhere above the guard keep full severity.
 
 Scanning is on by default; disable it in `config.yaml`:
 

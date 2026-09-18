@@ -23,7 +23,10 @@ Open **Capabilities → Skills** and switch between **Installed** and **Browse**
 Search stays at the top; the tab switch and actions share one row.
 **Installed** reads the selected profile's actual skills and enabled state;
 it is not inferred from the public catalog. **Browse** is a native catalog UI,
-not an embedded website or a second, smaller catalog.
+not an embedded website or a second, smaller catalog. Cards are the default;
+the list and card icons at the right of the filters switch layouts without
+clearing search or filters. The choice is remembered across Skills and Plugins.
+Click a card for details or use its Install button directly.
 
 Desktop and the public [Skills Hub](/skills) read the same published CDN
 snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
@@ -434,7 +437,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
@@ -649,13 +652,20 @@ than 60 reference files). They warn; they never block a write.
 |--------|---------|------------|
 | `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
 | `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
-| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
+| `patch` with `content` | Major structural rewrites (replaces the whole SKILL.md; `edit` is the legacy alias) | `name`, `content` |
 | `delete` | Remove a skill entirely | `name` |
 | `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
 
+Each action is advertised as its own shape: the text slot belongs to one action only
+(`content` → create / full rewrite, `new_string` → targeted patch, `file_content` →
+write_file). An op that carries another action's slot — e.g. `file_content` on a
+`create` — is invalid against the tool schema (grammar-constrained local backends never
+emit it) and, if it arrives anyway, is rejected **before any op in the batch is
+applied**, with an error naming the key the text sits in and where to move it.
+
 :::tip
-The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
+The targeted `patch` is preferred for updates — it's more token-efficient than a full rewrite because only the changed text appears in the tool call.
 :::
 
 ### Gating agent skill writes (`skills.write_approval`)
@@ -698,6 +708,8 @@ in the pending JSON file). Memory writes have the same gate under
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
+
+Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached centralized index that covers the external registries. That index is rebuilt periodically, so when it has no match for your query Hermes also asks `skills.sh`, ClawHub, LobeHub and well-known endpoints directly — a skill published minutes ago still shows up. That extra pass gets at most 8 seconds of the search budget, so a slow registry cannot turn a miss into a long wait. Custom GitHub taps are not part of that fallback (search them with `--source github`, or via the index once it catches up), and provider filters such as `--source nvidia` do not trigger it (those registries carry no provider data).
 
 ### Common commands
 

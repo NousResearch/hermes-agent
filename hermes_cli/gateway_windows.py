@@ -259,6 +259,11 @@ def _legacy_startup_entry_path() -> Path:
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
 
 
+def _startup_staging_path() -> Path:
+    """The Startup-folder staging file; also the debris a pre-fix failed swap left behind (#114093)."""
+    return get_startup_entry_path().with_suffix(".tmp")
+
+
 def _stable_gateway_working_dir(project_root: Path) -> str:
     """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
     service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
@@ -404,9 +409,20 @@ def _write_task_script() -> Path:
 
 
 def _atomic_write(path: Path, content: str, tmp: Path) -> None:
-    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``."""
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(path)
+    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
+
+    The staging file is removed even when the rename fails: the Startup-folder caller stages
+    inside the Startup folder itself, and Windows opens every file there at login — a leftover
+    ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+    """
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ── Install / uninstall
@@ -517,7 +533,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), entry.with_suffix(".tmp"))
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():
@@ -773,6 +789,12 @@ def install(
 
     task_name = get_task_name()
     script_path = _write_task_script()
+    # A pre-fix install that failed its Startup-folder swap left `Hermes_Gateway.tmp` there, and the
+    # Scheduled Task path below never touches that folder — sweep it so a re-run clears the debris.
+    try:
+        _startup_staging_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
     # On locked-down accounts schtasks can sit for the full timeout before returning Access Denied.
     # All intent questions were asked above, so ask for UAC before touching schtasks.
@@ -1157,6 +1179,7 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (_startup_staging_path(), "Windows login item staging file"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
     ):
         try:
@@ -1425,24 +1448,35 @@ def _windows_stop_drain_timeout() -> float:
     return max(1.0, min(configured, 30.0))
 
 
-def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
-    """Force-kill known gateway PIDs without a broad process sweep."""
+def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
+    """``{pid: start_time}`` fingerprints, captured BEFORE any drain/wait so a later force-kill can
+    detect that the PID was recycled meanwhile."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+        from gateway.status import get_process_start_time
+    except ImportError:
+        return {pid: None for pid in pids}
+    return {pid: get_process_start_time(pid) for pid in pids}
+
+
+def _force_terminate_known_gateway_pids(identities: dict[int, int | None]) -> int:
+    """Force-kill known gateway PIDs without a broad process sweep. ``identities`` maps each PID to
+    the start time observed when it was identified as a gateway (``_gateway_pid_identities``);
+    ``terminate_pid`` refuses the kill when the live process no longer matches. Re-reading the start
+    time here would compare the process with itself and taskkill whatever now owns the PID."""
+    try:
+        from gateway.status import _pid_exists, terminate_pid
     except ImportError:
         return 0
 
     own_pid = os.getpid()
     killed = 0
-    seen: set[int] = set()
-    for pid in pids:
-        if pid <= 0 or pid == own_pid or pid in seen:
+    for pid, expected_start_time in identities.items():
+        if pid <= 0 or pid == own_pid:
             continue
-        seen.add(pid)
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(pid, force=True, expected_start_time=get_process_start_time(pid))
+            terminate_pid(pid, force=True, expected_start_time=expected_start_time)
             killed += 1
         except ProcessLookupError:
             continue
@@ -1479,6 +1513,8 @@ def stop() -> None:
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
+    # Fingerprint before the drain: the kill below must refuse a PID recycled during the wait.
+    identities = _gateway_pid_identities(stop_pids)
     drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
     stopped_any = drained
@@ -1491,8 +1527,9 @@ def stop() -> None:
             print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
     # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
-    stop_pids.extend(pid for pid in _collect_gateway_stop_pids() if pid not in stop_pids)
-    killed = _force_terminate_known_gateway_pids(stop_pids)
+    late_pids = [pid for pid in _collect_gateway_stop_pids() if pid not in identities]
+    identities.update(_gateway_pid_identities(late_pids))
+    killed = _force_terminate_known_gateway_pids(identities)
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
@@ -1528,7 +1565,7 @@ def restart() -> None:
 
     if not _wait_for_gateway_absent(timeout_s=30.0):
         print("⚠ Gateway still present after stop; forcing termination before restart...")
-        _force_terminate_known_gateway_pids(_collect_gateway_stop_pids())
+        _force_terminate_known_gateway_pids(_gateway_pid_identities(_collect_gateway_stop_pids()))
         if not _wait_for_gateway_absent(timeout_s=10.0):
             raise RuntimeError(
                 "Gateway process still detected after force kill; refusing to "

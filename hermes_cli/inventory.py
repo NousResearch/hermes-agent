@@ -291,8 +291,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
             if get_model_capabilities is not None and slug:
                 try:
                     meta = get_model_capabilities(slug, model)
-                    if meta is not None:
-                        reasoning = bool(meta.supports_reasoning)
+                    if meta is not None and meta.supports_reasoning is not None:
+                        reasoning = meta.supports_reasoning
                 except Exception:
                     reasoning = True
 
@@ -486,10 +486,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            _provider_is_keyless(slug)  # zero-setup providers need no configuration at all
             # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            or (slug == "anthropic" and _anthropic_oauth_credentials_present())
+            (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )
@@ -505,16 +504,6 @@ def _external_process_signed_in(slug: str) -> bool:
         pconfig = PROVIDER_REGISTRY.get(slug)
         return bool(pconfig and pconfig.auth_type == "external_process"
                     and get_external_process_provider_status(slug).get("auth_verified"))
-    except Exception:
-        return False
-
-
-def _provider_is_keyless(slug: str) -> bool:
-    """True when the provider's Hermes overlay declares it keyless."""
-    try:
-        from hermes_cli.providers import HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS.get(slug)
-        return bool(overlay is not None and getattr(overlay, "keyless", False))
     except Exception:
         return False
 
@@ -744,6 +733,6 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
         return _row(
             "moa", "Mixture of Agents", (current_provider or "").lower() == "moa", models=models,
             total_models=len(models), source="virtual", authenticated=True, auth_type="virtual",
-            warning="Aggregator acts as the selected model; references provide analysis before each call.")
+            warning="Aggregator is the acting model billed for the run; references only advise once per user turn by default.")
     except Exception:
         return None

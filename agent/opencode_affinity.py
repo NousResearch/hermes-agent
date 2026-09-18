@@ -1,6 +1,6 @@
 """``x-opencode-session`` — OpenCode relay session-affinity header.
 
-OpenCode (opencode.ai Zen/Go/free relay) pins requests that share an
+OpenCode (opencode.ai Zen/Go relay) pins requests that share an
 ``x-opencode-session`` value to the same upstream backend, which is what
 keeps its prompt cache warm across the turns of one conversation. The value
 only has to be opaque and consistent per conversation, so it is derived the
@@ -25,7 +25,7 @@ OPENCODE_SESSION_HEADER = "x-opencode-session"
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
     """True when *provider* or *base_url* addresses the OpenCode relay.
 
-    Matches the built-in opencode-zen/go/free providers, custom
+    Matches the built-in opencode-zen/go providers, custom
     ``opencode-<family>-*`` providers, and any base_url hosted on opencode.ai.
     """
     try:

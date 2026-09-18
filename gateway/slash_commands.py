@@ -435,15 +435,27 @@ class GatewaySlashCommandsMixin(
             await _stop(session_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No run under the caller's own key. In a per-user thread (thread_sessions_per_user=True) a
-        # run another user started lives under a different key, yet authorized users must still be
-        # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
-        sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized_for_source(source):
-            for sibling_key in sibling_keys:
-                await _stop(sibling_key, "stop_command_thread_sibling")
-            logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                        session_key, len(sibling_keys), ", ".join(sibling_keys))
+        # No run under the caller's own key: a live turn in THIS chat may still carry a differently
+        # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
+        # tier (a sibling needs the caller's own thread slot, which satisfies the chat predicate), so
+        # it is the set to act on — acting on the sibling subset alone would reply "Stopped" while a
+        # same-thread run under a differently shaped key kept going. See `_chat_scoped_run_keys` for
+        # the shapes and isolation bounds; both tiers are authorization-gated.
+        runs = self._same_chat_runs(source, session_key)
+        sibling_keys = self._sibling_thread_run_keys(source, runs)
+        fallback_keys = self._chat_scoped_run_keys(source, runs)
+        # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps its own
+        # label for hook consumers, anything wider is a chat-scope stop.
+        reason = (
+            "stop_command_thread_sibling"
+            if fallback_keys == sibling_keys
+            else "stop_command_chat_scope"
+        )
+        if fallback_keys and self._is_user_authorized_for_source(source):
+            for fallback_key in fallback_keys:
+                await _stop(fallback_key, reason)
+            logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
+                        reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No running agent anywhere for this scope. A platform status indicator can still be stuck —
@@ -805,7 +817,11 @@ class GatewaySlashCommandsMixin(
             model, rt = None, {}
         if not rt.get("api_key"):
             return t("gateway.btw.no_provider")
-        main_runtime = {"model": model, **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+        main_runtime = {
+            "model": model,
+            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": session_entry.session_id,
+        }
         history_snapshot = list(history)
         # Prefer the cache-parity fork when a live cached AIAgent exists: it replays the snapshot
         # against the warm provider prefix cache, giving FULL context at cache-read prices. With no

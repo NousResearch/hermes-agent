@@ -176,6 +176,41 @@ Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
 
+### Entries that need your own OAuth app (no DCR)
+
+Some vendors run their remote MCP behind OAuth but do **not** offer Dynamic
+Client Registration — every client must be an app the user pre-registers in
+the vendor's developer console. Asana's V2 server
+(`https://mcp.asana.com/v2/mcp`) is the shipped example: the retired V1
+`https://mcp.asana.com/sse` server accepted any client; V2 does not.
+
+Such a manifest declares the credentials under `auth.env` and pins the
+client under `auth.oauth`, so installing it (CLI picker, web dashboard or
+Desktop) prompts for the Client ID / Client secret, stores them in the
+profile's `.env`, and writes only `${VAR}` references to `config.yaml`:
+
+```yaml
+mcp_servers:
+  asana:
+    url: https://mcp.asana.com/v2/mcp
+    auth: oauth
+    oauth:
+      client_id: "${ASANA_CLIENT_ID}"
+      client_secret: "${ASANA_CLIENT_SECRET}"
+      redirect_host: localhost      # the vendor matches the redirect URL exactly
+      redirect_port: 27890          # register http://localhost:27890/callback on the app
+```
+
+Read the entry's `post_install` notes for the exact app type and redirect URL
+to register, then run `hermes mcp login <name>` and restart (or
+`/reload-mcp`) the session or gateway that should expose the tools. The
+dashboard / Desktop **Authorize** button works too: because the client is
+pre-registered with a pinned `redirect_port`, Hermes keeps the registered
+loopback callback (`http://localhost:27890/callback`) instead of the
+dashboard's own callback URL — so the browser you approve in must run on the
+same machine as the Hermes process. For a remote host, use `hermes mcp login`
+over SSH port-forwarding.
+
 ### Updating tool selection later
 
 ```bash
@@ -663,7 +698,7 @@ If you change MCP config, use:
 
 This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
-A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. No restart or `/reload-mcp` needed for the edit to take effect.
+A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
 **Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
 

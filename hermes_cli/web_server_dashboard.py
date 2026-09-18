@@ -675,6 +675,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _read_manifest as _read_plugin_manifest_at,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -683,6 +684,10 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     hidden_plugins: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
+
+    # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = resolved_removed_entries()
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
         # Both the path-derived key (nested category plugins) and the bare manifest name
@@ -716,7 +721,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
-            "removed_reason": removed_annotation(name, dir_str),
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}

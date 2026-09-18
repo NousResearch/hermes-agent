@@ -1181,6 +1181,20 @@ def test_link_tasks_emits_dependency_wait_when_demoting_ready_child(kanban_home)
         assert payload["parent"] == parent
 
 
+def test_link_tasks_rejects_unowned_running_child_without_recording_edge(kanban_home):
+    """Regression for #113374: an unowned dependency cannot gate an active run."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        child = kb.create_task(conn, title="claimed child")
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+
+        with pytest.raises(ValueError, match="child is already running"):
+            kb.link_tasks(conn, parent, child)
+
+        assert kb.parent_ids(conn, child) == []
+        assert "linked" not in [event.kind for event in kb.list_events(conn, child)]
+
+
 def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
     """A done parent demotes nothing and reports no gate."""
     with kbc.connect() as conn:
@@ -1316,6 +1330,7 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
         CREATE TABLE tasks (
             id INTEGER PRIMARY KEY,
             title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '',
             tenant TEXT,
             result TEXT,
             idempotency_key TEXT,
@@ -1350,6 +1365,49 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
     # Running migration on an already-migrated schema must not raise.
     kbc._migrate_add_optional_columns(conn)
     conn.close()
+
+
+def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_home):
+    """A board whose ``tasks`` table was created by an external harness without
+    the nullable/defaulted v1 columns (body, assignee, priority, ..., claim_lock,
+    claim_expires) but which already has ``task_runs`` must connect: the
+    connect-time in-flight backfill SELECTs ``claim_lock`` from ``tasks`` and
+    used to raise ``no such column`` on every call (#112953), before
+    ``_INITIALIZED_PATHS`` cached anything, so the dispatcher failed every tick.
+    """
+    db_path = kanban_home / "foreign.db"
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+        " status TEXT NOT NULL, created_at INTEGER NOT NULL)"
+    )
+    seed.execute(kbc._REBUILD_SPECS["task_runs"][0])
+    seed.commit()
+    seed.close()
+
+    healed = {
+        "body", "assignee", "priority", "created_by", "started_at", "completed_at",
+        "workspace_kind", "workspace_path", "claim_lock", "claim_expires",
+    }
+    conn = kbc.connect(db_path)
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        assert healed <= cols
+        # Healed DDL matches the fresh schema (NOT NULL DEFAULT 'scratch' etc.).
+        fresh = sqlite3.connect(":memory:")
+        fresh.executescript(kb.SCHEMA_SQL)
+        fresh_info = {r[1]: r[2:] for r in fresh.execute("PRAGMA table_info(tasks)")}
+        healed_info = {r["name"]: tuple(r)[2:] for r in conn.execute("PRAGMA table_info(tasks)")}
+        assert {c: healed_info[c] for c in healed} == {c: fresh_info[c] for c in healed}
+    finally:
+        conn.close()
+    # Second connect (the next dispatcher tick) is a no-op, not a re-raise, and
+    # the healed board is queryable (SELECT * reads every v1 column).
+    conn = kbc.connect(db_path)
+    try:
+        assert kb.list_tasks(conn) == []
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

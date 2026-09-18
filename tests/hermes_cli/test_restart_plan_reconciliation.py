@@ -295,6 +295,34 @@ def test_serve_outcome_follows_incarnation_probe_when_provided():
     assert by_pid == {900: "unaccounted", 901: "stopped"}
 
 
+def test_desktop_serve_deferral_requires_a_verified_alive_incarnation():
+    """Desktop may defer only a serve the survivor probe confirmed alive."""
+    desktop_serve = _serve("default", 900)
+    desktop_serve.supervisor = "desktop"
+    desktop_serve.restart_via = _restart_mechanism("desktop", "default")
+
+    unknown = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=["hermes-serve.service"],
+        relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=[], stale_serve_pids=None,
+    )
+    assert unknown[0]["outcome"] == "unaccounted"
+
+    alive = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids={900},
+    )
+    assert alive[0]["outcome"] == "deferred"
+
+    gone = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids=set(),
+    )
+    assert gone[0]["outcome"] == "restarted"
+
+
 def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys):
     outcomes = match_runtime_outcomes(
         _plan(_serve("default", 900)),
@@ -304,7 +332,7 @@ def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys)
     assert report_unaccounted_runtimes(outcomes) is True
     out = capsys.readouterr().out
     assert "serve [default] pid 900" in out
-    assert "hermes-serve.service" in out
+    assert "relaunch `hermes serve`" in out
     assert "hermes gateway restart" not in out
 
 

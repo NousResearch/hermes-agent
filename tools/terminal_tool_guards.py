@@ -204,9 +204,9 @@ def gateway_lifecycle_block(
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
-        contains_gateway_lifecycle_command_or_referenced_script,
         contains_launchctl_submit_command,
         lifecycle_scan_root_within_budget,
+        scan_gateway_lifecycle,
     )
     # Keep the specific launchctl diagnostic when this optional pre-scan fits the
     # budget. The full fail-closed guard below still runs when it does not, so
@@ -227,11 +227,23 @@ def gateway_lifecycle_block(
     guard_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
     )
-    if contains_gateway_lifecycle_command_or_referenced_script(
+    unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
-    ):
+    )
+    if unsafe and refusal:
+        # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
+        # size, device, live SQLite, cloud placeholder). Say so, or the model rewords and retries
+        # the same command in a loop (#113944).
+        return _blocked_json(
+            f"Blocked: the lifecycle guard could not scan this command or referenced script: {refusal}. "
+            "Nothing in the command is known to contain a gateway lifecycle command, but a "
+            "script the command executes must be scannable (a regular text file under 1 MiB) "
+            "before it can run inside the gateway process.",
+            "error",
+        )
+    if unsafe:
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "

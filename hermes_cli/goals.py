@@ -886,6 +886,7 @@ def judge_goal(
 
     try:
         from agent.auxiliary_client import call_llm
+        from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None, False
@@ -913,6 +914,11 @@ def judge_goal(
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+    except AuxiliaryClientUnavailable as exc:
+        # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
+        # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
+        logger.info("goal judge: auxiliary client unavailable (%s) — falling through to continue", exc)
+        return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
@@ -1557,7 +1563,8 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "calling one of them."
 )
 
-# Judge says done but the worker never called kanban_complete/kanban_block: one explicit nudge.
+# Judge says done but the worker never made a terminal board call
+# (kanban_complete/kanban_request_review/kanban_block): one explicit nudge.
 KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
@@ -1639,7 +1646,15 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
+        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+        try:
+            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

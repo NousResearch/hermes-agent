@@ -1832,6 +1832,7 @@ class ConnectionManager:
         self._ws = await asyncio.wait_for(
             websockets.connect(  # type: ignore[attr-defined]
                 self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
+                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
             ),
             timeout=CONNECT_TIMEOUT_SECONDS,
         )

@@ -1475,7 +1475,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `NamedTuple` | import | `typing` |
 | `PROVIDER_GROUPS` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `ProviderEntry` | moved-lazy | `hermes_cli.models_catalog_static` |
-| `_OPENCODE_KEYLESS_EXTRA_SLUGS` | restored-helper | `(deleted; restored as a dependency of is_opencode_zen_free_model)` |
 | `atomic_json_write` | moved-lazy | `utils` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `compute_sale_discount` | moved-lazy | `hermes_cli.models_pricing` |
@@ -1490,7 +1489,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `group_providers` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `http` | import | `http.client` |
 | `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
-| `is_opencode_zen_free_model` | restored-def | `(deleted; BASE body restored)` |
 | `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
 | `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |

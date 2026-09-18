@@ -1533,3 +1533,16 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)
+
+
+def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
+    """A watchdog-stamped ``degraded`` of a dead process is a current failure under the same rule as
+    ``startup_failed`` (#113372): kept while the operator wants the gateway running, ``stopped`` once
+    ``hermes gateway stop`` records the intent. The startup-time ``degraded`` (retryable platforms, no
+    watchdog exit_reason) of a dead process is just ``stopped``."""
+    watchdog = {"gateway_state": "degraded", "exit_reason": "loop_liveness_watchdog"}
+    assert status.retained_gateway_state(watchdog) == "degraded"
+    assert status.retained_gateway_state({**watchdog, "exit_reason": "shutdown_watchdog"}) == "degraded"
+    assert status.retained_gateway_state({**watchdog, "desired_state": "stopped"}) == "stopped"
+    assert status.retained_gateway_state({"gateway_state": "degraded", "exit_reason": None}) == "stopped"
+    assert status.retained_gateway_state({"gateway_state": "startup_failed", "exit_reason": "x"}) == "startup_failed"

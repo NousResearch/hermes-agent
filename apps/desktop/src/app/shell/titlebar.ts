@@ -5,6 +5,8 @@ export const TITLEBAR_HEIGHT = 34
 export const TITLEBAR_TABS_GAP = 0
 /** Keep the below-controls tab row aligned with the titlebar control band. */
 export const TITLEBAR_TABS_HEIGHT = TITLEBAR_HEIGHT
+/** Permanent native drag target beside a top-edge tab strip. */
+export const TITLEBAR_DRAG_HANDLE_WIDTH = 48
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 /** Titlebar tool hit target (both axes). */
 export const TITLEBAR_CONTROL_SIZE = 24
@@ -116,3 +118,6 @@ export function titlebarControlsPosition(
     top
   }
 }
+
+/** Rebind panel measurements after titlebar nodes or their positions change. */
+export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'

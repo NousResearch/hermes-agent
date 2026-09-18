@@ -22,8 +22,9 @@ import pytest
 @pytest.fixture
 def served_root(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
-    (root / "profiles" / "coder").mkdir(parents=True)
-    (root / "profiles" / "other").mkdir(parents=True)
+    for name in ("coder", "other"):
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     (root / "config.yaml").write_text("model: {default: x}\n")  # NO multiplex flag: env-only opt-in
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     (root / "gateway_state.json").write_text(json.dumps(
@@ -165,7 +166,7 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     assert calls, f"--force must let `gateway {verb}` reach the service manager"
 
 
-def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch):
+def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monkeypatch):
     import hermes_cli.gateway as gw
     import hermes_cli.status as st
     import hermes_cli.cron as cr
@@ -183,7 +184,10 @@ def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "NOT fire" not in buf.getvalue() and "multiplexer" in buf.getvalue()
+    assert "Scheduler host: default-profile multiplexer" in buf.getvalue()
+    # A live scheduler host alone does not prove this satellite's ticker is healthy.
+    assert "has not reported a heartbeat" in buf.getvalue()
+    assert "will fire automatically" not in buf.getvalue()
 
 
 def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):

@@ -1746,3 +1746,15 @@ class TestMultiplexConstructionScope:
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
         assert adapter._public_url == "https://default-profile.example.com/"
+
+
+def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
+    """A scalar line in a conversation file must not break replay or pollute
+    the list[dict] contract."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    protocol.persist_message("ctx-mixed", "user", "hello", "t1")
+    path = protocol._conv_path("ctx-mixed")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("42\n")
+    convo = protocol.load_conversation("ctx-mixed")
+    assert len(convo) == 1 and convo[0]["text"] == "hello"

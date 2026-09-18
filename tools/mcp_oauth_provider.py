@@ -443,7 +443,7 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
     return {
         "client_metadata": client_metadata,
         "storage": storage,
-        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri),
+        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri, redirect_host=cfg.get("redirect_host")),
         # mcp 2.0 dropped OAuthClientProvider's own `timeout`; the configured
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),

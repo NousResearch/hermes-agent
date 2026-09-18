@@ -50,9 +50,9 @@ export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, proc
       </div>
       {open &&
         (process ? (
-          <LogView className="mt-2 max-h-80 overscroll-contain">{report}</LogView>
+          <LogView className="mt-2 max-h-80 overscroll-x-contain overscroll-y-auto">{report}</LogView>
         ) : (
-          <div className="mt-2 max-h-80 min-w-0 max-w-full overflow-auto overscroll-contain wrap-anywhere">
+          <div className="mt-2 max-h-80 min-w-0 max-w-full overflow-auto overscroll-x-contain overscroll-y-auto wrap-anywhere">
             <MarkdownTextContent isRunning={false} text={report} />
           </div>
         ))}

@@ -23,7 +23,7 @@ export const rosterWatermarks = new Map<string, number>()
 // sessions are room plumbing — neither is a scratch conversation, and a
 // 6-member room would otherwise dump six identical "Group: ..." rows into
 // recents. Backed by the core generic `hidden` session flag (session.create
-// hidden:true / session.set_hidden). Older gateways ignore the flag and the
+// hidden:true / REST PATCH /api/sessions/{id}). Older gateways ignore the flag and the
 // sessions simply stay visible there.
 
 /** Bot the Routines tile is scoped to. Follows the live gateway profile

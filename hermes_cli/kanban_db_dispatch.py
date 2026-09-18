@@ -38,7 +38,8 @@ DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
-# and call kanban_block/kanban_complete before max_runtime_seconds kills it.
+# and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
+# before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 # A healthy worker is still alive for a while after kanban_complete /
@@ -896,14 +897,17 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
 
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
-    # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the work itself succeeded and only the
+    # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
     # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
-    "worker exited cleanly (rc=0) without calling "
-    "kanban_complete or kanban_block — protocol violation. "
+    # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
+    # last output (``_worker_final_output``, up to 400 chars) is appended after it — a longer preamble
+    # truncates away the worker's explanation, which is the part the board and the retry worker need.
+    "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
+    "or kanban_request_review — protocol violation. "
     "If the prior run already did the work, verify it and "
-    "report the result via kanban_complete; a run that ends "
-    "without a terminal kanban call counts as failed no "
+    "report it via kanban_complete (or kanban_request_review); "
+    "a run without a terminal kanban call counts as failed no "
     "matter what it did."
 )
 
@@ -1375,9 +1379,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
+    handoff event followed the comment: the named profile must work on that
+    PR). The review lane skips the last two: they are the *inputs* to a review
+    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
+    passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1444,15 +1450,47 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
+    #    reviewer changes_requested, review reopen) names the profile that must
+    #    now work on THAT PR — a closer or the implementer finishing it, not a
+    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
+    #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+            continue
+        events = conn.execute(
+            # Strictly after: a same-second tie stays guarded (fail closed).
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
+            (task_id, int(c["created_at"] or 0)),
+        ).fetchall()
+        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        return "active_pr"
 
     return None
+
+
+def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
+    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
+    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
+    --reclaim``), an unassign, or the dispatcher's own
+    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
+    the very implementer that opened the PR. Events without ``from`` (written
+    before it was recorded) are not trusted as handoffs — fail closed."""
+    if kind != "assigned":
+        return True
+    data = _kb._json_or(payload, {})
+    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
+        return False
+    to = data.get("assignee")
+    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -1495,17 +1533,33 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         kanban:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
-    Returns ``None`` when the key is unset (upstream behavior: any existing
-    profile is claimable). A set value is fail-closed: an empty list claims
-    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
+    Returns ``None`` only when the key is absent from the user config (upstream
+    behavior: any existing profile is claimable). A present value is
+    fail-closed: an empty list, ``null`` or a bare ``dispatch_profiles:`` claims
+    nothing. The user layer is read without the ``DEFAULT_CONFIG`` merge (whose
+    ``None`` placeholder would make the key look present in every home), and a
+    config read that raises also claims nothing — a corrupt config on a shared
+    board must never widen this home's claim scope silently (#113620).
     """
     try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
-    except Exception:
+        from hermes_cli.config_effective import load_user_config_effective
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
+            "this home claims no cards until the config is readable",
+            type(exc).__name__, exc,
+        )
+        return frozenset()
+    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None
-    if raw is None:
-        return None
+    raw = kanban["dispatch_profiles"]
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        _kb._log.warning(
+            "kanban: kanban.dispatch_profiles is present but empty — this home "
+            "claims no cards; omit the key to allow any existing profile"
+        )
+        return frozenset()
     names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
     allowed = set()
     for n in names:
@@ -1514,6 +1568,26 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         except ValueError:
             continue
     return frozenset(allowed)
+
+
+def dispatch_profile_allowlist_summary() -> str:
+    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
+
+    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
+    can see what a home believes it may claim (#113620): ``any`` (key absent),
+    the sorted allowed names, or ``none (fail-closed: ...)``.
+    """
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+    except Exception as exc:
+        return f"none (fail-closed: profiles unavailable: {exc})"
+    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
+    if allowlist is None:
+        return "any"
+    if allowlist:
+        return ", ".join(sorted(allowlist))
+    return ("none (fail-closed: kanban.dispatch_profiles is present but names no valid "
+            "profile, or the config could not be read — omit the key to allow any)")
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
@@ -1956,8 +2030,8 @@ def _tick_spawn_budget(
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
-    # per-tick budget: "running" tasks stay running until the worker calls
-    # kanban_complete/kanban_block or the TTL reclaims them.
+    # per-tick budget: "running" tasks stay running until the worker makes a terminal
+    # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
     running_count = 0
     spawn_budget: Optional[int] = None
     if max_spawn is not None or max_in_progress is not None:
@@ -2427,11 +2501,8 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
-    if task.goal_mode:
-        # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
-        # Without -Q the worker gets one turn, prints text, exits rc=0, and the
-        # dispatcher records a protocol violation.
-        cmd.append("-Q")
+    # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
+    # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd
 
 

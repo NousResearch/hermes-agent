@@ -135,6 +135,69 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
         assert resp.status >= 500
     assert session_db.get_session("solo")["end_reason"] is None
 
+
+@pytest.mark.asyncio
+async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, session_db, monkeypatch):
+    """Canonical Bot Chat recovery must not run SQLite work in the HTTP loop."""
+    session_id = session_db.create_session("archived-bot-chat", "gateway_botmode")
+    assert session_db.set_session_title(session_id, "Bot Chat")
+    session_db.end_session(session_id, "ws_orphan_reap")
+    assert session_db.set_session_archived(session_id, True)
+
+    loop_thread = threading.get_ident()
+    call_threads = {}
+    get_by_title = session_db.get_session_by_title
+    unarchive = session_db.unarchive_recoverable_session
+
+    def record_get_by_title(title):
+        call_threads["get_session_by_title"] = threading.get_ident()
+        return get_by_title(title)
+
+    def record_unarchive(stale_id):
+        call_threads["unarchive_recoverable_session"] = threading.get_ident()
+        return unarchive(stale_id)
+
+    monkeypatch.setattr(session_db, "get_session_by_title", record_get_by_title)
+    monkeypatch.setattr(session_db, "unarchive_recoverable_session", record_unarchive)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get("/api/sessions?title=Bot%20Chat")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [session["id"] for session in payload["data"]] == [session_id]
+    assert set(call_threads) == {"get_session_by_title", "unarchive_recoverable_session"}
+    assert all(thread_id != loop_thread for thread_id in call_threads.values())
+    assert not session_db.get_session(session_id)["archived"]
+
+
+@pytest.mark.asyncio
+async def test_session_model_lock_persists_off_the_event_loop(adapter, session_db, monkeypatch):
+    """POST /api/sessions/{id}/model writes the lock row through a worker thread: the same
+    contended-write class as the Bot Chat resurrection, on a sibling handler."""
+    session_id = session_db.create_session("lock-off-loop", "api_server", model="gpt-5.5")
+    loop_thread = threading.get_ident()
+    seen = []
+    real = session_db.update_session_runtime_lock
+
+    def record(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session_db, "update_session_runtime_lock", record)
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={"provider": "nous", "model": "x-ai/grok-4.5", "require_model_lock": True})
+            assert resp.status == 200, await resp.text()
+    assert seen and all(tid != loop_thread for tid in seen)
+    assert session_db.get_session(session_id)["model"] == "x-ai/grok-4.5"
+
+
 @pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
@@ -540,7 +603,7 @@ def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        lambda provider: {
+        lambda provider, target_model=None: {
             "provider": provider,
             "api_key": f"sk-{provider}",
             "base_url": f"https://{provider}.example/v1",

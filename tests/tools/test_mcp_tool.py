@@ -1569,6 +1569,8 @@ class TestSanitizeError:
         for text, expected in (
             ("Error with ghp_abc123def456", "Error with [REDACTED]"),
             ("key sk-projABC123xyz", "key [REDACTED]"),
+            # Dotted/dashed provider keys (``sk-sp-…``/``sk-ws-…``) must not leak a tail.
+            ("key sk-sp-ABCDEFGH12345678.abcdefgh_XYZ-0987.", "key [REDACTED]."),
             ("Authorization: Bearer eyJabc123def", "Authorization: [REDACTED]"),
             ("url?token=secret123", "url?[REDACTED]"),
         ):

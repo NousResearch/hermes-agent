@@ -641,10 +641,10 @@ describe('useDesktopIntegrations', () => {
         settleConfirm(true)
         await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
         expect(installs()).toEqual([[{
-          connectionId: connection, profile, path: '/api/skills/hub/install', method: 'POST', body: { identifier }
+          connectionId: connection, profile, priority: 'foreground', path: '/api/skills/hub/install', method: 'POST', body: { identifier }
         }]])
         expect(api).toHaveBeenCalledWith({
-          connectionId: connection, profile, path: '/api/actions/skill-link-test/status?lines=200'
+          connectionId: connection, profile, priority: 'foreground', path: '/api/actions/skill-link-test/status?lines=200'
         })
       }
 

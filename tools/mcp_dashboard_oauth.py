@@ -29,6 +29,12 @@ def _event_field():
     return field(default_factory=threading.Event, init=False, repr=False)
 
 
+def exception_message(exc: BaseException) -> str:
+    """``str(exc)``, or the type name when it is empty (bare ``TimeoutError()``/``RuntimeError()``)
+    so ``mark_error`` never records a blank cause."""
+    return str(exc) or type(exc).__name__
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str
@@ -96,7 +102,9 @@ class DashboardOAuthFlow:
         if self._callback_error:
             raise RuntimeError(f"OAuth authorization failed: {self._callback_error}")
         if self._callback is None:
-            raise RuntimeError("OAuth callback did not include an authorization code")
+            raise RuntimeError(
+                f"MCP OAuth flow for '{self.server_name}' ended without an authorization code "
+                f"(status={self.status}, error={self.error!r})")
         return self._callback
 
     def mark_approved(self) -> None:
@@ -107,11 +115,22 @@ class DashboardOAuthFlow:
             self.error = None
 
     def mark_error(self, error: str) -> None:
+        """Fail the flow with *error*; the first reason wins. Waking the callback waiter makes the
+        worker fail too, and its follow-on ``mark_error`` must not clobber the cause the user needs."""
         with self._lock:
-            if self.status == "approved":
+            if self.status in {"approved", "error"}:
                 return
             self.status = "error"
-            self.error = error
+            self.error = error or "MCP OAuth flow failed before the callback was received (empty error message)"
+            # The SDK's callback waiter reads _callback_error, not error — without
+            # this copy, a failure marked before any browser redirect (worker
+            # crash, authorization-URL timeout, user cancel) wakes the waiter
+            # with no callback and no error, surfacing as the generic
+            # "did not include an authorization code" RuntimeError while the
+            # real cause stays unread. Guarded so a late mark_error cannot
+            # override an already delivered callback.
+            if self._callback is None and self._callback_error is None:
+                self._callback_error = self.error
             self._authorization_ready.set()
             self._callback_ready.set()
 

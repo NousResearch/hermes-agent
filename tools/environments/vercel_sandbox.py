@@ -291,7 +291,9 @@ class VercelSandboxEnvironment(BaseEnvironment):
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
         sandbox = self._require_sandbox()
         try:
-            self._run_checked(f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(archive_member)}", "bulk download")
+            # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+            self._run_checked(f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(archive_member)}",
+                              "bulk download")
             sandbox.download_file(remote_tar, dest_tar_path)
         finally:
             with contextlib.suppress(Exception):

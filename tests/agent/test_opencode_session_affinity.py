@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from agent import auxiliary_client as aux
@@ -35,7 +38,6 @@ def _agent(provider, model, base_url, api_mode=None):
         ("opencode-go", "glm-5", "https://opencode.ai/zen/go/v1", None),  # chat_completions
         ("opencode-go", "gpt-5.6-luna", "https://opencode.ai/zen/go/v1", None),  # codex_responses
         ("opencode-go", "minimax-m2.7", "https://opencode.ai/zen/go/v1", "anthropic_messages"),
-        ("opencode-free", "nemotron-3.5-lightning-free", "https://opencode.ai/zen/v1", None),
         ("custom", "glm-5", "https://opencode.ai/zen/go/v1", None),  # URL-only detection
     ],
 )
@@ -60,3 +62,88 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+@pytest.fixture
+def out_of_turn():
+    """No ambient turn context: runtime binding, conversation root and declared affinity scope all unset.
+
+    Earlier AIAgent-driven tests in this process can leave those contextvars set, which would hand the
+    header to an unfixed tree through ``get_conversation_context()`` instead of the explicit runtime."""
+    from agent import portal_tags
+
+    tokens = (
+        aux._RUNTIME_MAIN_CONTEXT.set(None),
+        portal_tags.set_conversation_context(None),
+        portal_tags.set_affinity_scope(None),
+    )
+    try:
+        yield
+    finally:
+        aux._RUNTIME_MAIN_CONTEXT.reset(tokens[0])
+        portal_tags.reset_conversation_context(tokens[1])
+        portal_tags.reset_affinity_scope(tokens[2])
+
+
+_OPENCODE_RUNTIME = {
+    "provider": "opencode-zen", "model": "glm-5", "base_url": "https://opencode.ai/zen/v1",
+    "api_key": "test-key", "session_id": "sess-affinity-1",
+}
+
+
+def _route_to_fake_opencode_client(monkeypatch, captured, *, async_mode):
+    """Pin the aux resolver on an OpenCode route served by a fake SDK client that records its kwargs."""
+    if async_mode:
+        async def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))], model="glm-5")
+    else:
+        def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))], model="glm-5")
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)), base_url="https://opencode.ai/zen/v1",
+    )
+    monkeypatch.setattr(aux, "_resolve_task_provider_model",
+                        lambda *_a, **_k: ("opencode-zen", "glm-5", "https://opencode.ai/zen/v1", "test-key", None))
+    monkeypatch.setattr(aux, "_get_cached_client", lambda *_a, **_k: (client, "glm-5"))
+
+
+def test_sync_out_of_turn_call_binds_the_explicit_main_runtime_session(monkeypatch, out_of_turn):
+    """#112717: a background/out-of-turn ``call_llm(main_runtime=...)`` (title, approval, skills hub,
+    ``/btw``) must send the conversation's ``x-opencode-session`` exactly like the main turn does."""
+    captured = {}
+    _route_to_fake_opencode_client(monkeypatch, captured, async_mode=False)
+
+    aux.call_llm(task="title_generation", main_runtime=_OPENCODE_RUNTIME, messages=_MSGS)
+
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None  # the explicit binding does not leak past the call
+
+
+def test_async_out_of_turn_call_binds_the_explicit_main_runtime_session(monkeypatch, out_of_turn):
+    """Same contract on the async twin (#112717)."""
+    captured = {}
+    _route_to_fake_opencode_client(monkeypatch, captured, async_mode=True)
+
+    asyncio.run(aux.async_call_llm(task="approval", main_runtime=_OPENCODE_RUNTIME, messages=_MSGS))
+
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None
+
+
+def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, out_of_turn):
+    """The Desktop/TUI-gateway ``llm.oneshot`` path builds its explicit ``main_runtime`` from the live
+    agent; without ``session_id`` an OpenCode title request sends no ``x-opencode-session`` (#112717)."""
+    from tui_gateway.server import _main_runtime_from_agent
+
+    agent = SimpleNamespace(
+        provider="opencode-zen", model="glm-5", base_url="https://opencode.ai/zen/v1", api_key="test-key",
+        api_mode="chat_completions", auth_mode="", session_id="sess-desktop-1",
+    )
+    captured = {}
+    _route_to_fake_opencode_client(monkeypatch, captured, async_mode=False)
+
+    aux.call_llm(task="title_generation", main_runtime=_main_runtime_from_agent(agent), messages=_MSGS)
+
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-desktop-1"

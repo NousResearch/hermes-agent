@@ -305,19 +305,126 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _enable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins on for both config-reading paths."""
-    c = curator_env["curator"]
+    """Flip curator.prune_builtins on (skill_usage is the only reader now)."""
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": True})
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: True)
 
 
 def _disable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins off for both config-reading paths."""
+    """Flip curator.prune_builtins off (skill_usage is the only reader now)."""
+    u = curator_env["usage"]
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+
+
+def _write_bundled_and_agent(curator_env, u):
+    """One bundled built-in, one ``skills.disabled`` agent skill and one plain agent-created skill under the test home."""
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-fixture")
+    _write_skill(skills_dir, "disabled-fixture")
+    _write_skill(skills_dir, "agent-fixture")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-fixture:deadbeef\n", encoding="utf-8",
+    )
+    (curator_env["home"] / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - disabled-fixture\n", encoding="utf-8",
+    )
+    u.mark_agent_created("disabled-fixture")
+    u.mark_agent_created("agent-fixture")
+    return skills_dir
+
+
+def test_llm_candidate_list_omits_bundled_and_disabled_skills(
+    curator_env, monkeypatch,
+):
+    """The LLM pass is only offered candidates it can act on (#111608, #113013).
+
+    Bundled skills: ``prune_builtins`` makes them archive-eligible for the
+    deterministic walk, but every background ``skill_manage`` write to one is
+    refused. Disabled skills: ``skill_view`` — the fork's only read path —
+    refuses them. Either way the fork loops on refusals until the
+    same-tool-failure halt ends the run with zero findings. The aging pass
+    (``list_agent_created_skill_names``) must still see both.
+    """
     c = curator_env["curator"]
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": False})
-    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+    _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    aging = set(u.list_agent_created_skill_names())
+    assert {"bundled-fixture", "disabled-fixture", "agent-fixture"} <= aging
+
+    listing = c._render_candidate_list()
+    assert "agent-fixture" in listing
+    assert "bundled-fixture" not in listing
+    assert "disabled-fixture" not in listing
+
+
+def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
+    curator_env, monkeypatch,
+):
+    """The delivered review prompt must not override hard rule #1.
+
+    ``PRUNE-BUILTINS MODE IS ON`` used to tell the model bundled skills were
+    in the candidate list and may be archived by the LLM. Archival is the
+    deterministic pass's job; the LLM pass must not be asked to mutate them.
+    When nothing actionable remains the fork is skipped outright.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    captured = {}
+
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+
+    prompt = captured["prompt"]
+    assert "agent-fixture" in prompt
+    assert "bundled-fixture" not in prompt
+    assert "disabled-fixture" not in prompt
+    assert "PRUNE-BUILTINS MODE IS ON" not in prompt
+
+    # Only bundled + disabled candidates left: no fork at all.
+    import shutil
+    shutil.rmtree(skills_dir / "agent-fixture")
+    captured.clear()
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    assert "prompt" not in captured
+
+
+def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
+    curator_env, monkeypatch,
+):
+    """Flag on: a long-idle bundled skill is archived without the LLM list."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    data = u.load_usage()
+    data["bundled-fixture"] = u._empty_record()
+    data["bundled-fixture"]["last_used_at"] = super_old
+    data["bundled-fixture"]["created_at"] = super_old
+    data["bundled-fixture"]["use_count"] = 1
+    u.save_usage(data)
+
+    # Eligible for the deterministic walk...
+    names = set(u.list_agent_created_skill_names())
+    assert "bundled-fixture" in names
+    # ...but not for the LLM rewrite pass.
+    assert "bundled-fixture" not in c._render_candidate_list()
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] >= 1
+    assert not (skills_dir / "bundled-fixture").exists()
+    assert "bundled-fixture" in u.read_suppressed_names()
 
 
 
@@ -535,7 +642,9 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     ``_background_review_read_before_write_guard`` refuses a background-review
     write whose target was not loaded via ``skill_view`` in the same turn —
-    edit, patch, write_file over an existing file, and remove_file. The forked
+    patch (targeted or full rewrite), write_file over an existing file, and
+    remove_file; ``edit`` is an unadvertised alias of the full-rewrite patch,
+    so the prompt no longer names it. The forked
     reviewer only performs that read if the prompt tells it to, so a guard the
     prompt never mentions is a silently jammed write channel rather than a
     safety net: the run completes, writes nothing, and reads like a pass that
@@ -562,7 +671,7 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     prompt = captured["prompt"]
     assert "skill_view" in prompt
-    for action in ("edit", "patch", "write_file", "remove_file"):
+    for action in ("patch", "write_file", "remove_file"):
         assert f"action={action}" in prompt, (
             "the delivered prompt never tells the reviewer to call skill_view "
             f"before skill_manage action={action}, which the read-before-write "

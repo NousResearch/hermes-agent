@@ -1,0 +1,43 @@
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: "0 */12 * * *" # 00:00 and 12:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: sync-fork-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+
+      - name: Fast-forward fork main
+        run: |
+          if ! git merge-base --is-ancestor HEAD upstream/main; then
+            echo "::error::Fork main has diverged from upstream/main; refusing to overwrite fork-only commits."
+            exit 1
+          fi
+
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse upstream/main)" ]; then
+            echo "Fork main is already up to date."
+          else
+            git push origin refs/remotes/upstream/main:refs/heads/main
+          fi

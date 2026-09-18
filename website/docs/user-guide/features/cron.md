@@ -84,7 +84,15 @@ validates that the job's configuration can actually produce a successful run:
 - attached skills are ready (no missing required environment variables,
   commands, or credential files),
 - delivery platform targets are known and have gateway credentials configured
-  (`local`/`origin` targets are never checked).
+  (`local`/`origin` targets are never checked),
+- every MCP server the job names in its own `enabled_toolsets` resolved to at
+  least one tool for this profile. A server that connected earlier in this
+  gateway and is only reconnecting after a network blip (router reboot, DNS
+  failure) does **not** block: the job runs with the tools that did resolve and
+  the gateway log notes which servers were skipped (once per outage). A server
+  that never connected for this profile (wrong URL or credentials, or a server
+  another profile owns under a multiplexer), or one parked on a permanent error
+  such as revoked credentials, blocks the run.
 
 When validation fails, the job's `last_status` becomes `blocked_config`, ONE
 alert is delivered (it is not repeated every tick), and **no LLM call is
@@ -256,7 +264,7 @@ hermes cron tick
 What they do:
 
 - `pause` — keep the job but stop scheduling it
-- `resume` — re-enable the job and compute the next future run
+- `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
 - `run` — trigger the job on the next scheduler tick
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
@@ -339,6 +347,8 @@ hermes cron list
 hermes cron status
 ```
 
+For a named profile served by the default-profile multiplexer, `hermes cron status` names that scheduler host and reports the named profile's own heartbeat health. Missing or stale heartbeats point to `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when that heartbeat is missing or stale; `cron status` additionally checks the last successful tick and reports tick errors.
+
 ### Gateway scheduler behavior
 
 On each tick Hermes:
@@ -365,6 +375,8 @@ cron:
 ```
 
 The lasting fix is a user session for the gateway user: `sudo loginctl enable-linger <gateway-user>` (and `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs), then restart the gateway. Kanban workers always require a scope and fail closed regardless of this key.
+
+The worker is the gateway's own interpreter running `python -m cron.scheduler`, with the gateway's checkout pinned on its `PYTHONPATH` (plus any entries the gateway itself was started with), so it imports the same Hermes tree the gateway runs — regardless of the venv's editable-install mapping, the unit's `WorkingDirectory`, or `PYTHONSAFEPATH` on the host. A worker that dies before acknowledging the handoff records its own stderr tail in the job's last error and in the execution ledger, so the failing import (or whatever killed it) is named instead of a bare exit code.
 
 ### Execution history
 
@@ -432,22 +444,36 @@ cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
-### Failure incidents: acknowledge a known failure
+### Failure incidents: alert once, remind on a cooldown, acknowledge
 
-A recurring job that keeps failing with the *same* error pings you on every
-run. Each failure is also recorded as a durable **incident**, keyed by the
-job plus a normalized signature of the error text, in the same per-profile
-ledger database as the execution history.
+A recurring job that keeps failing with the *same* error alerts you **once**,
+not on every run. Each failure is recorded as a durable **incident**, keyed by
+the job plus a normalized signature of the error text, in the same per-profile
+ledger database as the execution history; the first failure of a signature is
+always delivered, and repeats are then withheld while the incident is `alerted`
+(the run is still recorded — `hermes cron runs` and the failure streak see it,
+only the ping is held back).
+
+```yaml
+cron:
+  failure_repeat_alert_hours: 6   # still broken after this long → one reminder ping,
+                                  # then silent again; 0 = alert on every failing run
+```
+
+Anything that changes the picture alerts immediately: a *different* error mints
+its own incident and pings at once, and a successful run re-arms the signature
+so the same error after a green run alerts again. If the incident ledger cannot
+be read, the ping is delivered rather than swallowed.
 
 ```bash
 hermes cron incidents                 # list incidents (newest activity first)
 hermes cron incidents --state alerted # filter: detected | alerted | resolved | closed
-hermes cron incidents ack <id>        # acknowledge — stop re-pinging
+hermes cron incidents ack <id>        # acknowledge — silence this signature for good
 ```
 
-Acknowledging an incident silences the per-run failure ping for that exact
-signature only. Nothing else changes: the run history still records every
-failure, the failure streak keeps counting, and the moment the job starts
+Acknowledging an incident silences the failure ping for that exact signature
+only, reminders included. Nothing else changes: the run history still records
+every failure, the failure streak keeps counting, and the moment the job starts
 failing with a *different* error a new incident is minted and alerts fire
 again.
 
@@ -458,20 +484,16 @@ the job later fails with the *same* error, the resolved incident re-opens as
 the exception: a success leaves them alone, and a repeat stays silent.
 
 Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
-failure ping reached delivery) → `resolved` (the job ran OK afterwards;
-re-opens on a repeat) or `closed` (acknowledged; terminal for that
-signature). Stored error text is secret-redacted and truncated before it is
-written.
-
-Recording is always on and costs nothing to ignore — no ping is ever
-suppressed until you explicitly `ack`.
+failure ping reached delivery; `alerted_at` is the latest one and starts the
+reminder cooldown) → `resolved` (the job ran OK afterwards; re-opens on a
+repeat) or `closed` (acknowledged; terminal for that signature). Stored error
+text is secret-redacted and truncated before it is written.
 
 ### Fleet health check: `hermes cron doctor`
 
-`hermes cron doctor` is a read-only health check over every active job. It
-prints grouped, per-job issues and exits `1` when anything actionable is
-found (`0` when healthy), so it works from a terminal, a watchdog script, or
-a CI-style smoke check:
+`hermes cron doctor` is a read-only health check over every active job. It prints grouped, per-job issues and exits `1` while any finding stands, including historical late or catch-up dispatches (`0` when no findings remain).
+
+A successful catch-up does not clear the lateness warning; the next on-time dispatch does. A watchdog such as `hermes cron doctor || alert` can therefore keep alerting for a full schedule interval after the host wakes, even if the catch-up succeeds.
 
 ```bash
 hermes cron doctor
@@ -481,6 +503,8 @@ Checks per active job:
 
 - last run failed (`last_status` not ok, with the recorded error),
 - last delivery failed (the output was produced but never reached you),
+- last dispatch was late or caught up after a missed schedule (`last_dispatch`); this warning clears at the next on-time fire,
+- a scheduled fire could not reach the runner (`last_fire_error`), with the recorded timestamp and a shortened reason; this warning clears after a successful run,
 - `next_run_at` missing, or parked in the past beyond a 15-minute ticker
   grace window — the "job is silently not firing" signal (scheduler dead,
   gateway down, or a wedged fire-claim),
@@ -526,6 +550,15 @@ When scheduling jobs, you specify where the output goes:
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
+
+Delivered output is secret-redacted on the way out, on every lane: the platform message, the
+session mirror (payload and the job name spliced around it), and a `bot-chat` turn. Credential
+shapes (vendor-prefixed API keys, tokens, `KEY=value` assignments) are masked even when
+`security.redact_secrets: false` — that setting governs your own logs, not what leaves the
+machine — and a redactor failure replaces the payload rather than sending it unscanned.
+Credential-named URL query parameters are not stripped (magic links and pre-signed URLs are
+legitimate cron output), and user-chosen secrets with no recognisable shape are not detected.
+The run document under `cron/output/<job_id>/` keeps the agent's response as written.
 
 ### Delivery failures are a distinct status
 
@@ -649,7 +682,7 @@ cron:
 
 Behaviour is **thread-preferred**, scoped to the job's own conversation:
 
-- **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
+- **Thread-capable platforms** (Telegram topics, Discord/Slack/Matrix threads): each
   delivery opens its own dedicated thread and the brief is seeded into that
   thread's session, so a reply in-thread continues with full context. A
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
@@ -748,6 +781,24 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+
+### Declaring a failed run
+
+Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
+finishes its turn but the work did not get done — for example a delegated subagent or a script it ran failed —
+it can declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
+by the explanation:
+
+```text
+[CRON_FAILURE]
+The nightly export subagent exited with "disk full"; no report was produced.
+```
+
+The run is then recorded as failed (`last_status`, failure streak, `hermes cron runs` and `hermes cron incidents`
+all reflect it) and the failure notice is delivered like any other failed run. The full response is still saved
+under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
+else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
+with a non-zero exit code.
 
 ## Script timeout
 
@@ -941,7 +992,8 @@ On hosted (managed-cron) deployments, a scheduled fire travels from the platform
 These misses are stamped on the job record as `last_fire_error` (timestamp + reason) and surfaced by:
 
 - `cronjob` tool → `action: "list"` — the `last_fire_error` field
-- `hermes cron list` — a red `⚠ Missed scheduled fire:` line under the job
+- `hermes cron list`: a red missed-fire warning under the job
+- `hermes cron doctor`: a per-job missed-fire finding that makes the command exit `1`
 - The dashboard job view
 
 The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `hermes gateway restart`).

@@ -47,7 +47,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
 :::tip
-The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused. A misspelled path under a known section (`gateway.discord.foo`) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway.
+The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused. A known key written under the wrong prefix (`gateway.discord.foo`, where `discord.foo` is itself a known key) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway. Any other unknown path under a known section (a typo such as `agent.max_turnz`, or a runtime-read key with no seeded default) is written together with a did-you-mean notice, since the schema alone cannot tell the two apart. `hermes config get` on such a path prints the value from your file together with a stderr notice that Hermes may not read it, so a leftover key cannot silently pass for a live setting.
 :::
 
 ## Configuration Precedence
@@ -127,7 +127,10 @@ mode is not live-downgraded when you set `journal_mode: delete` (a downgrade
 under open connections can corrupt it). `hermes doctor` warns
 `<db> is in WAL mode despite database.journal_mode=delete` until you stop
 every Hermes process for the profile and run a one-time offline
-`PRAGMA journal_mode=DELETE` on the file.
+`PRAGMA journal_mode=DELETE` on the file. Under that warning it names the
+processes currently holding the database (`<db> is held by PID <n> (<command>)`)
+so you know what to stop; when the holder scan is partial or unavailable it says
+`cannot prove the database is quiet` instead of giving an all-clear.
 
 ## Environment Variable Substitution
 
@@ -221,6 +224,7 @@ terminal:
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
+  sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
@@ -588,7 +592,8 @@ When in doubt, set `terminal.backend` back to `local` and verify that commands r
 
 For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
 
-- The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB.
+- The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB; set `terminal.sync_back_max_bytes` (bytes) in `config.yaml` to raise the cap for a larger state tree. Live sockets under the remote `~/.hermes/` (e.g. `gateway.sock`) are skipped rather than failing the transfer.
+- The downloaded archive is staged under the system temp directory (`hermes-sync-back-<pid>-*`); leftovers from a hard-killed process are reclaimed on the next sync-back.
 - Docker and Singularity use bind mounts (live host filesystem view) and don't need this.
 - This covers Hermes state (`~/.hermes/`), **not** arbitrary working-tree files inside the sandbox — have the agent copy important artifacts out explicitly (e.g. `scp`, `modal volume put`) before the sandbox is destroyed.
 
@@ -702,6 +707,8 @@ Security tradeoff:
 - `true` gives the sandbox direct access to the directory you launched Hermes from
 
 Use the opt-in only when you intentionally want the container to work on live host files.
+
+A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or a desktop/TUI session's workspace) never becomes the container's working directory: when it is the directory mounted at `/workspace`, file tools and terminal commands use `/workspace`; otherwise the container keeps its own working directory. If a file tool still cannot enter its working directory, the error names the invalid `terminal.cwd` for the active backend rather than the shell's raw `cd:` line.
 
 ### Persistent Shell
 
@@ -1358,6 +1365,12 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
 `/title` and `hermes sessions rename`.
 
+To keep the instant derived title (the first line of your opening message) but never
+spend a model call upgrading it, set `auxiliary.title_generation.model_upgrade_enabled: false`.
+No background `auto-title` thread starts and no automatic title-model request is sent; the
+explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
+still disables both stages.
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, vision) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:
@@ -1400,6 +1413,8 @@ Auxiliary task blocks additionally accept a `reasoning_effort` knob:
 
 This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It applies to auxiliary-client tasks such as `vision`, `compression`, `title_generation`, and `curator`, across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
 
+If the endpoint rejects the reasoning field outright (a chat-only model behind an OpenAI-compatible relay answering `400 Unrecognized request argument supplied: reasoning_effort`), the auxiliary call is retried once with every reasoning field omitted, so the task (for example the session title) still completes with the endpoint's default behaviour.
+
 **Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](/user-guide/features/memory#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
 
 **MoA also uses a different configuration:** reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](/user-guide/features/mixture-of-agents).
@@ -1414,7 +1429,9 @@ auxiliary:
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `opencode-free`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
+
+Local OpenAI-compatible servers work under their own names too: `provider: ollama` (also `vllm`, `llamacpp`, `llama.cpp`) with a `base_url` such as `http://127.0.0.1:11434` and an empty `api_key` routes through the custom endpoint with a placeholder key, and a bare `host:port` base_url gets the `/v1` suffix automatically.
 
 :::tip MiniMax OAuth
 `minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).
@@ -1479,6 +1496,7 @@ auxiliary:
   # set e.g. "English" or "Japanese" to pin titles to one language.
   title_generation:
     enabled: true              # set false to disable auto-title generation
+    model_upgrade_enabled: true  # set false to keep the instant derived title, never call a model
     provider: "auto"
     model: ""
     base_url: ""
@@ -1525,7 +1543,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, approval 30s, compression 120s, title generation 30s, every other task 30s. Increase these if you use slow local models for auxiliary tasks — a reasoning model that emits a thinking block before its answer routinely needs more than 30s for a title, and a request that hits the deadline is logged as `Auxiliary <task>: request to <base_url> timed out after <N>s (raise auxiliary.<task>.timeout …)` before Hermes tries the fallback chain. Title generation, compression and vision give up on the primary route after one full timeout window (no same-provider retry) so a slow model cannot multiply the wait. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info
@@ -1559,6 +1577,10 @@ Each entry supports the same three knobs as any auxiliary task config:
 | `base_url` | (Optional) Custom OpenAI-compatible endpoint |
 
 `fallback_chain` is available on any auxiliary task — `compression`, `vision`, `approval`, `skills_hub`, `mcp`, etc.
+
+### Native vision embed budgets (top-level `vision:`)
+
+Separate from `auxiliary.vision` (which picks the describer model): when the *main* model is vision-capable, `vision_analyze` and browser screenshots embed real pixels into tool results that are re-sent every later turn. `vision.embed_target_bytes` (default `262144`, clamped 64 KiB..4 MiB) sizes one embed; `vision.max_calls_per_image` caps how often the same image may be embedded per session (unset = 3 inside delegated subagents, unlimited for the main agent; `0` = unlimited). See [Vision → Native embeds ride the session](/user-guide/features/vision#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image).
 
 ### Limiting auxiliary concurrency
 
@@ -1790,10 +1812,15 @@ agent:
 The key matching is **spelling-tolerant** — any reasonable spelling will match:
 - `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
 - `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- A key prefixed with a named custom provider (`ollama-local/qwen3.6:27b-q4_k_m`) also applies when the request carries only the bare model id (`qwen3.6:27b-q4_k_m`), which is what fallback entries and `providers:` routes send
 - Exact matches take precedence over variants
 
 :::note
-There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+Model ids contain dots (`claude-opus-4.5`, `qwen3.6:27b`), which `hermes config set` treats as nesting separators. Escape them with a backslash to write the literal key — `hermes config set 'agent.reasoning_overrides.ollama-local/qwen3\.6:27b-q4_k_m' low` — or edit the YAML directly. See [Dots inside key names](/reference/cli-commands#dots-inside-key-names).
+:::
+
+:::note Local OpenAI-compatible endpoints
+A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpoint) receives the resolved effort — `agent.reasoning_effort` or the matching per-model override — as the standard top-level `reasoning_effort` request field, clamped to the values the OpenAI-compatible wire accepts (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). The nested `reasoning` object is reserved for endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models) because arbitrary servers reject unknown fields with HTTP 400. If your server reads its thinking budget from a different field (Ollama's `think`, vLLM's `chat_template_kwargs`, a router-specific key), set it under the custom provider's [`extra_body`](/integrations/providers#named-custom-providers), which is merged into every request routed there.
 :::
 
 **Resolution priority:**
@@ -1803,7 +1830,7 @@ There is no `hermes config set` support for `reasoning_overrides` keys — edit 
 3. Global `agent.reasoning_effort`
 4. Provider default
 
-The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
+The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches (including a switch issued before the first message), session resume (`--resume`, `/resume`), `/new`, and fallback model activation.
 
 ## Fast Mode
 
@@ -2006,6 +2033,7 @@ display:
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices (see messaging guide)
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: ""         # Legacy cosmetic field still surfaced in some summaries
@@ -2604,6 +2632,8 @@ Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe
 
 `hermes doctor` (and the startup config check) reports a value the runtime cannot load — a typo such as `Asia/Tokio` would otherwise silently put the agent clock and every cron schedule on server-local time. `HERMES_TIMEZONE` overrides this key when set.
 
+The agent clock, cron schedules and time-aware tools follow this zone on every OS. Code run through `execute_code` also inherits it as `TZ` on Linux and macOS; on Windows those children keep the OS-configured zone instead (the Windows C runtime only parses POSIX-form `TZ` strings, and an IANA name there produces a wrong UTC offset), so set the Windows zone itself when child scripts must render local time in this zone.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:
@@ -2844,7 +2874,7 @@ network:
   force_ipv4: false   # Force IPv4 for outbound connections (default: false)
 ```
 
-`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Set this to `true` to skip IPv6 entirely and connect over IPv4 directly.
+`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Hermes already races IPv6 and IPv4 for every outbound connection it makes (Happy Eyeballs, RFC 8305: the IPv4 attempt starts 250 ms after IPv6 and whichever connects first wins), so an advertised-but-blackholed IPv6 route costs about a quarter second per connection instead of the full timeout. This covers the gateway's WebSocket dials (relay connector, platform adapters) as well as HTTP. Set this to `true` only when you want to skip IPv6 entirely and connect over IPv4 directly. `hermes doctor` runs an `IPv6 route` check that detects a dead IPv6 path and points at this setting.
 
 ## Onboarding
 

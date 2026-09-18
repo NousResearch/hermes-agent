@@ -151,8 +151,26 @@ def cron_list(show_all: bool = False):
 
     for job in jobs:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
-        badge = _STATE_BADGES.get(effective_job_state(job)) or (
-            ("[active]", Colors.GREEN) if job.get("enabled", True) else ("[disabled]", Colors.RED))
+        # Escalera de header: [active!]/streak/[error] según last_status + enabled
+        state_name = effective_job_state(job)
+        if state_name == "paused":
+            badge = ("[paused]", Colors.YELLOW)
+        elif state_name == "completed":
+            badge = ("[completed]", Colors.BLUE)
+        elif state_name == "error":
+            badge = ("[error]", Colors.RED)
+        elif not job.get("enabled", True):
+            badge = ("[disabled]", Colors.RED)
+        else:
+            last_status = job.get("last_status")
+            failure_streak = int(job.get("failure_streak") or 0)
+            if last_status == "error":
+                if failure_streak >= 2:
+                    badge = (f"[active! {failure_streak} fails]", Colors.YELLOW)
+                else:
+                    badge = ("[active!]", Colors.YELLOW)
+            else:
+                badge = ("[active]", Colors.GREEN)
         print(f"  {color(job.get('id', '?'), Colors.YELLOW)} {color(*badge)}")
         for label, value in _job_rows(job):
             print(f"    {label + ':':<11}{value}")

@@ -66,9 +66,22 @@ export async function refreshAllVoiceLiveStatuses(): Promise<void> {
   await Promise.all([refreshVoiceLiveStatus(), refreshVoiceLiveGrokStatus()])
 }
 
-/** Selected mode. `chained` until the backend answers, or when the backend predates the mode. */
-export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): VoiceChatMode {
-  return status?.mode === 'gpt-live' || status?.mode === 'grok-live' ? status.mode : 'chained'
+/** Selected mode. `chained` until a status atom answers, or when the backend predates the mode.
+ *  Default (no argument) consults BOTH status atoms: the gpt-live endpoint can lag or stay
+ *  null while grok-live is the configured engine — reading only `$voiceLiveStatus` then
+ *  silently mounts chained STT instead of duplex. */
+export function selectedVoiceChatMode(status?: null | VoiceLiveStatus): VoiceChatMode {
+  if (status !== undefined) {
+    return status?.mode === 'gpt-live' || status?.mode === 'grok-live' ? status.mode : 'chained'
+  }
+
+  for (const candidate of [$voiceLiveStatus.get(), $voiceLiveGrokStatus.get()]) {
+    if (candidate?.mode === 'gpt-live' || candidate?.mode === 'grok-live') {
+      return candidate.mode
+    }
+  }
+
+  return 'chained'
 }
 
 /**

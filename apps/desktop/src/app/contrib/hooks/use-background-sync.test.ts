@@ -285,6 +285,51 @@ describe('reconcileActiveTranscript', () => {
     expect(messages.at(-1)?.error).toBe('local failure')
   })
 
+  it('preserves local optimistic user message before backend ACK and converges on ACK', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      { id: '1-0-user', parts: [{ text: 'old question', type: 'text' }], role: 'user' },
+      { id: '1-1-assistant', parts: [{ text: 'old answer', type: 'text' }], role: 'assistant' },
+      { id: 'user-pending-123', parts: [{ text: 'new optimistic question', type: 'text' }], role: 'user' }
+    ]
+    // 1. Resync arrives while user-pending-123 is still in flight (backend has only old messages)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'old question', role: 'user', timestamp: 1 },
+        { content: 'old answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: ACTIVE_STORED_ID
+    } as never)
+
+    await fixture.refresh()
+
+    const messagesAfterEarlySync = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    expect(messagesAfterEarlySync.map(m => m.id)).toEqual(['1-0-user', '2-1-assistant', 'user-pending-123'])
+    expect(messagesAfterEarlySync.at(-1)?.parts[0]).toMatchObject({ text: 'new optimistic question' })
+
+    // 2. Later resync arrives after backend has persisted/ACKed the user message
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'old question', role: 'user', timestamp: 1 },
+        { content: 'old answer', role: 'assistant', timestamp: 2 },
+        { content: 'new optimistic question', role: 'user', timestamp: 3 }
+      ],
+      session_id: ACTIVE_STORED_ID
+    } as never)
+
+    await fixture.refresh()
+
+    const messagesAfterAckSync = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    // Optimistic user id should be replaced by authoritative message or converged without duplication
+    const userMessages = messagesAfterAckSync.filter(m => m.role === 'user')
+    expect(userMessages).toHaveLength(2)
+    expect(userMessages.map(m => m.parts[0])).toMatchObject([
+      { text: 'old question' },
+      { text: 'new optimistic question' }
+    ])
+    expect(messagesAfterAckSync.filter(m => m.id === 'user-pending-123')).toHaveLength(0)
+  })
+
   it('does not clobber a busy stream', async () => {
     const fixture = makeRefresh()
     fixture.busyRef.current = true

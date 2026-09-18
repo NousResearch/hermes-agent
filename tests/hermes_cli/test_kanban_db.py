@@ -427,6 +427,57 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_does_not_trap_combo_timeout_mentioning_429(kanban_home):
+    """A combo/fallback global-timeout error that merely *mentions* one
+    target's 429/403 in its trailing detail must NOT trip ``blocker_auth``.
+
+    Real-world shape (observed 2026-09-17): a 7-target combo times out with
+    zero terminal responses; the error text names the one target that came
+    back 429 before the others timed out silently. That is a transient
+    gateway/combo failure — retrying is exactly the right move — not
+    evidence that *this task's* configured model/provider is quota/auth
+    blocked. Trapping it in blocker_auth is a stuck task: the guard blocks
+    the very respawn that would produce a fresh, non-429 error, so the task
+    parks forever until something external (model override, error aging out
+    another way) breaks the loop.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="combo-timeout-guard", assignee="a")
+        kb.claim_task(conn, tid)
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (
+                "claude/claude-opus-5 (429) without a terminal response "
+                "Custom endpoint didn't answer after 3 attempts — it looks "
+                "temporarily unavailable. Wait a minute and send /retry, or "
+                "switch models with /model. Provider said: Combo global "
+                "timeout (180000ms) after 1/7 targets | tried: "
+                "claude/claude-opus-5 (429) without a terminal response",
+                tid,
+            ),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+    # A genuine, non-combo quota/auth error still traps as before — the
+    # combo-timeout carve-out must not blanket-disable the blocker.
+    with kbc.connect() as conn:
+        tid2 = kb.create_task(conn, title="real-auth-block", assignee="a")
+        kb.claim_task(conn, tid2)
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("401 Unauthorized: invalid api key for provider", tid2),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, tid2) == "blocker_auth"
+
+
 
 
 

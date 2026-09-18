@@ -93,6 +93,11 @@ def _raw_flood_wait(text: str) -> Optional[float]:
         return None
 
 
+def is_reconnect_only(error: Any) -> bool:
+    """True for a row that only an adapter reconnect may retry (no timer, no backoff)."""
+    return str(error or "").strip().lower() in _RUNTIME_RETRYABLE_ERRORS
+
+
 def is_flood_error(error: Any) -> bool:
     """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, or a
     row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``)."""
@@ -153,7 +158,7 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
     if is_flood_error(last_error):
         return flood_not_before(updated_at, last_error)
     text = str(last_error or "").strip().lower()
-    if text in _RUNTIME_RETRYABLE_ERRORS:
+    if is_reconnect_only(text):
         return _failed_stamp(updated_at)
     if classify_dead_error(text):
         return None
@@ -485,7 +490,7 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
     for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
         # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
         # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
-        if str(last_error or "").strip().lower() in _RUNTIME_RETRYABLE_ERRORS:
+        if is_reconnect_only(last_error):
             continue
         due = retry_not_before(updated_at, last_error, attempts)
         if due is None or attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:

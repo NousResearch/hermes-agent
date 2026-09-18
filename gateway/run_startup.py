@@ -449,10 +449,16 @@ class GatewayStartupMixin:
             adapter = self.adapters.get(platform)
         # A runtime claim whose reconnect vanished before dispatch is released without spending an
         # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
+        # Only a flood row keeps its error (the platform's wait must be honoured); any other row
+        # becomes reconnect-only, or the redelivery timer would claim and release it until the
+        # adapter is back.
         if adapter is None and row.get("runtime_recovery"):
+            from gateway.delivery_ledger import is_flood_error
+
+            last_error = row.get("last_error")
             await self._release_runtime_claim_quiet(
                 row["obligation_id"], "failed to release undispatched runtime obligation %s",
-                error=row.get("last_error") or "send_path_degraded",
+                error=last_error if is_flood_error(last_error) else "send_path_degraded",
             )
         return adapter
 

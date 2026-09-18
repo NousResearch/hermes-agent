@@ -625,6 +625,18 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    if (this.disposed) {
+      // kill() is terminal: every caller (die / dieWithCode /
+      // graceful-exit-cleanup / dead-output-stream) exits the Node process
+      // right after, so there is no legitimate kill-then-start flow. A
+      // start() arriving here is a recovery subscriber reacting to the
+      // killed child's late `exit` — respawning now would recreate the
+      // gateway on a PTY that is already gone.
+      this.pushLog('[lifecycle] start() ignored after kill()')
+
+      return
+    }
+
     this.disposed = false
     this.clearReconnect()
 
@@ -785,6 +797,14 @@ export class GatewayClient extends EventEmitter {
     this.clearReconnect()
     this.reconnectAttempts = 0
     const proc = this.proc
+    // Detach the reference BEFORE killing: the child's late `exit` event is
+    // identity-gated on `this.proc === ownedProc`, and graceful-exit callers
+    // (SIGHUP on a dead PTY) do not live long enough to consume a recovery
+    // restart. Leaving the reference in place let the exit reach
+    // handleTransportExit → emit('exit') → useMainApp's recovery subscriber
+    // → start(), whose first statement un-latches `disposed` and spawns a
+    // replacement gateway onto the vanished pipes.
+    this.proc = null
     const killed = proc?.kill()
 
     this.lifecycle(

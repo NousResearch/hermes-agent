@@ -26,6 +26,7 @@ import type * as RoutingModule from './routing'
 
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
+  openRosterBotByName: vi.fn(async () => true),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
   setWorkspaceScope: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('./cron', () => ({ bindProfileSync: () => () => undefined, RoutinesPane:
 vi.mock('./roster-pane', () => ({
   botChatOwnsWorkspace: mocks.botChatOwnsWorkspace,
   BotsPane: () => null,
+  openRosterBotByName: mocks.openRosterBotByName,
   releaseStaleOpenBotChat: vi.fn(),
   selectedRosterBot: () => null,
   sessionOwnsWorkspace: mocks.sessionOwnsWorkspace

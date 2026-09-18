@@ -48,6 +48,7 @@ import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { $pendingDeepLinkBot } from '@/store/bot-deeplink-open'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -681,6 +682,10 @@ export const host = {
     model: readonlyAtom<string>($currentModel),
     /** Profile the live gateway is routed to. */
     profile: readonlyAtom<string>($activeGatewayProfile),
+    /** Bot profile named by a pending `hermes://bot/<profile>` deep link, or
+     *  null. Set by the deep-link listener; a consumer claims it via
+     *  `consumePendingBotDeepLink`. */
+    pendingBotDeepLink: readonlyAtom<null | string>($pendingDeepLinkBot),
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
@@ -729,6 +734,19 @@ export const host = {
     // the tile. Reveal imperatively, the same way `navigateToWorkspacePage`
     // does for the sidebar and keybinds.
     syncWorkspaceRoute(to)
+  },
+
+  /** Claim a pending `hermes://bot/<profile>` deep link, if any. Returns the
+   *  bot profile name once and clears the request, so exactly one consumer
+   *  acts on a link even if several subscribe to `state.pendingBotDeepLink`. */
+  consumePendingBotDeepLink: (): null | string => {
+    const pending = $pendingDeepLinkBot.get()
+
+    if (pending !== null) {
+      $pendingDeepLinkBot.set(null)
+    }
+
+    return pending
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no

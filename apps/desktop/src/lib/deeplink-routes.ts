@@ -18,6 +18,7 @@ export type DeepLinkAction =
     }
   | { type: 'skill-install'; identifier: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
+  | { type: 'bot-open'; profile: string }
   | { type: 'ignore' }
 
 function truthyParam(value: string | undefined, defaultValue = false): boolean {
@@ -45,6 +46,17 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     return payload.name === 'install' && identifier && identifier === identifier.trim()
       ? { type: 'skill-install', identifier }
       : { type: 'ignore' }
+  }
+
+  // hermes://bot/<profile> (or hermes://open/bots?bot=<profile>): open that
+  // bot's canonical Bot Chat. The link carries a NAME, never a session id —
+  // the consumer resolves the registry at open time, so the link can't dangle.
+  const botProfile = payload.kind === 'bot' ? payload.name : payload.params?.bot || ''
+
+  if (payload.kind === 'bot' || (payload.kind === 'open' && payload.name === 'bots')) {
+    const profile = botProfile.trim()
+
+    return profile ? { type: 'bot-open', profile } : { type: 'ignore' }
   }
 
   const repo = (

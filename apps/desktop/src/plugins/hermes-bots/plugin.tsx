@@ -64,6 +64,7 @@ import { $activityToasts } from './roster-actions'
 import {
   botChatOwnsWorkspace,
   BotsPane,
+  openRosterBotByName,
   releaseStaleOpenBotChat,
   selectedRosterBot,
   sessionOwnsWorkspace
@@ -107,12 +108,46 @@ export default {
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()
 
+    // Inbound `hermes://bot/<profile>` deep links: the OS handler drops the
+    // link with core's deep-link listener, which parks the bot name on the
+    // shared atom; the open itself belongs HERE, through the same title
+    // registry the roster row click resolves. A hidden canonical chat never
+    // appears in the session rows, so the generic session-route path treats
+    // the link as stale and silently clears it — resolving by name is the
+    // only door that reaches it. Consumed once; a link arriving before the
+    // roster pane mounts still resolves, because the registry lookup runs
+    // against the bot's own profile, not the visible rows. Feature-detected:
+    // older desktops (and bare stub harnesses) have no pending-link atom.
+    const $pendingBotLink = host.state.pendingBotDeepLink
+
+    const claimBotDeepLink = () => {
+      const profile = typeof host.consumePendingBotDeepLink === 'function' ? host.consumePendingBotDeepLink() : null
+
+      if (!profile || typeof profile !== 'string') {
+        return
+      }
+
+      void openRosterBotByName(profile).catch(() => {
+        /* the open path already toasts its own failure reason */
+      })
+    }
+
+    const unbindBotDeepLink =
+      $pendingBotLink && typeof $pendingBotLink.listen === 'function' ? $pendingBotLink.listen(claimBotDeepLink) : null
+
+    claimBotDeepLink()
+
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
     if (typeof ctx.onDispose === 'function') {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(() => {
+        if (typeof unbindBotDeepLink === 'function') {
+          unbindBotDeepLink()
+        }
+      })
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the

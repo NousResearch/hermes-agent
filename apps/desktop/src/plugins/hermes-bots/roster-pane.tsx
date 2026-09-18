@@ -39,7 +39,7 @@ import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
-import { $activityToasts } from './roster-actions'
+import { $activityToasts, openRosterBot } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
 import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
@@ -58,6 +58,30 @@ import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 export function selectedRosterBot(roster: RosterRow[], key: string): RosterRow | null {
   return (Array.isArray(roster) ? roster : []).find(bot => botRosterKey(bot) === key) || null
+}
+
+/** Open a bot's canonical Bot Chat addressed only by NAME — the inbound door
+ *  for `hermes://bot/<profile>` deep links. Same resolution as a roster row
+ *  click: a live roster row (the pane may not have mounted yet) when one
+ *  carries the name, otherwise a name-only row, which the canonical-chat
+ *  registry resolves against the bot's own profile. A name never dangles the
+ *  way a pinned session id would. */
+export function openRosterBotByName(name: string): Promise<boolean> {
+  const trimmed = (name || '').trim()
+
+  if (!trimmed) {
+    return Promise.resolve(false)
+  }
+
+  const roster = $lastRoster.get()
+  const rows: RosterRow[] = Array.isArray(roster) ? roster.filter(Boolean) : []
+  const isDefault = trimmed.toLowerCase() === 'default'
+  // `default` names the ACTIVE gateway's primary profile — never borrow a
+  // remote default's identity.
+  const named = rows.filter(bot => bot.name === trimmed && !(isDefault && (bot.remoteSource || bot.sourceScoped)))
+  const bot: RosterRow = named.length === 1 ? named[0] : { name: trimmed }
+
+  return openRosterBot(bot)
 }
 
 /** A selected owner whose roster row is absent because its SOURCE is down —

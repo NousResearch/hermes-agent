@@ -6,8 +6,10 @@ name, config section (``memory.<name>``), data directory and tool names, so the 
 
 * ``hermes update`` — for every profile home that shares the venv (primary; runs where the venv was
   just rebuilt anyway).
-* agent init — when the configured provider cannot be found at all, once per process (Desktop
-  users update through the app and never run ``hermes update`` by hand).
+* agent init — when the configured provider cannot be found at all, once per process per
+  (profile home, name). Desktop users update through the app and never run ``hermes update``
+  by hand; a multiplex gateway serving several homes must not skip home B because home A
+  already attempted the same provider name.
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
 list, dependency constraints, enable), never a custom source. Offline or absent from the catalog:
@@ -22,7 +24,9 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-_attempted: set[str] = set()
+# One-shot recovery is per (profile home, provider name). A multiplex gateway serves several
+# profile homes from one process; a name attempted for home A must not skip home B.
+_attempted: set[tuple[str, str]] = set()
 
 
 def configured_provider(home: Path) -> str:
@@ -108,15 +112,18 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 
 def recover_at_startup(name: str) -> bool:
     """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
-    name; honours ``security.allow_lazy_installs`` because it installs code. True when installed."""
-    if name in _attempted:
+    (profile home, name) — a multiplex gateway serves several profile homes, and a name attempted for
+    one must not skip the recovery for another. Honours ``security.allow_lazy_installs`` because it
+    installs code. True when installed."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    home = Path(get_hermes_home())
+    key = (hermes_home_key(home), name)
+    if key in _attempted:
         return False
-    _attempted.add(name)
+    _attempted.add(key)
     from tools.lazy_deps import _allow_lazy_installs
     if not _allow_lazy_installs():
         logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
                        "run `hermes plugins install %s`.", name, name)
         return False
-    from hermes_constants import get_hermes_home
-    home = Path(get_hermes_home())
     return migrate_home(home, install=_install_into(home), say=logger.warning) == name

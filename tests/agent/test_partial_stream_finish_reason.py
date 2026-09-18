@@ -15,6 +15,7 @@ Pins the contract:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1068,3 +1069,140 @@ class TestMergedFinishChunkSurvivesSSEGuard:
         assert response.id != PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "Hello."
+
+
+# ── Repetition-dominated tool-call arguments (#103599) ─────────────────────
+
+class TestRepetitionDominatedToolArgs:
+    """A model in a degenerate repetition loop can emit tool-call arguments
+    that are WELL-FORMED JSON but dominated by verbatim repeated fragments
+    (issue #103599: a ~15 KB heredoc of one repeated line, parsed fine,
+    executed as-is). The visible-text repetition guard never sees this shape
+    because it only runs on turns WITHOUT tool calls.
+
+    Contract: well-formed-but-repetition-dominated arguments must be flagged
+    as a dropped tool call (partial-stream stub, finish_reason="length",
+    tool_calls=None) so the loop retries/aborts honestly instead of
+    dispatching degenerate content. Clean arguments of any length must be
+    untouched (fail-open).
+    """
+
+    _DEGEN_LINE = (
+        r'def controls_table(dom_list): return [{"id": d.id, "name": d.name} for d in dom_list]'
+    )
+
+    @classmethod
+    def _degenerate_args(cls) -> str:
+        # The incident shape: one 85-char line repeated ~200x inside a
+        # heredoc — well-formed JSON, ~18 KB, repetition-dominated.
+        body = (cls._DEGEN_LINE + r"\n") * 200
+        return json.dumps({"command": "cat >> /tmp/g1.py <<'PYEOF'\n" + body + "PYEOF"})
+
+    @classmethod
+    def _healthy_args(cls) -> str:
+        # A long, legitimate script: every line distinct, no verbatim repeat.
+        lines = [
+            f"row_{i:03d} = build_row(item_{i}, source_{i}, flags=[\"a{i}\", \"b{i}\", \"c{i}\"])"
+            for i in range(60)
+        ]
+        return json.dumps({"command": "python3 - <<PY\n" + "\n".join(lines) + "\nPY"})
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_repetition_dominated_wellformed_args_route_to_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _degenerate_stream():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name="terminal"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments=self._degenerate_args()),
+            ])
+            # clean close, no finish_reason — the degenerate content was
+            # delivered in full, the model simply stopped
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _degenerate_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID, (
+            "Well-formed JSON arguments dominated by verbatim repeats must be "
+            "treated as a dropped tool call (partial-stream stub), not executed."
+        )
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None, (
+            "Repetition-dominated tool args must never auto-execute."
+        )
+        assert getattr(response, "_dropped_tool_names", None) == ["terminal"]
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_clean_long_args_are_untouched(self, _mock_close, mock_create, monkeypatch):
+        """Fail-open control: a long, healthy argument string (no verbatim
+        repeat) must complete normally — the guard must not flag legitimate
+        large payloads."""
+
+        def _healthy_stream():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_ok", name="terminal"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments=self._healthy_args()),
+            ])
+            yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _healthy_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.tool_calls is not None, (
+            "Clean long arguments must execute — the guard is fail-open."
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_short_args_are_untouched(self, _mock_close, mock_create, monkeypatch):
+        """Below the guard's minimum fragment length the check never runs."""
+
+        def _short_stream():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_s", name="terminal"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"command": "ls -la /tmp"}'),
+            ])
+            yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _short_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.tool_calls is not None
+
+

@@ -244,6 +244,18 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
         return inactivity_notice(job_name, job_id)
 
+    # Tool-guardrail halt (e.g. identical_call_streak_halt): the agent looped on the same tool
+    # call and the anti-loop guardrail stopped it. This is an agent-loop problem, NOT a provider
+    # or model-service failure — classify it before provider_failure_notice so the copy never
+    # blames the model. (Re-applied 2026-09-17 after the 0.21.3 update wiped the fix.)
+    if "tool guardrail halted the run" in lower:
+        return (
+            f"⚠️ El cron '{job_name}' no entregó su reporte: el agente entró en bucle "
+            f"repitiendo la misma llamada a herramienta y el anti-loop lo detuvo. "
+            f"No es un problema del proveedor ni del modelo. Revisá el output de la corrida "
+            f"para ver qué bloqueó la herramienta."
+        )
+
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
     # blame the wrong subsystem.
@@ -1788,6 +1800,20 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
         and turn_exit_reason.startswith("max_iterations_reached(")
         and bool(final_response_text)
     )
+    # Tool-guardrail halt (e.g. identical_call_streak_halt) sets completed=True/failed=False,
+    # so the check below would NOT raise — the anti-loop's technical message would be delivered
+    # to the user as if it were the report. Treat it as a failure so the except handler builds
+    # the proper failure notice. (Re-applied 2026-09-17 after the 0.21.3 update wiped the fix.)
+    if turn_exit_reason == "guardrail_halt":
+        _gcode = ""
+        try:
+            _gcode = str((result.get("guardrail") or {}).get("code") or "")
+        except Exception:
+            _gcode = ""
+        raise RuntimeError(
+            f"tool guardrail halted the run ({_gcode})" if _gcode
+            else "tool guardrail halted the run"
+        )
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:

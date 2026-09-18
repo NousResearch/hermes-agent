@@ -240,6 +240,33 @@ def test_rejected_bot_messages_do_not_consume_budget(monkeypatch, runner):
     assert runner._bot_loop_guard.tracked_conversations == 0
 
 
+def test_human_message_resets_tripped_conversation(monkeypatch, runner, settings):
+    """A human speaking in a tripped conversation clears the cooldown — the loop is over.
+
+    Regression for the CEO<->CFO bot-to-bot echo: the guard used to re-arm only after
+    ``cooldown_seconds`` and the next bot-to-bot exchange immediately re-tripped it, so the
+    "fix" was a 30-minute band-aid. A person intervening must end the cooldown immediately.
+    """
+    _incident_config(monkeypatch)
+    settings["value"] = BotLoopGuardSettings(max_events=2, window_seconds=60, cooldown_seconds=60)
+
+    # Trip the guard: with max_events=2, two bot messages are admitted and the third trips it.
+    assert _inbound(runner, _bot(BOT_A)) is True
+    assert _inbound(runner, _bot(BOT_B)) is True
+    assert _inbound(runner, _bot(BOT_A)) is False
+
+    conversation = runner._bot_loop_guard_conversation(_bot(BOT_A))
+    assert runner._bot_loop_guard.blocked(conversation) is True
+    assert _inbound(runner, _bot(BOT_B)) is False
+
+    # A human speaks in the same conversation -> the loop is over, the guard resets.
+    assert runner._is_user_authorized(_human()) is True
+    assert runner._bot_loop_guard.blocked(conversation) is False
+
+    # Bots may talk again without re-tripping on the first message.
+    assert _inbound(runner, _bot(BOT_A)) is True
+
+
 # --- BotLoopGuard unit ------------------------------------------------------
 
 

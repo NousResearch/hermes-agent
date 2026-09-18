@@ -129,6 +129,19 @@ class BotLoopGuard:
             events.append(now)
             return True, "ok"
 
+    def reset(self, conversation: Hashable) -> None:
+        """Clear the cooldown and event budget for ``conversation``.
+
+        Called when a HUMAN speaks in a conversation that tripped the guard: the loop is
+        over (a person intervened), so the bots may talk again. Without this, a tripped
+        conversation only re-arms after ``cooldown_seconds`` and the next bot-to-bot
+        exchange immediately re-trips it — the guard becomes a 30-minute band-aid instead
+        of a stop.
+        """
+        with self._lock:
+            self._cooldown_until.pop(conversation, None)
+            self._events.pop(conversation, None)
+
     def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
         """Drop idle conversations at most once per window so memory stays bounded."""
         if now - self._last_sweep < settings.window_seconds:

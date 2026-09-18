@@ -552,6 +552,14 @@ class GatewayAuthorizationMixin:
         if not self._principal_authorized(source, allow_adapter_delegation=allow_adapter_delegation):
             return False
         if not getattr(source, "is_bot", False):
+            # A human spoke here: if the loop guard had this conversation cooling down, the loop
+            # is over (a person intervened) — clear the cooldown so bots may talk again. Without
+            # this, a tripped conversation re-trips on the next bot-to-bot exchange after the
+            # cooldown expires, turning the guard into a 30-minute band-aid.
+            guard = self._bot_loop_guard_instance()
+            conversation = self._bot_loop_guard_conversation(source)
+            if guard.blocked(conversation):
+                guard.reset(conversation)
             return True
         # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
         return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))

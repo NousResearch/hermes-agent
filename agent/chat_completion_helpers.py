@@ -44,6 +44,7 @@ from agent.message_sanitization import (
     sanitize_outbound_kwargs,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
+from agent.repetition_guard import is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3018,6 +3019,24 @@ class _StreamingCall(StreamingWaitMonitor):
                     if repaired != "{}":
                         arguments = repaired
                     else:
+                        has_truncated_tool_args = True
+                else:
+                    # Well-formed JSON is not proof of a healthy model: a model in a
+                    # degenerate repetition loop can emit valid JSON whose payload is
+                    # dominated by verbatim repeated fragments (issue #103599 — a ~15 KB
+                    # heredoc of one repeated line, parsed fine, executed as-is). The
+                    # visible-text guard never sees this shape because it only runs on
+                    # turns WITHOUT tool calls. Flag it as a dropped tool call so it
+                    # routes through the partial-stream stub (honest drop → retry/abort)
+                    # instead of dispatching degenerate content. Fail-open: short or
+                    # clean arguments return False and are untouched.
+                    if is_repetition_dominated(arguments):
+                        logger.warning(
+                            "Tool call '%s' arguments are repetition-dominated "
+                            "(degenerate model output); treating as a dropped "
+                            "tool call instead of executing.",
+                            tc["function"]["name"] or "?",
+                        )
                         has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this

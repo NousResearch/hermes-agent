@@ -900,6 +900,157 @@ def test_stream_flushes_buffered_provider_chunks_after_relay_failure(
 
 
 
+def test_stream_refuses_replay_after_transformed_relay_output(
+    relay_turn, monkeypatch
+):
+    """A transformed delivered chunk consumes an unknown provider source; replaying the
+    pending raw list would emit that source a second time after its transformed form."""
+    relay, turn = relay_turn
+    raw_chunks = [{"delta": "first"}, {"delta": "second"}]
+
+    async def transform_then_fail(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            await anext(upstream)  # provider chunk A enters _raw_chunks
+            transformed = {"delta": "first (rewritten)"}
+            observe_chunk(transformed)
+            yield transformed  # delivered with no provider-source match
+            await anext(upstream)  # provider chunk B enters _raw_chunks
+            with pytest.raises(StopAsyncIteration):
+                await anext(upstream)
+            finalizer()
+            raise RuntimeError("simulated buffered Relay failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", transform_then_fail)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(raw_chunks),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-transformed-failure",
+        },
+    )
+
+    iterator = iter(stream)
+    first = next(iterator)
+    assert getattr(first, "delta", first) == "first (rewritten)"
+    # The fallback must not replay raw chunks behind already-delivered
+    # transformed output; the Relay failure propagates instead.
+    with pytest.raises(RuntimeError, match="simulated buffered Relay failure"):
+        next(iterator)
+
+
+def test_stream_does_not_replay_chunks_relay_passed_over(
+    relay_turn, monkeypatch
+):
+    """A match at index > 0 means Relay saw and skipped the earlier chunks — they were
+    suppressed, not merely pending, and the fallback must not resurrect them."""
+    relay, turn = relay_turn
+    raw_chunks = [{"delta": "first"}, {"delta": "second"}]
+
+    async def reorder_then_fail(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            await anext(upstream)  # A pending
+            second = await anext(upstream)  # B pulled
+            observe_chunk(second)
+            yield second  # matches at index 1: A genuinely pending
+            with pytest.raises(StopAsyncIteration):
+                await anext(upstream)
+            finalizer()
+            raise RuntimeError("simulated buffered Relay failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", reorder_then_fail)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(raw_chunks),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-reordered-failure",
+        },
+    )
+
+    # B delivered from Relay; A was passed over and stays suppressed.
+    assert list(stream) == [{"delta": "second"}]
+
+
+def test_stream_propagates_failure_after_foreign_chunk_even_with_empty_pending(
+    relay_turn, monkeypatch
+):
+    """An injected (sourceless) chunk poisons the same invariant: with the pending list
+    empty the old code would end the stream as if the Relay had not failed."""
+    relay, turn = relay_turn
+    raw_chunks = [{"delta": "first"}]
+
+    async def inject_then_fail(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            first = await anext(upstream)
+            observe_chunk(first)
+            yield first  # matched: pending list drains
+            observe_chunk({"meta": "usage"})
+            yield {"meta": "usage"}  # foreign chunk, no provider source
+            with pytest.raises(StopAsyncIteration):
+                await anext(upstream)
+            finalizer()
+            raise RuntimeError("simulated buffered Relay failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", inject_then_fail)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(raw_chunks),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-foreign-failure",
+        },
+    )
+
+    iterator = iter(stream)
+    next(iterator)  # provider chunk, matched
+    next(iterator)  # foreign chunk delivered
+    with pytest.raises(RuntimeError, match="simulated buffered Relay failure"):
+        next(iterator)
+
+
 def test_bypassed_stream_still_honors_chunk_acceptance(relay_turn):
     _relay, turn = relay_turn
     turn.lease.host.release_managed_execution("test.relay_llm")

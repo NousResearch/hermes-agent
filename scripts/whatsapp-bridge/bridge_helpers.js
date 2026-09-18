@@ -1,6 +1,45 @@
 import path from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync, appendFileSync } from 'fs';
 import { randomBytes } from 'crypto';
+
+// Routes that WRITE to WhatsApp (send, edit, media, poll, location, typing, read receipts).
+// Everything else (GET /messages, GET /chat/:id, GET /health) is read-only observation.
+export const OUTBOUND_ROUTES = new Set([
+  '/send', '/edit', '/send-media', '/send-poll', '/send-location', '/typing', '/read',
+]);
+
+/**
+ * Send-policy guard for the bridge HTTP surface.
+ *
+ * `send_policy: disabled` turns the bridge into a receive-only endpoint: every outbound
+ * route answers 403 and each refusal appends one JSONL recon row (ts, route, reason) so the
+ * mode is verifiable in the field. Any value other than `open` (including typos) fails
+ * CLOSED — an unrecognized policy must never silently enable sends.
+ *
+ * Returned as express middleware with `.sendsDisabled` exposed so the health endpoint can
+ * report the policy and the adapter can verify enforcement instead of assuming it.
+ */
+export function createSendPolicyGuard({ sendPolicy = 'open', logPath = null } = {}) {
+  const policy = String(sendPolicy ?? 'open').trim().toLowerCase();
+  const disabled = policy !== 'open';
+
+  function writeReconRow(route, reason) {
+    if (!logPath) return;
+    try {
+      mkdirSync(path.dirname(logPath), { recursive: true });
+      appendFileSync(logPath, JSON.stringify({ ts: Date.now(), route, reason }) + '\n');
+    } catch {}
+  }
+
+  function middleware(req, res, next) {
+    if (!disabled || !OUTBOUND_ROUTES.has(req.path)) return next();
+    writeReconRow(req.path, 'send_policy_disabled');
+    res.status(403).json({ error: 'read_only: send_policy is disabled' });
+  }
+  middleware.sendsDisabled = disabled;
+  middleware.policy = policy;
+  return middleware;
+}
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

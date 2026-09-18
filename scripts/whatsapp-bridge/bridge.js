@@ -35,6 +35,7 @@ import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   buildPollPayload,
+  createSendPolicyGuard,
   createReconnectScheduler,
   createVersionResolver,
   buildLocationPayload,
@@ -115,6 +116,9 @@ const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
+// Send policy: 'open' (default, today's behaviour) or 'disabled' (receive-only). Injected by
+// the adapter from config.extra `send_policy`. Any non-'open' value fails closed.
+const WHATSAPP_SEND_POLICY = String(process.env.WHATSAPP_SEND_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '☤ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
@@ -773,6 +777,15 @@ async function startSocket() {
 const app = express();
 app.use(express.json());
 
+// Send-policy guard: with WHATSAPP_SEND_POLICY=disabled every outbound route answers 403
+// and each refusal appends one recon row to send_policy_recon.jsonl beside the session.
+// Wired BEFORE every route so it sees all traffic (including /read).
+const sendPolicyGuard = createSendPolicyGuard({
+  sendPolicy: WHATSAPP_SEND_POLICY,
+  logPath: path.join(SESSION_DIR, 'send_policy_recon.jsonl'),
+});
+app.use(sendPolicyGuard);
+
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
 // the same machine could be tricked into fetching from an attacker
@@ -1102,6 +1115,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    sendPolicy: sendPolicyGuard.policy,
+    sendsDisabled: sendPolicyGuard.sendsDisabled,
   });
 });
 

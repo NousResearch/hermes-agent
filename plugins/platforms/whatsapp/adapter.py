@@ -273,6 +273,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
+        # send_policy: 'open' (default — today's behaviour) or 'disabled' (receive-only).
+        # Read from config.extra ONLY (a behavioral setting, never a secret); any value other
+        # than 'open' fails closed. Enforced on BOTH layers: the adapter refuses outbound
+        # sends without touching the bridge, and the bridge itself 403s every outbound route
+        # (defense against direct HTTP callers and version-skewed adapter/bridge pairs).
+        self._send_policy = str(extra.get("send_policy", "open") or "open").strip().lower()
+        self._sends_disabled = self._send_policy != "open"
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
@@ -362,13 +369,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
+            policy_matches = bool(data.get("sendsDisabled", False)) == self._sends_disabled
+            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts and policy_matches:
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else ("send_read_receipts config changed" if not policy_matches else "send_policy config changed")
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except Exception:
             pass  # Bridge not running, start a new one
@@ -392,6 +400,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
         bridge_env["WHATSAPP_DM_POLICY"] = self._dm_policy
+        # Bridge must enforce the same send policy the adapter enforces: direct HTTP callers
+        # and version-skewed adapter/bridge pairs get the gate at the HTTP layer too.
+        bridge_env["WHATSAPP_SEND_POLICY"] = self._send_policy
         allowed = ",".join(sorted(self._allow_from))
         if allowed:
             bridge_env["WHATSAPP_ALLOWED_USERS"] = allowed
@@ -580,6 +591,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
+        if self._sends_disabled:
+            return SendResult(success=False, error="send_policy is disabled (read-only mode)")
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
@@ -732,6 +745,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _send_read_receipt(self, data: Dict[str, Any]) -> None:
         key = data.get("readReceiptKey")
+        if self._sends_disabled:
+            return
         if not self._send_read_receipts or not self._http_session or not isinstance(key, dict):
             return
         try:
@@ -882,6 +897,8 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, caption=None):
     """Out-of-process delivery via the bridge HTTP API (standalone_sender_fn: cron apart from the gateway); ``caption`` rides on the media bubble."""
+    if str((getattr(pconfig, "extra", {}) or {}).get("send_policy", "open") or "open").strip().lower() != "open":
+        return send_error("send_policy is disabled (read-only mode)")
     try:
         import aiohttp
     except ImportError:

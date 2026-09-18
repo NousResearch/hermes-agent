@@ -22,6 +22,35 @@ type KanbanMessages = {
   locked: { review: string; running: string; scheduled: string }
   arcRunning: string
   arcStale: string
+  needsTriageTitle: string
+  actBlock: string
+  actUnblock: string
+  actRequestReview: string
+  actRequestChanges: string
+  actComment: string
+  actReassign: string
+  actAddLink: string
+  actAddChild: string
+  actMultiTip: string
+  blockTitle: string
+  reasonLabel: string
+  blockPlaceholder: string
+  blockConfirm: string
+  changesTitle: string
+  changesLabel: string
+  changesPlaceholder: string
+  changesConfirm: string
+  commentTitle: string
+  filterStatus: string
+  filterNeedsTriage: string
+  priorityHigh: string
+  priorityNormal: string
+  priorityLow: string
+  overCap: string
+  nearCap: string
+  overCapTip: string
+  nearCapTip: string
+  staleBlockedTip: string
   title: string
   orchestrationSettings: string
   newTask: string
@@ -239,6 +268,35 @@ export const en: KanbanMessages = {
   },
   arcRunning: 'An agent is working on this now.',
   arcStale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.',
+  needsTriageTitle: 'Needs triage — unblocked then re-blocked, or the worker failed repeatedly.',
+  actBlock: 'Block…',
+  actUnblock: 'Unblock',
+  actRequestReview: 'Request review',
+  actRequestChanges: 'Request changes…',
+  actComment: 'Comment…',
+  actReassign: 'Reassign to',
+  actAddLink: 'Add link…',
+  actAddChild: 'Add child…',
+  actMultiTip: 'Single card only',
+  blockTitle: 'Block card',
+  reasonLabel: 'Reason',
+  blockPlaceholder: 'Why is this blocked?',
+  blockConfirm: 'Block card',
+  changesTitle: 'Request changes',
+  changesLabel: 'Changes required',
+  changesPlaceholder: 'What must change for this to pass — one per line',
+  changesConfirm: 'Request changes',
+  commentTitle: 'Add comment',
+  filterStatus: 'Status',
+  filterNeedsTriage: 'Needs triage',
+  priorityHigh: 'High',
+  priorityNormal: 'Normal',
+  priorityLow: 'Low',
+  overCap: 'over cap',
+  nearCap: 'near cap',
+  overCapTip: 'Past its runtime cap — the dispatcher will time it out.',
+  nearCapTip: 'Half the runtime cap is spent.',
+  staleBlockedTip: 'Blocked for over 24h — triage it.',
   title: 'Kanban',
   orchestrationSettings: 'Orchestration settings',
   newTask: 'New task',
@@ -453,6 +511,35 @@ const ja: KanbanMessages = {
   },
   arcRunning: 'エージェントが現在作業中です。',
   arcStale: '取得済みですが、2分以上ワーカーのハートビートがありません — ディスパッチャが再取得します。',
+  needsTriageTitle: '要整理 — ブロック解除後に再ブロック、またはワーカーが繰り返し失敗しています。',
+  actBlock: 'ブロック…',
+  actUnblock: 'ブロック解除',
+  actRequestReview: 'レビューを依頼',
+  actRequestChanges: '変更を依頼…',
+  actComment: 'コメント…',
+  actReassign: '再割り当て',
+  actAddLink: 'リンクを追加…',
+  actAddChild: '子タスクを追加…',
+  actMultiTip: '複数選択時は使えません',
+  blockTitle: 'カードをブロック',
+  reasonLabel: '理由',
+  blockPlaceholder: 'なぜブロックするのか？',
+  blockConfirm: 'ブロックする',
+  changesTitle: '変更を依頼',
+  changesLabel: '必要な修正',
+  changesPlaceholder: '承認に必要な修正を1行ずつ',
+  changesConfirm: '変更を依頼',
+  commentTitle: 'コメントを追加',
+  filterStatus: 'ステータス',
+  filterNeedsTriage: 'トリアージ要',
+  priorityHigh: '高',
+  priorityNormal: '標準',
+  priorityLow: '低',
+  overCap: '上限超過',
+  nearCap: '上限間近',
+  overCapTip: '実行上限を超えました — ディスパッチャがタイムアウトさせます。',
+  nearCapTip: '実行上限の半分を消費しました。',
+  staleBlockedTip: '24時間以上ブロックされています — トリアージしてください。',
   title: 'カンバン',
   orchestrationSettings: 'オーケストレーション設定',
   newTask: '新しいタスク',
@@ -666,6 +753,35 @@ const zh: KanbanMessages = {
   },
   arcRunning: '有代理正在处理它。',
   arcStale: '已领取，但超过 2 分钟没有工作单元心跳 — 调度器将重新领取。',
+  needsTriageTitle: '需整理 — 解除阻塞后又受阻，或工作单元反复失败。',
+  actBlock: '阻塞…',
+  actUnblock: '解除阻塞',
+  actRequestReview: '请求审查',
+  actRequestChanges: '要求修改…',
+  actComment: '评论…',
+  actReassign: '重新分配',
+  actAddLink: '添加链接…',
+  actAddChild: '添加子任务…',
+  actMultiTip: '仅限单张卡片',
+  blockTitle: '阻塞卡片',
+  reasonLabel: '原因',
+  blockPlaceholder: '为什么阻塞？',
+  blockConfirm: '阻塞卡片',
+  changesTitle: '要求修改',
+  changesLabel: '必改项',
+  changesPlaceholder: '通过前必须修改什么 — 一行一项',
+  changesConfirm: '要求修改',
+  commentTitle: '添加评论',
+  filterStatus: '状态',
+  filterNeedsTriage: '需整理',
+  priorityHigh: '高',
+  priorityNormal: '普通',
+  priorityLow: '低',
+  overCap: '超上限',
+  nearCap: '接近上限',
+  overCapTip: '已超出运行上限 — 调度器将把它判为超时。',
+  nearCapTip: '运行上限已用掉一半。',
+  staleBlockedTip: '受阻已超过 24 小时 — 需要整理。',
   title: '看板',
   orchestrationSettings: '编排设置',
   newTask: '新建任务',
@@ -876,6 +992,35 @@ const zhHant: KanbanMessages = {
   },
   arcRunning: '有代理正在處理它。',
   arcStale: '已領取，但超過 2 分鐘沒有工作單元心跳 — 排程器將重新領取。',
+  needsTriageTitle: '需整理 — 解除阻塞後又受阻，或工作單元反覆失敗。',
+  actBlock: '阻塞…',
+  actUnblock: '解除阻塞',
+  actRequestReview: '請求審查',
+  actRequestChanges: '要求修改…',
+  actComment: '評論…',
+  actReassign: '重新指派',
+  actAddLink: '新增連結…',
+  actAddChild: '新增子任務…',
+  actMultiTip: '僅限單張卡片',
+  blockTitle: '阻塞卡片',
+  reasonLabel: '原因',
+  blockPlaceholder: '為什麼阻塞？',
+  blockConfirm: '阻塞卡片',
+  changesTitle: '要求修改',
+  changesLabel: '必改項',
+  changesPlaceholder: '通過前必須修改什麼 — 一行一項',
+  changesConfirm: '要求修改',
+  commentTitle: '新增評論',
+  filterStatus: '狀態',
+  filterNeedsTriage: '需整理',
+  priorityHigh: '高',
+  priorityNormal: '普通',
+  priorityLow: '低',
+  overCap: '超上限',
+  nearCap: '接近上限',
+  overCapTip: '已超出執行上限 — 排程器將把它判為逾時。',
+  nearCapTip: '執行上限已用掉一半。',
+  staleBlockedTip: '受阻已超過 24 小時 — 需要整理。',
   title: '看板',
   orchestrationSettings: '編排設定',
   newTask: '新增任務',

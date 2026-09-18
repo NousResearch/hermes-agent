@@ -1274,7 +1274,99 @@ def test_specify_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Final result visibility for Done cards
+# Runtime / triage fields on the board payload (PR1 ② + ③)
 # ---------------------------------------------------------------------------
 
 
+def _card(client, task_id, column):
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    col = next(c for c in r.json()["columns"] if c["name"] == column)
+
+    return next(t for t in col["tasks"] if t["id"] == task_id)
+
+
+def test_board_payload_carries_runtime_fields_equal_to_db(client, kanban_home):
+    """max_runtime_seconds / started_at / last_heartbeat_at ride along with
+    asdict(Task); pin them to the DB row so a future field whitelist can't
+    silently drop what the card badge reads (equality, not frozen literals)."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="long-running card", assignee="worker", max_runtime_seconds=900)
+        conn.execute("UPDATE tasks SET started_at=?, last_heartbeat_at=? WHERE id=?", (1000, 1001, tid))
+        conn.commit()
+    finally:
+        conn.close()
+
+    card = _card(client, tid, "ready")
+
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT max_runtime_seconds, started_at, last_heartbeat_at FROM tasks WHERE id=?", (tid,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert card["max_runtime_seconds"] == row["max_runtime_seconds"] == 900
+    assert card["started_at"] == row["started_at"] == 1000
+    assert card["last_heartbeat_at"] == row["last_heartbeat_at"] == 1001
+
+
+def test_triage_signal_flags_unblock_then_reblock(client, kanban_home):
+    """blocked -> unblocked -> blocked again with a *new* block kind: same-kind
+    re-blocks auto-escalate to the triage lane (block_loop_detected; out of the
+    filter's scope), while a kind change stays in ``blocked`` with a fresh
+    'blocked' event after the 'unblocked' one. The flag is True and
+    last_event_at carries the fresh activity clock the stale-blocked dot reads."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="loop", assignee="worker")
+        assert kb.block_task(conn, tid, reason="waiting on API creds")
+        assert kb.unblock_task(conn, tid)
+        assert kb.block_task(conn, tid, kind="transient", reason="creds still missing")
+    finally:
+        conn.close()
+
+    card = _card(client, tid, "blocked")
+    assert card["triage_signal"] is True
+    assert isinstance(card["last_event_at"], int)
+
+
+def test_triage_signal_flags_repeated_failures(client, kanban_home):
+    """The other loop shape: a worker that already failed twice (the dispatcher
+    gave up) — no unblock pair needed for the flag."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="flaky", assignee="worker")
+        conn.execute("UPDATE tasks SET consecutive_failures=2 WHERE id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _card(client, tid, "ready")["triage_signal"] is True
+
+
+def test_triage_signal_absent_for_single_block_and_closed_cards(client, kanban_home):
+    """A single block without a preceding unblock is normal gating, and closed
+    lanes (done / triage / archived) are out of scope — both stay unflagged."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="blocked only", assignee="worker")
+        assert kb.block_task(conn, tid, reason="one shot")
+    finally:
+        conn.close()
+
+    assert _card(client, tid, "blocked")["triage_signal"] is False
+
+    conn = kbc.connect()
+    try:
+        assert kb.unblock_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="again")
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _card(client, tid, "done")["triage_signal"] is False

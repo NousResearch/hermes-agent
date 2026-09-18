@@ -87,6 +87,71 @@ export function duration(start?: null | number, end?: null | number): null | str
   return `${value}${ELAPSED_SUFFIX[unit]}`
 }
 
+// ── card badges ──────────────────────────────────────────────────────────────
+
+/** Compact "34m" for badge labels, off the same bucketing as run durations. */
+export function fmtSecs(seconds: number): string {
+  const { unit, value } = coarseElapsed(Math.max(0, Math.floor(seconds)) * 1000)
+
+  return `${value}${ELAPSED_SUFFIX[unit]}`
+}
+
+/** A blocked card quiet for this long is stale — it needs a human. */
+export const STALE_BLOCKED_SECONDS = 86_400
+
+export interface RuntimeBadge {
+  cap: number
+  elapsed: number
+  kind: 'near' | 'over'
+}
+
+/**
+ * The card's runtime-cap badge state: `over` past the cap (the dispatcher will
+ * time the run out), `near` past half of it, null with no cap or no run clock
+ * (a queued card's cap is nobody's worry yet).
+ */
+export function runtimeCapBadge(task: KanbanTask, nowSecs: number): null | RuntimeBadge {
+  const cap = task.max_runtime_seconds
+
+  if (!cap || task.status !== 'running' || !task.started_at) {
+    return null
+  }
+
+  const elapsed = Math.max(0, nowSecs - task.started_at)
+
+  if (elapsed > cap) {
+    return { cap, elapsed, kind: 'over' }
+  }
+
+  return elapsed > cap / 2 ? { cap, elapsed, kind: 'near' } : null
+}
+
+/** Blocked card that has seen no event for 24h+ — render the grey triage dot. */
+export function staleBlocked(task: KanbanTask, nowSecs: number): boolean {
+  return (
+    task.status === 'blocked' &&
+    typeof task.last_event_at === 'number' &&
+    nowSecs - task.last_event_at > STALE_BLOCKED_SECONDS
+  )
+}
+
+/** Ticking epoch-seconds clock for badges whose numbers age by the minute. */
+export function useNowSecs(active: boolean): number {
+  const [, force] = useState(0)
+
+  useEffect(() => {
+    if (!active) {
+      return
+    }
+
+    const id = window.setInterval(() => force(n => n + 1), 5_000)
+
+    return () => window.clearInterval(id)
+  }, [active])
+
+  return Math.floor(Date.now() / 1000)
+}
+
 // ── liveness ─────────────────────────────────────────────────────────────────
 
 /** Live elapsed label ("34s", "2m") that keeps ticking while mounted. */

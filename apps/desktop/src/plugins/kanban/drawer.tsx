@@ -540,11 +540,13 @@ function EstimateSection({ id }: { id: string }) {
 
 export function TaskDrawer({
   columns,
+  focusLinks,
   id,
   onClose,
   onOpen
 }: {
   columns: string[]
+  focusLinks?: number
   id: null | string
   onClose: () => void
   onOpen: (id: string) => void
@@ -552,6 +554,7 @@ export function TaskDrawer({
   const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
+  const linksRef = useRef<HTMLDivElement>(null)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
@@ -583,6 +586,20 @@ export function TaskDrawer({
 
     return () => window.removeEventListener('keydown', onKey)
   }, [id, onClose])
+
+  // The card menu's "add link / add child" bumps `focusLinks`; scroll the
+  // dependencies section into view once per bump (and only after the fetch has
+  // rendered something to scroll to).
+  const [scrolledPing, setScrolledPing] = useState<null | number>(null)
+
+  useEffect(() => {
+    if (!focusLinks || focusLinks === scrolledPing || !detail) {
+      return
+    }
+
+    setScrolledPing(focusLinks)
+    linksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [detail, focusLinks, scrolledPing])
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
@@ -815,27 +832,36 @@ export function TaskDrawer({
               </Section>
             )}
 
-            {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
+            {(detail.links.parents.length > 0 || detail.links.children.length > 0 || !!focusLinks) && (
               <Section label={k.dependencies}>
-                {(['parents', 'children'] as const).map(side =>
-                  detail.links[side].length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5" key={side}>
-                      <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                        {side === 'parents' ? k.blockedBy : k.blocks}
-                      </span>
-                      {detail.links[side].map(linked => (
-                        <button
-                          className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                          key={linked}
-                          onClick={() => onOpen(linked)}
-                          type="button"
-                        >
-                          {shortId(linked)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null
-                )}
+                <div className="flex flex-col gap-1.5" ref={linksRef}>
+                  {(['parents', 'children'] as const).map(side =>
+                    detail.links[side].length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-1.5" key={side}>
+                        <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
+                          {side === 'parents' ? k.blockedBy : k.blocks}
+                        </span>
+                        {detail.links[side].map(linked => (
+                          <button
+                            className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                            key={linked}
+                            onClick={() => onOpen(linked)}
+                            type="button"
+                          >
+                            {shortId(linked)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : focusLinks ? (
+                      <div className="flex items-center gap-1.5" key={side}>
+                        <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
+                          {side === 'parents' ? k.blockedBy : k.blocks}
+                        </span>
+                        <span className="text-[0.75rem] text-(--ui-text-quaternary)">—</span>
+                      </div>
+                    ) : null
+                  )}
+                </div>
               </Section>
             )}
 

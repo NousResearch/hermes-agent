@@ -9,6 +9,7 @@
  */
 
 import {
+  atom,
   Button,
   cn,
   Codicon,
@@ -17,6 +18,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
   Contribute,
   Dialog,
@@ -66,6 +70,7 @@ import {
   $collapsedLanes,
   $introDismissed,
   $lanesByProfile,
+  addComment,
   boardKey,
   BOARDS_KEY,
   bulkTasks,
@@ -76,7 +81,8 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  reassignTask
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
@@ -93,12 +99,17 @@ import {
   columnLabel,
   errText,
   FIELD_LABEL,
+  fmtSecs,
   isLockedTarget,
+  type KanbanText,
   lockedReason,
   RunClock,
+  runtimeCapBadge,
   shortId,
+  staleBlocked,
   useDefaultAssignee,
   useKanban,
+  useNowSecs,
   useOrchestration
 } from './ui'
 
@@ -132,6 +143,139 @@ function moveCard(board: KanbanBoard, id: string, toStatus: string): KanbanBoard
 
 function removeCard(board: KanbanBoard, id: string): KanbanBoard {
   return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(t => t.id !== id) })) }
+}
+
+// ── card actions (right-click menu) ─────────────────────────────────────────
+
+/**
+ * The card menu's action set, data-tabled: one row per action, with its
+ * visibility rule and whether it may fan out over a multi-card selection.
+ * Non-batch-safe rows render disabled (not hidden) while several cards are
+ * selected — the menu stays a stable map of what a card can do.
+ */
+export type CardActionKey =
+  | 'addChild'
+  | 'addLink'
+  | 'block'
+  | 'comment'
+  | 'reassign'
+  | 'requestChanges'
+  | 'requestReview'
+  | 'unblock'
+
+export interface CardActionDef {
+  batchSafe: boolean
+  icon: string
+  key: CardActionKey
+  label: (k: KanbanText) => string
+  when: (status: string) => boolean
+}
+
+export const CARD_ACTIONS: readonly CardActionDef[] = [
+  { batchSafe: false, icon: 'circle-slash', key: 'block', label: k => k.actBlock, when: s => s !== 'blocked' },
+  { batchSafe: true, icon: 'debug-continue', key: 'unblock', label: k => k.actUnblock, when: s => s === 'blocked' },
+  { batchSafe: true, icon: 'eye', key: 'requestReview', label: k => k.actRequestReview, when: s => s === 'done' },
+  {
+    batchSafe: false,
+    icon: 'request-changes',
+    key: 'requestChanges',
+    label: k => k.actRequestChanges,
+    when: s => s === 'review'
+  },
+  { batchSafe: false, icon: 'comment', key: 'comment', label: k => k.actComment, when: () => true },
+  { batchSafe: true, icon: 'account', key: 'reassign', label: k => k.actReassign, when: () => true },
+  { batchSafe: false, icon: 'link', key: 'addLink', label: k => k.actAddLink, when: () => true },
+  { batchSafe: false, icon: 'add', key: 'addChild', label: k => k.actAddChild, when: () => true }
+]
+
+type PromptKind = 'block' | 'changes' | 'comment'
+
+/**
+ * Copy + submit for the menu dialogs that collect a note. `block` flips status
+ * with the reason; `changes` posts the must-fix note first, then hands the card
+ * back to its queue (leaving review reopens it, per the backend transition).
+ */
+const PROMPTS: Record<
+  PromptKind,
+  {
+    confirm: (k: KanbanText) => string
+    label: (k: KanbanText) => string
+    placeholder: (k: KanbanText) => string
+    submit: (id: string, text: string) => Promise<unknown>
+    title: (k: KanbanText) => string
+  }
+> = {
+  block: {
+    confirm: k => k.blockConfirm,
+    label: k => k.reasonLabel,
+    placeholder: k => k.blockPlaceholder,
+    submit: (id, text) => patchTask(id, { block_reason: text, status: 'blocked' }),
+    title: k => k.blockTitle
+  },
+  changes: {
+    confirm: k => k.changesConfirm,
+    label: k => k.changesLabel,
+    placeholder: k => k.changesPlaceholder,
+    submit: async (id, text) => {
+      await addComment(id, text)
+
+      return patchTask(id, { status: 'todo' })
+    },
+    title: k => k.changesTitle
+  },
+  comment: {
+    confirm: k => k.send,
+    label: k => k.comment,
+    placeholder: k => k.addComment,
+    submit: (id, text) => addComment(id, text),
+    title: k => k.commentTitle
+  }
+}
+
+/** One-shot note dialog shared by block / request-changes / comment. */
+function CardPromptDialog({ entity, onClose }: { entity: { id: string; kind: PromptKind }; onClose: () => void }) {
+  const k = useKanban()
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const copy = PROMPTS[entity.kind]
+
+  const submit = useMutation({
+    mutationFn: () => copy.submit(entity.id, text.trim()),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+      void qc.invalidateQueries({ queryKey: ['kanban', 'task'] })
+      onClose()
+    }
+  })
+
+  return (
+    <Dialog onOpenChange={open => !open && onClose()} open>
+      <DialogContent className="w-[min(30rem,92vw)]">
+        <DialogHeader>
+          <DialogTitle>{copy.title(k)}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-2">
+          <span className={FIELD_LABEL}>{copy.label(k)}</span>
+          <Textarea
+            autoFocus
+            className="min-h-24"
+            onChange={event => setText(event.target.value)}
+            placeholder={copy.placeholder(k)}
+            value={text}
+          />
+        </div>
+        <DialogFooter>
+          <Button onClick={onClose} variant="ghost">
+            {k.cancel}
+          </Button>
+          <Button disabled={!text.trim() || submit.isPending} onClick={() => submit.mutate()}>
+            {copy.confirm(k)}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 // ── card ─────────────────────────────────────────────────────────────────────
@@ -239,19 +383,25 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
 }
 
 function Card({
+  assignees,
   columns,
+  onAct,
   onDelete,
   onMove,
   onOpen,
   onToggleSelect,
+  scope,
   selected,
   task
 }: {
+  assignees: string[]
   columns: string[]
+  onAct: (key: CardActionKey, ids: string[], value?: string) => void
   onDelete: (id: string) => void
   onMove: (id: string, status: string) => void
   onOpen: (id: string) => void
   onToggleSelect: (id: string) => void
+  scope: string[]
   selected: boolean
   task: KanbanTask
 }) {
@@ -261,6 +411,9 @@ function Card({
   const summary = task.latest_summary || task.body
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
+  const now = useNowSecs(task.status === 'running')
+  const cap = runtimeCapBadge(task, now)
+  const stale = staleBlocked(task, now)
 
   return (
     <ContextMenu>
@@ -285,7 +438,12 @@ function Card({
             event.dataTransfer.setDragImage(event.currentTarget, event.nativeEvent.offsetX, event.nativeEvent.offsetY)
             setDragging(true)
           }}
-          style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
+          style={
+            {
+              '--kanban-tone': meta.tone,
+              borderLeftColor: cap?.kind === 'over' ? 'var(--destructive, #f87171)' : meta.tone
+            } as CSSProperties
+          }
         >
           {/* Machine-activity arc: animates ONLY while an agent is actually on
               the card (claimed + working; amber when the heartbeat is gone).
@@ -295,8 +453,28 @@ function Card({
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
+          <span className="flex items-start gap-2 text-[0.8125rem] font-medium leading-snug text-foreground">
+            <span className="line-clamp-2 min-w-0 flex-1">{task.title || task.id}</span>
+            {cap && (
+              <Tip label={cap.kind === 'over' ? k.overCapTip : k.nearCapTip}>
+                <span
+                  className={cn(
+                    'shrink-0 cursor-help rounded px-1 py-px text-[0.5625rem] font-semibold tabular-nums',
+                    cap.kind === 'over' ? 'bg-destructive/15 text-destructive' : 'bg-amber-500/15 text-amber-500'
+                  )}
+                >
+                  {cap.kind === 'over' ? k.overCap : k.nearCap} · {fmtSecs(cap.elapsed)}/{fmtSecs(cap.cap)}
+                </span>
+              </Tip>
+            )}
+            {stale && !cap && (
+              <Tip label={k.staleBlockedTip}>
+                <span
+                  className="mt-1 size-1.5 shrink-0 cursor-help rounded-full"
+                  style={{ backgroundColor: 'var(--ui-text-quaternary)' }}
+                />
+              </Tip>
+            )}
           </span>
           {summary && (
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
@@ -313,6 +491,39 @@ function Card({
           <Codicon name={selected ? 'close' : 'check-all'} size="0.85rem" />
           {selected ? k.deselect : k.select(formatModifierToken('mod'))}
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        {CARD_ACTIONS.filter(action => action.when(task.status)).map(action => {
+          // A multi-card selection keeps non-batch-safe rows visible but inert.
+          const inert = scope.length > 1 && !action.batchSafe
+
+          if (action.key === 'reassign') {
+            return (
+              <ContextMenuSub key={action.key}>
+                <ContextMenuSubTrigger>{action.label(k)}</ContextMenuSubTrigger>
+                <ContextMenuSubContent>
+                  {assignees.map(name => (
+                    <ContextMenuItem key={name} onSelect={() => onAct('reassign', scope, name)}>
+                      <Avatar name={name} size="0.875rem" />
+                      {name}
+                    </ContextMenuItem>
+                  ))}
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            )
+          }
+
+          return (
+            <ContextMenuItem
+              disabled={inert}
+              key={action.key}
+              onSelect={() => onAct(action.key, scope)}
+              title={inert ? k.actMultiTip : undefined}
+            >
+              <Codicon name={action.icon} size="0.85rem" />
+              {action.label(k)}
+            </ContextMenuItem>
+          )
+        })}
         <ContextMenuSeparator />
         {columns
           .filter(name => name !== task.status && !isLockedTarget(name))
@@ -335,9 +546,11 @@ function Card({
 // ── column ───────────────────────────────────────────────────────────────────
 
 function Column({
+  assignees,
   collapsed,
   column,
   columns,
+  onAct,
   onAdd,
   onDelete,
   onDropTask,
@@ -347,9 +560,11 @@ function Column({
   onToggleSelect,
   selected
 }: {
+  assignees: string[]
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  onAct: (key: CardActionKey, ids: string[], value?: string) => void
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -473,12 +688,15 @@ function Column({
                 </div>
                 {tasks.map(task => (
                   <Card
+                    assignees={assignees}
                     columns={columns}
                     key={task.id}
+                    onAct={onAct}
                     onDelete={onDelete}
                     onMove={onMove}
                     onOpen={onOpen}
                     onToggleSelect={onToggleSelect}
+                    scope={selected.has(task.id) ? [...selected] : [task.id]}
                     selected={selected.has(task.id)}
                     task={task}
                   />
@@ -487,12 +705,15 @@ function Column({
             ))
           : column.tasks.map(task => (
               <Card
+                assignees={assignees}
                 columns={columns}
                 key={task.id}
+                onAct={onAct}
                 onDelete={onDelete}
                 onMove={onMove}
                 onOpen={onOpen}
                 onToggleSelect={onToggleSelect}
+                scope={selected.has(task.id) ? [...selected] : [task.id]}
                 selected={selected.has(task.id)}
                 task={task}
               />
@@ -865,6 +1086,78 @@ function Intro() {
 
 const UNASSIGNED_LANE = 'unassigned'
 
+// ── filter facets (status / priority / triage) ───────────────────────────────
+
+/**
+ * The URL-facing facet filters. They live in atoms (the filter kebab writes,
+ * the page reads) and round-trip through the hash query, so
+ * `#/kanban?status=todo,blocked&priority=high&triage=1` opens the same view
+ * in another window.
+ */
+export const $filterStatus = atom<string[]>([])
+export const $filterPriority = atom<number[]>([])
+export const $filterTriage = atom<boolean>(false)
+
+export interface FilterQuery {
+  priority: number[]
+  status: string[]
+  triage: boolean
+}
+
+interface PriorityFacet {
+  key: string
+  label: (k: KanbanText) => string
+  value: number
+}
+
+export const PRIORITY_FACETS: readonly PriorityFacet[] = [
+  { key: 'high', label: k => k.priorityHigh, value: 5 },
+  { key: 'normal', label: k => k.priorityNormal, value: 0 },
+  { key: 'low', label: k => k.priorityLow, value: -5 }
+]
+
+/** Read the facets out of a `#/route?query` hash; unknown values drop. */
+export function parseFilterQuery(hash: string): FilterQuery {
+  const query = new URLSearchParams(hash.split('?')[1] ?? '')
+  const status = (query.get('status') ?? '').split(',').filter(Boolean)
+
+  const priority = (query.get('priority') ?? '')
+    .split(',')
+    .flatMap(token => PRIORITY_FACETS.filter(facet => facet.key === token).map(facet => facet.value))
+
+  return { priority, status, triage: query.get('triage') === '1' }
+}
+
+/** Merge the facets back into a hash, preserving the route and other params. */
+export function buildFilterQuery(hash: string, facets: FilterQuery): string {
+  const [route = '', query = ''] = hash.split('?')
+  const path = route.replace(/^#/, '')
+  const params = new URLSearchParams(query)
+  const set = (key: string, value: string) => (value ? params.set(key, value) : params.delete(key))
+
+  set('status', facets.status.join(','))
+  set(
+    'priority',
+    facets.priority
+      .flatMap(value => PRIORITY_FACETS.filter(facet => facet.value === value).map(facet => facet.key))
+      .join(',')
+  )
+  set('triage', facets.triage ? '1' : '')
+
+  const next = params.toString().replaceAll('%2C', ',')
+
+  return next ? `${path}?${next}` : path
+}
+
+/** One task against the facet filters — an empty dimension passes everything. */
+export function matchesFacetFilters(task: KanbanTask, facets: FilterQuery): boolean {
+  return (
+    (facets.status.length === 0 || facets.status.includes(task.status)) &&
+    (facets.priority.length === 0 || facets.priority.includes(task.priority ?? 0)) &&
+    (!facets.triage || task.triage_signal === true)
+  )
+}
+
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
 function FilterMenu({
@@ -885,8 +1178,17 @@ function FilterMenu({
   tenant: string
 }) {
   const k = useKanban()
-  const active = Boolean(assignee || tenant || archived)
   const lanesByProfile = useValue($lanesByProfile)
+  const statusFacets = useValue($filterStatus)
+  const priorityFacets = useValue($filterPriority)
+  const triageFacet = useValue($filterTriage)
+
+  const active = Boolean(
+    assignee || tenant || archived || statusFacets.length > 0 || priorityFacets.length > 0 || triageFacet
+  )
+
+  const toggle = <T,>(list: T[], value: T): T[] =>
+    list.includes(value) ? list.filter(entry => entry !== value) : [...list, value]
 
   const check = (on: boolean) => (on ? <Codicon className="ml-auto" name="check" size="0.8rem" /> : null)
 
@@ -937,6 +1239,32 @@ function FilterMenu({
         <DropdownMenuItem onSelect={() => $lanesByProfile.set(!lanesByProfile)}>
           {k.groupRunning}
           {check(lanesByProfile)}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
+          {k.filterStatus}
+        </div>
+        {board.columns.map(col => (
+          <DropdownMenuItem key={col.name} onSelect={() => $filterStatus.set(toggle(statusFacets, col.name))}>
+            <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(col.name).tone }} />
+            {columnLabel(k, col.name)}
+            {check(statusFacets.includes(col.name))}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
+          {k.priority}
+        </div>
+        {PRIORITY_FACETS.map(facet => (
+          <DropdownMenuItem key={facet.key} onSelect={() => $filterPriority.set(toggle(priorityFacets, facet.value))}>
+            {facet.label(k)}
+            {check(priorityFacets.includes(facet.value))}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => $filterTriage.set(!triageFacet)} title={k.needsTriageTitle}>
+          {k.filterNeedsTriage}
+          {check(triageFacet)}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1101,6 +1429,47 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [prompt, setPrompt] = useState<null | { id: string; kind: PromptKind }>(null)
+  const [linksPing, setLinksPing] = useState(0)
+
+  // The facets live in atoms (shared with the filter kebab) but seed from — and
+  // write back to — the hash query, so a copied URL reopens the same view.
+  // Seeding runs once per mount; writing tracks the atoms (and no-ops when the
+  // hash already matches).
+  const statusFacets = useValue($filterStatus)
+  const priorityFacets = useValue($filterPriority)
+  const triageFacet = useValue($filterTriage)
+
+  const facets = useMemo<FilterQuery>(
+    () => ({ priority: priorityFacets, status: statusFacets, triage: triageFacet }),
+    [priorityFacets, statusFacets, triageFacet]
+  )
+
+  useEffect(() => {
+    const seed = parseFilterQuery(window.location.hash)
+
+    $filterStatus.set(seed.status)
+    $filterPriority.set(seed.priority)
+    $filterTriage.set(seed.triage)
+  }, [])
+
+  useEffect(() => {
+    const next = buildFilterQuery(window.location.hash, facets)
+
+    if (!window.location.hash || next === window.location.hash.replace(/^#/, '')) {
+      return
+    }
+
+    try {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${window.location.search}#${next}`
+      )
+    } catch {
+      // Sharing a view is a nicety; a locked-down scheme must not break the board.
+    }
+  }, [facets])
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1179,10 +1548,11 @@ export function KanbanBoardPage() {
     const keep = (task: KanbanTask) =>
       (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
       (!tenant || task.tenant === tenant) &&
-      (!assignee || task.assignee === assignee)
+      (!assignee || task.assignee === assignee) &&
+      matchesFacetFilters(task, facets)
 
     return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(keep) })) }
-  }, [board, search, tenant, assignee])
+  }, [board, search, tenant, assignee, facets])
 
   const total = filtered?.columns.reduce((sum, col) => sum + col.tasks.length, 0) ?? 0
 
@@ -1248,6 +1618,57 @@ export function KanbanBoardPage() {
 
     moveMut.mutate({ id, status })
   }
+
+  // Card-menu writes fan out per id over the id-scoped endpoints (the bulk
+  // endpoint has no review/blocked transitions); partial failures are named and
+  // successes stand — the refresh then shows the true state.
+  const runCardOps = (ops: Array<() => Promise<unknown>>) => {
+    void Promise.allSettled(ops.map(op => op())).then(results => {
+      const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
+
+      if (failures.length === 1) {
+        host.notify({ kind: 'error', message: errText(failures[0]) })
+      } else if (failures.length > 1) {
+        host.notify({ kind: 'warning', message: k.bulkFailed(failures.length, ops.length, errText(failures[0])) })
+      }
+
+      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    })
+  }
+
+  const onCardAct = (key: CardActionKey, ids: string[], value?: string) => {
+    if (key === 'reassign' && value) {
+      runCardOps(ids.map(id => () => reassignTask(id, value)))
+
+      return
+    }
+
+    const statusFor: Partial<Record<CardActionKey, string>> = { requestReview: 'review', unblock: 'ready' }
+    const status = statusFor[key]
+
+    if (status) {
+      runCardOps(ids.map(id => () => patchTask(id, { status })))
+
+      return
+    }
+
+    if (key === 'block' || key === 'comment' || key === 'requestChanges') {
+      setPrompt({ id: ids[0], kind: key === 'requestChanges' ? 'changes' : key })
+
+      return
+    }
+
+    // add link / add child: land on the drawer's dependencies section instead
+    // of growing an ID picker inside the menu.
+    setOpenId(ids[0])
+    setLinksPing(ping => ping + 1)
+  }
+
+  const anyFilter =
+    Boolean(search || tenant || assignee) ||
+    facets.status.length > 0 ||
+    facets.priority.length > 0 ||
+    facets.triage
 
   const errorMessage = error ? errText(error) : null
 
@@ -1380,7 +1801,7 @@ export function KanbanBoardPage() {
         <div className="grid flex-1 place-items-center px-4 text-center">
           <div className="flex flex-col items-center gap-2">
             <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
-            <p className="text-xs text-(--ui-text-tertiary)">{search || tenant || assignee ? k.noMatch : k.noTasks}</p>
+            <p className="text-xs text-(--ui-text-tertiary)">{anyFilter ? k.noMatch : k.noTasks}</p>
             <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
               <Codicon name="add" size="0.75rem" />
               {k.newTask}
@@ -1398,10 +1819,12 @@ export function KanbanBoardPage() {
 
             return (
               <Column
+                assignees={board?.assignees ?? []}
                 collapsed={laneOverrides[col.name] ?? auto}
                 column={col}
                 columns={columnNames}
                 key={col.name}
+                onAct={onCardAct}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
                 onDropTask={onMove}
@@ -1426,7 +1849,14 @@ export function KanbanBoardPage() {
       )}
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      {prompt && <CardPromptDialog entity={prompt} onClose={() => setPrompt(null)} />}
+      <TaskDrawer
+        columns={columnNames}
+        focusLinks={linksPing}
+        id={openId}
+        onClose={() => setOpenId(null)}
+        onOpen={setOpenId}
+      />
     </div>
   )
 }

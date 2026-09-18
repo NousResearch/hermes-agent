@@ -52,6 +52,34 @@ _FIXED_EVENT_FIELDS = {
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
 
 
+# Per-argument cap for ``tool.started`` args: a whole command survives, a pasted file does not flood the stream.
+_TOOL_ARG_MAX_CHARS = 2000
+
+
+def _tool_started_args(args: Any, redact_sensitive_text: Callable[..., str]) -> Optional[Dict[str, Any]]:
+    """The call's arguments for the public run stream, so a client can show the whole command
+    rather than the display preview (cut to a few dozen characters).
+
+    Redacted value by value, before any cut. Strings stay strings; anything else passes through
+    only if its redacted JSON form is unchanged and small, and otherwise travels as that redacted
+    string, so a secret nested in a structure can never reach the wire."""
+    if not isinstance(args, dict) or not args:
+        return None
+
+    def _bound(text: str) -> str:
+        return text if len(text) <= _TOOL_ARG_MAX_CHARS else text[:_TOOL_ARG_MAX_CHARS] + "…"
+
+    out: Dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            out[str(key)] = _bound(redact_sensitive_text(value, force=True))
+            continue
+        dumped = json.dumps(value, ensure_ascii=False, default=str)
+        redacted = redact_sensitive_text(dumped, force=True)
+        out[str(key)] = value if redacted == dumped and len(dumped) <= 500 else _bound(redacted)
+    return out
+
+
 def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
     """Bounded, secret-redacted result summary for the public run stream — redacted BEFORE
     truncation so a cut never leaves a secret's prefix on the wire."""
@@ -215,6 +243,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.started":
+                started_args = _tool_started_args(args, redact_sensitive_text)
+                if started_args is not None:
+                    event_fields["args"] = started_args
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)

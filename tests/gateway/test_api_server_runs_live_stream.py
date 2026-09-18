@@ -12,7 +12,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from agent.credits_tracker import AgentNotice
-from gateway.platforms.api_server_runs import _tool_completed_preview
+from gateway.platforms.api_server_runs import _tool_completed_preview, _tool_started_args
 from tests.gateway.test_api_server_runs import _create_runs_app, _make_adapter
 
 
@@ -123,3 +123,32 @@ def test_preview_is_redacted_before_it_is_cut():
     assert "sk-ant-api03-bbbb" not in preview
     assert len(preview) <= 501
     assert _tool_completed_preview(None, redact) == ""
+
+
+@pytest.mark.asyncio
+async def test_tool_started_carries_the_full_arguments():
+    command = "curl -sS --max-time 3 http://127.0.0.1:9222/json/version && echo " + "x" * 120
+
+    def script(_agent, progress):
+        progress("tool.started", "terminal", "curl -sS --max-time 3 http://127.0.0.1…", {"command": command, "timeout": 30})
+
+    events = await _run(script)
+    [started] = [e for e in events if e["event"] == "tool.started"]
+    assert started["preview"].endswith("…")
+    assert started["args"] == {"command": command, "timeout": 30}
+
+
+def test_started_args_are_redacted_bounded_and_never_leak_through_structures():
+    from agent.redact import redact_sensitive_text as redact
+
+    secret = "sk-ant-api03-" + "c" * 40
+    out = _tool_started_args(
+        {"command": f"export KEY={secret}", "env": {"KEY": secret}, "body": "y" * 5000, "n": 3},
+        redact,
+    )
+    assert secret not in json.dumps(out)
+    assert isinstance(out["env"], str)  # a structure that needed redaction travels as its redacted text
+    assert len(out["body"]) == 2001
+    assert out["n"] == 3
+    assert _tool_started_args(None, redact) is None
+    assert _tool_started_args({}, redact) is None

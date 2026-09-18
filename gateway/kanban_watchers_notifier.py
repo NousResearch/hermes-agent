@@ -38,6 +38,20 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
+# Deliberately English-only: this line is model-directed guidance and applies
+# uniformly after the localized wake guidance (all of which are English today).
+# It is guidance, not a deterministic authorization boundary; superseded-event
+# and root-owned-action enforcement lives in code.
+_KANBAN_WAKE_DECISION_CONTRACT = (
+    "Treat this event as a notification, not authoritative current state. "
+    "Read the exact task's authoritative current state once (re-read only on "
+    "read failure or observed change); do not poll or rerun unchanged checks. "
+    "If a newer transition supersedes this event, discard it. Act only if "
+    "current state names a root-owned next action, and reuse valid evidence "
+    "bound to the exact unchanged candidate. Otherwise make no mutation, "
+    "comment, or follow-up task and stop."
+)
+
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
@@ -585,7 +599,7 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
-        self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
+        self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance") + "\n" + _KANBAN_WAKE_DECISION_CONTRACT
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",

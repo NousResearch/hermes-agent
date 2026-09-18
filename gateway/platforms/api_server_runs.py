@@ -775,7 +775,10 @@ def _run_usage(agent) -> Dict[str, int]:
 
 
 def _served_runtime(agent) -> Dict[str, str]:
-    """The ``{provider, model}`` pair that actually served the turn."""
+    """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
+    switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
+    ``run_conversation()`` returns these attributes name the served pair — the run record's
+    ``model`` field only echoes the request (#102101). Non-string attributes read as ``\"\"``."""
     pair = {}
     for key in ("provider", "model"):
         value = getattr(agent, key, "")

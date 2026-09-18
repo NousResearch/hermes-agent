@@ -2226,7 +2226,7 @@ def cmd_backup(args):
 
     if getattr(args, "quick", False):
         backup.run_quick_backup(args)
-    elif backup.run_backup(args) is False:
+    elif not backup.run_backup(args):
         raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 

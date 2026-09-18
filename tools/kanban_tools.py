@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.kanban_extensions import load_extension_columns
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -852,6 +853,80 @@ def _handle_attachments(args: dict, **kw) -> str:
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
 
 
+# --- Deployment extension columns (#109800) ---
+# A deployment can extend the ``tasks`` table with its own columns and declare them
+# (plus which are required) in ``<kanban_home>/kanban/extension-columns.json`` —
+# see hermes_cli.kanban_extensions. Declared columns are injected into the
+# kanban_create schema, so required ones are visible to the model and enforceable
+# through the native tool, and supplied values pass through to the INSERT
+# (``kb.create_task(extra_fields=...)``).
+
+def _declared_extension_columns() -> list[dict[str, Any]]:
+    """Overlay-declared extension columns usable by ``kanban_create``. A name that
+    collides with a native schema property is dropped (with a warning): the overlay
+    must never silently hijack a core field such as ``title`` or ``board``."""
+    native = set(KANBAN_CREATE_SCHEMA["parameters"]["properties"])
+    columns: list[dict[str, Any]] = []
+    for column in load_extension_columns():
+        if column["name"] in native:
+            logger.warning(
+                "kanban extension column %r shadows a native kanban_create field; ignored",
+                column["name"])
+            continue
+        columns.append(column)
+    return columns
+
+
+def _create_schema_overrides() -> dict:
+    """``ToolEntry.dynamic_schema_overrides`` for kanban_create: expose this deployment's
+    declared extension columns, required ones landing in ``required``, so the model can
+    supply values without guessing. ``{}`` when nothing is declared — the static
+    (byte-frozen) schema is then served untouched."""
+    columns = _declared_extension_columns()
+    if not columns:
+        return {}
+    parameters = {**KANBAN_CREATE_SCHEMA["parameters"]}
+    properties = {name: dict(prop) for name, prop in parameters["properties"].items()}
+    required = list(parameters.get("required") or [])
+    for column in columns:
+        prop: dict[str, Any] = {"type": column["type"], "description": column["description"]}
+        if column.get("enum"):
+            prop["enum"] = list(column["enum"])
+        properties[column["name"]] = prop
+        if column["required"] and column["name"] not in required:
+            required.append(column["name"])
+    parameters["properties"] = properties
+    parameters["required"] = required
+    return {"parameters": parameters}
+
+
+def _extension_field_values(args: dict) -> dict[str, Any]:
+    """Values for declared extension columns in this create call. Rejects (as a tool
+    error) a call that omits a deployment-required column or sends a value outside a
+    declared enum — the whole point of the mechanism is that the local board rule is
+    enforceable through the native tool instead of leaking a silently column-less card."""
+    values: dict[str, Any] = {}
+    for column in _declared_extension_columns():
+        name = column["name"]
+        value = args.get(name)
+        provided = (
+            name in args and value is not None
+            and not (isinstance(value, str) and not value.strip()))
+        if not provided:
+            _check(not column["required"],
+                   f"{name} is required by this deployment's kanban extension columns "
+                   f"(overlay: kanban/extension-columns.json over the kanban home): pass "
+                   f"{name} in this call — a card created without it silently omits the "
+                   f"column.")
+            continue
+        allowed = column.get("enum")
+        _check(allowed is None or value in allowed,
+               f"{name} must be one of {', '.join(map(str, allowed))} "
+               f"(declared enum), got {value!r}")
+        values[name] = value
+    return values
+
+
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -860,6 +935,9 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Required-extension-column enforcement happens before any DB write: a rejected
+    # call must not leave a half-configured card behind.
+    extra_fields = _extension_field_values(args)
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -900,6 +978,9 @@ def _handle_create(args: dict, **kw) -> str:
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
+            # Deployment extension columns (#109800): declared in the overlay, already
+            # validated (required/enum) by _extension_field_values.
+            extra_fields=extra_fields or None,
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
@@ -1016,6 +1097,8 @@ def _handle_link(args: dict, **kw) -> str:
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
 _ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Per-name dynamic schema overrides; kanban_create advertises deployment extension columns (#109800).
+_DYNAMIC_SCHEMA_OVERRIDES = {"kanban_create": _create_schema_overrides}
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1035,4 +1118,4 @@ _TOOLS = (
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
-                      check_fn=_gate)
+                      check_fn=_gate, dynamic_schema_overrides=_DYNAMIC_SCHEMA_OVERRIDES.get(_name))

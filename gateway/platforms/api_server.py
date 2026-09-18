@@ -2772,60 +2772,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
                                         notification_category: str = "result") -> None:
-        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
-
-        The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
-        the shared listener authenticates with that profile's own ``API_SERVER_KEY`` — which a
-        route-only profile legitimately does not have — while an unprefixed self-post would resume
-        the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
-        inside the owner profile's runtime scope (the session DB, model resolution and tool policy
-        all follow the ambient scope), with ``profile`` naming the profile the caller proved owns
-        the session — never derived here, so a missing proof cannot silently become the default.
-        Raises on failure so the caller can rewind its cursor: a draining gateway fails at once
-        (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
-        backoff the HTTP self-post uses for a 429.
-        """
-        from gateway.wake import _RETRY_DELAYS_SECONDS
-        profile = (profile or "").strip()
-        if not profile:
-            raise ValueError("run_internal_session_turn requires the owning profile")
-        token = _api_request_profile.set(profile)
-        attempts = 1 + len(_RETRY_DELAYS_SECONDS)
-        last_err: Optional[BaseException] = None
-        try:
-            for attempt in range(attempts):
-                if attempt:
-                    await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
-                if self._draining_response() is not None:
-                    raise RuntimeError(
-                        f"internal wake refused for session {session_id}: the gateway is draining")
-                # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
-                if self._concurrency_limited_response() is not None:
-                    last_err = RuntimeError(
-                        "internal wake deferred: the API server is at its concurrent-run cap")
-                    logger.warning("%s; attempt %d/%d", last_err, attempt + 1, attempts)
-                    continue
-                # #98619/#13437: adopt the live continuation tip first, the same canonical
-                # resolution the HTTP self-post consumes — a compressed origin must be woken on the
-                # transcript that is actually live, never the retired parent slice.
-                from gateway.platforms.api_server_runs import _resolve_live_session_id
-                resolved = await _resolve_live_session_id(self, session_id)
-                session, err = await self._get_existing_session_or_404(resolved)
-                if err is not None or not session:
-                    raise RuntimeError(
-                        f"internal wake target session {resolved!r} is not in the active profile store")
-                history = await self._conversation_history_for_session(resolved)
-                await self._run_agent(
-                    user_message=text, conversation_history=history, session_id=resolved,
-                    gateway_session_key=None, requested_runtime={}, route_source="global",
-                    session_history_delivery="1", notification_category=notification_category,
-                )
-                return
-            raise RuntimeError(
-                f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
-        finally:
-            if token is not None:
-                _api_request_profile.reset(token)
+        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key);
+        see ``api_server_runs.run_internal_session_turn``."""
+        await _api_runs.run_internal_session_turn(
+            self, session_id=session_id, text=text, profile=profile,
+            notification_category=notification_category, _api_server=sys.modules[__name__])
 
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":

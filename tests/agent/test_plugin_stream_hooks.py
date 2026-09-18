@@ -1,3 +1,4 @@
+import queue
 import threading
 import time
 
@@ -47,6 +48,95 @@ def test_stream_observer_hooks_are_valid_plugin_hooks():
         "on_stream_end",
         "on_interim_message",
     }.issubset(VALID_HOOKS)
+
+
+def test_last_stream_observer_disposal_stops_its_worker(monkeypatch):
+    from agent import plugin_stream_hooks as hooks
+    from hermes_cli import plugins
+
+    manager = plugins.PluginManager()
+    context = plugins.PluginContext(plugins.PluginManifest(name="observer", key="observer"), manager)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    delivered = queue.Queue()
+
+    def observe(**payload):
+        delivered.put((payload["delta"], threading.current_thread()))
+
+    hooks.shutdown_plugin_stream_hook_dispatcher()
+    registration = context.register_hook("on_stream_delta", observe)
+    try:
+        assert hooks.enqueue_plugin_stream_hook("on_stream_delta", delta="before")
+        delta, worker = delivered.get(timeout=2)
+        assert delta == "before"
+        registration.dispose()
+        assert not hooks.enqueue_plugin_stream_hook("on_stream_delta", delta="after")
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert delivered.empty()
+    finally:
+        registration.dispose()
+        hooks.shutdown_plugin_stream_hook_dispatcher(timeout=2)
+
+
+def test_stream_observers_keep_profile_context_and_independent_lifetimes(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from agent import plugin_stream_hooks as hooks, secret_scope
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli import plugins
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {})
+    monkeypatch.setattr(plugins, "_plugin_manager", None)
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    delivered = queue.Queue()
+    registrations = []
+
+    def observe(**payload):
+        delivered.put((payload["delta"], get_hermes_home(),
+                       secret_scope.get_secret("OBSERVER_TEST_KEY"), threading.current_thread()))
+
+    hooks.shutdown_plugin_stream_hook_dispatcher()
+    try:
+        for home in (home_a, home_b):
+            with _profile_runtime_scope(home, {"OBSERVER_TEST_KEY": home.name}):
+                context = plugins.PluginContext(
+                    plugins.PluginManifest(name="observer", key="observer"), plugins.get_plugin_manager()
+                )
+                # A shared callable must still have a separate worker in each profile.
+                registrations.append(context.register_hook("on_stream_delta", observe))
+
+        workers = []
+        for home, delta, expected_secret in (
+            (home_a, "a1", "a"), (home_b, "b1", "b"), (home_a, "a2", "a-rotated")
+        ):
+            with _profile_runtime_scope(home, {"OBSERVER_TEST_KEY": expected_secret}):
+                assert hooks.enqueue_plugin_stream_hook("on_stream_delta", delta=delta)
+            actual_delta, actual_home, secret, worker = delivered.get(timeout=2)
+            assert (actual_delta, actual_home, secret) == (delta, home, expected_secret)
+            workers.append(worker)
+
+        assert workers[0] is workers[2]
+        assert workers[0] is not workers[1]
+        assert workers[0].is_alive()
+        with _profile_runtime_scope(home_b, {"OBSERVER_TEST_KEY": "b"}):
+            registrations[1].dispose()
+            assert not hooks.enqueue_plugin_stream_hook("on_stream_delta", delta="removed")
+        workers[1].join(timeout=2)
+        assert not workers[1].is_alive()
+        assert workers[0].is_alive()
+        with _profile_runtime_scope(home_a, {}):
+            assert hooks.enqueue_plugin_stream_hook("on_stream_delta", delta="a3")
+        assert delivered.get(timeout=2) == ("a3", home_a, None, workers[0])
+    finally:
+        for registration in registrations:
+            registration.dispose()
+        hooks.shutdown_plugin_stream_hook_dispatcher(timeout=2)
+        secret_scope.set_multiplex_active(previous_multiplex)
 
 
 def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):

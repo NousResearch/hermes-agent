@@ -929,3 +929,19 @@ class CLIModelSwitchMixin:
         self._pending_moa_disable_after_turn = True
         self._pending_agent_seed = payload
         _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
+
+    def _cmd_solo(self, cmd_original: str):
+        """Queue one active-MoA turn without advisor fan-out."""
+        from cli import _cprint, _slash_args
+
+        payload = _slash_args(cmd_original)
+        if not payload:
+            _cprint("  Usage: /solo <prompt>  (runs this active MoA preset's aggregator alone once)")
+            return True
+        if getattr(self, "provider", None) != "moa":
+            _cprint("  /solo is only available while an MoA preset is active.")
+            return True
+        self._pending_moa_skip_references = True
+        self._pending_agent_seed = payload
+        _cprint("  MoA solo turn queued; reference fan-out will resume on the next prompt.")
+        return True

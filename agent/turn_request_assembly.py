@@ -83,7 +83,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
         logger.warning("MoA context aggregation failed: %s", _moa_exc)
 
 
-def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_request: Any) -> tuple:
+def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_request: Any, *, skip_references: bool) -> tuple:
     """Persistent-MoA request: rebase the pending prepared request onto the new messages
     when the client supports it, else prepare a fresh one. Returns
     ``(prepared_request, api_messages, pending_moa_prepared_request)``."""
@@ -97,7 +97,12 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
     if prepared is None:
         _prepare = getattr(_moa_completions, "prepare", None)
         if callable(_prepare):
-            prepared = _prepare(api_messages)
+            # Preserve compatibility with facades that implement the existing one-argument
+            # prepare() hook; only the built-in facade needs the new opt-out keyword.
+            prepared = (
+                _prepare(api_messages, skip_references=True)
+                if skip_references else _prepare(api_messages)
+            )
     if prepared is not None:
         api_messages = prepared["messages"]
     return prepared, api_messages, pending_moa_prepared_request
@@ -105,7 +110,7 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
 
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
-    _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    _plugin_user_context: Any, moa_config: Any, moa_skip_references: bool, active_system_prompt: Any,
     original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
 ) -> AssembledRequest:
     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
@@ -226,7 +231,7 @@ def assemble_api_request(
     _moa_prepared_request = None
     if agent.provider == "moa":
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
-            agent, api_messages, pending_moa_prepared_request
+            agent, api_messages, pending_moa_prepared_request, skip_references=moa_skip_references
         )
 
     # One image-stripped estimate feeds both figures; tools counted separately (50+

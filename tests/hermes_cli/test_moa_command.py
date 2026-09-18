@@ -73,6 +73,31 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli._pending_moa_restore_model["provider"] != "moa"
 
 
+def test_solo_queues_one_active_moa_turn_without_switching_models():
+    cli = _make_cli()
+    cli.provider = cli.requested_provider = "moa"
+    cli.model = "default"
+
+    with patch("cli._cprint"):
+        assert cli.process_command("/solo convert this markdown to PDF") is True
+
+    assert cli._pending_agent_seed == "convert this markdown to PDF"
+    assert cli._pending_moa_skip_references is True
+    assert cli.provider == "moa"
+    assert cli.model == "default"
+
+
+def test_solo_requires_an_active_moa_session():
+    cli = _make_cli()
+
+    with patch("cli._cprint") as print_mock:
+        assert cli.process_command("/solo convert this markdown to PDF") is True
+
+    assert cli._pending_agent_seed is None
+    assert getattr(cli, "_pending_moa_skip_references", False) is False
+    assert "only available while an MoA preset is active" in str(print_mock.call_args)
+
+
 
 
 class TestNormalizeMoaModel:
@@ -112,4 +137,3 @@ class TestNormalizeMoaModel:
         requested_provider = override or "deepseek" or "auto"
         assert requested_provider == "moa"
         assert model == "strategy"
-

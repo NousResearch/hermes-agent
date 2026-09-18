@@ -670,34 +670,18 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
           return
         }
 
-        const editor = editorRef.current
-
-        // Dirty edit guard: when the user actually typed something, blur must
-        // not cancel the composer — that would discard their in-flight
-        // edits. Compare against the draft captured immediately before the
-        // first edit; when no edit event occurred, the current hydrated draft
-        // is the clean baseline.
-        const initialDraft = initialDraftRef.current ?? draftRef.current
-
-        if (editor && syncDraftFromEditor(editor) !== initialDraft) {
-          closeTrigger()
-
-          return
-        }
-
+        // Blur must never cancel the composer — clean or dirty (#115462).
+        // Cancelling a clean draft 80ms after focus leaves means clicking
+        // away (or a focus steal) collapses the edit before the user typed
+        // anything. The edit closes only on explicit collapse (outside
+        // pointerdown / Escape) or submit. closeTrigger() just dismisses the
+        // @-menu popover.
         closeTrigger()
 
-        // Swallow the unbound-core throw: if the composer core was already torn
-        // down (a send/cancel raced this timer), cancel() throws "Composer is
-        // not available" as an uncaught renderer error. Nothing to cancel then.
-        try {
-          aui.composer().cancel()
-        } catch {
-          // Composer core already gone — the edit is closing anyway.
-        }
+        return
       }, 80)
     },
-    [aui, closeTrigger, scheduleTimeout, submitting, syncDraftFromEditor]
+    [closeTrigger, scheduleTimeout, submitting]
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

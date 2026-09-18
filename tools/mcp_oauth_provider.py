@@ -27,10 +27,7 @@ _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
 def _default_auth_request_user_agent() -> str:
     """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
     all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
-    try:
-        from hermes_cli import __version__
-    except Exception:  # pragma: no cover — defensive
-        __version__ = "unknown"
+    from hermes_cli import __version__
     return f"Hermes-Agent/{__version__}"
 
 

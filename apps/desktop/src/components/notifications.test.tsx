@@ -2,11 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { setInAppToastCorner } from '@/store/in-app-toast-corner'
 import { $notifications, clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { stubResizeObserver } from '@/test/jsdom'
 
-import { NotificationStack, toastTitleClassName } from './notifications'
+import { ambientStackClassName, NotificationStack, toastTitleClassName } from './notifications'
 
 const LONG_TITLE = 'This turn is no longer in server history (it may have been compressed away).'
 const DETAIL = 'target user message is no longer in session history'
@@ -16,6 +17,7 @@ beforeAll(stubResizeObserver)
 describe('toast titles', () => {
   beforeEach(() => {
     clearNotifications()
+    setInAppToastCorner('bottom-right')
     $poolLimitsSettingsRequest.set(0)
   })
 
@@ -44,14 +46,50 @@ describe('toast titles', () => {
 
       render(<NotificationStack />)
       expect(screen.getAllByRole('status')).toHaveLength(1)
-      expect(document.querySelectorAll('[data-slot="card-stack-edge"]')).toHaveLength(1)
-      fireEvent.click(screen.getByRole('button', { name: /Show.*6/ }))
+      const edgeButton = screen.getByRole('button', { name: /Show.*6/ })
+      const stack = edgeButton.closest('[data-slot="card-stack"]')
+      expect(stack?.querySelector('[data-slot="card-stack-edge"]')).not.toBeNull()
+      fireEvent.click(edgeButton)
       expect(screen.getByText('Notice 0')).toBeTruthy()
       expect(screen.getAllByRole('status')).toHaveLength(7)
       fireEvent.click(screen.getAllByRole('button', { name: /Dismiss/ })[0])
       await waitFor(() => expect(screen.queryByText('Notice 6')).toBeNull())
     }
   )
+
+  it.each([
+    ['top-left', 'ml-4', 'self-start'],
+    ['top-right', 'mr-4', 'self-end'],
+    ['bottom-left', 'left-4', 'bottom-4'],
+    ['bottom-right', 'right-4', 'bottom-4']
+  ] as const)('places routine toasts in the selected %s corner', (corner, horizontal, vertical) => {
+    setInAppToastCorner(corner)
+    notify({ id: `notice-${corner}`, message: corner, placement: 'bottom-right', durationMs: 0 })
+
+    render(<NotificationStack />)
+
+    const region = screen.getByText(corner).closest('[role="region"]')
+    expect(region?.className).toContain(horizontal)
+    expect(region?.className).toContain(vertical)
+    expect(ambientStackClassName(corner)).toContain(horizontal)
+  })
+
+  it('flows top-corner routine toasts below urgent notices in the same vertical lane', () => {
+    setInAppToastCorner('top-right')
+    notify({ id: 'urgent', kind: 'error', message: 'Urgent notice', durationMs: 0 })
+    notify({ id: 'routine', message: 'Routine notice', placement: 'bottom-right', durationMs: 0 })
+
+    render(<NotificationStack />)
+
+    const urgentRegion = screen.getByText('Urgent notice').closest('[role="region"]')
+    const routineRegion = screen.getByText('Routine notice').closest('[role="region"]')
+    const lane = urgentRegion?.parentElement
+
+    expect(lane?.getAttribute('data-slot')).toBe('top-notification-lane')
+    expect(routineRegion?.parentElement).toBe(lane)
+    expect(urgentRegion?.nextElementSibling).toBe(routineRegion)
+    expect(routineRegion?.className).not.toContain('fixed')
+  })
 
   it('renders the full title and body instead of truncating them', () => {
     notify({ kind: 'error', title: LONG_TITLE, message: DETAIL })

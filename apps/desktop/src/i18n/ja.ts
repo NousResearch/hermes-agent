@@ -452,10 +452,19 @@ export const ja = defineLocale({
     },
     notifications: {
       title: '通知',
-      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      intro: 'アプリ内トースト、ネイティブのデスクトップ通知、完了音を設定します。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'オフで以下の通知をすべて無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
+      inAppPositionTitle: 'アプリ内トーストの位置',
+      inAppPositionDesc:
+        '通常のアプリ内通知を表示する場所を選択します。エラーと操作通知は上部中央に表示されます。',
+      inAppPositions: {
+        'top-left': '左上',
+        'top-right': '右上',
+        'bottom-left': '左下',
+        'bottom-right': '右下'
+      },
       kinds: {
         approval: {
           label: '承認が必要',

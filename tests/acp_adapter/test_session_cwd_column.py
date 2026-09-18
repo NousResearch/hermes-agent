@@ -37,3 +37,57 @@ def test_created_session_records_cwd_in_its_own_column(tmp_path):
     # The JSON copy stays -- _restore() rebuilds the agent from it.
     assert json.loads(row["model_config"])["cwd"] == state.cwd
     db.close()
+
+
+def test_reopening_in_another_workspace_moves_the_cwd_column(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    first, second = tmp_path / "old", tmp_path / "new"
+    first.mkdir()
+    second.mkdir()
+    manager = _manager(db)
+
+    state = manager.create_session(cwd=str(first))
+    state.history.append({"role": "user", "content": "hello"})
+    manager.save_session(state.session_id)
+
+    manager.update_cwd(state.session_id, str(second))
+
+    row = db.get_session(state.session_id)
+    assert row["cwd"] == state.cwd
+    assert str(second) in row["cwd"]
+    # A moved workspace must claim a fresh probe generation, so a slow git
+    # probe for the OLD cwd cannot publish onto the new one.
+    assert (row["git_metadata_generation"] or 0) >= 1
+    db.close()
+
+
+def test_git_metadata_publishes_against_its_own_generation(tmp_path):
+    """The stale-probe guard we rely on for the async enrichment.
+
+    Asserts the DB contract directly rather than racing a thread -- timing
+    assertions on a loaded CI runner are how flakes are born.
+    """
+    db = SessionDB(tmp_path / "state.db")
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    manager = _manager(db)
+
+    state = manager.create_session(cwd=str(workspace))
+    state.history.append({"role": "user", "content": "hello"})
+    manager.save_session(state.session_id)
+
+    generation = manager._claim_cwd_generation(state)
+    assert generation and generation >= 1
+
+    # Publishing for the CURRENT generation lands...
+    db.publish_session_git_metadata(
+        state.session_id, state.cwd, generation, "main", str(workspace)
+    )
+    assert db.get_session(state.session_id)["git_repo_root"] == str(workspace)
+
+    # ...and a stale probe (older generation) is refused rather than clobbering.
+    db.publish_session_git_metadata(
+        state.session_id, state.cwd, generation - 1, "stale", str(tmp_path / "elsewhere")
+    )
+    assert db.get_session(state.session_id)["git_repo_root"] == str(workspace)
+    db.close()

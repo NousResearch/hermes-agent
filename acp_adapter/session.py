@@ -244,6 +244,11 @@ class SessionManager:
         state.cwd = cwd
         _register_task_cwd(session_id, cwd)
         self._persist(state)
+        # Promote the authoritative column and claim an ordering generation, the
+        # same contract tui_gateway/session_workdir.py uses: a git probe may only
+        # publish while its generation is still current, so a slow probe for a
+        # previous workspace cannot overwrite a newer claim (A -> B -> A).
+        self._schedule_git_metadata(state, self._claim_cwd_generation(state))
         return state
 
     def save_session(self, session_id: str) -> None:
@@ -332,6 +337,50 @@ class SessionManager:
             db.replace_messages(state.session_id, state.history, active_only=True)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+
+    def _claim_cwd_generation(self, state: SessionState) -> Optional[int]:
+        """Write the cwd column and return its new git-metadata generation.
+
+        Returns None when the row does not exist yet (a contentless session is
+        deliberately ephemeral until it has history) or the DB is unavailable.
+        """
+        db = self._get_db()
+        if db is None or not state.cwd:
+            return None
+        try:
+            return db.update_session_cwd(state.session_id, state.cwd)
+        except Exception:
+            logger.debug("Failed to persist ACP session cwd column for %s",
+                         state.session_id, exc_info=True)
+            return None
+
+    def _schedule_git_metadata(self, state: SessionState, generation: Optional[int]) -> None:
+        """Probe git off the critical path and publish under ``generation``.
+
+        ``session/new`` is on the editor's interactive path; ``git rev-parse``
+        on a cold or networked filesystem is not something to put in front of
+        the user. The generation guard in ``publish_session_git_metadata``
+        means a slow probe for a previous workspace is dropped rather than
+        applied to the new one.
+        """
+        if not generation or not state.cwd:
+            return
+
+        session_id, cwd = state.session_id, state.cwd
+
+        def _run() -> None:
+            try:
+                from tui_gateway import git_probe
+                branch, root = git_probe.branch(cwd), git_probe.common_repo_root(cwd)
+                if not (branch or root):
+                    return
+                db = self._get_db()
+                if db is not None:
+                    db.publish_session_git_metadata(session_id, cwd, generation, branch, root)
+            except Exception:
+                logger.debug("Failed to publish ACP git metadata for %s", session_id, exc_info=True)
+
+        threading.Thread(target=_run, name=f"acp-git-meta-{session_id[:8]}", daemon=True).start()
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load an ACP session from the database into memory, recreating the AIAgent."""

@@ -1210,21 +1210,18 @@ class TestGetRealHomeFallback:
         hermes_home = tmp_path / ".hermes"
         (hermes_home / "home").mkdir(parents=True)
         profile_home = str(hermes_home / "home")
-        env = {
-            "HERMES_HOME": str(hermes_home),
-            "HOME": profile_home,
-            "HERMES_REAL_HOME": "",
-            "USERPROFILE": "",
-            "HOMEDRIVE": "",
-            "HOMEPATH": "",
-        }
-        for key in ("HERMES_REAL_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
-            monkeypatch.delenv(key, raising=False)
-        real_expanduser = os.path.expanduser
+        # Deterministic exhaustion: the real candidate chain consults
+        # pwd.getpwuid()/expanduser(), which resolve to the operator's home on
+        # Linux CI and would win over the fallback. Stub the chain to the
+        # profile home only, and point gettempdir at a sentinel to prove the
+        # fallback delegates instead of hardcoding a path.
         monkeypatch.setattr(
-            os.path, "expanduser", lambda p: profile_home if p == "~" else real_expanduser(p)
+            hermes_constants, "_iter_real_home_candidates", lambda env=None: [profile_home]
         )
-        assert hermes_constants.get_real_home(env) == tempfile.gettempdir()
+        sentinel = str(tmp_path / "sentinel-tmp")
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: sentinel)
+        env = {"HERMES_HOME": str(hermes_home), "HOME": profile_home}
+        assert hermes_constants.get_real_home(env) == sentinel
 
     def test_usable_candidate_beats_fallback(self, tmp_path, monkeypatch):
         real_home = tmp_path / "real"

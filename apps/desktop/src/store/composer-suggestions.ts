@@ -242,7 +242,7 @@ function publish(sessionId: string | null): void {
 }
 
 // ---------------------------------------------------------------------------
-// Draft sampling (the composer's runtime subscription feeds this)
+// Draft sampling (the composer's local draft writer feeds this)
 // ---------------------------------------------------------------------------
 
 const SAMPLE_DEBOUNCE_MS = 600
@@ -254,7 +254,7 @@ const sampleGenerations = new Map<string, number>()
 
 /**
  * Feed a session's draft snapshot to the draft providers. Called from that
- * composer's runtime subscription on every change, but internally debounced
+ * composer's local writer on every change, but internally debounced
  * and change-gated: the store only writes when the session's merged set
  * actually differs, so typing within a line costs nothing downstream.
  */

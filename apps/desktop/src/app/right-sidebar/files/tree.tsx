@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
+import { isSashDragging, onSashDragEnd } from '@/components/pane-shell/geometry'
 import { Codicon } from '@/components/ui/codicon'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -19,8 +20,11 @@ import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
 const INDENT = 10
+const TREE_SIZE_BUCKET_PX = 8
 /** Fixed base inset (`px-6.5`) layered on top of arborist's depth indent. */
 const TREE_ROW_INSET = '17px'
+
+export const shouldPublishProjectTreeResize = (sashDragging: boolean) => !sashDragging
 
 function withTreeInset(paddingLeft: number | string | undefined): string {
   if (typeof paddingLeft === 'number') {
@@ -66,22 +70,46 @@ export function ProjectTree({
   const syncTreeSize = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const el = containerRef.current
 
-    if (!el) {
+    if (!el || !shouldPublishProjectTreeResize(isSashDragging())) {
       return
     }
 
-    const { height, width } = projectTreeViewportSize(entries, el)
+    const measured = projectTreeViewportSize(entries, el)
 
     setSize(prev => {
-      if (prev.height === height && prev.width === width) {
+      if (prev.height === measured.height && prev.width === measured.width) {
         return prev
       }
 
-      return { height, width }
+      return measured
     })
   }, [])
 
   useResizeObserver(syncTreeSize, containerRef)
+
+  // The shell previews sash movement with imperative flex styles every frame.
+  // Keep react-arborist's virtual viewport fixed during that gesture so one
+  // pixel cannot rerender every visible row; publish the final size once the
+  // authoritative sash lifecycle ends.
+  useEffect(() => {
+    let frame: number | undefined
+
+    const unsubscribe = onSashDragEnd(() => {
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame)
+      }
+
+      frame = window.requestAnimationFrame(() => syncTreeSize([]))
+    })
+
+    return () => {
+      unsubscribe()
+
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
+  }, [syncTreeSize])
 
   const handleToggle = useCallback(
     (id: string) => {
@@ -228,8 +256,9 @@ export function projectTreeViewportSize(
 ): { height: number; width: number } {
   const entry = entries.find(item => item.target === element)
   const box = entry?.contentRect ?? element.getBoundingClientRect()
+  const bucket = (value: number) => Math.max(0, Math.round(value / TREE_SIZE_BUCKET_PX) * TREE_SIZE_BUCKET_PX)
 
-  return { height: box.height, width: box.width }
+  return { height: bucket(box.height), width: bucket(box.width) }
 }
 
 function TreeSizingState() {

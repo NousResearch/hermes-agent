@@ -505,18 +505,35 @@ class GatewayAgentCacheMixin:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
             parked = adapter.get_pending_message(session_key)
-            if (
-                parked is not None
-                and invalidation_reason == "stop_command"
-                and getattr(parked, "internal", False)
-            ):
+            if (invalidation_reason or "").startswith("stop_command"):
                 # /stop must not drop a parked internal wake (e.g. an async-delegation
                 # completion notice): the post-command drain restarts it once the session
-                # is idle. /new and /reset keep the discard so stale text does not replay
-                # into a fresh history. See #114456.
+                # is idle. The busy fast path uses bare "stop_command" but
+                # _handle_stop_command() cleans up with "stop_command_pending",
+                # "stop_command_handler" and "stop_command_thread_sibling" — match the
+                # whole family. /new and /reset ("new_command") keep the discard so stale
+                # text does not replay into a fresh history. See #114456.
                 pending_slot = getattr(adapter, "_pending_messages", None)
-                if pending_slot is not None:
-                    pending_slot[session_key] = parked
+                if parked is not None and getattr(parked, "internal", False):
+                    if pending_slot is not None:
+                        pending_slot[session_key] = parked
+                elif pending_slot is not None:
+                    # Other ordering: a human follow-up occupied the primary slot while an
+                    # accepted internal wake waited in the overflow FIFO
+                    # (SessionState.conversation.queued_events). The pop above discarded the
+                    # human head and the drain only reads the primary slot, so promote the
+                    # accepted overflow wake — otherwise it is orphaned until the next user
+                    # message. Unaccepted events were never admitted; human overflow items
+                    # keep existing behavior.
+                    overflow_state = self._peek_session_state(session_key)
+                    overflow = overflow_state.conversation.queued_events if overflow_state else None
+                    if overflow:
+                        for _i, _queued in enumerate(overflow):
+                            if getattr(_queued, "internal", False) and getattr(
+                                _queued, "_gateway_accepted", False
+                            ):
+                                pending_slot[session_key] = overflow.pop(_i)
+                                break
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

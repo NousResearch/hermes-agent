@@ -600,6 +600,10 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
 
 
 def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
+    reason = getattr(source, "fetch_error", "")
+    if isinstance(reason, str) and reason:
+        c.print(f"[bold red]Error:[/] {reason}")
+        return
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)

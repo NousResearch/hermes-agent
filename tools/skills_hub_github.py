@@ -256,6 +256,7 @@ class GitHubSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Download a skill; identifier format: "owner/repo/path/to/skill-dir"."""
+        self.fetch_error = ""
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split
@@ -270,6 +271,10 @@ class GitHubSource(SkillSource):
             return None
         referenced = _referenced_support_paths(skill_md)
         if referenced is None:
+            self.fetch_error = (
+                "SKILL.md references paths outside the skill directory (path traversal). "
+                "Ask the author for a self-contained skill bundle."
+            )
             return None
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         if tree is not None:

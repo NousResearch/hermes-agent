@@ -212,7 +212,10 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
                 }
                 role="checkbox"
               >
-                <Codicon className={cn(checked ? 'text-(--ui-accent)' : 'text-(--ui-text-quaternary)')} name={checked ? 'pass-filled' : 'circle-large-outline'} />
+                <Codicon
+                  className={cn(checked ? 'text-(--ui-accent)' : 'text-(--ui-text-quaternary)')}
+                  name={checked ? 'pass-filled' : 'circle-large-outline'}
+                />
                 <div className="min-w-0 flex-1 text-left">
                   <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
                   <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">

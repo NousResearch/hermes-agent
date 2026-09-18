@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -111,6 +112,33 @@ def run_tool_round(
             })
         assistant_message.tool_calls = [
             tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names
+        ]
+
+    # FAIL-CLOSED malformed arguments (RCA 2026-09-17): calls whose args carry the
+    # __hermes_malformed_tool_arguments__ sentinel (assembled in _assemble_tool_calls
+    # when repair failed) are NOT executed — the "{}" execution path ran tools as
+    # silent no-ops. Error-result them so the model re-issues the call.
+    def _is_malformed_args_call(tc) -> bool:
+        try:
+            parsed = json.loads(tc.function.arguments)
+            return isinstance(parsed, dict) and parsed.get("__hermes_malformed_tool_arguments__") is True
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return False
+
+    _malformed_args_calls = [tc for tc in assistant_message.tool_calls if _is_malformed_args_call(tc)]
+    if _malformed_args_calls:
+        for tc in _malformed_args_calls:
+            append_message(messages, {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": coalesce_tool_call_id(tc),
+                "content": (
+                    "Tool call rejected: the arguments were malformed (unrepairable JSON) and the "
+                    "call was NOT executed. Re-issue the tool call with complete, valid JSON arguments."
+                ),
+            })
+        assistant_message.tool_calls = [
+            tc for tc in assistant_message.tool_calls if not _is_malformed_args_call(tc)
         ]
 
     # Persist the tool-call turn before any tool side effects so resume sees the executed

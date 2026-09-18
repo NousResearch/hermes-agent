@@ -17,6 +17,7 @@ interface RosterBotRow {
   activity: number
   bot: RosterRow
   kind: 'bot'
+  order?: number
   pinned: boolean
 }
 export interface RosterGroupRow {
@@ -113,7 +114,8 @@ export function deriveRosterRows({
           bot,
           pinned: isPinned(bot),
           activity: activityOf(bot),
-          active: activeRosterKeys.has(botRosterKey(bot))
+          active: activeRosterKeys.has(botRosterKey(bot)),
+          order: botRosterMeta(bot, allMeta)?.rosterOrder
         }))
 
   const rosterRows = sortGroupRosterRows([...botRows, ...groupRows], groupRooms)

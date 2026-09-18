@@ -6,6 +6,8 @@
  * and the row decides only how it reads.
  */
 
+import { useState } from 'react'
+
 import {
   cn,
   coarseElapsed,
@@ -106,10 +108,14 @@ interface BotRowProps {
   onGroup: (bot: RosterRow) => void
   /** Opens the New section dialog; the bot is filed into it on create. */
   onNewSection: (bot: RosterRow) => void
+  /** Reorder drop: (dragged roster key, this row, insert-after?) — the pane
+   *  resolves band membership and persists orders. Null on the flat
+   *  (no-sections) list, where row-drop ordering is not offered. */
+  onDropReorder?: null | ((dragKey: string, target: RosterRow, after: boolean) => void)
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, onDropReorder, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -229,8 +235,14 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // only a section block can accept it.
   const rosterKey = botRosterKey(bot)
   const sections = useValue($botSections)
-  const dragging = useValue($draggingBot) === rosterKey
+  const dragging = useValue($draggingBot)
+  const draggingThis = dragging === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
+  // Row-drop reorder target state: lit only while a DIFFERENT bot is dragged
+  // over this row's upper/lower half. `sections.length` gates it to the
+  // sectioned roster, where band membership is unambiguous.
+  const [dropEdge, setDropEdge] = useState<null | 'after' | 'before'>(null)
+  const dropArmed = Boolean(onDropReorder && dragging && !draggingThis && sections.length > 0)
 
   const row = (
     <RowButton
@@ -241,7 +253,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         isActive && 'bg-(--ui-row-active-background)',
         // The row being dragged fades in place; the browser's drag image is
         // the row itself, so the ghost under the pointer is the full row.
-        dragging && 'opacity-40'
+        draggingThis && 'opacity-40',
+        // Insertion line where the dragged bot would land: a full-width rule
+        // above/below this row, accent-tinted so it reads as a placement, not
+        // a selection.
+        dropEdge === 'before' && 'shadow-[inset_0_2px_0_0_var(--ui-accent)]',
+        dropEdge === 'after' && 'shadow-[inset_0_-2px_0_0_var(--ui-accent)]'
       )}
       data-roster-key={rosterKey}
       draggable
@@ -251,6 +268,43 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
+      }}
+      onDragEnter={event => {
+        if (dropArmed && event.dataTransfer.types.includes(BOT_DRAG_MIME)) {
+          event.preventDefault()
+        }
+      }}
+      onDragOver={event => {
+        if (!dropArmed || !event.dataTransfer.types.includes(BOT_DRAG_MIME)) {
+          return
+        }
+
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+
+        const rect = event.currentTarget.getBoundingClientRect()
+        const after = event.clientY > rect.top + rect.height / 2
+        setDropEdge(after ? 'after' : 'before')
+      }}
+      onDragLeave={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDropEdge(null)
+        }
+      }}
+      onDrop={event => {
+        const edge = dropEdge
+        const dragKey = dragging
+        setDropEdge(null)
+
+        if (!dropArmed || !edge || !dragKey || !event.dataTransfer.types.includes(BOT_DRAG_MIME)) {
+          return
+        }
+
+        event.preventDefault()
+        event.stopPropagation()
+        $draggingBot.set(null)
+
+        onDropReorder?.(dragKey, bot, edge === 'after')
       }}
       onPointerEnter={warm}
     >

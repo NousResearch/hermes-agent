@@ -451,6 +451,13 @@ def _ensure_git_worktree(
     start_commit = _resolve_start_commit(repo_root, start_ref) if start_ref else "HEAD"
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
+        if start_ref:
+            actual_commit = _resolve_start_commit(target, "HEAD")
+            if actual_commit != start_commit:
+                raise RuntimeError(
+                    f"existing worktree {target} has HEAD {actual_commit}, not requested "
+                    f"start_ref commit {start_commit}; refusing to move or overwrite it"
+                )
         return
     branch_exists = _git_branch_exists(repo_root, branch_name)
     if branch_exists and start_ref:
@@ -471,6 +478,22 @@ def _ensure_git_worktree(
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    if branch_exists and start_ref:
+        actual_commit = _resolve_start_commit(target, "HEAD")
+        if actual_commit != start_commit:
+            cleanup = _git(repo_root, "worktree", "remove", "--force", str(target), timeout=60)
+            cleanup_error = (cleanup.stderr or cleanup.stdout or "").strip()
+            if cleanup.returncode != 0:
+                raise RuntimeError(
+                    f"existing branch {branch_name!r} changed to {actual_commit} while creating "
+                    f"{target}, not requested start_ref commit {start_commit}; cleanup failed: "
+                    f"{cleanup_error}"
+                )
+            raise RuntimeError(
+                f"existing branch {branch_name!r} changed to {actual_commit} while creating "
+                f"{target}, not requested start_ref commit {start_commit}; removed the mismatched "
+                "worktree without moving the branch"
+            )
 
 
 def _anchored_worktree(
@@ -526,10 +549,16 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     requested_resolved = requested.resolve(strict=False)
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
-        if start_ref:
-            _resolve_start_commit(requested, start_ref)
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            if start_ref:
+                start_commit = _resolve_start_commit(requested, start_ref)
+                actual_commit = _resolve_start_commit(requested, "HEAD")
+                if actual_commit != start_commit:
+                    raise RuntimeError(
+                        f"existing worktree {requested} has HEAD {actual_commit}, not requested "
+                        f"start_ref commit {start_commit}; refusing to move or overwrite it"
+                    )
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT task's
         # branch (decompose children inherit the root's workspace_path
@@ -544,6 +573,11 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this task's
         # own canonical worktree): keep the legacy reuse rather than fail dispatch.
+        if start_ref:
+            raise RuntimeError(
+                f"existing worktree {requested} is on branch {actual_branch!r}, not requested "
+                f"branch {branch_name!r}; refusing to ignore start_ref {start_ref!r}"
+            )
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)

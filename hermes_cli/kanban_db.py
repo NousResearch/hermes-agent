@@ -1286,6 +1286,7 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    workspace_kind_was_explicit = workspace_kind is not None
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1308,12 +1309,14 @@ def create_task(
         raise ValueError("branch_name is only valid for worktree workspaces")
     if start_ref is not None:
         start_ref = str(start_ref).strip() or None
-    if start_ref and workspace_kind != "worktree":
+    if start_ref and workspace_kind_was_explicit and workspace_kind != "worktree":
         raise ValueError("start_ref is only valid for worktree workspaces")
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
+    if start_ref and workspace_kind != "worktree":
+        raise ValueError("start_ref is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 

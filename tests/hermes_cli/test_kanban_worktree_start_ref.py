@@ -13,6 +13,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import projects_db as pdb
 
 
 @pytest.fixture
@@ -278,3 +279,142 @@ def test_invalid_start_ref_leaves_git_state_untouched(kanban_home, tmp_path):
         kbw._resolve_worktree_workspace(collision_task)
     assert not collision.exists()
     assert _git(repo, "rev-parse", "wt/collision") == commit_b
+
+
+def test_existing_worktree_must_match_resolved_start_ref(kanban_home, tmp_path):
+    repo, commit_a, commit_b = _repo_with_two_commits(tmp_path)
+    existing = repo / ".worktrees" / "existing-mismatch"
+    branch = "wt/existing-mismatch"
+    _git(repo, "worktree", "add", "-b", branch, str(existing), commit_b)
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="reject an existing worktree at another commit",
+            workspace_kind="worktree",
+            workspace_path=str(existing),
+            branch_name=branch,
+            start_ref=commit_a,
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    with pytest.raises(RuntimeError, match="existing worktree.*HEAD.*requested start_ref"):
+        kbw._resolve_worktree_workspace(task)
+    assert _git(existing, "rev-parse", "HEAD") == commit_b
+    assert _git(repo, "rev-parse", branch) == commit_b
+
+
+def test_existing_branch_race_fails_closed_before_dispatch(
+    kanban_home, tmp_path, monkeypatch,
+):
+    repo, commit_a, commit_b = _repo_with_two_commits(tmp_path)
+    target = repo / ".worktrees" / "branch-race"
+    branch = "wt/branch-race"
+    _git(repo, "branch", branch, commit_a)
+
+    real_git = kbw._git
+    moved = False
+
+    def racing_git(repo_root, *args, **kwargs):
+        nonlocal moved
+        if args == ("worktree", "add", str(target), branch) and not moved:
+            moved = True
+            real_git(repo_root, "branch", "-f", branch, commit_b, timeout=60)
+        return real_git(repo_root, *args, **kwargs)
+
+    monkeypatch.setattr(kbw, "_git", racing_git)
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="detect a branch move before materialization",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name=branch,
+            start_ref=commit_a,
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    with pytest.raises(RuntimeError, match="branch.*changed.*requested start_ref"):
+        kbw._resolve_worktree_workspace(task)
+    assert moved is True
+    assert not target.exists()
+    assert _git(repo, "rev-parse", branch) == commit_b
+
+
+def test_project_start_ref_uses_effective_worktree_across_surfaces(
+    kanban_home, tmp_path, capsys,
+):
+    repo, commit_a, _ = _repo_with_two_commits(tmp_path)
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn,
+            name="Start Ref Project",
+            primary_path=str(repo),
+        )
+
+    with kbc.connect() as conn:
+        direct_id = kb.create_task(
+            conn,
+            title="direct project start ref",
+            project_id=project_id,
+            start_ref=commit_a,
+        )
+        direct = kb.get_task(conn, direct_id)
+    assert direct is not None
+    assert (direct.workspace_kind, direct.project_id, direct.start_ref) == (
+        "worktree", project_id, commit_a,
+    )
+    direct_workspace, _ = kbw._resolve_worktree_workspace(direct)
+    assert _git(direct_workspace, "rev-parse", "HEAD") == commit_a
+
+    from hermes_cli import kanban as kb_cli
+
+    parser = argparse.ArgumentParser()
+    kb_cli.build_parser(parser.add_subparsers())
+    cli_args = parser.parse_args([
+        "kanban", "create", "CLI project start ref", "--project", project_id,
+        "--start-ref", commit_a, "--json",
+    ])
+    assert kb_cli._cmd_create(cli_args) == 0
+    cli_task = json.loads(capsys.readouterr().out)
+    assert (cli_task["workspace_kind"], cli_task["project_id"], cli_task["start_ref"]) == (
+        "worktree", project_id, commit_a,
+    )
+
+    from tools import kanban_tools as kt
+
+    tool_result = json.loads(kt._handle_create({
+        "title": "Tool project start ref",
+        "assignee": "coder",
+        "project": project_id,
+        "start_ref": commit_a,
+    }))
+    assert tool_result["ok"] is True
+    assert (
+        tool_result["workspace_kind"], tool_result["project_id"], tool_result["start_ref"],
+    ) == ("worktree", project_id, commit_a)
+
+    kb.create_board("scoped-start-ref", project_id=project_id)
+    with kbc.connect(board="scoped-start-ref") as conn:
+        scoped_id = kb.create_task(
+            conn,
+            title="board-scoped project start ref",
+            board="scoped-start-ref",
+            start_ref=commit_a,
+        )
+        scoped = kb.get_task(conn, scoped_id)
+    assert scoped is not None
+    assert (scoped.workspace_kind, scoped.project_id, scoped.start_ref) == (
+        "worktree", project_id, commit_a,
+    )
+
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError, match="start_ref is only valid for worktree workspaces"):
+            kb.create_task(
+                conn,
+                title="explicit scratch stays invalid",
+                workspace_kind="scratch",
+                start_ref=commit_a,
+            )

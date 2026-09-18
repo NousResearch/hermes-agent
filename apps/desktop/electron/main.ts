@@ -171,7 +171,7 @@ import {
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute,
   resolveDesktopConnectionRequest,
-  resolveDesktopWindowRoute
+  resolveDesktopWindowLaunch
 } from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
@@ -13569,7 +13569,7 @@ function createInstanceWindow(
   options?: DesktopProfileRoute,
   source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
 ) {
-  const route = resolveDesktopWindowRoute(
+  const route = resolveDesktopWindowLaunch(
     options,
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
@@ -13633,7 +13633,6 @@ function createInstanceWindow(
     win,
     buildInstanceWindowUrl({
       ...route,
-      profileWindow: options !== undefined,
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),

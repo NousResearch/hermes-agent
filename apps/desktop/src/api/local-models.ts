@@ -102,6 +102,15 @@ export function ejectLocalModel(modelId: string): Promise<{ ok: boolean }> {
   })
 }
 
+export function setLocalUnloadAfterIdle(seconds: number): Promise<{ unload_after_idle_seconds: number; ok: boolean }> {
+  return hermesApi<{ unload_after_idle_seconds: number; ok: boolean }>({
+    ...profileScoped(),
+    body: { seconds },
+    method: 'POST',
+    path: '/api/local-models/unload-after-idle'
+  })
+}
+
 export function setLocalServer(action: 'start' | 'stop'): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(),

@@ -297,8 +297,9 @@ class TestEventLifecycle:
 
         job = create_job(prompt="x", schedule="in 30m", name="once")
         assert job["schedule"]["kind"] == "once"
-        assert claim_dispatch(job["id"]) is True
+        # Production order: fire claim, then claim_dispatch inside run_one_job.
         assert claim_job_for_fire(job["id"], manual=True) is True
+        assert claim_dispatch(job["id"]) is True
         owner = get_job(job["id"])["fire_claim"]["by"]
         assert admit_job_event(job["id"], delivery_id="d-os", context="after")["status"] == "queued"
         assert mark_job_run(job["id"], True, expected_fire_owner=owner) is True
@@ -1289,4 +1290,299 @@ class TestReviewR5OneshotBudget:
         assert final.get("state") == "completed"
         assert final.get("enabled") is False
         assert not (final.get("pending_event_batch") or {}).get("events")
+        assert _misleading_oneshot_removal(caplog) == []
+
+
+class TestReviewR6OneshotBudget:
+    """Review-r6: a budget-exhausted one-shot kept non-terminal so a 202
+    batch can drain must not be retired by ``cronjob(action='run')`` /
+    ``claim_job_for_fire(manual=True)``, and occurrence-free completion
+    must not leave the consumed stamp as a past ``next_run_at``.
+    """
+
+    def _block_run_job(self, monkeypatch):
+        import threading
+
+        import cron.scheduler as sched
+
+        started = threading.Event()
+        release = threading.Event()
+        prompts = []
+        thread_errors = []
+
+        def fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            started.set()
+            assert release.wait(15)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+        return started, release, prompts, thread_errors, sched
+
+    def _drain_ticks(self, sched, prompts, n=3):
+        ticks = []
+        for _ in range(n):
+            prompts.clear()
+            count = sched.tick(verbose=False, sync=True)
+            ticks.append((count, list(prompts)))
+        return ticks
+
+    def _assert_direct_run_refused_and_batch_drains(
+        self, job_id, pending_ctx, operator, sched, prompts, caplog,
+    ):
+        from cron.jobs import get_job
+        from tools.cronjob_tools import _execute_job_now
+
+        after = get_job(job_id)
+        assert after is not None, "one-shot record was deleted after completion"
+        assert after.get("state") == "scheduled"
+        assert after.get("enabled") is True
+        assert [event["context"] for event in _contexts(after)[0]] == [pending_ctx]
+        assert (after.get("repeat") or {}).get("completed") == (
+            after.get("repeat") or {}
+        ).get("times")
+        # R6-B: consumed stamp is not an occurrence on an exhausted one-shot.
+        assert after.get("next_run_at") in (None, False)
+
+        result = _execute_job_now(after, extra_prompt=operator)
+        refused = get_job(job_id)
+        assert result.get("claimed") is False
+        assert result.get("success") is False
+        assert "terminal" in (result.get("error") or "")
+        assert "resume" in (result.get("error") or "")
+        assert refused is not None
+        assert refused.get("state") == "scheduled"
+        assert refused.get("enabled") is True
+        assert not refused.get("fire_claim")
+        assert refused.get("event_rerun_due") is True
+        assert [event["context"] for event in _contexts(refused)[0]] == [
+            pending_ctx
+        ]
+        assert refused.get("manual_run_at") in (None, False)
+        assert refused.get("manual_run_prompt") in (None, False)
+
+        ticks = self._drain_ticks(sched, prompts)
+        final = get_job(job_id)
+
+        assert ticks[0][0] >= 1
+        assert len(ticks[0][1]) == 1
+        assert pending_ctx in str(ticks[0][1][0])
+        assert operator not in str(ticks[0][1][0])
+        assert ticks[1][0] == 0
+        assert ticks[2][0] == 0
+        assert final is not None, "retired one-shot record was deleted"
+        assert final.get("id") == job_id
+        assert final.get("state") == "completed"
+        assert final.get("enabled") is False
+        assert not (final.get("pending_event_batch") or {}).get("events")
+        assert not final.get("fire_claim")
+        assert _misleading_oneshot_removal(caplog) == []
+
+    def test_direct_run_on_pending_reenabled_retired_oneshot(
+        self, temp_home, monkeypatch, caplog
+    ):
+        """R6-A / R5-B shape: ``cronjob(action='run')`` after pending
+        re-enable left a budget-exhausted one-shot scheduled. Predecessor
+        ``claim_dispatch`` retain marked it completed and stranded the
+        202 batch with a dangling fire_claim.
+        """
+        import logging
+        import threading
+
+        from cron import jobs as jobs_mod
+        from cron.jobs import admit_job_event, create_job, load_jobs, save_jobs
+
+        started, release, prompts, thread_errors, sched = self._block_run_job(
+            monkeypatch
+        )
+        pending_ctx = "ctx-ONE"
+        operator = "op-late"
+
+        job = create_job(prompt="x", schedule="in 30m", name="once")
+        job_id = job["id"]
+        records = load_jobs()
+        for record in records:
+            if record["id"] == job_id:
+                record["next_run_at"] = jobs_mod._hermes_now().isoformat()
+        save_jobs(records)
+
+        def _run_tick():
+            try:
+                sched.tick(verbose=False, sync=True)
+            except Exception as exc:
+                thread_errors.append(exc)
+                started.set()
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            worker = threading.Thread(target=_run_tick)
+            worker.start()
+            assert started.wait(15), (
+                f"oneshot run never started; errors={thread_errors!r}"
+            )
+            assert not thread_errors
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+            release.set()
+            worker.join(30)
+            assert not worker.is_alive()
+            assert not thread_errors
+            self._assert_direct_run_refused_and_batch_drains(
+                job_id, pending_ctx, operator, sched, prompts, caplog,
+            )
+
+    def test_direct_run_on_exhausted_manual_oneshot_after_leftover_drop(
+        self, temp_home, monkeypatch, caplog
+    ):
+        """R6-A / R5-A post-completion shape: leftover run-now was dropped,
+        record kept scheduled with the 202 batch. Direct run must refuse
+        the same way and leave the drain intact.
+        """
+        import logging
+        import threading
+
+        from cron.jobs import admit_job_event, create_job, trigger_job
+
+        started, release, prompts, thread_errors, sched = self._block_run_job(
+            monkeypatch
+        )
+        op_one = "op-ONE"
+        op_two = "op-TWO"
+        pending_ctx = "ctx-ONE"
+        operator = "op-late"
+
+        job = create_job(prompt="x", schedule="in 30m", name="once")
+        job_id = job["id"]
+        trigger_job(job_id, extra_prompt=op_one)
+
+        def _run_tick():
+            try:
+                sched.tick(verbose=False, sync=True)
+            except Exception as exc:
+                thread_errors.append(exc)
+                started.set()
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            worker = threading.Thread(target=_run_tick)
+            worker.start()
+            assert started.wait(15), (
+                f"manual oneshot never started; errors={thread_errors!r}"
+            )
+            assert not thread_errors
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+            second = trigger_job(job_id, extra_prompt=op_two)
+            assert second is not None
+            release.set()
+            worker.join(30)
+            assert not worker.is_alive()
+            assert not thread_errors
+            self._assert_direct_run_refused_and_batch_drains(
+                job_id, pending_ctx, operator, sched, prompts, caplog,
+            )
+
+    def test_foreign_tick_during_drain_does_not_delete_exhausted_oneshot(
+        self, temp_home, monkeypatch, caplog
+    ):
+        """R6-B: occurrence-free completion of a manual one-shot with a
+        queued event must not leave ``next_run_at`` at the consumed past
+        stamp. A second scheduler process (running-set check patched
+        False) must not hit ``_oneshot_dispatch_limit_reached`` and delete
+        the record under the live drain run.
+        """
+        import logging
+        import threading
+
+        from cron import jobs as jobs_mod
+        from cron.jobs import admit_job_event, create_job, get_job, trigger_job
+
+        started, release, prompts, thread_errors, sched = self._block_run_job(
+            monkeypatch
+        )
+        op_one = "op-ONE"
+        pending_ctx = "ctx-ONE"
+
+        job = create_job(prompt="x", schedule="in 30m", name="once")
+        job_id = job["id"]
+        trigger_job(job_id, extra_prompt=op_one)
+
+        def _run_tick():
+            try:
+                sched.tick(verbose=False, sync=True)
+            except Exception as exc:
+                thread_errors.append(exc)
+                started.set()
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            worker = threading.Thread(target=_run_tick)
+            worker.start()
+            assert started.wait(15), (
+                f"manual oneshot never started; errors={thread_errors!r}"
+            )
+            assert not thread_errors
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+            release.set()
+            worker.join(30)
+            assert not worker.is_alive()
+            assert not thread_errors
+
+            after = get_job(job_id)
+            assert after is not None, "one-shot record was deleted after completion"
+            assert after.get("state") == "scheduled"
+            assert after.get("enabled") is True
+            assert [event["context"] for event in _contexts(after)[0]] == [
+                pending_ctx
+            ]
+            assert (after.get("repeat") or {}).get("completed") == (
+                after.get("repeat") or {}
+            ).get("times")
+            # Consumed stamp is not an occurrence; a past next_run_at would
+            # look due to a foreign tick during the drain run.
+            assert after.get("next_run_at") in (None, False)
+            assert after.get("manual_run_at") in (None, False)
+
+            started.clear()
+            release.clear()
+            prompts.clear()
+            drain_worker = threading.Thread(target=_run_tick)
+            drain_worker.start()
+            assert started.wait(15), (
+                f"drain run never started; errors={thread_errors!r}"
+            )
+            assert not thread_errors
+            inflight = get_job(job_id)
+            assert inflight is not None
+            assert inflight.get("fire_claim")
+            assert not (inflight.get("pending_event_batch") or {}).get("events")
+
+            monkeypatch.setattr(
+                jobs_mod, "_job_running_in_this_process", lambda _jid: False
+            )
+            jobs_mod.get_due_jobs()
+            still = get_job(job_id)
+            assert still is not None, (
+                "foreign tick deleted the record under the live drain run"
+            )
+            assert still.get("id") == job_id
+            assert still.get("fire_claim")
+            assert _misleading_oneshot_removal(caplog) == []
+
+            release.set()
+            drain_worker.join(30)
+            assert not drain_worker.is_alive()
+            assert not thread_errors
+
+            ticks = self._drain_ticks(sched, prompts)
+            final = get_job(job_id)
+
+        assert ticks[0][0] == 0
+        assert ticks[1][0] == 0
+        assert final is not None, "retired one-shot record was deleted"
+        assert final.get("id") == job_id
+        assert final.get("state") == "completed"
+        assert final.get("enabled") is False
+        assert not (final.get("pending_event_batch") or {}).get("events")
+        assert not final.get("fire_claim")
         assert _misleading_oneshot_removal(caplog) == []

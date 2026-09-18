@@ -48,7 +48,8 @@ from cron.jobs import (
     resnapshot_all_unpinned,
     resnapshot_job,
     resume_job,
-    update_job)
+    update_job,
+    _exhausted_oneshot_manual_run_refusal)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
     _apply_continuity,
@@ -201,7 +202,9 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         elif not is_job_runnable(refreshed):
             reason = "Job is paused/disabled; resume it before running."
         else:
-            reason = "Job is already being fired by the scheduler; not run again."
+            reason = _exhausted_oneshot_manual_run_refusal(refreshed, job_id) or (
+                "Job is already being fired by the scheduler; not run again."
+            )
         return None, {"claimed": False, "success": False, "error": reason}
     except Exception as e:
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)

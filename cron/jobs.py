@@ -561,6 +561,32 @@ def _oneshot_repeat_limit_reached(job: Dict[str, Any]) -> bool:
     return times is not None and times > 0 and completed >= times
 
 
+def _exhausted_oneshot_manual_run_refusal(
+    job: Dict[str, Any], job_id: str, now: Optional[datetime] = None,
+) -> Optional[str]:
+    """Error text refusing a new fire on a budget-exhausted idle one-shot.
+
+    Pending re-enable leaves the record scheduled so a 202 batch can drain.
+    A ``trigger_job`` or ``cronjob(action='run')`` in that window is the
+    same class as a terminal trigger. None when a live fire/run claim still
+    owns the in-flight leftover path.
+    """
+    if not _oneshot_repeat_limit_reached(job):
+        return None
+    if now is None:
+        now = _hermes_now()
+    if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS) or _claim_is_live(
+        job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()
+    ):
+        return None
+    name = job.get("name", job_id)
+    return (
+        f"Cannot run: job '{name}' is completed (terminal). "
+        f"Create a new occurrence with 'hermes cron resume {name} "
+        "--run-now' or '--at <ISO-8601>'."
+    )
+
+
 def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
     """True for a recurring job stuck in ``state=error`` (set ONLY when ``compute_next_run()`` fails
     for a cron/interval job: croniter missing, malformed schedule). Such a job still has future
@@ -2221,18 +2247,9 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
     # 202 batch can drain. A run-now in that window is the same class as a
     # terminal trigger: refuse it (resume --run-now). In-flight leftover
     # stamps are still accepted here and dropped at mark_job_run.
-    if _oneshot_repeat_limit_reached(job):
-        in_flight = _claim_is_live(
-            job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS
-        ) or _claim_is_live(
-            job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()
-        )
-        if not in_flight:
-            name = job.get("name", job_id)
-            raise ValueError(
-                f"Cannot run: job '{name}' is completed (terminal). "
-                f"Create a new occurrence with 'hermes cron resume {name} "
-                "--run-now' or '--at <ISO-8601>'.")
+    refusal = _exhausted_oneshot_manual_run_refusal(job, job_id, now)
+    if refusal:
+        raise ValueError(refusal)
     manual_run_at = now.isoformat()
     return update_job(job["id"], {
         "enabled": True,
@@ -2538,7 +2555,14 @@ def mark_job_run(
         elif this_claim_consumed_manual and pending_after:
             # Run-now while events are still queued: occurrence-free, no repeat bump.
             # next_run_at was already re-anchored at claim time for interval jobs.
-            job["next_run_at"] = scheduled_next
+            # A finite one-shot's consumed stamp is not an occurrence; leaving
+            # that past instant as next_run_at lets a foreign process's tick
+            # hit the dispatch-limit guard and delete the record under a live
+            # drain run.
+            if _oneshot_repeat_limit_reached(job):
+                job["next_run_at"] = None
+            else:
+                job["next_run_at"] = scheduled_next
             if job.get("state") != "paused" and job.get("next_run_at"):
                 job["state"] = "scheduled"
         else:
@@ -2577,6 +2601,8 @@ def mark_job_run(
             )
             job.pop("manual_run_at", None)
             job.pop("manual_run_prompt", None)
+            if _oneshot_repeat_limit_reached(job):
+                job["next_run_at"] = None
         elif leftover_manual_at:
             # In-flight completion did not own this run-now: keep the operator
             # stamp due for the next tick's manual-precedence fire. Never
@@ -2855,6 +2881,12 @@ def claim_job_for_fire(
             job.pop("event_rerun_due", None)
             save_jobs(jobs)
             return dict(copy.deepcopy(job), _scheduled_instant=None) if return_job else True
+        # Budget-exhausted one-shot: refuse a new non-event fire so we do
+        # not stamp a dangling fire_claim that claim_dispatch then completes
+        # without running, stranding a 202 batch. Event-rerun claims above
+        # still drain. In-flight leftover stamps go through trigger_job.
+        if _exhausted_oneshot_manual_run_refusal(job, job_id, now):
+            return False
         from cron.occurrences import completed_occurrence, scheduled_instant
 
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a

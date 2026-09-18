@@ -15,6 +15,12 @@ import {
 } from './tool-parts'
 import type { ChatMessage, ChatMessagePart } from './types'
 
+// Older gateways persisted this Discord routing envelope in user rows. Strip
+// only the producer's complete prefix, optionally after its reply pointer;
+// quoted examples and the underlying SessionMessage must remain untouched.
+const DISCORD_TRIGGERING_NOTE_RE =
+  /^(\[Replying to(?: your previous message)?: "[\s\S]*?"\]\n\n)?\[Triggering message id: `\d+` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n\n/
+
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
@@ -94,23 +100,25 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
     return textContent
   }
 
+  const authoredContent = textContent.replace(DISCORD_TRIGGERING_NOTE_RE, '$1')
+
   // A `/skill` turn is stored expanded (the whole skill body). Current
   // gateways project it to the invocation before it ever reaches us; this is
   // the fallback for an older backend that still ships the raw payload.
-  const invocation = skillInvocationText(textContent)
+  const invocation = skillInvocationText(authoredContent)
 
   if (invocation) {
     return invocation
   }
 
-  const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
+  const marker = authoredContent.match(ATTACHED_CONTEXT_MARKER_RE)
 
   if (!marker || marker.index === undefined) {
-    return textContent.replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
+    return authoredContent.replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
   }
 
-  const visibleText = textContent.slice(0, marker.index).replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
-  const attachedContext = textContent.slice(marker.index + marker[0].length)
+  const visibleText = authoredContent.slice(0, marker.index).replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
+  const attachedContext = authoredContent.slice(marker.index + marker[0].length)
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
   // The prose keeps the `@file:` token the user typed, so it already chips in

@@ -4,6 +4,7 @@ import type { ConnectionState } from '@hermes/shared'
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-states'
 
 import { composerPlainText } from './rich-editor'
 import type { TriggerState } from './text-utils'
@@ -73,7 +74,10 @@ export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math
  *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
  *  items are a registry row, not a composer branch. */
 export const COMPLETION_ACTIONS: Record<string, () => void> = {
-  'session-picker': () => setSessionPickerOpen(true)
+  'session-picker': () => {
+    const callerTileId = $focusedSessionIsTile.get() ? $focusedStoredSessionId.get() : null
+    setSessionPickerOpen(true, callerTileId)
+  }
 }
 
 /** Map a picked `/` completion to its pill accent. Driven by the completion

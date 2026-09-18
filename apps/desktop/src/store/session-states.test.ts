@@ -41,6 +41,7 @@ import {
   patchSessionTile,
   recordSessionEventScope,
   releaseSessionTranscript,
+  replaceSessionTile,
   requestForOwnedSession,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
@@ -1376,5 +1377,55 @@ describe('isSessionRemote (#94640)', () => {
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(isSessionRemote('stored-2')).toBe(true)
+  })
+
+  describe('replaceSessionTile', () => {
+    beforeEach(() => {
+      $sessionTiles.set([])
+      $sessionStates.set({})
+      $layoutTree.set(null)
+    })
+
+    it('replaces an open blank draft tile by discarding the draft', () => {
+      openSessionTile('draft-1', 'center', 'workspace')
+      patchSessionTile('draft-1', { runtimeId: 'rt-draft' })
+      $sessionStates.set({
+        'rt-draft': { busy: false, messages: [], storedSessionId: 'draft-1' } as never
+      })
+
+      const replaced = replaceSessionTile('draft-1', 'resumed-1')
+      expect(replaced).toBe(true)
+
+      const tiles = $sessionTiles.get()
+      expect(tiles.some(t => t.storedSessionId === 'draft-1')).toBe(false)
+      expect(tiles.some(t => t.storedSessionId === 'resumed-1')).toBe(true)
+      const newTile = tiles.find(t => t.storedSessionId === 'resumed-1')
+      expect(newTile?.dir).toBe('center')
+      expect(newTile?.anchor).toBe('workspace')
+    })
+
+    it('replaces an open tile with messages by closing it', () => {
+      openSessionTile('chat-1', 'center', 'workspace')
+      patchSessionTile('chat-1', { runtimeId: 'rt-chat' })
+      $sessionStates.set({
+        'rt-chat': { busy: false, messages: [{ id: 'm1', role: 'user' }], storedSessionId: 'chat-1' } as never
+      })
+
+      const replaced = replaceSessionTile('chat-1', 'resumed-2')
+      expect(replaced).toBe(true)
+
+      const tiles = $sessionTiles.get()
+      expect(tiles.some(t => t.storedSessionId === 'chat-1')).toBe(false)
+      expect(tiles.some(t => t.storedSessionId === 'resumed-2')).toBe(true)
+    })
+
+    it('returns false when the target tile does not exist', () => {
+      expect(replaceSessionTile('nonexistent', 'resumed-3')).toBe(false)
+    })
+
+    it('returns false when the target tile is already the same session', () => {
+      openSessionTile('same-1', 'center', 'workspace')
+      expect(replaceSessionTile('same-1', 'same-1')).toBe(false)
+    })
   })
 })

@@ -1870,7 +1870,7 @@ describe('usePromptActions desktop slash pickers', () => {
 
     await handle!.submitText('/resume 20260610_130000_123abc')
 
-    expect(resumeStoredSession).toHaveBeenCalledWith('20260610_130000_123abc')
+    expect(resumeStoredSession).toHaveBeenCalledWith('20260610_130000_123abc', undefined)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 

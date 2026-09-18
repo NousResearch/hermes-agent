@@ -343,7 +343,7 @@ function Harness({
     openMemoryGraph: () => undefined,
     refreshSessions: async () => undefined,
     requestGateway,
-    resumeStoredSession: sessionActions.resumeSession,
+    resumeStoredSession: (storedSessionId: string) => sessionActions.resumeSession(storedSessionId),
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
     startFreshSessionDraft: sessionActions.startFreshSessionDraft,

@@ -42,7 +42,12 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import {
+  $focusedSessionIsTile,
+  $focusedStoredSessionId,
+  $sessionStates,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 import {
   applyWakeStartResult,
   applyWakeStatus,
@@ -150,7 +155,7 @@ interface SlashCommandDeps {
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
-  resumeStoredSession: (storedSessionId: string) => Promise<void> | void
+  resumeStoredSession: (storedSessionId: string, options?: { callerTileId?: string }) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
@@ -1136,11 +1141,30 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
+        // A foreground slash has no caller tile of its own (the hint arrives
+        // only for explicit tile targets), so the picker's caller defaults to
+        // the focused tile. Tiling-family commands act on THAT caller: a tile
+        // must never reclaim the foreground into its parent's siblings-only
+        // routing weeds — only main does the multi-profile sweep.
+        const callerTile = ctx.sessionHint
+          ? (storedSessionIdForRuntimeId(ctx.sessionHint) ?? null)
+          : ($focusedSessionIsTile.get() ? $focusedStoredSessionId.get() : null)
+
+        const forwardResume = (id: string) =>
+          resumeStoredSession(id, callerTile ? { callerTileId: callerTile } : undefined)
+
         // session picker — /resume, /sessions, /switch
         const query = ctx.arg.trim()
 
         if (!query) {
-          setSessionPickerOpen(true)
+          // A tile slash arrives with an explicit runtime hint (submitText →
+          // executeSlashCommand): keep the picker pinned to THAT tile even if
+          // focus is elsewhere. A foreground slash uses the focused tile.
+          const callerTileId = ctx.sessionHint
+            ? (storedSessionIdForRuntimeId(ctx.sessionHint) ?? undefined)
+            : ($focusedSessionIsTile.get() ? ($focusedStoredSessionId.get() ?? undefined) : undefined)
+
+          setSessionPickerOpen(true, callerTileId)
 
           return
         }
@@ -1155,7 +1179,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         if (!match) {
           if (isSessionIdCandidate(query)) {
-            await resumeStoredSession(query)
+            await forwardResume(query)
 
             return
           }
@@ -1165,7 +1189,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        await resumeStoredSession(match.id)
+        await forwardResume(match.id)
       }
 
       // The whole dispatcher: resolve the command's desktop surface, then act on

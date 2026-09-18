@@ -8,7 +8,7 @@ forever" gap:
    to the sibling console ``python.exe`` so respawns and regenerated
    launchers use the hidden-console design (#54220/#56747) and don't die
    with ``RuntimeError: sys.stderr is None`` (#71671).
-2. ``hermes_cli.main._refresh_windows_gateway_launchers`` — ``hermes
+2. ``cli_main._refresh_windows_gateway_launchers`` — ``hermes
    update`` regenerates the installed Scheduled Task / Startup launcher
    scripts instead of leaving install-time artifacts stale forever.
 
@@ -27,6 +27,7 @@ import pytest
 
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as cli_main
+from hermes_cli import update_cmd
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +87,19 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_update_launcher_refresh_reregisters_drifted_scheduled_task(monkeypatch):
+    """``hermes update`` must not only rewrite the launcher scripts but also re-register a Scheduled
+    Task that predates the current template (#113670) — otherwise template hardening never reaches
+    existing installs."""
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: Path("gateway.cmd"))
+    reconciled: list[str] = []
+    monkeypatch.setattr(gateway_windows, "reconcile_scheduled_task", lambda name: reconciled.append(name) or True)
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
 
+    update_cmd._refresh_windows_gateway_launchers()
 
-
-
-
-
+    assert reconciled == ["Hermes_Gateway"]

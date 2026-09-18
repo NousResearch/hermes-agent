@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
+import hermes_cli.main_web_build as main_web_build
+import hermes_cli.main_install_repair as main_install_repair
+from hermes_cli import update_cmd
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -79,17 +82,21 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_main, "_resolve_update_branch", lambda args: "main"
     )
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
         hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
-    monkeypatch.setattr(hermes_main, "_is_fork", lambda *a, **k: False)
+    monkeypatch.setattr(update_cmd, "_is_fork", lambda *a, **k: False)
     monkeypatch.setattr(
         hermes_main, "_stash_local_changes_if_needed", lambda *a, **k: None
     )
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
     monkeypatch.setattr(
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        main_web_build, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
     monkeypatch.setattr(
         hermes_main, "_run_pre_update_backup", lambda *a, **k: None
@@ -103,8 +110,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
     # Gateway restart path (called after a successful update).
-    monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a: None)
+    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     # Keep the (now surfaced — #78574) gateway auto-restart phase away from
     # this machine's real gateways: discovery returns nothing, systemd is
     # unsupported, so the phase is a clean no-op for both snapshots.

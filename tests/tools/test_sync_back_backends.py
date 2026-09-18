@@ -131,6 +131,35 @@ class TestSSHBulkDownload:
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("timeout") == 120 or call_kwargs[1].get("timeout") == 120
 
+    def test_ssh_bulk_download_tolerates_only_socket_ignored_exit_2(self, ssh_mock_env, tmp_path):
+        """Live sockets are excluded up front, and an rc=2 whose stderr is solely
+        'socket ignored' lines (a socket not named *.sock) does not fail the transfer."""
+        dest = tmp_path / "backup.tar"
+        stderr = b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+        completed = subprocess.CompletedProcess([], 2, stderr=stderr)
+
+        with patch.object(subprocess, "run", return_value=completed) as mock_run:
+            ssh_mock_env._ssh_bulk_download(dest)  # must not raise
+
+        assert "--exclude='*.sock'" in " ".join(mock_run.call_args[0][0])
+
+    def test_ssh_bulk_download_still_fails_on_every_other_status(self, ssh_mock_env, tmp_path):
+        """rc=1; rc=2 with a real error beside the socket line, with no diagnostic at all, or
+        with 'socket ignored' merely inside a filename — all still raise."""
+        from tools.environments.base import EnvironmentConnectionError
+        dest = tmp_path / "backup.tar"
+        failures = (
+            subprocess.CompletedProcess([], 1, stderr=b"tar: home/testuser/.hermes/state.db: file changed as we read it"),
+            subprocess.CompletedProcess([], 2, stderr=(b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+                                                      b"tar: home/testuser/.hermes/state.db: Cannot open: Permission denied\n")),
+            subprocess.CompletedProcess([], 2, stderr=b"\n"),
+            subprocess.CompletedProcess([], 2, stderr=b"tar: socket ignored dir/state.db: Cannot open: Permission denied\n"),
+        )
+        for completed in failures:
+            with patch.object(subprocess, "run", return_value=completed):
+                with pytest.raises(EnvironmentConnectionError):
+                    ssh_mock_env._ssh_bulk_download(dest)
+
 
 class TestSSHCleanup:
     """Verify SSH cleanup() calls sync_back() before closing ControlMaster."""
@@ -228,6 +257,8 @@ class TestModalBulkDownload:
         assert args[1] == "-c"
         assert "tar cf -" in args[2]
         assert "-C / root/.hermes" in args[2]
+        # Live sockets cannot be archived; exclude them like the SSH backend.
+        assert "--exclude='*.sock'" in args[2]
 
 
     def test_modal_bulk_download_uses_120s_timeout(self, tmp_path):
@@ -299,6 +330,8 @@ class TestDaytonaBulkDownload:
         assert env._sandbox.process.exec.call_count == 2
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "tar cf" in tar_cmd
+        # Live sockets cannot be archived; exclude them like the SSH backend.
+        assert "--exclude='*.sock'" in tar_cmd
         # PID-suffixed temp path avoids collisions on sync_back retry
         assert "/tmp/.hermes_sync." in tar_cmd
         assert ".tar" in tar_cmd

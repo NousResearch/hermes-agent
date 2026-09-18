@@ -10,13 +10,16 @@ import {
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -75,6 +78,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -195,7 +199,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   async function handleDelete(endpoint: CustomEndpoint) {
-    if (!window.confirm(`Delete ${endpoint.name}?`)) {
+    // This panel is not internationalized at all — keep the literal it had.
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
       return
     }
 
@@ -227,9 +232,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       <div className="space-y-6">
         <section>
-          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />
+          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.customEndpoints.title} />
           <div className="divide-y divide-border/40 rounded-md border border-border/50">
             {endpoints.length ? (
               endpoints.map(endpoint => (
@@ -272,11 +278,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </Button>
                     {endpoint.source !== 'direct-config' && (
                       <Button
+                        aria-label={t.settings.customEndpoints.deleteEndpoint}
                         className="hover:text-destructive"
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title="Delete endpoint"
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -286,7 +292,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 </div>
               ))
             ) : (
-              <EmptyState description="Add an OpenAI-compatible endpoint below." title="No custom endpoints" />
+              <EmptyState
+                description={t.settings.customEndpoints.emptyDescription}
+                title={t.settings.customEndpoints.emptyTitle}
+              />
             )}
           </div>
         </section>
@@ -299,7 +308,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 Name
                 <Input
                   onChange={event => setForm(current => ({ ...current, name: event.target.value }))}
-                  placeholder="Axet Proxy"
+                  placeholder={t.settings.customEndpoints.namePlaceholder}
                   value={form.name}
                 />
               </label>
@@ -340,7 +349,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 <Input
                   inputMode="numeric"
                   onChange={event => setForm(current => ({ ...current, contextLength: event.target.value }))}
-                  placeholder="Auto"
+                  placeholder={t.settings.customEndpoints.contextPlaceholder}
                   value={form.contextLength}
                 />
               </label>

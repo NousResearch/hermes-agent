@@ -598,6 +598,7 @@ compression:
   enabled: true                                     # 开启/关闭压缩
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
+  tail_mode: legacy                                 # 尾部保留策略："legacy"（0.20×窗口的逐字尾部）或 "lean"（截取 2.5% 窗口、10K-25K 上下限的精简尾部，摘要中附带分块摘录、锚点索引与 session_search 恢复指引 — 压缩后保留 token 约减少 3 倍）
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
   context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文
@@ -737,6 +738,8 @@ Hermes 对流式传输有单独的超时层，以及用于非流式调用的陈�
 
 **陈旧非流检测**终止长时间没有响应的非流式调用。默认情况下，Hermes 在本地端点上禁用此功能，以避免长时间预填充期间的误报。如果您显式设置 `providers.<id>.stale_timeout_seconds`、`providers.<id>.models.<model>.stale_timeout_seconds` 或 `HERMES_API_CALL_STALE_TIMEOUT`，即使在本地端点上也会遵守该显式值。
 
+周期性的提供商等待提示仅在至少 **60 秒没有响应活动**后显示。Codex Responses 的**等待状态**描述的是没有流事件的时间，而不是生成的总时长：持续收到流事件（包括推理内容）时不会显示等待警告。如果事件停止，提示会显示多久没有收到流事件，而不会声称尚未收到任何响应；事件恢复后提示会清除。当重连进入新的首事件看门狗阶段时，等待状态也会跟随该阶段。这只影响状态显示，不会延长独立的调用总时长限制，也不会更改看门狗超时。Chat Completions 流同样会在数据块恢复时及时清除无输出警告，但不会覆盖本地模型加载状态。
+
 ## 上下文压力警告
 
 与迭代预算压力分开，上下文压力跟踪对话距**压缩阈值**有多近 —— 即上下文压缩触发以摘要旧消息的点。这有助于您和 agent 了解对话何时变长。
@@ -786,7 +789,7 @@ Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，�
 
 ## 辅助模型
 
-Hermes 使用"辅助"模型处理图像分析、网页摘要、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉和网页提取）。
+Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉分析）。（网页提取不是辅助任务：`web_extract` 和浏览器快照会确定性截断长内容，并将完整文本存储供 `read_file` 分页读取 —— 不涉及 LLM。）
 
 :::note 为什么 "auto" 使用您的主模型
 早期版本将聚合器用户（OpenRouter、Nous Portal）分流到便宜的 provider 端默认值。这令人惊讶 —— 付费购买聚合器订阅的用户会看到不同的模型处理其辅助流量。`auto` 现在对所有人使用主模型，`config.yaml` 中的每任务覆盖仍然优先（见下方[完整辅助配置参考](#full-auxiliary-config-reference)）。
@@ -801,7 +804,6 @@ $ hermes model
 → Configure auxiliary models
 
 [ ] vision               currently: auto / main model
-[ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
@@ -850,6 +852,10 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 `"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](/integrations/providers)。
 :::
 
+如果端点直接拒绝推理字段（例如 OpenAI 兼容中继后面的纯聊天模型返回 `400 Unrecognized request argument supplied: reasoning_effort`），辅助调用会去掉所有推理字段重试一次，因此该任务（例如会话标题）仍会以端点的默认行为完成。
+
+**后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](/user-guide/features/memory#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
+
 ### 完整辅助配置参考
 
 ```yaml
@@ -862,14 +868,6 @@ auxiliary:
     api_key: ""                # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
     timeout: 120               # 秒 —— LLM API 调用超时；视觉负载需要宽裕的超时
     download_timeout: 30       # 秒 —— 图像 HTTP 下载；慢速连接请增加
-
-  # 网页摘要 + 浏览器页面文本提取
-  web_extract:
-    provider: "auto"
-    model: ""                  # 例如 "google/gemini-2.5-flash"
-    base_url: ""
-    api_key: ""
-    timeout: 360               # 秒（6 分钟）—— 每次尝试的 LLM 摘要
 
   # 危险命令审批分类器
   approval:
@@ -920,7 +918,7 @@ auxiliary:
 ```
 
 :::tip
-每个辅助任务都有可配置的 `timeout`（秒）。默认值：vision 120s、web_extract 360s、approval 30s、compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
+每个辅助任务都有可配置的 `timeout`（秒）。默认值：vision 120s、approval 30s、compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
 :::
 
 :::info
@@ -953,7 +951,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`skills_hub`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1096,16 +1094,16 @@ auxiliary:
 | Vision 模型 | `AUXILIARY_VISION_MODEL` |
 | Vision 端点 | `AUXILIARY_VISION_BASE_URL` |
 | Vision API 密钥 | `AUXILIARY_VISION_API_KEY` |
-| Web 提取 provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
-| Web 提取模型 | `AUXILIARY_WEB_EXTRACT_MODEL` |
-| Web 提取端点 | `AUXILIARY_WEB_EXTRACT_BASE_URL` |
-| Web 提取 API 密钥 | `AUXILIARY_WEB_EXTRACT_API_KEY` |
 
-压缩和回退模型设置仅限 config.yaml。
+压缩和回退模型设置仅限 config.yaml。（`AUXILIARY_WEB_EXTRACT_*` 变量已废弃 —— 网页提取不再使用辅助 LLM。）
 
 :::tip
 运行 `hermes config` 查看您当前的辅助模型设置。覆盖仅在与默认值不同时显示。
 :::
+
+### 原生视觉嵌入预算（顶层 `vision:`）
+
+与 `auxiliary.vision`（选择描述器模型）不同：当*主*模型支持视觉时，`vision_analyze` 和浏览器截图会把真实像素嵌入工具结果，并在之后的每一轮请求中重复发送。`vision.embed_target_bytes`（默认 `262144`，限制在 64 KiB..4 MiB 之间）控制单次嵌入的大小；`vision.max_calls_per_image` 限制同一张图片在一个会话中可被嵌入的次数（未设置 = 委派子代理内为 3，主代理不限；`0` = 不限）。参见 [视觉 → 原生嵌入伴随整个会话](/user-guide/features/vision#原生嵌入伴随整个会话visionembed_target_bytes-与-visionmax_calls_per_image)。
 
 ## 推理努力程度
 
@@ -1240,7 +1238,7 @@ display:
 示例页脚：
 
 ```
-⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 3 file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.
   • concepts/automatic-organization.md — [patch] Could not find match for old_string
   • concepts/lora.md — [patch] Could not find match for old_string
   • concepts/rag-pipeline.md — [patch] Could not find match for old_string
@@ -1579,6 +1577,8 @@ timezone: "America/New_York"   # IANA 时区（默认："" = 服务器本地时�
 ```
 
 支持的值：任何 IANA 时区标识符（例如 `America/New_York`、`Europe/London`、`Asia/Kolkata`、`UTC`）。留空或省略以使用服务器本地时间。
+
+代理时钟、cron 调度和时间相关工具在所有操作系统上都遵循此时区。通过 `execute_code` 运行的代码在 Linux 和 macOS 上也会以 `TZ` 的形式继承它；在 Windows 上这些子进程保留操作系统配置的时区（Windows C 运行时只解析 POSIX 形式的 `TZ` 字符串，IANA 名称会产生错误的 UTC 偏移量），因此若子脚本必须以此时区显示本地时间，请直接设置 Windows 系统时区。
 
 ## Discord
 

@@ -15,7 +15,7 @@ Fetch Canvas LMS courses and assignments via API token.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/canvas` |
-| Path | `optional-skills/productivity/canvas` |
+| Path | `optional-skills/productivity\canvas` |
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |

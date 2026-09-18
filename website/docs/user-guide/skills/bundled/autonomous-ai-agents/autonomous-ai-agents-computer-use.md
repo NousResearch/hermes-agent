@@ -1,21 +1,21 @@
 ---
-title: "Computer Use — Drive the desktop in the background without stealing focus"
+title: "Computer Use — Drive the desktop background-first; escalate on signal"
 sidebar_label: "Computer Use"
-description: "Drive the desktop in the background without stealing focus"
+description: "Drive the desktop background-first; escalate on signal"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Computer Use
 
-Drive the desktop in the background without stealing focus.
+Drive the desktop background-first; escalate on signal.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents/computer-use` |
+| Path | `skills/autonomous-ai-agents\computer-use` |
 | Version | `2.0.0` |
 | Author | Francesco Bonacci (f-trycua), Hermes Agent |
 | License | MIT |
@@ -40,11 +40,13 @@ Everything here works with any tool-capable model — Claude, GPT, Gemini,
 or an open model on a local OpenAI-compatible endpoint. There is no
 Anthropic-native schema to learn.
 
-Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood
-for the platform plumbing. The Hermes-side `computer_use` tool exposed
-in this skill is a higher-level Hermes vocabulary; the raw cua-driver
-MCP tools (which a different agent harness would see) are NOT what you
-call — call the `computer_use` actions documented below.
+Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
+This wrapper skill teaches the Hermes `computer_use` workflow and action
+vocabulary. Call the actions documented below instead of raw cua-driver MCP
+tools. For driver internals and platform-specific behavior, follow the Cua
+skill installed by `cua-driver skills install`. Hermes autodetection is a
+planned cua-driver follow-up, so currently point Hermes at the resulting
+`~/.cua-driver/skills/cua-driver` directory or symlink it into your skill space.
 
 ## The canonical workflow
 
@@ -129,7 +131,7 @@ Returned fields (present when the driver supports them):
 - `effect`: `"confirmed"` (driver read the result back — done), `"unverifiable"`
   (delivered, but confirm it yourself by re-capturing), or `"suspected_noop"`
   (ran but almost certainly did nothing).
-- `escalation`: `{recommended: "px" | "foreground" | "page", reason}` — present
+- `escalation`: `{recommended: "px" | "foreground", reason}` — present
   only when there's a next rung to try.
 - `code`: a structured refusal like `"background_unavailable"` or
   `"foreground_unsupported"`.
@@ -145,10 +147,7 @@ Walk it in order:
 3. **Pixel, background.** After `effect:"suspected_noop"` or a structured
    refusal recommends `"px"` (or a `degraded` capture has no elements), click
    by `coordinate=[x,y]` instead of `element`.
-4. **Typed page.** When `escalation.recommended == "page"` and the exact
-   browser-page contract below is available, use the namespaced typed route
-   before native foreground. This is not the legacy `page` workflow.
-5. **Foreground.** After `effect:"suspected_noop"`,
+4. **Foreground.** After `effect:"suspected_noop"`,
    `code:"background_unavailable"`, or a verified pixel no-op,
    re-issue the SAME action with `delivery_mode="foreground"`. This briefly
    raises the window and restores focus after; pair with `bring_to_front=True`
@@ -156,6 +155,17 @@ Walk it in order:
    (it's a visible focus change) and is only appropriate when the user isn't
    actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
    tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
+5. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
+   Some Qt text components (KTextEditor: Kate, KWrite, KDevelop) discard
+   SYNTHETIC X keystrokes entirely — foreground `type` reports ok
+   ("Typed N characters into the focused widget", `effect:"unverifiable"`)
+   but a fresh AX capture shows the text never arrived, and raw XTest fails
+   identically (proven live, Aug 2026 — it is the toolkit, not the driver;
+   the same foreground route works on kcalc/Chrome). After ONE such
+   verified-lost round trip, stop retrying input rungs: write the file with
+   terminal/file tools and let the editor reload it, or drive the app's
+   DBus/CLI interface. Never loop the ladder against a surface that
+   verifiably swallows synthetic input.
 
 ```
 computer_use(action="click", element=7)
@@ -173,39 +183,16 @@ NOT conclude "cua-driver can't drive this app" — climb the ladder. If
 action schema lacks that property; choose another verified rung without
 inferring support from the executable's reported version.
 
-## Typed browser page rung
+## Page content is a separate toolset
 
-For page content in a supported GUI browser, the same `computer_use` tool
-exposes namespaced `cua_browser_*` actions. They do not collide with other
-browser tools. The contract is capability-based:
-
-1. Discover the exact native browser `(pid, window_id)` with `list_windows` or
-   native capture, then call `cua_browser_state` with both values.
-2. Continue only when it returns `status:"ok"`, `binding_quality:"exact"`, and
-   `mutation_allowed:true`. Select an opaque `tab_id` from that response.
-3. Call `cua_browser_state` with the `tab_id` for a fresh `semantic_v2`
-   snapshot. Use only refs from that newest snapshot and only for their
-   declared actions.
-4. Use the matching namespaced action (`cua_browser_click`,
-   `cua_browser_type`, `cua_browser_navigate`, or `cua_browser_pointer`).
-   Trusted input is the default. `input_route="dom_event"` is an explicit
-   trust downgrade; never choose it silently after a refusal.
-5. Every mutation invalidates refs. Take a fresh state snapshot before another
-   typed action. Never chain actions from remembered refs.
-
-`cua_browser_prepare` is a separate approved setup action. Driver-owned
-`isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
-An `existing_profile` is decided by cua-driver's immutable permission mode.
-Normal Hermes sessions use `standard`, which requires a certified protected
-host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
-`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
-`unrestricted` after that risk acceptance, so there are no runtime Cua
-approval prompts. Never invent, store, log, or reuse a grant token.
-
-Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
-permission UI, OS prompts, native dialogs, extension surfaces, unsupported
-engines, and any typed route that cannot prove exact binding or mutation
-permission. `cua_browser_dialog` covers page JavaScript dialogs only.
+`computer_use` is desktop-only: it does not expose a typed route for browser
+page content (no `cua_browser_*` actions). For reading or acting on a page's
+DOM — navigation, clicking a link by text, typed input into a form field —
+use the separate `browser_navigate`/`browser_click`/`browser_type`/`browser_snapshot`
+tools (or `browser_exec` when the Browser Use CLI backend is active); their
+own schemas document the current contract. Reserve `computer_use` for browser
+*chrome* (the address bar, permission prompts, extension popups, native
+dialogs) and anything else on screen that isn't page content.
 
 ### Key shortcuts vary per platform
 
@@ -311,7 +298,7 @@ in your conversation context.
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
 | Element index stale ("Element N not in cache") | SOM indices are only valid until the next `capture`. Re-capture before clicking. The wrapper carries opaque `element_token`s for stale-detection; you'll see an explicit error rather than a wrong click |
-| Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), typed page route when exact, then foreground. Browser chrome/native prompts remain native. Don't conclude the app is undrivable |
+| Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
@@ -363,7 +350,6 @@ These are platform deep dives, not duplicates — when the user reports
 `WINDOWS.md` for the UIA / UWP context that explains why and what to
 do differently.
 
-When `cua-driver skills install` autodetects Hermes (planned follow-up
-in trycua/cua), this happens automatically on install. Until then, ask
-the user to run the command and the pack lands in their agent skill
-space alongside this skill.
+Hermes autodetection is a planned follow-up in trycua/cua. For now, the command
+installs the pack under `~/.cua-driver/skills/cua-driver`; point Hermes at that
+directory or symlink it into the user's skill space.

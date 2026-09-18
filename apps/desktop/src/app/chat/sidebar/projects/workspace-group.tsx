@@ -2,15 +2,16 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
 
+import { type NewSessionPlacement, type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { setWorkspaceNodeOpen } from '@/store/layout'
+import { $sidebarShowAllSessions, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { newSessionInProfile, selectProfile } from '@/store/profile'
+import { newSessionInProfile, pinNewChatProfile, selectProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
@@ -32,12 +33,19 @@ interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  onNewSession,
+  onNewSessionSplit,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -45,6 +53,10 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   // that leaves this profile's spend unchanged doesn't repaint its header.
   const usage = useStoreSelector($sessionProfilesUsage, all => all[group.id])
   const rankIds = useStore($sidebarSessionRankIds)
+  // The sidebar's "Show all sessions" preference lifts the lane's page too —
+  // the same switch that widens the project overview, read at the leaf like
+  // overview-row does.
+  const showAllSessions = useStore($sidebarShowAllSessions)
   // Empty worktree/branch lanes start collapsed — they only show a "No sessions
   // yet" placeholder, so defaulting them open just adds noise. Profile lanes and
   // lanes that already hold sessions default open.
@@ -56,8 +68,10 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   // rows it hides are the ones the sort ranked last.
   const sessions = rankSessions(group.sessions, rankIds)
   // A profile previews the same handful a project does, and clicking its label
-  // is how you see the rest. Workspace groups page within what's loaded.
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : visibleCount)
+  // is how you see the rest. Workspace groups page within what's loaded unless
+  // the user asked for everything.
+  const laneCap = showAllSessions ? sessions.length : visibleCount
+  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : laneCap)
   const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
@@ -71,20 +85,16 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
     />
   )
 
-  const handleNewSession = async () => {
+  const prepareWorkspaceTarget = async () => {
     // Reveal the lane the new session targets — an empty worktree/branch lane
     // starts collapsed, so without this the session lands in a folder the user
     // can't see. Stable across the lane's default flipping open once populated.
     setWorkspaceNodeOpen(group.id, true)
 
     if (isProfileGroup) {
-      newSessionInProfile(group.id)
+      pinNewChatProfile(group.id)
 
-      return
-    }
-
-    if (!onNewSession) {
-      return
+      return true
     }
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
@@ -96,18 +106,64 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
       } catch (err) {
         notifyError(err, t.statusStack.coding.switchFailed(group.label))
 
-        return
+        return false
       }
     }
 
+    return true
+  }
+
+  const handleNewSession = async () => {
+    if (isProfileGroup) {
+      setWorkspaceNodeOpen(group.id, true)
+      newSessionInProfile(group.id)
+
+      return
+    }
+
+    if (!onNewSession || !(await prepareWorkspaceTarget())) {
+      return
+    }
+
     onNewSession(group.path)
+  }
+
+  const handleNewSessionSplit = async (placement: NewSessionPlacement) => {
+    if (!onNewSessionSplit || !(await prepareWorkspaceTarget())) {
+      return
+    }
+
+    onNewSessionSplit(placement.dir, {
+      anchor: placement.anchor,
+      before: placement.before,
+      cwd: group.path,
+      profile: isProfileGroup ? group.id : placement.profile
+    })
   }
 
   // Profile groups start a fresh session in that profile but keep the
   // all-profiles browse view; workspace groups seed the new session's cwd.
   // Main checkout lanes are branch-targeted.
   const addButton = (onNewSession || isProfileGroup) && (
-    <WorkspaceAddButton label={s.newSessionIn(group.label)} onClick={() => void handleNewSession()} />
+    <WorkspaceAddButton
+      label={s.newSessionIn(group.label)}
+      onClick={() => void handleNewSession()}
+      onPointerDown={
+        onNewSessionSplit
+          ? event => {
+              // Drag the "+" onto a chat zone: create the session pinned to
+              // this lane's cwd (or profile for profile groups), exactly where
+              // it's dropped. A sub-threshold release falls through to the
+              // onClick above.
+              startNewSessionDrag(placement => void handleNewSessionSplit(placement), event, {
+                cwd: group.path,
+                label: s.newSessionIn(group.label),
+                profile: isProfileGroup ? group.id : undefined
+              })
+            }
+          : undefined
+      }
+    />
   )
 
   return (

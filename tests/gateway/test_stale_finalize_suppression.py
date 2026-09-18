@@ -232,12 +232,21 @@ async def test_stale_finalize_does_not_suppress_complete_response(
     assert any(FULL_RESPONSE in payload for payload in all_payloads), (
         f"complete response never reached the platform; payloads: {all_payloads!r}"
     )
-    # The preferred recovery is an in-place reconciliation edit of the
-    # streamed message (single corrected message, no duplicate).
+    # The recovery must not duplicate: when the gateway suppressed its normal
+    # final send (already_sent), the complete response must have been the
+    # payload of the message that finalized on screen — either an in-place
+    # reconciliation/finalize edit, or (consumer-declared final contract,
+    # 2026-08-16) the primary send itself when the authoritative final was
+    # adopted before the first flush. Both shapes are single-message.
     if result.get("already_sent"):
-        assert any(
+        _edit_carried = any(
             e["content"] == FULL_RESPONSE and e["finalize"] for e in adapter.edits
-        ), "already_sent=True but no edit carried the complete response"
+        )
+        _send_carried = any(c["content"] == FULL_RESPONSE for c in adapter.sent)
+        assert _edit_carried or _send_carried, (
+            "already_sent=True but neither an edit nor the primary send "
+            "carried the complete response"
+        )
 
 
 @pytest.mark.asyncio
@@ -364,8 +373,23 @@ def _consumer():
 
 
 class TestDeliveredFinalMatches:
-    def test_no_record_returns_none(self):
+    def test_no_record_no_visible_text_returns_false(self):
+        """#95382 tightening: a record-less consumer with no visible match
+        for the final text is a demonstrable non-delivery, not legacy trust."""
         consumer = _consumer()
+        assert consumer.delivered_final_matches("anything") is False
+
+    def test_no_record_but_visible_final_returns_true(self):
+        """Ambiguous-dedup control: visible text equals the final answer."""
+        consumer = _consumer()
+        consumer._already_sent = True
+        consumer._last_sent_text = FULL_RESPONSE
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is True
+
+    def test_no_record_ambiguous_timeout_returns_none(self):
+        """The explicitly-marked ambiguous timeout keeps legacy trust."""
+        consumer = _consumer()
+        consumer._delivery_ambiguous = True
         assert consumer.delivered_final_matches("anything") is None
 
     def test_matching_record_returns_true(self):
@@ -607,3 +631,34 @@ async def test_empty_fallback_final_after_split_records_only_what_survives():
     # The head is gone from the chat, so the complete answer was NOT delivered:
     # the gateway must be told this is a mismatch and send it.
     assert consumer.delivered_final_matches(complete) is False
+
+
+@pytest.mark.asyncio
+async def test_flood_retry_never_resends_full_payload_after_partial_split_delivery(monkeypatch):
+    """A short-wait flood result that carries ``partial_overflow`` means the head of a split
+    payload is already on screen: the fallback flood retry must NOT sleep and re-send the whole
+    content (that duplicates the head); it returns the partial failure to the caller."""
+    consumer = _consumer()
+    calls: list[str] = []
+
+    async def partial_flood_send(chat_id, content, reply_to=None, metadata=None):
+        calls.append(content)
+        return SendResult(
+            success=False, error="Flood control exceeded. Retry after 2 seconds",
+            raw_response={"partial_overflow": True, "delivered_chunks": 1, "total_chunks": 3},
+        )
+
+    monkeypatch.setattr(consumer.adapter, "send", partial_flood_send)
+    monkeypatch.setattr(consumer, "_fallback_flood_retry_delay", lambda result: 0.0)
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await consumer._send_with_flood_retry(content="HEAD TAIL", retry_log="retry %.1fs")
+
+    assert result.success is False and result.raw_response["partial_overflow"] is True
+    assert calls == ["HEAD TAIL"], f"full payload re-sent after partial delivery: {calls}"
+    assert slept == []

@@ -9,7 +9,7 @@ export interface ComposerAttachment {
    * which is content/path-derived, this survives draft cloning but changes
    * when the user removes and re-adds the same attachment. */
   occurrenceId?: string
-  kind: 'file' | 'folder' | 'image' | 'review' | 'terminal' | 'url'
+  kind: 'file' | 'folder' | 'image' | 'terminal' | 'url'
   label: string
   detail?: string
   refText?: string
@@ -19,6 +19,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
+  titlePreview?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.
@@ -406,15 +408,16 @@ export const clearSessionDraft = (scope: string | null | undefined) => stashSess
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while
  * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
- * vanish from the composer when selection follows the new tip. No-op unless both
- * keys resolve, differ, and the source has content. Does not overwrite a
+ * vanish from the composer when selection follows the new tip. A new chat is
+ * stored under the pre-session key until its first session id arrives. No-op
+ * unless the destination resolves, the keys differ, and the source has content. Does not overwrite a
  * non-empty destination draft.
  */
 export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
   const from = draftKey(fromKey)
   const to = draftKey(toKey)
 
-  if (!fromKey || !toKey || from === to) {
+  if (!toKey?.trim() || from === to) {
     return false
   }
 
@@ -434,6 +437,30 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
   clearSessionDraft(fromKey)
 
   return true
+}
+
+/**
+ * The stored id the pre-session chat is about to be re-homed onto, announced
+ * by the site that assigns it (first-send `session.create`, cold-start
+ * resume-last-session) and consumed by the composer's scope swap.
+ *
+ * The swap cannot tell an assignment apart from the user opening another
+ * session from a new chat — both flip the scope from the `__new__` bucket to
+ * a concrete id — and only the assignment may carry the draft along: a
+ * sidebar click keeps per-scope drafts where they were typed.
+ */
+let announcedNewSessionDraftKey: string | null = null
+
+export function announceNewSessionDraftKey(toKey: string | null | undefined): void {
+  announcedNewSessionDraftKey = toKey?.trim() || null
+}
+
+/** Consume the announcement; move the `__new__` draft when it names `toKey`. */
+export function adoptNewSessionDraft(toKey: string | null | undefined): boolean {
+  const announced = announcedNewSessionDraftKey
+  announcedNewSessionDraftKey = null
+
+  return !!announced && announced === toKey?.trim() && migrateSessionDraft(null, toKey)
 }
 
 export function setComposerDraft(value: string) {

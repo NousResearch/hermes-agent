@@ -1,4 +1,4 @@
-"""Deterministic reproduction of the recurring-cron EAGAIN wedge (t_8b5480b3).
+"""Deterministic reproduction of the recurring-cron EAGAIN in-memory wedge (t_8b5480b3).
 
 Scenario modelled on the 2026-08-14 incident: a recurring no_agent interval job
 whose script subprocess raises EAGAIN ([Errno 11] Resource temporarily
@@ -6,12 +6,17 @@ unavailable) during a substrate thread-exhaustion spike. After the failure is
 recorded (terminal 'failed' execution row), the job must be re-dispatched on
 the NEXT tick once the substrate recovers — with no force-run.
 
-The os-reviewer (t_20e23f84) established the real incident wedge: 4 recurring
-no_agent jobs recorded ZERO executions for ~1h47m after EAGAIN while
-`next_run_at` kept advancing (they stayed 'due') but `_submit_with_guard`
-never dispatched them, and the wedge SURVIVED a gateway restart. That points
-at a PERSISTED non-dispatch state, not just the in-memory `_running_job_ids`
-leak (which t_3778a491 already bounds).
+SCOPE NOTE (honest): this file exercises the in-memory EAGAIN-release class —
+the claim taken by ``_submit_with_guard`` is released when the submit/init
+path fails, so the NEXT tick re-dispatches. It passes on unfixed base because
+a terminal ``failed`` execution row does not itself suppress a recurring job's
+next due fire; that is pre-existing behavior, not the fix. The persisted-state
+(restart-surviving) half of the incident — a recurring job whose persisted
+``last_status=error`` and ``next_run_at`` parked in the future is never
+re-dispatched without force-run/resume — is covered by
+``test_recurring_persisted_error_recovery.py``, which provides the clean
+behavioral RED (unfixed: no execution) / GREEN (fixed: re-dispatched) for the
+new recovery path.
 
 This file drives the REAL `tick()` end-to-end against a throwaway HERMES_HOME:
   tick 1 -> script EAGAINs (subprocess.run raises OSError 11) -> failed exec row

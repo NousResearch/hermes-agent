@@ -1,5 +1,6 @@
 """Surfacing tests — managed scope shown in `config show` and `hermes doctor`."""
 import pytest
+from hermes_cli import doctor_config
 
 
 @pytest.fixture
@@ -52,5 +53,5 @@ def test_doctor_silent_with_no_managed_scope(tmp_path, monkeypatch, capsys):
     from hermes_cli import managed_scope, doctor
 
     managed_scope.invalidate_managed_cache()
-    doctor.managed_scope_check()
+    doctor_config.managed_scope_check()
     assert capsys.readouterr().out.strip() == ""

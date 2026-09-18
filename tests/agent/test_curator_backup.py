@@ -135,6 +135,32 @@ def test_rollback_is_itself_undoable(backup_env):
     )
 
 
+def test_rollback_aborts_when_safety_snapshot_fails(backup_env, monkeypatch):
+    """Rollback must not replace live skills without an undo snapshot."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    skill_file = _write_skill(skills, "alpha", body="snapshot state") / "SKILL.md"
+    target = cb.snapshot_skills(reason="rollback-target")
+    assert target is not None
+
+    skill_file.write_text("current state\n", encoding="utf-8")
+    current_bytes = skill_file.read_bytes()
+    monkeypatch.setattr(cb, "snapshot_skills", lambda *args, **kwargs: None)
+
+    ok, msg, restored = cb.rollback(target.name)
+
+    assert not ok
+    assert "safety snapshot failed" in msg
+    assert restored is None
+    assert skill_file.read_bytes() == current_bytes
+    assert not list((skills / ".curator_backups").glob(".rollback-staging-*"))
+
+
+def test_rollback_no_snapshots_returns_error(backup_env):
+    cb = backup_env["cb"]
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "no matching backup" in msg.lower() or "no snapshot" in msg.lower()
 
 
 def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
@@ -458,3 +484,116 @@ def test_rollback_recovers_cleanly_from_a_partial_extract(backup_env, monkeypatc
     assert present == ["alpha", "beta"], f"tree not restored: {present}"
     assert "current copy" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
     assert "current only" in (skills / "beta" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_snapshot_excludes_git_and_curator_backups_and_hub(backup_env):
+    """Tar snapshots must exclude .git, .curator_backups, and .hub (top-level and nested)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    # Top-level excluded structures
+    (skills / ".git").mkdir()
+    (skills / ".git" / "config").write_text("[core]\nrepositoryformatversion = 0\n", encoding="utf-8")
+    (skills / ".hub").mkdir()
+    (skills / ".hub" / "lock.json").write_text("{}", encoding="utf-8")
+
+    # Regular skill with nested .git
+    _write_skill(skills, "alpha", body="alpha body")
+    nested_git = skills / "alpha" / ".git"
+    nested_git.mkdir()
+    (nested_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="test-exclude-git")
+    assert snap_dir is not None
+
+    archive = snap_dir / "skills.tar.gz"
+    assert archive.exists()
+
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getnames()
+
+    # Ensure no member contains .git, .curator_backups, or .hub
+    for name in members:
+        parts = Path(name).parts
+        assert ".git" not in parts, f".git found in archive: {name}"
+        assert ".curator_backups" not in parts, f".curator_backups found in archive: {name}"
+        assert ".hub" not in parts, f".hub found in archive: {name}"
+
+    assert "alpha/SKILL.md" in members
+
+
+def test_rollback_preserves_top_level_git(backup_env):
+    """Rollback must preserve repository .git metadata untouched in the skills root."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    git_dir = skills / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    _write_skill(skills, "alpha", body="v1")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+
+    # Mutate skills tree and git metadata
+    _write_skill(skills, "alpha", body="v2")
+    _write_skill(skills, "beta", body="new")
+    (git_dir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+
+    assert (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8").find("v1") != -1
+    assert not (skills / "beta").exists()
+    assert (git_dir / "HEAD").exists()
+    assert (git_dir / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
+
+
+
+def test_rollback_preserves_nested_git_inside_skill(backup_env):
+    """A skill that is itself a git checkout keeps its .git across rollback:
+    the snapshot excludes it, so rollback must carry it over from the live tree."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="v1")
+    nested_git = skills / "alpha" / ".git"
+    nested_git.mkdir()
+    (nested_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+
+    _write_skill(skills, "alpha", body="v2")
+    (nested_git / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    # Live .git state (post-snapshot) is what survives — it was never archived.
+    assert (nested_git / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
+    staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    assert staging == [], f"staging dir left behind: {staging}"
+
+
+def test_rollback_preserves_nested_git_file_pointer(backup_env):
+    """Submodule / worktree checkouts use a ``.git`` FILE (gitdir: pointer);
+    it must be carried across rollback like the dir form."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="v1")
+    git_ptr = skills / "alpha" / ".git"
+    git_ptr.write_text("gitdir: ../../.git/modules/alpha\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        assert "alpha/.git" not in tf.getnames()
+
+    _write_skill(skills, "alpha", body="v2")
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert git_ptr.is_file()
+    assert git_ptr.read_text(encoding="utf-8").startswith("gitdir:")

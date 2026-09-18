@@ -1,14 +1,14 @@
 import type { ThreadMessage } from '@assistant-ui/react'
+import type { ModelOptionsResult } from '@hermes/shared'
 
 import type { QuickModelOption } from '@/app/chat/composer/types'
-import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
+import type { ClientSessionState } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
-import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
-export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
 export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 const THINKING_STATUS_PREFIX_RE =
@@ -43,6 +43,7 @@ export function createClientSessionState(
     interimBoundaryPending: false,
     needsInput: false,
     turnStartedAt: null,
+    turnLive: false,
     usage: null
   }
 }
@@ -172,31 +173,6 @@ export function attachmentId(kind: ComposerAttachment['kind'], value: string): s
   return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
-/** A GitHub PR review-thread (`#discussion_r<id>`) or conversation
- *  (`#issuecomment-<id>`) deep link — the one paste shape that can resolve to
- *  a structured review attachment instead of a plain `@url:` chip. */
-export const PR_COMMENT_URL_RE =
-  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:\/[^#\s]*)?#(?:discussion_r|issuecomment-)\d+$/
-
-/** The send-time expansion of a `review` attachment. `detail` holds the
- *  resolved comment as JSON (HermesPrComment shape); a malformed payload falls
- *  back to the attachment's URL ref so the send never throws. */
-export function reviewCommentBlock(detail: string): null | string {
-  try {
-    const c = JSON.parse(detail)
-
-    const anchor = c.path
-      ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
-      : `PR #${c.prNumber}`
-
-    const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
-
-    return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``
-  } catch {
-    return null
-  }
-}
-
 export function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
@@ -211,18 +187,6 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
-  }
-
-  // A resolved PR review comment: expand to a fenced block carrying the
-  // anchor (file:line), author, body, and — when present — the diff hunk the
-  // comment sits on, so "address this" needs no re-explaining what "this" is.
-  // A malformed payload falls through to the refText (the pasted URL).
-  if (attachment.kind === 'review' && attachment.detail) {
-    const block = reviewCommentBlock(attachment.detail)
-
-    if (block) {
-      return block
-    }
   }
 
   if (attachment.refText) {
@@ -294,54 +258,8 @@ export function normalizePersonalityValue(value: string): string {
   return !trimmed || trimmed === 'default' || trimmed === 'none' ? '' : trimmed
 }
 
-export function parseSlashCommand(command: string) {
-  // `[\s\S]*` (not `.*`): the arg may span newlines — `/goal <multi-line text>`
-  // or a skill command with a long pasted context. The old `.*$` regex failed
-  // the whole match on any newline, so every multiline slash command parsed as
-  // an empty name and got swallowed (#41323, #55510). The backend and CLI both
-  // split on any whitespace (`split(maxsplit=1)`), so this is the parity fix.
-  const match = command.replace(/^\/+/, '').match(/^(\S+)([\s\S]*)$/)
-
-  return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
-}
-
-export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
-  if (!raw || typeof raw !== 'object') {
-    return null
-  }
-
-  const row = raw as Record<string, unknown>
-  const str = (value: unknown) => (typeof value === 'string' ? value : undefined)
-
-  switch (row.type) {
-    case 'exec':
-
-    case 'plugin':
-      return { type: row.type, output: str(row.output) }
-
-    case 'alias':
-      return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
-
-    case 'skill':
-      return typeof row.name === 'string'
-        ? { type: 'skill', name: row.name, message: str(row.message), display: str(row.display) }
-        : null
-
-    case 'send':
-      return typeof row.message === 'string'
-        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
-        : null
-
-    case 'prefill':
-      return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
-
-    default:
-      return null
-  }
-}
-
 export function quickModelOptions(
-  data: ModelOptionsResponse | undefined,
+  data: ModelOptionsResult | undefined,
   currentProvider: string,
   currentModel: string
 ): QuickModelOption[] {
@@ -458,7 +376,13 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: timelineMeta }
+      metadata: {
+        custom: {
+          ...timelineMeta,
+          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+        }
+      }
     } as ThreadMessage
   }
 
@@ -482,6 +406,9 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...(message.interim ? { interim: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
+        ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
+        // Structured failure layer for the error card (see lib/error-surface).
+        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         ...reactionMeta
       }
     }
@@ -513,6 +440,45 @@ function isToolOnlyAssistant(message: ChatMessage): boolean {
 }
 
 /**
+ * Concatenate a tool-only follow-up message's parts onto its predecessor's,
+ * dropping any incoming `tool-call` part whose `toolCallId` the predecessor
+ * already carries. A repeated id here is the SAME call re-attached (structural
+ * carry-over re-adding a cached row's tool calls, or a live-turn projection
+ * that also exists as a committed row — #87857): folding both copies into one
+ * message manufactures the duplicate key that crashes assistant-ui's
+ * `useResources`, and renaming it would render the same call twice. Genuinely
+ * new calls in the same follow-up row are preserved.
+ */
+export function concatToolPartsUnique(
+  prevParts: readonly ChatMessagePart[],
+  nextParts: readonly ChatMessagePart[]
+): ChatMessagePart[] {
+  const seen = new Set<string>()
+
+  for (const part of prevParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      seen.add(part.toolCallId)
+    }
+  }
+
+  const out = [...prevParts]
+
+  for (const part of nextParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      if (seen.has(part.toolCallId)) {
+        continue
+      }
+
+      seen.add(part.toolCallId)
+    }
+
+    out.push(part)
+  }
+
+  return out
+}
+
+/**
  * Fold each settled tool-only assistant message into the preceding assistant
  * message so its calls join that message's tool group (and can collapse into
  * the auto-scrolling window). Render-only — never mutates the `$messages` store
@@ -540,7 +506,7 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
                   (latest, value) => (latest === undefined ? value : Math.max(latest, value)),
                   undefined
                 ),
-              parts: [...prev.parts, ...message.parts]
+              parts: concatToolPartsUnique(prev.parts, message.parts)
             }
 
       cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })

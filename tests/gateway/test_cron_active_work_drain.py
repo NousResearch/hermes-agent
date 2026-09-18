@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +84,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         import cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
-        import tools.browser_tool as _bt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path
@@ -97,7 +98,8 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         marked_calls = []
         real_mark = sched.mark_running_jobs_interrupted

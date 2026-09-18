@@ -65,6 +65,7 @@ def _install_agent_stubs(monkeypatch, observed: dict):
     ``observed["agent_runs"]`` counts real agent invocations.
     """
     import cron.scheduler as sched
+    from cron import scheduler_delivery as sched_delivery
 
     observed.setdefault("prompts", [])
     observed.setdefault("agent_runs", 0)
@@ -97,7 +98,7 @@ def _install_agent_stubs(monkeypatch, observed: dict):
         },
     )
 
-    monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+    monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
     monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
     monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
@@ -290,6 +291,23 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1
     # First run: new output is injected as monitor context.
     assert "state A" in observed["prompts"][0]
+
+
+def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
+    """Runtime monitor data with a WhatsApp-style bidi marker must not block the job (#111523)."""
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "printf 'Alice\\342\\200\\252 Work\\n'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _, _, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert observed["agent_runs"] == 1
+    assert "\u202a" not in observed["prompts"][0]
+    assert "Alice Work" in observed["prompts"][0]
 
 
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):

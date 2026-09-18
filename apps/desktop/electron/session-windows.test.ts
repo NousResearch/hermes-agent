@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -67,6 +68,12 @@ test('buildSessionWindowUrl avoids a double slash when the dev server has a trai
   assert.equal(url, 'http://localhost:5173/?win=secondary#/abc123')
 })
 
+test('buildSessionWindowUrl carries the owning profile in the query before the hash (#82768)', () => {
+  const url = buildSessionWindowUrl('abc123', { devServer: 'http://localhost:5173', profile: 'work', watch: true })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1&profile=work#/abc123')
+})
+
 test('buildSessionWindowUrl encodes the session id in the hash route', () => {
   const url = buildSessionWindowUrl('a b/c', { devServer: 'http://localhost:5173' })
 
@@ -88,10 +95,47 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildInstanceWindowUrl marks a full peer without selecting a specialized renderer', () => {
+  const url = buildInstanceWindowUrl({ devServer: 'http://localhost:5173/' })
+
+  assert.equal(url, 'http://localhost:5173/?peer=1')
+  assert.ok(!url.includes('win='))
+})
+
+test('buildInstanceWindowUrl marks a packaged full peer', () => {
+  const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
+
+  assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
+})
+
+test('full peers carry their boot owner but only explicit profile windows pin future chats', () => {
+  for (const source of [{ devServer: 'http://localhost:5173/' }, { rendererIndexPath: '/opt/app/index.html' }]) {
+    for (const connectionId of [null, 'remote&work']) {
+      for (const profileWindow of [false, true]) {
+        const url = new URL(buildInstanceWindowUrl({ ...source, connectionId, profile: 'work', profileWindow }))
+        assert.equal(url.searchParams.get('peer'), '1')
+        assert.equal(url.searchParams.get('profile'), 'work')
+        assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+        assert.equal(url.searchParams.get('profileWindow'), profileWindow ? '1' : null)
+        assert.equal(url.searchParams.has('win'), false)
+        assert.equal(url.hash, '')
+      }
+    }
+  }
+})
+
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
   const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
   assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
+})
+
+test('instanceWindowBounds keeps the cascaded window inside the work area it lands on', () => {
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]
+  // Source docked at the bottom-right: a raw +32/+32 cascade would overshoot both edges.
+  const bounds = instanceWindowBounds({ x: 700, y: 240, width: 1220, height: 800 }, { width: 1, height: 1 }, displays)
+
+  assert.deepEqual(bounds, { width: 1220, height: 800, x: 700, y: 240 })
 })
 
 test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {

@@ -686,6 +686,7 @@ class TestMigratedPlatformWiring:
         [
             "teams", "telegram", "discord", "slack",
             "matrix", "dingtalk", "feishu", "wecom_callback",
+            "google_chat",
         ],
     )
     def test_lazy_installable_platform_has_split_wiring(self, platform_name):

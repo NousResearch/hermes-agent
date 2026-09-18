@@ -2224,7 +2224,10 @@ def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
 
-    (backup.run_quick_backup if getattr(args, "quick", False) else backup.run_backup)(args)
+    if getattr(args, "quick", False):
+        backup.run_quick_backup(args)
+    elif backup.run_backup(args) is False:
+        raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:

@@ -203,6 +203,25 @@ class TestScanFile:
         assert {"sys_prompt_override", "fake_policy", "invisible_unicode"} <= ids
         assert any(fi.category == "injection" for fi in findings)
 
+    def test_emoji_zwj_in_skill_content_is_clean(self, tmp_path):
+        """A decorative emoji must not condemn the whole SKILL.md — the same U+200D false
+        positive that dropped context files applies to the skill scanner."""
+        f = tmp_path / "SKILL.md"
+        f.write_text("---\nname: emoji-skill\ndescription: x\n---\n\n"
+                     "Report like \U0001F468\u200D\U0001F3EB and \U0001F408\u200D\u2B1B.\n")
+        assert "invisible_unicode" not in {fi.pattern_id for fi in scan_file(f, "SKILL.md")}
+
+    def test_bare_zwj_in_skill_content_still_flagged(self, tmp_path):
+        f = tmp_path / "SKILL.md"
+        f.write_text("---\nname: x\n---\n\npay\u200dload\n")
+        assert "invisible_unicode" in {fi.pattern_id for fi in scan_file(f, "SKILL.md")}
+
+    def test_mixed_line_keeps_the_skill_finding(self, tmp_path):
+        f = tmp_path / "SKILL.md"
+        f.write_text("---\nname: x\n---\n\nUse \U0001F3C4\u200D\u2642\uFE0F then pay\u200dload\n")
+        assert "invisible_unicode" in {fi.pattern_id for fi in scan_file(f, "SKILL.md")}
+
+
     def test_sudo_event_names_are_not_sudo_usage(self, tmp_path):
         """`sudo.request` / `sudo.respond` are the gateway's secure-prompt wire events (the masked sudo
         password ask). A client plugin that relays those prompts must spell them out, and they are not

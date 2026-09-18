@@ -17,8 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+# Shared with the threat scanner and the cron tripwire so the three invisible-unicode
+# checks cannot drift: the emoji-ZWJ exemption for U+200D lives in threat_patterns.
+from tools.threat_patterns import zwj_is_emoji_only
 
-SCANNER_VERSION = "skills-guard-v5"
+
+# v6: U+200D inside an emoji ZWJ sequence is no longer an `invisible_unicode` finding.
+SCANNER_VERSION = "skills-guard-v6"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -575,7 +580,15 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):
-        if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
+        # U+200D is exempt when every joiner on the line joins emoji — a decorative emoji
+        # must not condemn the whole SKILL.md. A bare joiner elsewhere on the same line
+        # still reports, and every other invisible codepoint is unaffected.
+        char = next(
+            (c for c in INVISIBLE_CHARS
+             if c in line and not (c == "\u200d" and zwj_is_emoji_only(line))),
+            None,
+        )
+        if char is not None:
             name = _unicode_char_name(char)
             findings.append(Finding("invisible_unicode", "high", "injection", rel_path, i,
                                     f"U+{ord(char):04X} ({name})",

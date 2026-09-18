@@ -1,0 +1,14 @@
+name: jev-agent-router
+repo: https://github.com/Pinutss/jev-agent-router
+sha: e1e63a5f5fc667eb555e9f195e965bce720096fa
+description: Picks one agent for a task, explains the choice, abstains, or falls back once. Portable Agent Plugins v1 package with agent_route MCP.
+maintainer: Pinutss
+tier: community
+category: general
+docs_url: https://github.com/Pinutss/jev-agent-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

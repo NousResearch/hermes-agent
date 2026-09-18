@@ -199,6 +199,9 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._run_agent = pytest.fail
     runner._post_turn_goal_continuation = AsyncMock()
 
+    # Initialize the unrelated topic-recovery thread pool before measuring the
+    # lease clock. Keep the one-second rejection bound and real dispatch path.
+    await asyncio.to_thread(runner._recover_telegram_topic_thread_id, _event().source)
     try:
         response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
     finally:

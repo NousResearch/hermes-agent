@@ -37,6 +37,18 @@ delivery notification because the executor completed immediately. The fixture no
 blocks executor completion until delivery is observed, preserving both event types,
 task correlation and the original two-second bounds. Five fresh-process runs of
 all seven persistent-worker tests passed without retry (35 assertions).
+Full current-main core run: 37,977 passed, 337 skipped and one failed in 1,066.4s.
+The failure cancelled full dispatch during initialization of the unrelated topic
+lookup thread pool, before the lease clock. The lease file passed all 12 tests
+in both direct and canonical isolated runs. The fixture now initializes that pool
+before timing dispatch, retaining the real path, one-second rejection deadline,
+20ms lease budget and all fail-closed/no-goal/no-transcript assertions. A new full
+core run is in progress; the earlier aggregate failure is not claimed green.
+The first native Workstation run had 472 passed, two skipped and a Windows file
+replacement access failure under a checkout-nested temporary directory. The
+canonical isolated runner repeats it using independent OS temporary roots.
+Desktop reruns exposed host saturation when multiple suites used default worker
+counts; qualification now limits Desktop workers without changing test timeouts.
 
 ## H-064 — Canonical Work Loop (2026-09-17)
 

@@ -82,7 +82,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     if (!heldEntry.noted) {
       recordGroupActivity(context.group, {
         kind: 'held',
-        member: member.name,
+        member: groupMemberKey(member),
         thread
       })
     }
@@ -94,7 +94,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
+    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member, context.group))
   })
 
   // Images riding this delta (user attachments — member entries don't
@@ -165,7 +165,7 @@ export async function runGroupRoundMember(
     const reason = String(error?.data?.reason || '').trim()
     recordGroupActivity(context.group, {
       kind: 'failed',
-      member: member.name,
+      member: groupMemberKey(member),
       thread,
       ...(reason
         ? {
@@ -213,7 +213,7 @@ export async function runGroupRoundMember(
   ) {
     recordGroupActivity(context.group, {
       kind: 'cancelled',
-      member: member.name,
+      member: groupMemberKey(member),
       thread
     })
 

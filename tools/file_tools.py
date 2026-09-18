@@ -466,12 +466,71 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     return json.dumps(result_dict, ensure_ascii=False)
 
 
-def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
+_DEDUP_OVERLAP_THRESHOLD = 0.6
+
+
+def _find_overlapping_flagged_key(task_data: dict, resolved_str: str, offset: int, limit: int) -> tuple | None:
+    """Find an already-flagged dedup key on the same path whose line range
+    substantially overlaps ``[offset, offset + limit)``.
+
+    The exact-tuple dedup guard (``dedup_key = (path, offset, limit)``) is
+    evadable by trivially varying offset/limit while re-reading essentially the
+    same region: a different tuple resets the "how many times in a row" counter
+    to zero. This closes that gap WITHOUT changing what gets returned to the
+    model (the caller still serves/blocks the read exactly as before) -- it only
+    decides WHICH existing counter a near-duplicate read should continue, so a
+    perturbed-but-overlapping read escalates instead of resetting.
+
+    Deliberately keyed on the REQUESTED range of the prior flagged read, not
+    its actual returned content -- two earlier upstream attempts at this exact
+    guard were abandoned after review found they recorded requested ranges as
+    "covered" even when the read was truncated, silently misclassifying
+    partial reads. This function is never used to decide what content a read
+    returns (only whether an already-flagged counter continues), so a
+    request/actual mismatch here can at worst delay an escalation by one call,
+    never suppress content the model hasn't seen.
+    """
+    new_start, new_end, new_len = offset, offset + limit, limit
+    best_key, best_ratio = None, 0.0
+    # Candidates come from BOTH hit containers: a key may have been flagged by a
+    # repeated exact read (dedup_hits, cleared on any other tool call) or by a
+    # prior overlap-chained escalation (dedup_overlap_hits, which survives
+    # intervening tool calls) -- either is evidence the region was already
+    # called out, so both seed the search.
+    candidates = dict(task_data.get("dedup_hits") or {})
+    candidates.update(task_data.get("dedup_overlap_hits") or {})
+    for key, hits in candidates.items():
+        if hits < 1 or key[0] != resolved_str or key == (resolved_str, offset, limit):
+            continue
+        _, old_offset, old_limit = key
+        old_start, old_end = old_offset, old_offset + old_limit
+        # A model consolidating a previously-flagged narrow window into one larger,
+        # wider read is the encouraged behavior, not a repeat offense -- only a read
+        # comparable in size to (or smaller than) the flagged window counts.
+        if new_len > old_limit * 1.5:
+            continue
+        overlap = max(0, min(new_end, old_end) - max(new_start, old_start))
+        if overlap <= 0:
+            continue
+        ratio = overlap / min(new_end - new_start, old_end - old_start)
+        if ratio >= _DEDUP_OVERLAP_THRESHOLD and ratio > best_ratio:
+            best_key, best_ratio = key, ratio
+    return best_key
+
+
+def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, hits_key: str = "dedup_hits") -> str:
     """Return the "unchanged" stub for a repeated identical read, escalating to a
-    hard BLOCK after 2 stubs so weak tool-followers don't loop forever."""
+    hard BLOCK after 2 stubs so weak tool-followers don't loop forever.
+
+    ``hits_key`` selects which per-task counter tracks this key: the default
+    ``dedup_hits`` is reset by any other tool call (see
+    ``notify_other_tool_call``); the overlap-continuation call site below uses
+    ``dedup_overlap_hits`` instead, which survives intervening tool calls so a
+    model can't reset the escalation by interleaving an unrelated call.
+    """
     with _read_tracker_lock:
-        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
-        task_data["dedup_hits"][dedup_key] = hits
+        hits = task_data[hits_key].get(dedup_key, 0) + 1
+        task_data[hits_key][dedup_key] = hits
         _cap_read_tracker_data(task_data)
 
     if hits >= 2:
@@ -506,6 +565,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     """
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
+        task_data["dedup_overlap_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
@@ -605,6 +665,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                     return _dedup_stub_or_block(task_data, dedup_key, path)
             except OSError:
                 pass  # stat failed — fall through to full read
+        else:
+            # No exact-tuple match, but this offset/limit may still be a trivially
+            # perturbed re-read of a region already flagged under a DIFFERENT
+            # (offset, limit) key (see _find_overlapping_flagged_key). Continue that
+            # key's escalation instead of starting a fresh counter at zero.
+            with _read_tracker_lock:
+                overlap_key = _find_overlapping_flagged_key(task_data, resolved_str, offset, limit)
+                overlap_mtime = task_data["dedup"].get(overlap_key) if overlap_key else None
+            if overlap_key is not None and overlap_mtime is not None:
+                try:
+                    if os.path.getmtime(resolved_str) == overlap_mtime:
+                        return _dedup_stub_or_block(task_data, overlap_key, path, hits_key="dedup_overlap_hits")
+                except OSError:
+                    pass  # stat failed — fall through to full read
 
         result = _get_file_ops(task_id).read_file(path, offset, limit)
         result_dict = result.to_dict()

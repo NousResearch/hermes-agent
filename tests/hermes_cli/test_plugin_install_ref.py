@@ -358,9 +358,42 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    shutil.rmtree(target)
+    from hermes_cli.fs_remove import rmtree_force
+    rmtree_force(target)
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert _metadata(home)["demo"]["pinned"] is True
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("remover", ["cli", "dashboard"])
+@pytest.mark.parametrize("recorded", [True, False])
+def test_readonly_checkout_reinstall_and_remove(tmp_path, monkeypatch, remover, recorded):
+    import os
+    import stat
+    from hermes_cli import plugins_cmd
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _, name = plugins_cmd._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
+    objects = [p for p in (target / ".git" / "objects").rglob("*") if p.is_file()]
+    assert objects
+    for path in objects:
+        os.chmod(path, stat.S_IREAD)
+    target, _, _ = plugins_cmd._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
+    assert _git(target, "rev-parse", "HEAD") == new_sha
+    if not recorded:
+        plugins_cmd._write_install_metadata({})
+    objects = [p for p in (target / ".git" / "objects").rglob("*") if p.is_file()]
+    assert objects
+    for path in objects:
+        os.chmod(path, stat.S_IREAD)
+    if remover == "cli":
+        plugins_cmd.cmd_remove(name)
+    else:
+        assert plugins_cmd.dashboard_remove_user_plugin(name) == {"ok": True, "name": name}
+    assert not target.exists()
+    assert name not in plugins_cmd._read_install_metadata()

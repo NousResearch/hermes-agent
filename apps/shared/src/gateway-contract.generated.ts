@@ -2989,6 +2989,23 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
+export interface SessionWorktreeCleanupParams {
+  session_id: string
+  action?: string
+  profile?: string | null
+}
+export interface SessionWorktreeCleanupResult {
+  allowed: boolean
+  reasons: string[]
+  removed: boolean
+  root_session_id: string
+  path: string
+  branch: string
+  base_commit: string
+  state: string
+  failure_phase?: string | null
+  failure_message?: string | null
+}
 export interface SystemBatteryParams {
   profile?: string | null
 }

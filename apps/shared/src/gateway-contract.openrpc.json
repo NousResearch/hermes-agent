@@ -16208,6 +16208,42 @@
         "title": "PaneRevealPayload",
         "type": "object"
       },
+      "PasswordRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "password": {
+            "default": "",
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id"
+        ],
+        "title": "PasswordRespondParams",
+        "type": "object"
+      },
       "PasteCollapseParams": {
         "additionalProperties": false,
         "properties": {
@@ -27508,6 +27544,113 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
+      "SessionWorktreeCleanupParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "action": {
+            "default": "inspect",
+            "title": "Action",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionWorktreeCleanupParams",
+        "type": "object"
+      },
+      "SessionWorktreeCleanupResult": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "removed": {
+            "title": "Removed",
+            "type": "boolean"
+          },
+          "root_session_id": {
+            "title": "Root Session Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "base_commit": {
+            "title": "Base Commit",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "failure_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Failure Phase"
+          },
+          "failure_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Failure Message"
+          }
+        },
+        "required": [
+          "allowed",
+          "reasons",
+          "removed",
+          "root_session_id",
+          "path",
+          "branch",
+          "base_commit",
+          "state"
+        ],
+        "title": "SessionWorktreeCleanupResult",
+        "type": "object"
+      },
       "SetupReadyPayload": {
         "additionalProperties": true,
         "description": "``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``.",
@@ -30511,6 +30654,42 @@
         "title": "TerminalResizeResult",
         "type": "object"
       },
+      "TextRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id"
+        ],
+        "title": "TextRespondParams",
+        "type": "object"
+      },
       "TipShowPayload": {
         "additionalProperties": false,
         "description": "``tools/tip_tool.py``.",
@@ -31837,6 +32016,42 @@
           "available"
         ],
         "title": "UsageModel",
+        "type": "object"
+      },
+      "ValueRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id"
+        ],
+        "title": "ValueRespondParams",
         "type": "object"
       },
       "ValueResult": {

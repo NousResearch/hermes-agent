@@ -1668,7 +1668,19 @@ def _enable_gateway_prompts() -> None:
     os.environ.update(HERMES_GATEWAY_SESSION="1", HERMES_EXEC_ASK="1", HERMES_INTERACTIVE="1")
 
 
-# ── Blocking prompt factory ──────────────────────────────────────────
+# ── Blocking prompt factory / respond bridge ─────────────────────────
+
+
+def _respond(rid, params, key, *, allow_expired=False):
+    """Handle a *.respond method call: route the client's answer to the open server request."""
+    from tui_gateway import server_requests
+    request_id = str(params.get("request_id") or "")
+    if not request_id:
+        return _err(rid, 4009, "request_id required")
+    frame = {"id": request_id, "result": {key: params.get(key, "")}}
+    if server_requests.resolve_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"}) if allow_expired else _err(rid, 4009, f"no pending request for id {request_id!r}")
 
 
 def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
@@ -2692,7 +2704,8 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    conversation_worktree: dict | None = None):
+    conversation_worktree: dict | None = None,
+    cwd_override: str | None = None, auth_user_id: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2740,6 +2753,8 @@ def _make_agent(
             providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
             provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
             provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+            cwd=cwd_override,
+            user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
             session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
             checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
             pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),

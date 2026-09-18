@@ -16321,7 +16321,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
                 seen["msgs"].append(dict(m, session_id=session_id))
             return list(range(1, len(messages) + 1))
 
-        def set_session_title(self, key, title):
+        def set_auto_title(self, key, title, *, source="llm"):
             seen["title"] = (key, title)
             return True
 
@@ -16783,7 +16783,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
                 seen["msgs"].append(dict(m, session_id=session_id))
             return list(range(1, len(messages) + 1))
 
-        def set_session_title(self, key, title):
+        def set_auto_title(self, key, title, *, source="llm"):
             return True
 
         def get_session(self, key):
@@ -23265,7 +23265,7 @@ def test_workspace_move_rejects_managed_stored_session(monkeypatch, tmp_path):
     import contextlib
 
     @contextlib.contextmanager
-    def _fake_db(_params):
+    def _fake_db(_params, *, writer=False):
         yield FakeDB()
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)

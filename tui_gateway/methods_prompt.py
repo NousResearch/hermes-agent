@@ -452,6 +452,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     from tui_gateway.server import _db_error
     try:
         if _ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(_db_error)
             return _err(
                 rid, 5072,
                 "session storage unavailable: "
@@ -460,6 +461,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data={"code": "storage_unavailable", "cause": "encoding", "details": _db_error or ""})
         _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
+        _persist_submit_user_row(session, text, display_kind)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         with session["history_lock"]:
@@ -617,7 +619,7 @@ def _admit_prompt_submit(
             rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
         if err is not None:
             return err, None
-        if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
             return err, None
         # Record the surface only after this request owns the turn. A rejected busy
         # request must not overwrite the surface used by the in-flight turn.

@@ -689,3 +689,29 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+
+
+# ── conversation worktrees ────────────────────────────────────────────────────────────────────
+
+
+class SessionWorktreeCleanupParams(Params):
+    session_id: str
+    action: str = "inspect"  # "inspect" | "remove"
+    profile: str | None = None
+
+
+class SessionWorktreeCleanupResult(Result):
+    allowed: bool
+    reasons: list[str]
+    removed: bool
+    root_session_id: str
+    path: str
+    branch: str
+    base_commit: str
+    state: str
+    failure_phase: str | None = None
+    failure_message: str | None = None
+
+
+method("session.worktree_cleanup", params=SessionWorktreeCleanupParams, result=SessionWorktreeCleanupResult,
+       doc="Inspect or explicitly remove one managed conversation worktree.")

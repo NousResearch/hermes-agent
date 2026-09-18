@@ -7,7 +7,6 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 import contextlib
 from pathlib import Path
 
-from agent.replay_cleanup import sanitize_replay_history
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -86,7 +85,7 @@ def _profile_build_scope(profile_home):
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
     """``_make_agent`` with the session context bound for the build and cleared after."""
-    tokens = _set_session_context(key)
+    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"))
     try:
         return _make_agent(sid, key, session_id=key, **kwargs)
     finally:
@@ -251,7 +250,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
                        **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
-        db.set_session_title(new_key, title)
+        db.set_auto_title(new_key, title, source="derived")
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -547,7 +546,7 @@ class _Resume:
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
         raw, display = self.read_history()
-        return sanitize_replay_history(raw), display, raw
+        return canonicalize_replay_history(raw), display, raw
 
     def info(self, cwd: str, overrides: dict) -> dict:
         return _lazy_resume_info(cwd, model=(overrides.get("model_override") or {}).get("model") or "",
@@ -810,6 +809,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
+                cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 conversation_worktree=ctx.conversation_worktree, **stored_runtime_overrides)
         except Exception as e:
@@ -968,7 +968,7 @@ def _(rid, params: dict) -> dict:
     if live is not None and live.get("conversation_worktree"):
         return _err(rid, 4018, "workspace is managed by conversation worktree")
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
@@ -1039,7 +1039,7 @@ def _(rid, params: dict) -> dict:
     if any(s.get("session_key") == target for _sid, s in snapshot):
         return _err(rid, 4023, "cannot delete an active session")
     profile_home = _profile_home((params.get("profile") or "").strip() or None)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
         try:
@@ -1925,8 +1925,12 @@ def _(rid, params: dict, session: dict) -> dict:
     updated = next((_status_dt(meta[f], created) for f in ("updated_at", "last_updated_at", "last_activity_at")
                     if meta.get(f)), created)
     mirror = _metadata_mirror(session)
-    provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
-    model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    if session.get("_compute_host_active") and mirror:
+        model = mirror.get("model") or getattr(agent, "model", None) or "(unknown)"
+        provider = mirror.get("provider") or getattr(agent, "provider", None) or "unknown"
+    else:
+        model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+        provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
     project = _project_info_for_cwd(_display_session_cwd(session))
     title = (meta.get("title") or "").strip()
     lines = [
@@ -2167,6 +2171,8 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
+                                           cwd_override=branch_cwd,
+                                           auth_user_id=_session_auth_user_id(session),
                                            context_cwd_is_launch_artifact=(
                                                False if conversation_worktree
                                                else _context_cwd_is_launch_artifact(session)),
@@ -2180,6 +2186,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
             branch_owns_db = False
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
+            _sessions[new_sid]["auth_user_id"] = _session_auth_user_id(session)
         return agent
     finally:
         if branch_owns_db and branch_db is not None:

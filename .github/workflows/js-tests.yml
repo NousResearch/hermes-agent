@@ -105,4 +105,12 @@ jobs:
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        # --expect-workspaces is the silent-skip assertion: discovery is
+        # dynamic (npm query), so a workspace whose check scripts are renamed,
+        # removed, or no longer npm-resolved would drop out of the run and the
+        # job would still report green having checked one workspace fewer. The
+        # pinned list fails the job naming the workspace instead. Add every NEW
+        # workspace to it.
+        run: >-
+          node .github/scripts/run-workspace-checks.mjs
+          --expect-workspaces apps/desktop,apps/shared,ui-tui,ui-tui/packages/hermes-ink,web

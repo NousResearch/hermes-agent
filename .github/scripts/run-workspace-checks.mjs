@@ -15,6 +15,14 @@
 //
 // This also runs on a laptop: `node .github/scripts/run-workspace-checks.mjs`.
 // `--concurrency N` sets the limit. `--list` prints the units and exits.
+//
+// Silent-skip guard: discovery is dynamic (`npm query .workspace`), so a
+// workspace whose check scripts get renamed or removed — or a workspace that
+// npm stops resolving (registry layout drift, a broken package.json) — drops
+// out of the run SILENTLY and the job still reports green having checked one
+// workspace fewer. `--expect-workspaces <pkg,...>` (wired in CI) pins the set:
+// any listed workspace that contributes zero units is an error naming the
+// workspace, so the skip can never pass unnoticed.
 
 import { execFileSync, spawn } from 'node:child_process'
 import { availableParallelism } from 'node:os'
@@ -22,14 +30,21 @@ import { availableParallelism } from 'node:os'
 const IS_CI = Boolean(process.env.GITHUB_ACTIONS)
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
-/** @returns {{pkg: string, script: string}[]} */
-function discoverUnits() {
+/**
+ * @param {Record<string, import('node:child_process').ExecFileSyncOptionsWithStringEncoding>} [opts]
+ */
+function queryWorkspacePkgs(opts) {
   const raw = execFileSync(NPM, ['query', '.workspace'], {
     encoding: 'utf-8',
     shell: process.platform === 'win32',
+    ...opts,
   })
-  /** @type {{location: string, scripts?: Record<string,string>}[]} */
-  const pkgs = JSON.parse(raw)
+  return /** @type {{location: string, scripts?: Record<string,string>}[]} */ (JSON.parse(raw))
+}
+
+/** @returns {{pkg: string, script: string}[]} */
+function discoverUnits() {
+  const pkgs = queryWorkspacePkgs()
 
   /** @type {{pkg: string, script: string}[]} */
   const units = []
@@ -43,6 +58,18 @@ function discoverUnits() {
     }
   }
   return units
+}
+
+/**
+ * The silent-skip assertion: every workspace named in
+ * `--expect-workspaces` must contribute at least one unit. Returns the
+ * list of expected workspaces that contributed none (empty = pass).
+ * @param {{pkg: string, script: string}[]} units
+ * @param {string[]} expected
+ */
+function findSkippedExpectedWorkspaces(units, expected) {
+  const contributors = new Set(units.map((u) => u.pkg))
+  return expected.filter((pkg) => !contributors.has(pkg))
 }
 
 /** @param {{pkg: string, script: string}} unit */
@@ -83,6 +110,34 @@ async function main() {
       '::error::No workspace package declares a check script — refusing to report green having run nothing.',
     )
     process.exit(1)
+  }
+
+  // --expect-workspaces apps/desktop,web,… : the pinned workspace set. Any
+  // listed workspace that contributed ZERO units fails before anything runs.
+  const expectIdx = argv.indexOf('--expect-workspaces')
+  if (expectIdx !== -1) {
+    const expected = (argv[expectIdx + 1] || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (expected.length === 0) {
+      console.error('::error::--expect-workspaces given but the list is empty')
+      process.exit(1)
+    }
+    const skipped = findSkippedExpectedWorkspaces(units, expected)
+    if (skipped.length > 0) {
+      for (const pkg of skipped) {
+        console.error(
+          `::error::workspace ${pkg} is expected to contribute checks but contributed NONE ` +
+            '(its check scripts are missing, renamed, or npm no longer resolves it) ' +
+            '— refusing to report green having silently skipped it',
+        )
+      }
+      process.exit(1)
+    }
+    console.log(
+      `workspace expectation holds: all ${expected.length} pinned workspaces contribute checks`,
+    )
   }
 
   if (argv.includes('--list')) {

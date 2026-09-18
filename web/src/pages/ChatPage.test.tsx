@@ -134,6 +134,8 @@ vi.mock("@/i18n", () => ({
       chat: {
         collapseSidePanel: "Collapse chat side panel",
         showSidePanel: "Show chat side panel",
+        checkServerStatus: "Check server status",
+        openLogs: "Open logs",
       },
     },
   }),

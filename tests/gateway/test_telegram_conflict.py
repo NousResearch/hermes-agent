@@ -114,12 +114,12 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_conflict_retry_drops_pending_updates(monkeypatch):
-    """Conflict recovery must use drop_pending_updates=True (#75017).
+async def test_conflict_retry_preserves_pending_updates(monkeypatch):
+    """Conflict recovery must NOT drop the Bot API queue.
 
-    Without this, each retry starts a new getUpdates session that
-    immediately gets 409'd by the previous still-expiring session,
-    creating the very conflict we are trying to recover from.
+    The wait ladder (15–55s) expires the zombie getUpdates session. Using
+    drop_pending_updates=True also discarded DMs queued while the previous
+    gateway was wedged (T2/Corey 2026-09-11).
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.set_fatal_error_handler(AsyncMock())
@@ -143,9 +143,8 @@ async def test_conflict_retry_drops_pending_updates(monkeypatch):
         conflict("Conflict: terminated by other getUpdates request")
     )
 
-    assert captured.get("drop_pending_updates") is True, (
-        "Conflict retry must use drop_pending_updates=True to terminate "
-        "stale getUpdates sessions on Telegram's servers (#75017)"
+    assert captured.get("drop_pending_updates") is False, (
+        "Conflict retry must keep pending DMs; wait out the zombie session instead of flushing the queue"
     )
 
 

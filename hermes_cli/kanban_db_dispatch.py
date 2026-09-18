@@ -61,6 +61,19 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Provider-side capacity exhaustion that killed the worker process outright, so
+# the run is recorded ``crashed`` and never reaches the ``rate_limited`` cooldown
+# path above. The text still matches _RESPAWN_BLOCKER_RE ("429", "rate limit"),
+# which would park the card under ``blocker_auth`` — a state with no expiry. The
+# card then sits ``ready`` and guarded forever while the board reads healthy.
+# Treat these as the transient quota walls they are: same cooldown, same retry.
+# Deliberately narrow — an expired key or a real 403 must still park the card.
+_PROVIDER_CAPACITY_RE = re.compile(
+    r"(are cooling down|rate_limit_error|temporarily unavailable|"
+    r"exceed your account's rate limit)",
+    re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1459,16 +1472,27 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
+    # 1. Transient provider wall — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
+    #    A worker the provider killed outright lands here as ``crashed`` with
+    #    capacity text; it is the same wall and takes the same cooldown, because
+    #    blocker_auth below would otherwise park it with no expiry.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    err = row["last_failure_error"]
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+    if latest_run is not None and (
+        latest_run["outcome"] == "rate_limited"
+        or (
+            latest_run["outcome"] == "crashed"
+            and err
+            and _PROVIDER_CAPACITY_RE.search(err)
+        )
+    ):
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1482,7 +1506,6 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

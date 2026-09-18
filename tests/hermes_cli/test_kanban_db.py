@@ -427,6 +427,80 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_treats_provider_killed_crash_as_rate_limit(
+    kanban_home, monkeypatch,
+):
+    """A worker the provider kills mid-run is recorded ``crashed``, not
+    ``rate_limited`` — but its stamp still matches the quota pattern. Without the
+    capacity check it lands in ``blocker_auth``, which never expires, so the card
+    sits ``ready`` and guarded forever while the board reads healthy. It must take
+    the cooldown path and retry instead."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    provider_kill = (
+        'pid 33044 not alive Worker\'s last output: "one of 3 attempts — it looks '
+        "temporarily unavailable. Provider said: HTTP 429: All credentials for model "
+        "claude-sonnet-5 are cooling down via provider claude (last error: "
+        'rate_limit_error: This request would exceed your account\'s rate limit.)"'
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="provider-kill", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (provider_kill, tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_still_parks_a_real_credential_failure(
+    kanban_home, monkeypatch,
+):
+    """The capacity carve-out must not swallow genuine auth failures: an invalid
+    key does not resolve by waiting, so the card still parks under blocker_auth."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="bad-key", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 not alive: HTTP 401 invalid api key — unauthorized", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
 
 
 

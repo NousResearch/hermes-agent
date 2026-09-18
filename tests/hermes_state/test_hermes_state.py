@@ -1036,19 +1036,35 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db):
+    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
+        traced_connections = []
+
+        def trace(conn):
             conn.set_trace_callback(statements.append)
+            traced_connections.append(conn)
+
+        # The enricher reads through _read_ctx, which has exactly two branches: a
+        # POOLED read-only connection (_checkout_read_conn) under WAL, else the writer
+        # connection under the lock. Trace both. Tracing db._conn plus a fresh
+        # _get_read_conn() — as this test used to — misses the pooled handle, so the
+        # counter stayed 0 no matter what ran: the "no enrichment" assertion could
+        # never fail, while the "one enrichment" assertions failed on correct code.
+        trace(db._conn)
+        real_checkout = db._checkout_read_conn
+
+        def traced_checkout():
+            conn = real_checkout()
+            if conn is not None:
+                trace(conn)
+            return conn
+
+        monkeypatch.setattr(db, "_checkout_read_conn", traced_checkout)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)

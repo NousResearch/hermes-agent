@@ -163,7 +163,7 @@ type KanbanMessages = {
   // board switcher
   board: string
   newBoard: string
-  /** Tooltip on the title-bar trigger — names the ACTION, since the visible
+  /** Tooltip on the page-header trigger — names the ACTION, since the visible
    *  text is the board's own name and reads as a static label otherwise. */
   switchBoard: string
   newBoardDots: string

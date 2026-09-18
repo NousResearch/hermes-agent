@@ -49,7 +49,7 @@ describe('board switcher', () => {
     expect(await screen.findByText('Shipping')).toBeTruthy()
   })
 
-  // The trigger is projected into the title bar as the board's own name, so it
+  // The trigger is projected into the Kanban page header as the board's own name, so it
   // must announce itself as a control: a visible "Board" label, a "Board: …"
   // accessible name, and a "Switch board" tooltip on hover.
   it('identifies the current board switcher as a control', async () => {

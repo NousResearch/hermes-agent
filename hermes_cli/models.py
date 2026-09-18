@@ -37,7 +37,6 @@ from hermes_cli.models_catalog_static import (
     _AZURE_FOUNDRY_RESPONSES_PREFIXES,
     _BORROWED_MODEL_PROVIDERS,
     _COPILOT_MODEL_ALIASES,
-    _KEYLESS_STABLE_CACHE_PROVIDERS,
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
@@ -1585,11 +1584,6 @@ def _credential_fingerprint(provider: str) -> str:
     base-url env vars from ``PROVIDER_REGISTRY`` plus the mtimes of ``auth.json`` and external
     credential files (OAuth re-auth busts the cache without parsing every file shape)."""
     import hashlib
-
-    # Keyless providers serve the catalog anonymously: nothing the user rotates should invalidate
-    # the entry, so a stable fingerprint keeps the SWR cache alive and busts only on TTL expiry.
-    if (provider or "").strip().lower() in _KEYLESS_STABLE_CACHE_PROVIDERS:
-        return "keyless:" + (provider or "").strip().lower()
 
     parts: list[str] = []
     try:

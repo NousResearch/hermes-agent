@@ -23,7 +23,6 @@ class HermesOverlay:
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
-    keyless: bool = False                 # served anonymously — no credential exists to configure
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {

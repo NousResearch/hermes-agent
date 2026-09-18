@@ -532,12 +532,6 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
-# Providers whose catalog is served with NO credential get a constant credential fingerprint in
-# the disk cache, so folding in unrelated auth.json mtimes would only bust the SWR cache needlessly.
-# (Empty since the keyless OpenCode free tier was removed; kept as the extension point.)
-_KEYLESS_STABLE_CACHE_PROVIDERS = frozenset()
-
-
 # OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Hermes' default
 # Claude IDs use hyphens (Anthropic native) but Copilot's API only accepts dot-notation, so a
 # copilot + hyphenated default would otherwise hit HTTP 400 "model_not_supported".

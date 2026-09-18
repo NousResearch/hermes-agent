@@ -1741,27 +1741,14 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
     return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
 
 
-def _provider_is_keyless(provider_id: str) -> bool:
-    """HermesOverlay keyless flag — the same source the provider catalog and GUI contract tests use."""
-    try:
-        from hermes_cli.providers import HERMES_OVERLAYS
-        return bool(getattr(HERMES_OVERLAYS.get(provider_id), "keyless", False))
-    except Exception:
-        return False
-
-
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     status = {
-        "configured": True, "provider": provider_id, "name": pconfig.name, "key_source": "keyless",
+        "configured": True, "provider": provider_id, "name": pconfig.name, "key_source": "",
         "base_url": pconfig.inference_base_url, "logged_in": True}
-    if _provider_is_keyless(provider_id):
-        # Keyless providers are served anonymously: every install counts as
-        # configured.
-        return status
 
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
     env_url = _provider_env_base_url(pconfig)

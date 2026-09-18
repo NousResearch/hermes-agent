@@ -61,20 +61,6 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A combo/fallback timeout wrapper: one target among several returned 429/403
-# but the *overall* failure is "nothing answered in time", not "this task's
-# configured target is quota/auth blocked". Matching 429/403 unconditionally
-# false-positives on this shape (#111910-adjacent) — a single flaky member of
-# a 7-target combo trips `blocker_auth` and self-locks forever, because the
-# guard blocks the very respawn that would produce a fresh (non-429) error.
-# Anything that looks like "Combo global timeout ... tried: X (429/403)" is a
-# transient combo/gateway failure and must NOT match the blocker regex, even
-# though a bare 429/403 is present in the trailing per-target detail.
-_RESPAWN_COMBO_TIMEOUT_RE = re.compile(
-    r"combo global timeout|didn.t answer after \d+ attempts",
-    re.IGNORECASE,
-)
-
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1425,13 +1411,8 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    # Exception: a combo/fallback timeout wrapper ("Combo global timeout ...
-    # tried: X (429)") means the DISPATCHER's own target list timed out, not
-    # that this task's configured model/provider is quota/auth blocked. That
-    # shape must fall through to a normal retry — trapping it here self-locks
-    # forever, since the guard blocks the respawn that would refresh the error.
     err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err) and not _RESPAWN_COMBO_TIMEOUT_RE.search(err):
+    if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

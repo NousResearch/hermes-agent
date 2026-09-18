@@ -15,6 +15,37 @@ file. “Implemented”, “contract layer validated” and “tests green” do
 a product-level causal invariant has been proven across Task -> Run -> operation ->
 evidence -> canonical commit -> projection.
 
+## 2026-09-18 capability-runtime architecture — TARGET ONLY / NOT YET IMPLEMENTED
+
+The latest abstraction review extends AEPC-E002 into
+[PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md).
+This section is deliberately marked **target architecture**, not current product
+state.
+
+Current `main` already contains substantial foundations: ProceduralMemory,
+WebProcedure/ProcedureStep, RecipeStore, TaskCompiler, promoted routines,
+DurableBatchRunner, WorkPlan/WorkItem checkpoints, ArtifactStore/ExecutionJournal
+capture and compact NEEDS_REASONING. However, there is not yet a first-class
+general Capability contract/registry/resolver spanning browser/filesystem/process,
+and `work_execute` is still used by the dispatcher as a replan requirement when
+compilation is forced.
+
+The target changes the reusable unit from “batch” toward **versioned deterministic
+Capability**. The harness should automatically resolve exact compatible
+Capability/Recipe/Routine execution before another LLM planning call, while novel
+or drifted work remains bounded ADAPTIVE. Capabilities may compose other
+capabilities without LLM mediation; Skills remain the reasoning/knowledge layer
+above them.
+
+The Browser native runtime still needs a first-class semantic operation/target
+contract so transient refs such as `@e12` do not define durable operational
+identity. The same capability lifecycle must later prove filesystem/process and
+cross-backend flows.
+
+Do not report this target as implemented until the acceptance criteria in
+PROGRESSIVE_OPERATIONAL_COMPILATION.md have been demonstrated.
+
+
 ## 2026-09-18 native-browser compiler obstruction — global latch fixed; semantic-family hardening open; native gate open
 
 The Canonical Execution Reliability Gate remains implemented history. Remote

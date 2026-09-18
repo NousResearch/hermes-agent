@@ -621,6 +621,127 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+# --- Run-failure classes ------------------------------------------------------
+# Four failure shapes dominate the board and mean very different things, but the
+# raw ``outcome`` column conflates them: a crash whose worker PID vanished, a
+# worker that exited cleanly without calling kanban_complete/kanban_block
+# (protocol violation), a claim reclaimed for staleness, and a run ended by its
+# iteration/runtime budget. They used to be indistinguishable without digging
+# through per-task logs, so each one gets a name and they are counted together on
+# the board stats surface (``failure_class_counts``).
+FAILURE_CLASSES: tuple[str, ...] = (
+    "worker_vanished",
+    "protocol_violation",
+    "stale_lock",
+    "iteration_budget",
+    "spawn_precondition",
+    "rate_limited",
+    "worker_error",
+    "other",
+)
+
+# Success outcomes carry no failure verdict; counting them under ``other`` would
+# drown the signal, so they are excluded from the counts entirely.
+_SUCCESS_RUN_OUTCOMES = ("completed", "submitted_for_review", "review")
+# Outcomes that mean "the run ended in a crash-class way".
+_CRASH_RUN_OUTCOMES = ("crashed", "gave_up")
+_STALE_OUTCOMES = ("stale", "reclaimed", "superseded")
+_ITERATION_OUTCOMES = ("timed_out", "max_runtime", "iteration_budget")
+_SPAWN_PRECONDITION_PREFIX = "spawn precondition failed"
+
+
+def _coerce_run_metadata(value: Any) -> dict:
+    """``task_runs.metadata`` as a dict (it may be a JSON string or None)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _error_looks_like_vanished_worker(error: str) -> bool:
+    """True for the dispatcher's bare liveness verdict (``pid N not alive``)."""
+    head = (error or "")[:80]
+    return head.startswith("pid ") and "not alive" in head
+
+
+def classify_run_failure(
+    outcome: Optional[str],
+    error: Optional[str] = None,
+    metadata: Any = None,
+) -> str:
+    """Classify one ``task_runs`` row into :data:`FAILURE_CLASSES`; ``""`` if not a failure.
+
+    Durable markers win over outcome names (a reclaimed run can carry a
+    protocol-violation marker, and a crash can carry precondition metadata), so
+    precedence is: protocol violation -> spawn precondition -> rate limit ->
+    iteration budget -> stale/claim reclaim -> crash class -> ``other``.
+
+    ``worker_vanished`` vs ``worker_error``: the dispatcher's ``pid N not alive``
+    verdict means the worker disappeared with no reaped exit status at all (killed
+    by a restart/reclaim, or never visible) — a different operational problem from
+    a worker that exited non-zero on its own. A reaped ``exit_kind`` moves the run
+    to ``worker_error``.
+    """
+    outcome = str(outcome or "")
+    error = str(error or "")
+    md = _coerce_run_metadata(metadata)
+    if outcome in _SUCCESS_RUN_OUTCOMES:
+        return ""
+    if md.get("protocol_violation") or "protocol violation" in error:
+        return "protocol_violation"
+    if (
+        md.get("precondition")
+        or outcome == "precondition_failed"
+        or _SPAWN_PRECONDITION_PREFIX in error
+    ):
+        return "spawn_precondition"
+    if outcome == "rate_limited" or md.get("rate_limited"):
+        return "rate_limited"
+    if outcome in _ITERATION_OUTCOMES or md.get("iteration_budget"):
+        return "iteration_budget"
+    if outcome in _STALE_OUTCOMES:
+        return "stale_lock"
+    if outcome in _CRASH_RUN_OUTCOMES:
+        exit_kind = md.get("exit_kind")
+        if exit_kind in (None, "", "unknown") and _error_looks_like_vanished_worker(error):
+            return "worker_vanished"
+        return "worker_error"
+    return "other"
+
+
+def failure_class_counts(
+    conn,
+    *,
+    since: Optional[int] = None,
+    task_id: Optional[str] = None,
+) -> dict[str, int]:
+    """``{class: count}`` over closed ``task_runs`` (every class key present).
+
+    ``since``: epoch-seconds lower bound on ``ended_at``. ``task_id`` narrows to
+    one card. Open runs are excluded — a run still in flight has no verdict yet —
+    and successful runs are not counted at all (see ``classify_run_failure``).
+    """
+    counts = {name: 0 for name in FAILURE_CLASSES}
+    sql = "SELECT outcome, error, metadata FROM task_runs WHERE ended_at IS NOT NULL"
+    params: list[Any] = []
+    if since is not None:
+        sql += " AND ended_at >= ?"
+        params.append(int(since))
+    if task_id:
+        sql += " AND task_id = ?"
+        params.append(task_id)
+    for row in conn.execute(sql, params):
+        klass = classify_run_failure(row[0], row[1], row[2])
+        if klass:
+            counts[klass] = counts.get(klass, 0) + 1
+    return counts
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it

@@ -1069,6 +1069,12 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    failure_classes = stats.get("failure_classes") or {}
+    if failure_classes:
+        recent = stats.get("failure_classes_recent") or {}
+        print("\nFailure classes (task_runs):")
+        for name, count in failure_classes.items():
+            print(f"  {name:20s}  {count:6d}   (24h: {recent.get(name, 0)})")
     return 0
 
 

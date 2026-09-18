@@ -20,6 +20,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterable
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -110,6 +111,13 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    spawn_precondition_failed: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, check, reason)`` cards failed once because a spawn
+    precondition (``assignee_profile``, ``forced_skills``, ``workspace``) cannot
+    be satisfied. Not a crash and NOT a failure-budget event: retrying cannot fix
+    a typo'd skill name or an absent profile, so the card is blocked with the
+    precise reason instead of looping ``ready -> crash -> ready`` as
+    "pid N not alive"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -668,9 +676,22 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     return reconciled
 
 
+# Marker separating a crash verdict from the worker's own log tail inside the
+# error text (see ``_compose_crash_error``). Shared so ``_error_fingerprint`` can
+# drop the tail again and grouping stays prefix-based.
+_CRASH_ERROR_TAIL_MARKER = " — worker log tail: "
+
+
 def _error_fingerprint(error_text: str) -> str:
-    """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group."""
-    fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
+    """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group.
+
+    The crash-diagnosis tail is dropped first: two runs of the same failure mode
+    must group even though the worker's last log lines differ between attempts, and
+    a tail inside the 80-char window would otherwise split the group locally (the
+    systemic-crash breaker trips on >= 3 identical fingerprints per tick).
+    """
+    head = str(error_text or "").split(_CRASH_ERROR_TAIL_MARKER, 1)[0]
+    fp = re.sub(r'\bpid \d+\b', 'pid N', head[:80])
     fp = re.sub(r'\b\d{10,}\b', '<TS>', fp)
     return fp.lower().strip()
 
@@ -731,6 +752,117 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
+# --- Crash diagnosis fidelity ------------------------------------------------
+# "pid N not alive" is the dispatcher's liveness VERDICT, not a cause: the worker
+# PID is gone and no lifecycle call was recorded. The actionable line is the last
+# thing the worker wrote to its own log (see ``_open_worker_log``), and on the
+# live board ~900 runs carried only the verdict while all 382 distinct logs held
+# the real cause (an unresolvable forced skill, a missing profile, a provider
+# death). Operators must not need shell access to learn why a card died, so the
+# verdict is enriched with a bounded, redacted log tail everywhere it is shown:
+# the run error, ``tasks.last_failure_error``, the crashed/gave_up event payload.
+#
+# Bounded on purpose: the tail rides inside ``error`` fields that the board, the
+# retry prompt, and error fingerprints all read. The fingerprint normalizes the
+# PID but groups on the PREFIX, so a varying tail can never change grouping.
+_CRASH_ERROR_CHARS = 500          # mirrors the truncation in _record_task_failure
+_CRASH_ERROR_TAIL_LINES = 4       # newest lines that may appear inside `error`
+_WORKER_LOG_TAIL_LINES = 12       # lines kept in the (fuller) run metadata tail
+_WORKER_LOG_TAIL_CHARS = 1200     # hard cap on the metadata tail
+_WORKER_LOG_TAIL_LINE_CHARS = 200 # per-line cap so one giant line can't dominate
+_WORKER_LOG_TAIL_READ_BYTES = 64 * 1024  # read only the log's tail region
+
+
+def _display_safe_log_text(text: str) -> str:
+    """ANSI-strip + redact a log excerpt, best-effort.
+
+    Both helpers are imported lazily and defensively: a crash reclaim must never
+    fail (or leak raw terminal escapes / credentials into a durable error field)
+    because a display or redaction module is unavailable.
+    """
+    try:
+        from tools.ansi_strip import strip_ansi
+        text = strip_ansi(text)
+    except Exception:
+        pass
+    try:
+        from agent.redact import redact_sensitive_text
+        text = redact_sensitive_text(text)
+    except Exception:
+        pass
+    return text
+
+
+def _worker_log_tail(
+    task_id: str,
+    board: Optional[str] = None,
+    *,
+    max_lines: int = _WORKER_LOG_TAIL_LINES,
+    max_chars: int = _WORKER_LOG_TAIL_CHARS,
+) -> str:
+    """Last ``max_lines`` lines of a worker's own log, ANSI-stripped + redacted.
+
+    The log is the only place a worker's fatal error is written (the dispatcher
+    spawns it with ``stdout=stderr=<task>.log``), so this is what turns a liveness
+    verdict back into a diagnosable failure. Strictly bounded and never raising:
+    only the file's tail region is read, non-UTF8 bytes decode with replacement,
+    the rotated ``<task>.log.1`` is the fallback when the live file is empty, and
+    any failure returns ``""`` (callers then show the bare verdict).
+    """
+    if not task_id:
+        return ""
+    try:
+        log_path = _kb.worker_logs_dir(board=board) / f"{task_id}.log"
+        text = ""
+        for path in (log_path, log_path.with_name(log_path.name + ".1")):
+            try:
+                with open(path, "rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    start = max(0, fh.tell() - _WORKER_LOG_TAIL_READ_BYTES)
+                    fh.seek(start)
+                    text = fh.read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if text.strip():
+                break
+        if not text.strip():
+            return ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][-int(max_lines):]
+        cleaned = _display_safe_log_text("\n".join(ln[:_WORKER_LOG_TAIL_LINE_CHARS] for ln in lines))
+        return cleaned[: int(max_chars)]
+    except Exception:
+        _kb._log.debug(
+            "kanban: worker log tail unavailable for %s", task_id, exc_info=True,
+        )
+        return ""
+
+
+def _compose_crash_error(prefix: str, tail: str, *, limit: int = _CRASH_ERROR_CHARS) -> str:
+    """``prefix`` + as much of the log tail as fits, newest lines kept.
+
+    The newest line is the fatal one, so lines are dropped from the OLDEST end
+    until the whole thing fits ``limit``; if even one line cannot fit, the newest
+    end of that line is kept. The prefix (which carries the normalized PID
+    fingerprint) is always preserved verbatim.
+    """
+    prefix = prefix[:limit]
+    if not tail.strip():
+        return prefix
+    marker = _CRASH_ERROR_TAIL_MARKER
+    room = limit - len(prefix) - len(marker)
+    if room <= 0:
+        return prefix
+    picked = [ln for ln in tail.splitlines() if ln.strip()][-_CRASH_ERROR_TAIL_LINES:]
+    while len(picked) > 1 and len(" | ".join(picked)) > room:
+        picked.pop(0)
+    if not picked:
+        return prefix
+    joined = " | ".join(picked)
+    if len(joined) > room:
+        joined = joined[-room:]
+    return prefix + marker + joined
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -750,8 +882,22 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
-def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
-    """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
+def _classify_dead_worker(
+    pid: int,
+    claimer: Optional[str],
+    *,
+    task_id: Optional[str] = None,
+    board: Optional[str] = None,
+) -> _DeadWorker:
+    """Map a dead worker's reaped exit status to its reclaim bookkeeping.
+
+    ``task_id``/``board`` (optional) let the crash kinds fold the worker's own log
+    tail into the error text: the reaped exit status is only available for children
+    this process reaped, and the *reason* the worker died is almost never in that
+    status — it is the last lines of ``<task>.log``. The prefix is byte-identical
+    to the pre-tail text, so error fingerprints and their systemic-crash grouping
+    are unaffected; the PID also stays in the run/event metadata.
+    """
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
@@ -785,6 +931,14 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
+    # The verdict above names the liveness state, not the cause. Attach what the
+    # worker itself last reported so the error an operator reads on the board is
+    # the real failure; the fuller tail rides in metadata (event payload + run
+    # metadata) because the error field is truncated to 500 chars downstream.
+    tail = _worker_log_tail(task_id, board) if task_id else ""
+    if tail:
+        event_payload["worker_log_tail"] = tail
+        error_text = _compose_crash_error(error_text, tail)
     return _DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
@@ -802,7 +956,7 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
+def _reclaim_dead_workers(conn: sqlite3.Connection, *, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
@@ -825,7 +979,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"])
+            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -934,7 +1088,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -943,8 +1097,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
+
+    ``board`` pins the worker-log lookup (``_worker_log_tail``) to the board the
+    task was claimed from, so the logged failure this reclaim surfaces belongs to
+    the same per-board log the worker wrote.
     """
-    sweep = _reclaim_dead_workers(conn)
+    sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1120,6 +1278,203 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
             "last_failure_error = NULL WHERE id = ?",
             (task_id,),
         )
+
+
+# --- Spawn preconditions ------------------------------------------------------
+# Two live failure classes never reached the worker's work at all: a forced skill
+# that does not resolve (`Error: Unknown skill(s): sdlc-review` — 30 runs) and an
+# assignee profile the worker's own environment cannot find (13 runs). Both were
+# discovered only by the CHILD dying, so they showed up as ``pid N not alive`` and
+# burned a crash/retry attempt each. They are card-configuration errors: retrying
+# cannot fix them, so they are validated before the spawn and failed once.
+_SPAWN_PRECONDITION_PREFIX = "spawn precondition failed: "
+
+
+def preflight_forced_skills(
+    assignee: str,
+    skills: Optional[Iterable[str]],
+    *,
+    task_id: Optional[str] = None,
+) -> list[str]:
+    """Forced skills that cannot be loaded in ``assignee``'s profile; ``[]`` if OK.
+
+    Mirrors the child's own behavior (``cli.py::finalize_preloaded_skills`` /
+    ``tui_gateway/server.py::_startup_system_prompt``): a worker dies with
+    ``Unknown skill(s)`` only when EVERY requested skill is unresolvable, while a
+    partial miss just warns. So this returns the missing identifiers only when
+    NOTHING resolves — a partial miss must never block a card that would have run.
+
+    Returns ``[]`` (never blocks) whenever the profile home or the skill modules
+    cannot be introspected: a preflight must not turn an environment problem into
+    a blocked card. The lookup is scoped to the assignee's profile home with the
+    context-local ``HERMES_HOME`` override (it deliberately does not mutate
+    ``os.environ``, which is shared by every thread in a gateway process).
+    """
+    names = [str(s).strip() for s in (skills or ()) if str(s or "").strip()]
+    if not names or not assignee:
+        return []
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        profile_home = resolve_profile_env(normalize_profile_name(assignee))
+    except Exception:
+        return []
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            _prompt, loaded, missing = build_preloaded_skills_prompt(names, task_id=task_id)
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        _kb._log.debug(
+            "kanban: forced-skill preflight unavailable for profile %r", assignee,
+            exc_info=True,
+        )
+        return []
+    if missing and not loaded:
+        return list(missing)
+    return []
+
+
+def _spawn_precondition_failure(
+    task: Task, assignee: str,
+) -> Optional[tuple[str, str]]:
+    """``(check, reason)`` when ``task`` cannot be spawned as configured, else None.
+
+    Deliberately narrow: only conditions a dispatcher can *prove* before spawning
+    and that retrying cannot change. Everything else stays a runtime failure with
+    the log tail attached (``_classify_dead_worker``).
+    """
+    missing = preflight_forced_skills(assignee, task.skills, task_id=task.id)
+    if missing:
+        listed = ", ".join(missing)
+        return (
+            "forced_skills",
+            _SPAWN_PRECONDITION_PREFIX
+            + f"Unknown skill(s): {listed} — none of the forced skills for this card "
+              f"resolve in profile {assignee!r}. Remove or correct them on the card "
+              f"(`hermes kanban edit {task.id} --skills ...`), or grant them to that "
+              f"profile; the worker child would exit immediately with "
+              f"`Error: Unknown skill(s)`.",
+        )
+    return None
+
+
+def _record_spawn_precondition_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    check: str,
+    reason: str,
+    board: Optional[str] = None,
+) -> None:
+    """Fail a card ONCE for an un-satisfiable spawn precondition.
+
+    Deliberately does NOT go through :func:`_record_task_failure`: retrying cannot
+    fix a typo'd skill name or a missing profile, so the unified crash/retry budget
+    (``consecutive_failures``) must stay untouched, and the card must never present
+    as the dispatcher's liveness verdict (``pid N not alive``). The card is blocked
+    with the precise reason, which is exactly what the operator needs to see on the
+    board and in Mission Control; an ``spawn_precondition_failed`` event + comment
+    keep the same reason in the task history.
+    """
+    del board  # reserved: the reason text is board-agnostic; logs are per board
+    reason = reason[:_CRASH_ERROR_CHARS]
+    now = int(time.time())
+    with _kb.write_txn(conn):
+        run_id = _kb._current_run_id(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, last_heartbeat_at = NULL, "
+            "last_failure_error = ? "
+            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
+            (reason, task_id),
+        )
+        if cur.rowcount != 1:
+            return
+        if run_id is not None:
+            # The claim is already released above; closing the run keeps the
+            # attempt history truthful (no phantom 'running' attempt).
+            _kb._end_run(
+                conn, task_id,
+                outcome="precondition_failed", status="precondition_failed",
+                error=reason,
+                metadata={"precondition": check, "retryable": False},
+            )
+        _kb._append_event(
+            conn, task_id, "spawn_precondition_failed",
+            {"check": check, "reason": reason, "retryable": False},
+            run_id=run_id,
+        )
+        # Sticky block marker. ``recompute_ready`` auto-recovers a non-sticky
+        # ``blocked`` card whose failure counter is below the limit, and this path
+        # deliberately does NOT touch that counter — without the marker the card
+        # would cycle blocked -> ready -> preflight-fail on every tick, which is
+        # exactly the churn this preflight exists to remove. The ``blocked`` event
+        # is the durable "a human must fix the card" signal (``unblock`` returns it
+        # to the pool; if the configuration is still broken it fails once again).
+        _kb._append_event(
+            conn, task_id, "blocked",
+            {"reason": reason, "kind": "needs_input", "precondition": check,
+             "retryable": False, "source": "spawn_preflight"},
+            run_id=run_id,
+        )
+        _kb._insert_comment(
+            conn, task_id, "dispatcher",
+            "spawn preflight failed (not retried, no failure budget consumed): "
+            f"{reason}",
+            now,
+        )
+
+
+# Ready-transition events: a card's blocker is re-reported after each new
+# transition (created / promoted / reclaimed / unblocked / status change) and
+# suppressed otherwise, so repeated dispatcher ticks cannot spam the thread.
+_READY_TRANSITION_EVENT_KINDS = ("created", "promoted", "reclaimed", "unblocked", "status")
+
+
+def _note_missing_assignee_profile(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> bool:
+    """Record ONCE why a card with a non-profile assignee was skipped.
+
+    The skip itself is correct and must stay: a non-profile assignee can be a
+    control-plane lane that pulls via ``claim_task``, and blocking it would break
+    that lane. But a silent skip is how a typo'd assignee rots on the board with
+    no error to read, so the reason is stamped on the card and emitted once per
+    ready-transition. Returns True when this call recorded it.
+    """
+    reason = (
+        _SPAWN_PRECONDITION_PREFIX
+        + f"assignee profile {assignee!r} does not exist on this host, so the "
+          f"dispatcher will not spawn a worker for this card. Assign a real profile "
+          f"(`hermes kanban assign {task_id} <profile>`), or leave it for a "
+          f"control-plane lane that claims tasks itself."
+    )[:_CRASH_ERROR_CHARS]
+    placeholders = ", ".join("?" for _ in _READY_TRANSITION_EVENT_KINDS)
+    now = int(time.time())
+    with _kb.write_txn(conn):
+        already = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'spawn_precondition_failed' "
+            "AND payload LIKE '%assignee_profile%' AND created_at >= "
+            "(SELECT COALESCE(MAX(created_at), 0) FROM task_events WHERE task_id = ? "
+            f"AND kind IN ({placeholders})) LIMIT 1",
+            (task_id, task_id, *_READY_TRANSITION_EVENT_KINDS),
+        ).fetchone()
+        if already:
+            return False
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?", (reason, task_id),
+        )
+        _kb._append_event(
+            conn, task_id, "spawn_precondition_failed",
+            {"check": "assignee_profile", "reason": reason, "retryable": False,
+             "skipped": True},
+        )
+        _kb._insert_comment(conn, task_id, "dispatcher", reason, now)
+    return True
 
 
 def check_respawn_guard(
@@ -1514,6 +1869,10 @@ def _dispatch_lane_task(
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        # Skipping is right (see above) but silent skipping is how a typo'd
+        # assignee rots: record the real reason once per ready-transition.
+        if not dry_run:
+            _note_missing_assignee_profile(conn, task_id, assignee)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -1551,6 +1910,23 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    if lane == "review":
+        # Force-load sdlc-review; the kanban lifecycle is already in every
+        # worker's system prompt via KANBAN_GUIDANCE. Applied BEFORE the preflight
+        # so a host/profile missing that skill is reported as the precondition it
+        # is, instead of as a worker that died with `Unknown skill(s)`.
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Spawn preconditions: a card that cannot possibly start must fail ONCE with
+    # the precise reason and consume no crash/retry budget (the claim is released
+    # and the card blocked), never loop as "pid N not alive".
+    precondition = _spawn_precondition_failure(claimed, assignee)
+    if precondition is not None:
+        check, reason = precondition
+        _record_spawn_precondition_failure(
+            conn, claimed.id, check=check, reason=reason, board=board,
+        )
+        result.spawn_precondition_failed.append((claimed.id, check, reason))
+        return False
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -1558,20 +1934,18 @@ def _dispatch_lane_task(
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:
-        if _record_task_failure(
-            conn, claimed.id, f"workspace: {exc}",
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
-        ):
-            result.auto_blocked.append(claimed.id)
+        # A workspace/branch that cannot be resolved (e.g. `no workspace_path`) is
+        # a precondition failure too: retrying the same broken claim cannot fix it.
+        reason = f"{_SPAWN_PRECONDITION_PREFIX}workspace: {exc}"
+        _record_spawn_precondition_failure(
+            conn, claimed.id, check="workspace", reason=reason, board=board,
+        )
+        result.spawn_precondition_failed.append((claimed.id, "workspace", reason))
         return False
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-    if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -1631,6 +2005,7 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -1638,7 +2013,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
@@ -1770,7 +2145,7 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

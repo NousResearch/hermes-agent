@@ -220,7 +220,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "spawn_precondition_failed",
 )
 
 
@@ -3777,7 +3777,15 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
 # --- Stats + SLA helpers ---
 
 def board_stats(conn: sqlite3.Connection) -> dict:
-    """Per-status + per-assignee counts and the oldest ``ready`` age (staleness signal)."""
+    """Per-status + per-assignee counts, the oldest ``ready`` age (staleness
+    signal), and the run-failure-class breakdown.
+
+    ``failure_classes`` separates the four churn shapes an operator must act on
+    differently (worker vanished, protocol violation, stale claim, iteration
+    budget) plus the residual buckets, so "why does this board keep failing" is a
+    count instead of a per-run log dig. ``failure_classes_recent`` is the last
+    24h window beside the all-time total.
+    """
     by_status: dict[str, int] = {}
     for row in conn.execute(
         "SELECT status, COUNT(*) AS n FROM tasks "
@@ -3796,10 +3804,24 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         if oldest_row and oldest_row["ts"] is not None else None
     )
 
+    # Lazy import: kanban_diagnostics is a leaf module, but keeping it out of the
+    # import graph here means a diagnostics import error can never break the core
+    # board queries.
+    failure_classes: dict[str, int] = {}
+    failure_classes_recent: dict[str, int] = {}
+    try:
+        from hermes_cli.kanban_diagnostics import failure_class_counts
+        failure_classes = failure_class_counts(conn)
+        failure_classes_recent = failure_class_counts(conn, since=now - 24 * 3600)
+    except Exception:
+        _log.debug("kanban: run-failure-class counts unavailable", exc_info=True)
+
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
         "oldest_ready_age_seconds": oldest_ready_age,
+        "failure_classes": failure_classes,
+        "failure_classes_recent": failure_classes_recent,
         "now": now,
     }
 

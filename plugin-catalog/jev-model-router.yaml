@@ -1,0 +1,14 @@
+name: jev-model-router
+repo: https://github.com/Pinutss/jev-model-router
+sha: 86e3edbee6b1536e7b846abe942f10ca46032fa2
+description: Routes a task to an LLM under quality, cost, and latency constraints. Portable Agent Plugins v1 package with model_route MCP.
+maintainer: Pinutss
+tier: community
+category: models
+docs_url: https://github.com/Pinutss/jev-model-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -65,6 +65,11 @@ export function gatewayLine(
     },
     stopped: { label: g.stopped, tone: "text-muted-foreground" },
   };
+  // Alive but housekeeping stopped stamping the heartbeat: 'Running' would be the lie the
+  // reporter saw (loop/housekeeping wedged while gateway_state.json still said running).
+  if (status.gateway_heartbeat_stale_s != null) {
+    return { label: g.heartbeatStale, tone: "text-destructive" };
+  }
   if (status.gateway_state && byState[status.gateway_state]) {
     return byState[status.gateway_state];
   }

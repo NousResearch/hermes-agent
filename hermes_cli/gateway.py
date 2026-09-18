@@ -5091,7 +5091,8 @@ _WATCHDOG_EXIT_REASONS = {
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live
+        from gateway.status import (
+            read_runtime_status, runtime_status_heartbeat_age_s, runtime_status_is_stale, runtime_status_pid_is_live)
     except Exception:
         return []
 
@@ -5109,16 +5110,21 @@ def _runtime_health_lines() -> list[str]:
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
-    if (
-        gateway_state in ("running", "starting", "draining")
-        and runtime_status_is_stale(state)
-        and not runtime_status_pid_is_live(state)
-    ):
-        lines.append(
-            f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
-            "recorded process is gone (likely an ungraceful shutdown)"
-        )
-        return lines
+    if gateway_state in ("running", "starting", "draining") and runtime_status_is_stale(state):
+        if not runtime_status_pid_is_live(state):
+            lines.append(
+                f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
+                "recorded process is gone (likely an ungraceful shutdown)"
+            )
+            return lines
+        # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
+        # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.
+        age = runtime_status_heartbeat_age_s(state)
+        if gateway_state != "draining" and age is not None:
+            lines.append(
+                f"⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json for {age} s "
+                f"(event loop or housekeeping wedged; pid {state.get('pid')} alive) — restart the gateway"
+            )
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")

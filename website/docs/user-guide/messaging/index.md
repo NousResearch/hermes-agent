@@ -199,6 +199,13 @@ gateway process overwrites it, and the dashboard's gateway badge shows
 **Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
 `config.yaml` to disable the watchdog.
 
+Housekeeping also re-stamps `gateway_state.json`'s `updated_at` every tick
+(60 s), so it doubles as a heartbeat: when the process is still alive but that
+stamp is more than 120 s old, `hermes gateway status` prints
+`⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json
+for N s …` and the dashboard badge reads **Heartbeat stale** — the "looks
+running but nothing is scheduled" case. Restart the gateway.
+
 ### Optional Linux event-loop watchdog
 
 A systemd-managed gateway can opt into process recovery when Python's asyncio

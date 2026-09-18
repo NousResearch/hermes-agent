@@ -86,6 +86,7 @@ export interface Translations {
     gatewayStrip: {
       degraded: string;
       failed: string;
+      heartbeatStale: string;
       off: string;
       running: string;
       starting: string;

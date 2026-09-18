@@ -67,6 +67,7 @@ export const en: Translations = {
     gatewayStrip: {
       degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",

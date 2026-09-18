@@ -909,8 +909,10 @@ def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]
     return _read_json_file(path or _get_runtime_status_path())
 
 
-# Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect:
-# an older record outlived an ungracefully-killed writer (taskkill /F, OOM, power loss).
+# Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect: an older record
+# outlived an ungracefully-killed writer (taskkill /F, OOM, power loss) — or, with the PID alive, the
+# housekeeping thread that re-stamps ``updated_at`` every tick has wedged (#113372). 2x the 60 s
+# housekeeping interval.
 _RUNTIME_STATUS_STALE_TTL_S = 120
 
 
@@ -919,6 +921,15 @@ def runtime_status_is_stale(
 ) -> bool:
     """True when the snapshot's ``updated_at`` is older than ``ttl_s`` (or missing/unparseable)."""
     return not isinstance(record, dict) or _marker_is_stale(record.get("updated_at") or "", ttl_s)
+
+
+def runtime_status_heartbeat_age_s(record: Optional[dict[str, Any]]) -> Optional[int]:
+    """Whole seconds since the snapshot's ``updated_at``; None when missing/unparseable (an
+    unparseable stamp is a stale *file*, not a wedged heartbeat)."""
+    updated_at = normalize_updated_at(record.get("updated_at")) if isinstance(record, dict) else None
+    if not updated_at:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).total_seconds()))
 
 
 def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
@@ -940,7 +951,7 @@ _DRAINABLE_GATEWAY_STATES = frozenset({"running"})
 
 def derive_gateway_busy(*, gateway_running: bool, gateway_state: Any, active_agents: Any) -> bool:
     """Busy iff live, ``running``, and ``active_agents > 0`` -- the contract NAS gates on. Liveness
-    keys off ``gateway_running``, NEVER ``updated_at`` (an idle gateway never advances it)."""
+    keys off ``gateway_running``, NEVER ``updated_at`` (a stale heartbeat is a health warning, not death)."""
     if not derive_gateway_drainable(gateway_running=gateway_running, gateway_state=gateway_state):
         return False
     return parse_active_agents(active_agents) > 0

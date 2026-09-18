@@ -100,3 +100,89 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+class _TypingRecordingAdapter:
+    """Adapter double whose class exposes a real ``interrupt_session_activity`` accepting
+    ``metadata``, so the introspective call path (``getattr(type(adapter), …)`` +
+    ``_accepts_keyword``) resolves the recording method instead of skipping a MagicMock."""
+
+    def __init__(self):
+        self.interrupt_calls = []
+
+    async def send(self, *args, **kwargs):
+        pass
+
+    async def interrupt_session_activity(self, session_key, chat_id, metadata=None):
+        self.interrupt_calls.append((session_key, chat_id, metadata))
+
+
+class _TwoArgInterruptAdapter:
+    """Older adapter spelling: ``interrupt_session_activity(session_key, chat_id)`` only."""
+
+    def __init__(self):
+        self.interrupt_calls = []
+
+    async def send(self, *args, **kwargs):
+        pass
+
+    async def interrupt_session_activity(self, session_key, chat_id):
+        self.interrupt_calls.append((session_key, chat_id))
+
+
+def _make_typing_runner(adapter):
+    """``_make_runner`` with the given (class-level) adapter double installed."""
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_reset_command_interrupts_session_activity():
+    """#50766: the normal /new dispatch path (no agent in _running_agents) goes straight to
+    _handle_reset_command, which must stop the adapter's typing loop exactly like the /stop
+    path does — otherwise an orphaned _keep_typing task keeps the "typing…" indicator alive
+    after every reset."""
+    adapter = _TypingRecordingAdapter()
+    runner = _make_typing_runner(adapter)
+    source = _make_source()
+    session_key = build_session_key(source)
+    expected_metadata = runner._thread_metadata_for_source(source)
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert adapter.interrupt_calls == [(session_key, "c1", expected_metadata)]
+
+
+@pytest.mark.asyncio
+async def test_reset_command_interrupts_legacy_two_arg_adapter():
+    """The introspective contract must keep calling older adapters positionally: their
+    ``interrupt_session_activity(session_key, chat_id)`` has no ``metadata`` kwarg."""
+    adapter = _TwoArgInterruptAdapter()
+    runner = _make_typing_runner(adapter)
+    session_key = build_session_key(_make_source())
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert adapter.interrupt_calls == [(session_key, "c1")]
+
+
+@pytest.mark.asyncio
+async def test_reset_command_without_interrupt_hook_still_resets():
+    """Adapters without ``interrupt_session_activity`` (custom platforms, older adapters) must
+    not break /new: the activity interrupt is best-effort, so reset still completes and clears
+    session-scoped state (baseline guard)."""
+    runner = _make_runner()  # MagicMock adapter: class-level hook lookup resolves to nothing
+    session_key = build_session_key(_make_source())
+    runner._session_model_overrides[session_key] = {
+        "model": "gpt-4o",
+        "provider": "openai",
+        "api_key": "sk-test",
+        "base_url": "",
+        "api_mode": "openai",
+    }
+
+    result = await runner._handle_reset_command(_make_event("/new"))
+
+    assert session_key not in runner._session_model_overrides
+    assert result is not None

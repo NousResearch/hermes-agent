@@ -166,6 +166,11 @@ class GatewaySessionCommandsMixin:
         old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
+        # #50766: the normal-dispatch /new path (no agent in _running_agents) skips the
+        # _interrupt_and_clear_session quick path, so stop the adapter's typing loop here too —
+        # otherwise an orphaned _keep_typing task keeps the platform "typing…" indicator alive
+        # indefinitely after the reset.
+        await self._interrupt_session_activity_on_adapter(source, session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
         # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
         self._clear_conversation_scope(session_key, reason="session_reset")

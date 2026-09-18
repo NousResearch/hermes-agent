@@ -473,3 +473,117 @@ class TestReviewRepros:
         assert after2["next_run_at"] != scheduled_next
         assert (after2.get("repeat") or {}).get("completed", 0) == 1
         assert not any(context in str(p) for p in prompts if p)
+
+    def test_trigger_job_with_pending_runs_manual_then_event_once(self, temp_home, monkeypatch):
+        """Review-r2 N1: dashboard/API trigger_job(prompt) while pending is armed
+        must yield exactly two occurrence-free runs — operator prompt, then
+        event batch — with no mixing, no phantom scheduled fire, and no
+        repeat.completed bump."""
+        from datetime import datetime
+
+        from cron.jobs import get_job, trigger_job
+        from cron import jobs as jobs_mod
+        import cron.scheduler as sched
+
+        job, context = self._arm_pending()
+        operator = "operator-prompt"
+        trigger_job(job["id"], extra_prompt=operator)
+        triggered = get_job(job["id"])
+        assert triggered.get("manual_run_at") == triggered.get("next_run_at")
+        assert triggered.get("manual_run_prompt") == operator
+
+        prompts = []
+
+        def _fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", _fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        tick1 = sched.tick(verbose=False, sync=True)
+        assert tick1 >= 1
+        assert len(prompts) == 1
+        assert prompts[0] == operator
+        assert context not in str(prompts[0])
+        after1 = get_job(job["id"])
+        assert (after1.get("repeat") or {}).get("completed", 0) == 0
+        assert [event["context"] for event in _contexts(after1)[0]] == [context]
+        assert after1.get("event_rerun_due") is True
+        assert after1.get("manual_run_at") in (None, False)
+        assert after1.get("next_run_at") != triggered["next_run_at"]
+
+        prompts.clear()
+        tick2 = sched.tick(verbose=False, sync=True)
+        assert tick2 >= 1
+        assert len(prompts) == 1
+        assert context in str(prompts[0])
+        assert operator not in str(prompts[0])
+        after2 = get_job(job["id"])
+        assert (after2.get("repeat") or {}).get("completed", 0) == 0
+        assert not (after2.get("pending_event_batch") or {}).get("events")
+        assert after2.get("event_rerun_due") in (None, False)
+        assert after2["next_run_at"] == after1["next_run_at"]
+        assert datetime.fromisoformat(after2["next_run_at"]) > jobs_mod._hermes_now()
+
+        prompts.clear()
+        tick3 = sched.tick(verbose=False, sync=True)
+        assert tick3 == 0
+        assert prompts == []
+        assert (get_job(job["id"]).get("repeat") or {}).get("completed", 0) == 0
+
+    def test_event_rerun_claim_without_pending_fails_closed(self, temp_home):
+        """Review-r2 N2: event_rerun=True with nothing to promote must not claim."""
+        from cron.jobs import claim_job_for_fire, create_job, get_job
+
+        job = create_job(prompt="x", schedule="every 5m", name="q", repeat=5)
+        before = get_job(job["id"])
+        claimed = claim_job_for_fire(job["id"], event_rerun=True, return_job=True)
+        assert claimed is False
+        after = get_job(job["id"])
+        assert after["next_run_at"] == before["next_run_at"]
+        assert (after.get("repeat") or {}).get("completed", 0) == (
+            before.get("repeat") or {}
+        ).get("completed", 0)
+        assert not after.get("fire_claim")
+
+    def test_stale_event_rerun_snapshot_does_not_run_after_batch_drains(
+        self, temp_home, monkeypatch
+    ):
+        """Review-r2 N2 race: due-scan marked _event_rerun, another claimant
+        drained the batch, then the queued snapshot must not fall through to
+        a scheduled-style claim."""
+        from cron.executions import create_execution
+        from cron.jobs import claim_job_for_fire, get_due_jobs, get_job, mark_job_run
+        import cron.scheduler as sched
+
+        job, _context = self._arm_pending()
+        due = next(item for item in get_due_jobs() if item["id"] == job["id"])
+        assert due.get("_event_rerun") is True
+        promoted = claim_job_for_fire(job["id"], event_rerun=True, return_job=True)
+        assert isinstance(promoted, dict)
+        owner = promoted["fire_claim"]["by"]
+        assert mark_job_run(job["id"], True, expected_fire_owner=owner) is True
+        drained = get_job(job["id"])
+        next_before = drained["next_run_at"]
+        completed_before = (drained.get("repeat") or {}).get("completed", 0)
+        assert not (drained.get("pending_event_batch") or {}).get("events")
+
+        ran = []
+
+        def _fake_run_job(_job, *, extra_prompt=None, **_kw):
+            ran.append(extra_prompt)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", _fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        due["execution_id"] = create_execution(job["id"], source="builtin")["id"]
+        sched._process_due_job(due, adapters=None, loop=None, verbose=False)
+        assert ran == []
+        after = get_job(job["id"])
+        assert after["next_run_at"] == next_before
+        assert (after.get("repeat") or {}).get("completed", 0) == completed_before
+        assert claim_job_for_fire(job["id"], event_rerun=True, return_job=True) is False

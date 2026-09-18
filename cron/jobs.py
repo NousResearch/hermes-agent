@@ -2471,11 +2471,21 @@ def mark_job_run(
         event_run = bool(
             _coerce_event_items((job.get("fire_claim") or {}).get("event_batch"))
         )
+        # Stamp is still present until _record_run_outcome pops it. Do not require
+        # equality with next_run_at: interval claims re-anchor next_run_at first.
+        was_manual = bool(job.get("manual_run_at"))
         scheduled_next = job.get("next_run_at")
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        pending_after = _coerce_event_items(job.get("pending_event_batch"))
         if event_run:
             # Event reruns must not consume or re-anchor future scheduled occurrences.
+            job["next_run_at"] = scheduled_next
+            if job.get("state") != "paused" and job.get("next_run_at"):
+                job["state"] = "scheduled"
+        elif was_manual and pending_after:
+            # Run-now while events are still queued: occurrence-free, no repeat bump.
+            # next_run_at was already re-anchored at claim time for interval jobs.
             job["next_run_at"] = scheduled_next
             if job.get("state") != "paused" and job.get("next_run_at"):
                 job["state"] = "scheduled"
@@ -2488,7 +2498,7 @@ def mark_job_run(
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
-        pending = _coerce_event_items(job.get("pending_event_batch"))
+        pending = pending_after
         if pending:
             job["event_rerun_due"] = True
             if is_terminal_job(job):
@@ -2751,7 +2761,11 @@ def claim_job_for_fire(
         pending_events = _recover_stale_event_claim(job, now, claim_ttl_seconds)
         # Only an explicit event-rerun claim (ticker follow-up) may promote pending.
         # Manual/force/provider/scheduled claims leave the batch for its own event run.
-        if event_rerun and pending_events:
+        # Fail closed when the caller asked for an event rerun and there is nothing
+        # to promote — never fall through to a scheduled-style claim.
+        if event_rerun:
+            if not pending_events:
+                return False
             if force:
                 _activate_job_record(job)
             job["fire_claim"] = {
@@ -3526,7 +3540,11 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         and _claim_is_live(job.get("run_claim"), now, run_claim_ttl)
     ):
         return False
-    if _due_for_event_rerun(job, now):
+    # Manual run-now (trigger_job) takes precedence over a pending event follow-up
+    # so the operator prompt and the event batch each get their own occurrence-free run.
+    next_run_hint = job.get("next_run_at")
+    manual_due = bool(next_run_hint) and job.get("manual_run_at") == next_run_hint
+    if not manual_due and _due_for_event_rerun(job, now):
         return True
 
     next_run = _restore_unclaimed_slot(job, scan) or job.get("next_run_at") or _recover_missing_next_run(job, scan)

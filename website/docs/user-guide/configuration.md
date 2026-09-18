@@ -226,7 +226,7 @@ terminal:
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
-  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Registry image or Daytona snapshot name
 ```
 
 `terminal.temp_dir` controls where Hermes puts session temp artifacts on the

@@ -35,7 +35,8 @@ class DaytonaEnvironment(BaseEnvironment):
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
         ensure_lazy_dep("terminal.daytona")
-        from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
+        from daytona import (Daytona, CreateSandboxFromImageParams, CreateSandboxFromSnapshotParams,
+                             DaytonaError, Resources, SandboxState)
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
         self._daytona = Daytona()
@@ -70,9 +71,16 @@ class DaytonaEnvironment(BaseEnvironment):
                     logger.debug("Daytona: no legacy sandbox found for task %s: %s", task_id, e)
                     self._sandbox = None
         if self._sandbox is None:
-            self._sandbox = self._daytona.create(CreateSandboxFromImageParams(
-                image=image, name=sandbox_name, labels=labels, auto_stop_interval=0, resources=resources))
-            logger.info("Daytona: created sandbox %s for task %s", self._sandbox.id, task_id)
+            common = dict(name=sandbox_name, labels=labels, auto_stop_interval=0)
+            # A Daytona snapshot name takes precedence over a registry image reference;
+            # snapshots carry their own resources, so ``resources`` only applies to images.
+            try:
+                self._daytona.snapshot.get(image)
+                source, params = "snapshot", CreateSandboxFromSnapshotParams(snapshot=image, **common)
+            except DaytonaError:
+                source, params = "image", CreateSandboxFromImageParams(image=image, resources=resources, **common)
+            self._sandbox = self._daytona.create(params)
+            logger.info("Daytona: created sandbox %s for task %s from %s %s", self._sandbox.id, task_id, source, image)
 
         self._remote_home = "/root"
         with contextlib.suppress(Exception):

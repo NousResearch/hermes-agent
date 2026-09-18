@@ -69,6 +69,61 @@ class TestCollectInventory:
             by_profile["work"].restart_via, "work"
         )
 
+    def test_custom_default_home_reconciles_only_its_exact_hashed_unit(self, fleet):
+        plan = ui.collect_runtime_inventory()
+        runtime = next(r for r in plan.runtimes if r.profile == "default")
+        systemd_name = next(
+            name for name in runtime.detail["service_names"]
+            if name.startswith("hermes-gateway")
+        )
+        assert systemd_name != "hermes-gateway"
+
+        common = dict(
+            plan=ui.UpdatePlan(runtimes=[runtime]), relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        )
+        matched = ui.match_runtime_outcomes(
+            restarted_services=[f"user/{systemd_name}.service"], **common,
+        )
+        other_hash = "00000000" if not systemd_name.endswith("00000000") else "11111111"
+        unmatched = ui.match_runtime_outcomes(
+            restarted_services=[f"hermes-gateway-{other_hash}.service"], **common,
+        )
+        bare_restarted = ui.match_runtime_outcomes(
+            restarted_services=["hermes-gateway.service"], **common,
+        )
+        bare_failed = ui.match_runtime_outcomes(
+            restarted_services=[], failed_units=["hermes-gateway.service"],
+            **{key: value for key, value in common.items() if key != "failed_units"},
+        )
+
+        assert matched[0]["outcome"] == "restarted"
+        assert unmatched[0]["outcome"] == "unaccounted"
+        assert bare_restarted[0]["outcome"] == "unaccounted"
+        assert bare_failed[0]["outcome"] == "unaccounted"
+
+    def test_inventory_keeps_bare_unit_identity_across_sudo_home_switch(
+        self, fleet, monkeypatch,
+    ):
+        """An installed bare unit remains authoritative when sudo changes the process naming basis."""
+        default_home = (fleet / "home").resolve()
+        monkeypatch.setattr("hermes_cli.gateway._native_service_homes", lambda: set())
+        monkeypatch.setattr("hermes_cli.gateway._bare_unit_pinned_home", lambda: default_home)
+
+        plan = ui.collect_runtime_inventory()
+        runtime = next(r for r in plan.runtimes if r.profile == "default")
+
+        assert runtime.detail["service_names"] == [
+            "hermes-gateway", "ai.hermes.gateway",
+        ]
+        outcomes = ui.match_runtime_outcomes(
+            ui.UpdatePlan(runtimes=[runtime]),
+            restarted_services=["hermes-gateway.service"],
+            relaunched_profiles=[], externally_supervised_profiles=[],
+            killed_pids=set(), failed_units=[],
+        )
+        assert outcomes[0]["outcome"] == "restarted"
+
     def test_docker_install_not_updatable_in_place(self, fleet, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")
         monkeypatch.setattr(

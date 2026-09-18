@@ -2082,9 +2082,15 @@ def _bare_unit_pinned_home() -> Path | None:
         return None
 
 
-def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for a home that owns the bare name, the profile name for
-    ``<root>/profiles/<name>``, else a short hash of the path.
+def _profile_suffix(
+    hermes_home: str | Path | None = None,
+    default_root: str | Path | None = None,
+) -> str:
+    """Service-name suffix for a Hermes home: "" for a home that owns the bare name, the profile name
+    for ``<root>/profiles/<name>``, else a short hash of the path.
+
+    ``hermes_home`` and ``default_root`` let inventory derive the same host identity for every planned
+    runtime without rebinding process-global profile state.
 
     Bare-name owners: this process's platform-native default (``~/.hermes``), under sudo the invoking
     user's native default, and the home pinned by an installed ``hermes-gateway.service``. Under sudo the
@@ -2103,10 +2109,12 @@ def _profile_suffix() -> str:
     """
     import hashlib
     from hermes_constants import get_default_hermes_root
-    home = get_hermes_home().resolve()
+
+    home = Path(hermes_home or get_hermes_home()).resolve()
     if home in _native_service_homes() or home == _bare_unit_pinned_home():
         return ""
-    name = _profile_name_from_home(home, get_default_hermes_root().resolve())
+    root = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
+    name = _profile_name_from_home(home, root)
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 

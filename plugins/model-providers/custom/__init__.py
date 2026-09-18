@@ -29,6 +29,19 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
+    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
+        """The OpenAI-compat wire set, mirroring this profile's own chat-completions clamp.
+
+        Without this declaration the Responses transport clamps onto the OpenAI
+        per-model ladder (``codex_supported_efforts``), where ``max`` is gpt-5.6-only —
+        so a custom relay's model had a configured ``max`` silently demoted to
+        ``xhigh`` while the same provider over chat-completions forwarded ``max``
+        unchanged (#114249). A custom endpoint's vocabulary is undiscoverable, so
+        the widest OpenAI-compat set is the honest ceiling; ``ultra`` still clamps
+        to ``max`` via the shared ``clamp_effort`` policy.
+        """
+        return OPENAI_COMPAT_WIRE_EFFORTS
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -66,12 +79,8 @@ custom = CustomProfile(
     name="custom", aliases=("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
-    # Floor only (user model.max_tokens overrides); without it Ollama falls
-    # back to num_predict=128 and truncates.
-    # Without this, no max_tokens is sent and Ollama falls back to its internal num_predict=128, truncating
-    # responses after a few tokens (#39281). This is only a floor used when the user hasn't set
-    # model.max_tokens — they can override per-model — so we set it generously rather than lowballing it.
-    default_max_tokens=65536,
+    # An arbitrary client ceiling can exceed a local server's actual output limit.
+    # The endpoint owns its generation default.
 )
 
 register_provider(custom)

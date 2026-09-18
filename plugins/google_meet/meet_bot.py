@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
-from plugins.google_meet._jsonfile import write_json_atomic
+from utils import atomic_json_write
 
 # Short three-segment code, a lookup URL, or /new. Anything else is rejected.
 MEET_URL_RE = re.compile(
@@ -93,7 +93,7 @@ class _BotState:
     def _flush(self) -> None:
         data = {key: getattr(self, attr) if attr else None for key, attr, _ in _STATUS_FIELDS}
         data.update(transcriptPath=str(self.transcript_path), pid=os.getpid())  # keeps table key order
-        write_json_atomic(self.status_path, data)
+        atomic_json_write(self.status_path, data)
 
     def set(self, **kwargs) -> None:
         self.__dict__.update(kwargs)

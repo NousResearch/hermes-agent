@@ -9,8 +9,8 @@ description: "Reference for Hermes Agent MCP configuration keys, filtering seman
 This page is the compact reference companion to the main MCP docs.
 
 For conceptual guidance, see:
-- [MCP (Model Context Protocol)](/user-guide/features/mcp)
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
+- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md)
 
 ## Root config shape
 
@@ -60,14 +60,15 @@ mcp_servers:
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
-| `keepalive_interval` | number | both | Liveness ping cadence in seconds (default: `180`, floored at 5s). Set below the server's session TTL for servers that GC idle sessions quickly |
+| `keepalive_interval` | number | both | Liveness ping cadence in seconds (floored at 5s). HTTP defaults to `180`; set it below the server's session TTL when the server GC's idle sessions quickly. Stdio disables keepalive when omitted; set a value to opt in explicitly |
+| `lazy` | bool | both | Register the server's tools from the on-disk schema cache at startup and only spawn/connect it on the first tool call (default: `false`). Needs one prior live connect to fill the cache; a missing or stale entry falls back to the normal eager connect. Status surfaces show the server as `lazy` with its cached tool count until first use |
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
-| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
+| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) |
 
 ## Environment variable references
 
@@ -333,9 +334,46 @@ mcp_servers:
 Behavior:
 - Hermes uses the MCP SDK's OAuth 2.1 PKCE flow (metadata discovery, client identification, token exchange, and refresh)
 - On first connect, a browser window opens for authorization
-- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
+- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+- Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
+
+### Device-code login (RFC 8628)
+
+For an authorization server advertising `device_authorization_endpoint`, explicitly choose
+device authorization from a terminal on the machine running Hermes:
+
+```bash
+hermes mcp login protected_api --flow device
+```
+
+Open the printed verification URL on any device and enter the displayed user code.
+Hermes polls for approval, respects `authorization_pending` and `slow_down`, and stops
+on denial or expiry. No browser is launched and no callback listener is needed.
+`oauth.timeout` bounds the approval wait (default 300 seconds), also limited by the code's lifetime.
+When the server's protected-resource metadata lists several authorization servers, device
+login scans them in order and uses the first one whose metadata issuer matches its advertised
+URL and that offers the `device_code` grant (a browser-only server listed first is skipped);
+issuer validation is never relaxed.
+
+Set `oauth.flow: device` on the server to make `hermes mcp login` and `hermes mcp reauth`
+(including `reauth --all`) use device authorization. `login --flow browser` overrides that
+setting for one login; browser PKCE remains the default. Unsupported metadata produces
+an actionable error rather than silently falling back to a different flow.
+
+Device login requests the device and refresh grants during dynamic registration, or uses
+your configured `oauth.client_id`, `oauth.client_secret`, and `oauth.token_endpoint_auth_method`.
+The registered client must permit device authorization. The browser CIMD document is not used.
+`oauth.scope` is sent on the device authorization request; `oauth.user_agent` also applies
+to token polling. Tokens, registration, and issuer metadata stay in the active profile's
+MCP token store and the existing runtime refresh path reuses them after a restart.
+Failed device grants do not replace previously saved credentials.
+
+Initial device login is terminal-only: dashboard/browser callbacks and background reconnects
+do not start device authorization. Run the login command against the **same profile and host**
+as the gateway. An expired/rejected device grant without a usable refresh token requires
+another explicit login.
 
 ### Client identification: CIMD and DCR
 
@@ -377,7 +415,9 @@ mcp_servers:
 
 `client_metadata_url` must be an HTTPS URL with a path (no bare origin, no fragment, no userinfo, no `.`/`..` segments) that returns `200` and `Content-Type: application/json` with **no redirect** — authorization servers are forbidden from following redirects when fetching it. Hermes still pins its callback to the same `27890`–`27894` range, so a self-hosted document must declare all ten loopback URIs (`http://127.0.0.1:<port>/callback` and `http://localhost:<port>/callback` for each port), and its `client_id` must be its own URL.
 
-`user_agent` replaces the HTTP library's default `User-Agent` on **token-endpoint requests only** (authorization-code exchange and refresh) — some authorization servers and WAFs reject the default `python-httpx/...` value there. It never applies to MCP traffic or OAuth discovery, and no other token-request headers are configurable. Empty or null values are ignored.
+`user_agent` replaces the HTTP library's default `User-Agent` on **token-endpoint requests only** (authorization-code exchange and refresh) — some authorization servers and WAFs reject the default `python-httpx/...` value there. It never applies to MCP traffic, and no other token-request headers are configurable. Empty or null values are ignored.
+
+OAuth discovery and dynamic-client-registration requests (the `/.well-known/...` metadata documents and the `registration_endpoint` POST) always carry `User-Agent: Hermes-Agent/<version>`. The MCP SDK builds those requests without any client default headers, and WAF-fronted authorization servers answer a header-less request with `403` — the metadata document then looks unreadable, registration falls back to a guessed `/register` on the MCP host, and the login fails with `Registration failed: 404`. When every metadata fetch does fail, the error now leads with those statuses (`Could not read authorization-server metadata (403 from https://…/.well-known/oauth-authorization-server; …)`) before the registration fallback's own error.
 
 ## Add to Hermes link
 

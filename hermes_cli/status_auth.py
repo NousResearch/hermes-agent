@@ -124,6 +124,17 @@ def _render_auth_providers(ctx):
     ctx.nous_inference_present = inference = bool(
         nous_status.get("inference_credential_present") or (info and info.inference_credential_present)
     )
+    if nous_status.get("free_tier"):
+        # Free tier: never rendered as an account login (no account ids, no refresh row).
+        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        _status._row("Nous Portal", True, f"{FREE_TIER_LABEL} · {GUEST_MODEL}")
+        _status._detail("", UPGRADE_HINT)
+        inference_url = nous_status.get("inference_base_url")
+        if inference_url:
+            _status._detail("Inference:", inference_url)
+        for name, getter, hint, rows in _OAUTH_BLOCKS:
+            _oauth_block(name, statuses.get(getter, {}), hint, rows)
+        return
     nous_error = nous_status.get("error")
     _status._row("Nous Portal", logged_in,
          "logged in" if logged_in else "not logged in (Nous inference key configured)" if inference

@@ -231,6 +231,8 @@ def bench():
 
         # persist scan: fully-flushed list, old full walk vs bounded skip
         import run_agent as ra
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.session_persistence import _is_ephemeral_scaffolding
         flushed = copy.deepcopy(msgs)
         for m in flushed:
             if isinstance(m, dict):

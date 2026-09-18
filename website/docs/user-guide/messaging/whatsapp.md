@@ -113,9 +113,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
-This is consistent with [Signal group allowlists](/reference/environment-variables).
+This is consistent with [Signal group allowlists](../../reference/environment-variables.md).
 To use the pairing flow instead, remove both variables and rely on the
-[DM pairing system](/user-guide/security#dm-pairing-system).
+[DM pairing system](../security.md#dm-pairing-system).
 :::
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -173,7 +173,7 @@ Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -237,6 +237,10 @@ gateway:
 ```
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
+
+### Quoted Replies
+
+Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
 ---
 

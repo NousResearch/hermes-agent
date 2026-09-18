@@ -60,7 +60,6 @@ class ProfileRoute:
     fallback: Tuple[FallbackTarget, ...] = ()
     supports_tools: bool = True
     request_overrides: Optional[dict] = None     # provider request personality (runtime provider)
-    max_output_tokens: Optional[int] = None
 
 
 def _profiles_section(cfg: Optional[dict]) -> Any:
@@ -243,5 +242,4 @@ def resolve_profile_route(name: str, cfg: Optional[dict], parent_agent: Any = No
         fallback=spec.fallback,
         supports_tools=supports_tools,
         request_overrides=dict(runtime.get("request_overrides") or {}) or None,
-        max_output_tokens=runtime.get("max_output_tokens"),
     )

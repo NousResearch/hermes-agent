@@ -27,7 +27,7 @@ def searchable_tree(tmp_path):
     # Visible files
     visible_dir = tmp_path / "skills" / "my-skill"
     visible_dir.mkdir(parents=True)
-    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a real skill.")
+    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a visible document.")
 
     # Hidden directory mimicking .hub/index-cache
     hub_dir = tmp_path / "skills" / ".hub" / "index-cache"
@@ -87,7 +87,7 @@ class TestGrepExcludesHiddenDirs:
     def test_grep_fallback_finds_visible_content(self, searchable_tree, monkeypatch):
         """Searching ``.`` must not exclude the search root itself."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
-            "real skill",
+            "visible document",
             path=".",
             target="content",
         )
@@ -101,7 +101,7 @@ class TestGrepExcludesHiddenDirs:
     ):
         """An explicit ``./directory`` root must remain searchable too."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
-            "real skill",
+            "visible document",
             path="./my-skill",
             target="content",
         )
@@ -137,6 +137,54 @@ class TestGrepExcludesHiddenDirs:
         assert not result.matches
 
 
+class TestGrepSearchesRootsUnderHiddenDirs:
+    """Regression for #18473: grep applies ``--exclude-dir='.*'`` to the command-line
+    root as well (GNU grep: to every component of it), so a search rooted anywhere
+    under a dot-directory such as ``~/.hermes`` returned nothing on the fallback."""
+
+    @staticmethod
+    def _hidden_tree(tmp_path):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        (home / "skills" / "SKILL.md").write_text("visible document under a hidden home")
+        (home / ".hub").mkdir()
+        (home / ".hub" / "catalog.json").write_text("visible document cached from the hub")
+        return home
+
+    def test_absolute_root_under_hidden_dir_is_searched_but_hidden_children_are_not(
+        self, tmp_path, monkeypatch
+    ):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home), target="content")
+
+        assert result.error is None
+        assert [m.path.rsplit("/", 1)[-1] for m in result.matches] == ["SKILL.md"]
+
+    def test_relative_root_resolves_against_a_hidden_cwd(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(home)), cwd=str(home))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=".", target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path.endswith("SKILL.md")
+
+    def test_single_file_root_under_hidden_dir_is_searched(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home / "skills" / "SKILL.md"), target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+
+
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
@@ -160,7 +208,7 @@ class TestRipgrepAlreadyExcludesHidden:
     def test_rg_finds_visible_content(self, searchable_tree):
         """rg should find content in visible directories."""
         result = subprocess.run(
-            ["rg", "--no-heading", "real skill", str(searchable_tree)],
+            ["rg", "--no-heading", "visible document", str(searchable_tree)],
             capture_output=True, text=True,
         )
         assert "SKILL.md" in result.stdout

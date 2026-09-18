@@ -24,15 +24,16 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
-    _ChildRun, _attach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _route_telemetry, _start_heartbeat,
-    _validate_child_output_schema,
+    _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry,
+    _dump_subagent_timeout_diagnostic, _fabricated_entry, _lease_child_credential, _merge_late_steer,
+    _register_child, _route_telemetry, _start_heartbeat, _validate_child_output_schema
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials, _subagent_auto_approve, _subagent_auto_deny,
+    _resolve_child_runtime, _resolve_delegation_credentials,
+    _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -46,7 +47,9 @@ from tools.delegate_tool_registry import (  # noqa: F401
     get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
     steer_subagent,
 )
-from tools.delegate_tool_tasks import _coerce_task_schemas, _normalize_task_list
+from tools.delegate_tool_tasks import (  # noqa: F401
+    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+)
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
@@ -103,6 +106,54 @@ def _open_child_session_db(parent_agent) -> Any:
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
 
+def _apply_child_cache_ttl(child) -> None:
+    """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
+    away between turns (2x write vs 1.25x for 5m, #14971); a subagent calls every few seconds for
+    minutes and is gone, so it pays the 2x on every tool result and never collects the retention.
+    Caching itself stays exactly as configured (disabled stays disabled)."""
+    if getattr(child, "_cache_ttl", None) == "1h":
+        child._cache_ttl = "5m"
+
+_CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
+
+
+def _child_compression_cap_tokens(raw) -> "int | None":
+    """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
+
+    Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the
+    same ratio trigger as everyone else (0.50 x window). A bool ``true`` (YAML) would coerce to 1
+    and make every call compress; a string like ``"200k"`` would silently read as no cap. Both are
+    config errors: warn and treat as unset so a typo never changes compaction behaviour."""
+    if raw is None or raw is False or raw == 0:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) < _CHILD_CAP_MIN:
+        logger.warning(
+            "delegation.compression_threshold_tokens=%r is not a token count >= %d; ignoring it "
+            "(children keep the ratio trigger).", raw, _CHILD_CAP_MIN,
+        )
+        return None
+    return int(raw)
+
+
+def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
+    """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
+    (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
+    compacts at 500K like its parent. The compressor applies the cap on first window resolution, which
+    happens after construction, so setting it here is exactly equivalent to config."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = getattr(child, "context_compressor", None)
+    if not isinstance(cc, ContextCompressor):
+        return
+    cap = _child_compression_cap_tokens((delegation_cfg or {}).get("compression_threshold_tokens"))
+    if cap is None:
+        return
+    existing = cc.threshold_tokens_cap
+    cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap
+    if cc._threshold_tokens is not None:  # already resolved: re-clamp now
+        cc._apply_threshold_tokens_cap()
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -118,7 +169,7 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
-    override_max_tokens: Optional[int] = None,
+
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -129,6 +180,10 @@ def _build_child_agent(
     # supports_tools from the profile route (None = legacy, no check) + the profile name for the error.
     override_supports_tools: Optional[bool] = None,
     requested_profile: Optional[str] = None,
+    # Configuration block that owns the selected provider/model route. Internal
+    # callers such as /review pass auxiliary.review here so fallback policy is
+    # not accidentally read from the general delegation block.
+    routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -148,6 +203,9 @@ def _build_child_agent(
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
+    # General delegation behavior (reasoning, compression, capabilities) stays
+    # global. Only fallback policy follows the owner of a per-call route such
+    # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     # A profile pinned to a model without tool calling cannot run a tool-bearing child — refuse before
@@ -177,8 +235,9 @@ def _build_child_agent(
     rt = _resolve_child_runtime(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
-        override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
-        override_acp_args=override_acp_args, override_fallback_model=override_fallback_model,
+        override_acp_command=override_acp_command,
+        override_acp_args=override_acp_args, routing_cfg=routing_cfg,
+        override_fallback_model=override_fallback_model,
         override_reasoning_config=override_reasoning_config,
     )
     if override_request_overrides is not None:
@@ -212,6 +271,7 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
@@ -231,6 +291,7 @@ def _build_child_agent(
         # 'none' = profile route with an empty fallback chain (no model promotion);
         # 'profile:<name>' = profile route whose own fallback chain replaces the parent's.
         setattr(child, "_route_fallback_policy", f"profile:{requested_profile}" if override_fallback_model else "none")
+    _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -280,7 +341,7 @@ def _run_single_child(
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)
     # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
-    # child works; it stops itself once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*).
+    # child works; once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*) it also ends await_child's wait.
     heartbeat = _start_heartbeat(child, parent_agent, task_index)
     # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
     # doubles without a stable id. Unregistered in the finally block.
@@ -288,7 +349,7 @@ def _run_single_child(
         child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
         owner_session_record=owner_session_record,
     )
-    run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb)
+    run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat)
     # Set when a timed-out Future still owns the child: closing it from this
     # thread before the worker settles races the conversation's finally path.
     _child_close_deferred = False
@@ -310,6 +371,7 @@ def _run_single_child(
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
         run.append_sibling_write_reminder(entry)
+        run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)
     except Exception as exc:
@@ -325,15 +387,16 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
-def _profile_task_overrides(c: Dict[str, Any]) -> Dict[str, Any]:
+def _profile_task_overrides(c: Dict[str, Any], routing_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """override_* kwargs for one task's credential bundle. Profile-only keys are added ONLY when the bundle
     came from a profile route, so legacy calls into _build_child_agent stay byte-identical (kwargs included)."""
     overrides = {
         "override_provider": c["provider"], "override_base_url": c["base_url"],
         "override_api_key": c["api_key"], "override_api_mode": c["api_mode"],
         "override_request_overrides": c.get("request_overrides"),
-        "override_max_tokens": c.get("max_output_tokens"), "override_acp_command": c.get("command"),
+        "override_acp_command": c.get("command"),
         "override_acp_args": c.get("args"),
+        "routing_cfg": routing_cfg,
     }
     if c.get("requested_profile"):
         overrides.update({
@@ -370,7 +433,8 @@ def _resolve_task_credentials(
 
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, live_deleg_id: Optional[str], live_writers: list,
+    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
     task_creds: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
@@ -380,7 +444,7 @@ def _build_children(
     children = []
     for i, t in enumerate(task_list):
         _creds = task_creds[i] if task_creds and i < len(task_creds) else creds
-        overrides = _profile_task_overrides(_creds)
+        overrides = _profile_task_overrides(_creds, routing_cfg)
         # A profile's max_iterations can only TIGHTEN the config budget, never widen it (#25752 layering).
         _profile_max_iter = _creds.get("max_iterations") if _creds.get("requested_profile") else None
         _task_max_iterations = (
@@ -402,6 +466,11 @@ def _build_children(
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
+        # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
+        _t_images = task_images[i] if task_images and i < len(task_images) else None
+        if _t_images:
+            with _quiet("Could not attach images to child %d", i):
+                child._delegate_images = _t_images
         # Tee progress events into the live transcript (wrapper keeps the
         # _flush contract and swallows writer failures).
         _writer = live_writers[i] if i < len(live_writers) else None
@@ -420,9 +489,9 @@ def _build_children(
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
-    message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
-    model_profile: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
+    credentials_cfg: Optional[Dict[str, Any]] = None, model_profile: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -468,8 +537,9 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
-    # a per-call override shaped like the delegation config section.
-    routing_cfg = credentials_cfg if credentials_cfg else cfg
+    # a per-call routing owner shaped like the delegation config section. Keep
+    # the route and its fallback policy together through child construction.
+    routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
     try:
         creds = _resolve_delegation_credentials(routing_cfg, parent_agent, model_profile=model_profile)
     except ValueError as exc:
@@ -480,6 +550,8 @@ def delegate_task(
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+    if not err:
+        task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
     # Per-task profile routing (delegation.profiles): every task's route resolves BEFORE any child is
@@ -503,7 +575,8 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_creds=task_creds,
+        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        task_creds=task_creds,
     )
     if err:
         return tool_error(err)
@@ -516,7 +589,7 @@ def delegate_task(
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
 
-def _build_top_level_description() -> str:
+def _build_top_level_description(*, independent_completions=None) -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
     (limits live in the 'tasks' parameter description, rebuilt per get_definitions())."""
     try:
@@ -533,15 +606,27 @@ def _build_top_level_description() -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    return _DESCRIPTION_HEAD + restrictions_rule + _DESCRIPTION_TAIL
+    from tools.delegate_tool_config import _get_independent_completions
+
+    if independent_completions is None:
+        independent_completions = _get_independent_completions()
+    delivery = (
+        "each ungrouped task / `group` returns on its own"
+        if independent_completions else "one message per call"
+    )
+    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and the completed result (one "
-    "consolidated message, results in task order) re-enters the conversation on its own. Do NOT wait or poll; continue "
-    "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
+    "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
+    "and return results in this tool call. "
+    "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
+    "as a new message when subagents finish ({delivery}). Background results are delivered only "
+    "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
+    "wait or poll on transcripts, artifact files, or CI for a child. "
+    "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
     "parallel workstreams.\n"
@@ -558,6 +643,8 @@ _DESCRIPTION_HEAD = (
     "\"file written\" may be wrong. For external side effects (uploads, remote writes, publishing), require a "
     "verifiable handle (URL, ID, absolute path) and verify it yourself before telling the user the operation "
     "succeeded.\n"
+    "- Children cannot close tracked work: a child asked to close it returns findings instead; "
+    "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
@@ -580,10 +667,19 @@ def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits, and
     the delegation.agent_routing gate adds/removes the model_profile enum."""
+    from tools.delegate_tool_config import _get_independent_completions
+
+    independent_completions = _get_independent_completions()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
+
+    if not independent_completions:
+        tasks = overrides_params["properties"]["tasks"]
+        tasks["items"] = {**tasks["items"], "properties": {
+            k: v for k, v in tasks["items"]["properties"].items() if k != "group"
+        }}
 
     # Phase 2 gate (delegation.agent_routing, default off): expose model_profile — the operator's
     # named tiers — per task and batch-wide. Gate off (or no profiles) → schema byte-identical.
@@ -595,7 +691,10 @@ def _build_dynamic_schema_overrides() -> dict:
         overrides_params["properties"]["tasks"] = {**tasks_prop, "items": items}
         overrides_params["properties"]["model_profile"] = _model_profile_property(profile_names, batch_wide=True)
 
-    return {"description": _build_top_level_description(), "parameters": overrides_params}
+    return {
+        "description": _build_top_level_description(independent_completions=independent_completions),
+        "parameters": overrides_params,
+    }
 
 def _routable_profile_names() -> Optional[List[str]]:
     """Sorted profile names when delegation.agent_routing is truthy AND profiles are configured and
@@ -661,8 +760,23 @@ DELEGATE_TASK_SCHEMA = {
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
                             "child up front; parent validates with one bounded correction retry; result gains "
-                            "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
-                            "fields you will read.",
+                            "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
+                            "as summary, never discarded). Keep it forgiving — require only fields you will read.",
+                        ),
+                        "images": _p(
+                            "array",
+                            "Optional images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
+                            "screenshot the user sent, a design mock, a chart. Vision-capable children receive the "
+                            "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
+                            "files do NOT belong here — put paths in 'context' instead.",
+                            items={"type": "string"},
+                        ),
+                        "group": _p(
+                            "string",
+                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
+                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
+                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
+                            "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],
@@ -738,8 +852,8 @@ def _handle_model_call(args: dict, parent_agent=None, background: Optional[bool]
         goal=args.get("goal"), context=args.get("context"), tasks=tasks,
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=background, output_schema=args.get("output_schema"),
-        action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=parent_agent, model_profile=model_profile,
+        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"),
+        message=args.get("message"), parent_agent=parent_agent, model_profile=model_profile,
     )
 
 

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -178,7 +179,17 @@ def _read_browser_cfg() -> dict:
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
-    return is_truthy_value(browser_cfg.get("use_gateway"), default=False)
+    """True when the browser section selects the Nous Tool Gateway — by the current ``hermes tools``
+    picker row (``cloud_provider: nous``) or the pre-picker ``use_gateway: true`` flag. Reading only
+    the legacy flag missed every picker-configured gateway, and the direct-API branch it fell into
+    holds no credentials in managed mode (#108310)."""
+    if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
+        return True
+    try:
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+    except Exception:  # pragma: no cover — helper ships with the package
+        return False
+    return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
 def get_browser_backend() -> str:
@@ -197,7 +208,9 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     provider = str(browser_cfg.get("cloud_provider") or "").strip().lower()
     if provider not in {"browser-use", ""} or _use_gateway(browser_cfg) or _camofox_active(" during migration"):
         return False
-    return bool(os.getenv("BROWSER_USE_API_KEY"))
+    # Profile credential: a multiplexed secondary must not inherit the default's cloud mode.
+    from agent.secret_scope import get_secret
+    return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
 
 def is_browser_use_cli_mode() -> bool:
@@ -326,13 +339,15 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
 def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
-        from tools.vision_tools import (_EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES,
+        from tools.vision_tools import (_EMBED_MAX_DIMENSION,
                                         _resize_image_for_vision, _should_use_native_vision_fast_path)
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
         if not _should_use_native_vision_fast_path():
             return None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
         # same policy as the vision_analyze / browser_vision native embeds.
-        data_url = _resize_image_for_vision(Path(path), mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
+        data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+                                            max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
         text = json.dumps(result, ensure_ascii=False)
         attached = text + "\n\nThe screenshot from this call is attached — inspect it with your native vision."
@@ -343,9 +358,19 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
+def _served_profile_tag() -> str:
+    """``""`` outside a served-profile scope (every legacy key stays byte-identical); under a
+    multiplexed turn, the routed profile's home key — one profile's browser must never be handed
+    to another that happens to use the same session name or task id (#110032)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
+
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own."""
-    return f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
+    key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    tag = _served_profile_tag()
+    return f"{key}@{tag}" if tag else key
 
 
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
@@ -433,8 +458,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return _resolve_local_engine_cdp(env, task_id, session_name)
 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
-    # legacy provider would create a second, redundant session. The Nous-gateway variant (use_gateway: true)
-    # DOES resolve through the provider: the gateway provisions the browser server-side and returns its CDP URL.
+    # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
+    # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
+    # provisions the browser server-side and returns its CDP URL.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
@@ -484,6 +510,23 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return err or None
 
 
+def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
+    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
+    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
+    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+    if not cdp:
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+        policy, timeout_s = _get_dialog_policy_config()
+        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
+    except Exception as exc:
+        logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
@@ -499,14 +542,17 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool)
     return _resolve_backend_cdp(env, task_id, session_name=session)
 
 
-def _windows_popen_kwargs() -> dict:
-    """Hide the console the .cmd shim would flash on Windows (as browser_tool does)."""
+def _group_popen_kwargs() -> dict:
+    """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
+    timeout can take down every process that inherited the capture pipes, not just the CLI
+    child. Windows also hides the console the .cmd shim would flash (as browser_tool does)."""
     def _flags() -> dict:
         from hermes_cli._subprocess_compat import windows_hide_flags
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        return {"creationflags": windows_hide_flags(), "startupinfo": si}
-    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {}
+        return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                "startupinfo": si}
+    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
 
 
 def _clamp_timeout(timeout_s: Any) -> int:
@@ -516,9 +562,51 @@ def _clamp_timeout(timeout_s: Any) -> int:
         return _DEFAULT_TIMEOUT_S
 
 
+# After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
+# instant; the deadline only guards against a process outside the group still holding a pipe.
+_POST_KILL_DRAIN_S = 10.0
+
+
+def _kill_cli_process_group(proc) -> None:
+    """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
+    on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
+    if os.name == "nt":
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                           check=False, creationflags=windows_hide_flags())
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
+
+
+def _run_cli_killing_process_group(cmd, code, env, timeout):
+    """Run the CLI in its own process group and kill the whole group on timeout.
+
+    ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
+    inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
+    still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
+    blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
+    """
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(input=code, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_cli_process_group(proc)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
+    from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -542,6 +630,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -561,10 +650,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = subprocess.run(
-            cmd, input=code, capture_output=True, text=True, timeout=timeout, env=env,
-            **_windows_popen_kwargs(),
-        )
+        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
@@ -572,12 +658,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
+    # browser_vault_fill registers injected values with this forced model-egress
+    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    result = {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "output": redact_sensitive_text(proc.stdout, force=True),
+    }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = (proc.stderr or "").strip()
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
@@ -640,8 +732,8 @@ _HELPERS_DIGEST = (
     "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
-    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: stop and "
-    "ask the user; never guess credentials."
+    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
+    "credentials; see the vault note below if present, otherwise stop and ask the user."
 )
 
 

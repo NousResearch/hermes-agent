@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { memo, useState } from 'react'
 
 import { StatusRow } from '@/components/chat/status-row'
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -82,6 +81,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
 
   return (
     <StatusRow
+      dismiss={{ label: t.statusStack.dismiss, onDismiss: () => onDismiss(item.id) }}
       leading={
         <Codicon
           aria-hidden
@@ -100,34 +100,16 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
           void openDefaultTarget()
         }
       }}
-      trailing={
-        <Tip label={t.statusStack.dismiss}>
-          <Button
-            aria-label={t.statusStack.dismiss}
-            className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-            onClick={event => {
-              event.stopPropagation()
-              onDismiss(item.id)
-            }}
-            size="icon-xs"
-            type="button"
-            variant="ghost"
-          >
-            <Codicon name="close" size="0.75rem" />
-          </Button>
-        </Tip>
-      }
-      trailingVisible
     >
       <Tip
         label={
-          // inline-flex (not flex): a block child collapses Tip's decoration
-          // wrapper geometry and mis-positions the tooltip (#62022).
-          <span className="inline-flex flex-col gap-0.5">
-            <span>{item.target}</span>
+          <>
+            {item.target}
+            <br />
             <span className="opacity-70">{t.preview.linkHint}</span>
-          </span>
+          </>
         }
+        placement="row"
       >
         <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>
       </Tip>

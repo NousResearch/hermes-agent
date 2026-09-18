@@ -81,10 +81,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
         # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
-        # fenced out by the single-owner lease and the payload dropped. Land the DM in the live
-        # session via prompt.submit — the composer's choke point, so role alternation, persistence
-        # and streaming behave as a typed message would.
-        # (Nested per method_ctx rebinding.) See #100523.
+        # fenced out by the single-owner lease and the payload dropped (#100523). See below.
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         live_home = _profile_home(resolved)
         want_home = str(live_home) if live_home is not None else None
@@ -102,9 +99,45 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
                 and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
             return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
         author = delivery_turn_author(*(params.get(k) for k in sender_fields))
+
+        # This process's _sessions is not the ownership authority: the Desktop pools one backend per
+        # (connection, profile) and an SSH source runs one remote dashboard per profile, so the
+        # target's Bot Chat can be live in a sibling process on this host while the relay RPC lands
+        # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
+        # lease (#113753). Hand the DM to the live owner — this process or a sibling — through the
+        # same mailbox local DMs use (tools/bot_mode_dm.py::_run_delivery); its poller admits it at
+        # the next idle boundary and settles a receipt carrying the reply. Local DMs wait on that
+        # receipt (_wait_live_dm); so does this relay, on the same budget, so the sender gets the
+        # target's answer rather than a receipt when its Bot Chat happens to be open.
+        import time
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        owner_home = live_home if live_home is not None else Path(_hermes_home)
+        owner = find_canonical_live_owner(owner_home)
+        if owner is not None:
+            record = deliver_to_live_owner(owner_home, owner, message, author=author)
+            deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+            while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:
+                time.sleep(0.5)
+                record = read_delivery_result(owner_home, record["delivery_id"]) or record
+            if record["status"] == "settled":
+                from tui_gateway.prompt_turn import _bot_mode_delivery_text
+                return _ok(rid, {"reply": _bot_mode_delivery_text((record.get("reply") or "").strip(), successful=True)})
+            if record["status"] in ("queued", "claimed"):
+                # Admitted but not answered within the budget: the receipt stays, the turn still runs.
+                reply = (f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply "
+                         "will appear there. Do not resend.")
+                return _ok(rid, {"reply": reply})
+            from tools.bot_failure_reasons import CANCELLED, classify_agent_error
+            error = str(record.get("error") or f"Bot Chat delivery {record['status']}")
+            reason = record.get("reason") or (CANCELLED if record["status"] == "cancelled" else classify_agent_error(error))
+            return _err(rid, 5092, f"delivery turn failed: {error[-500:]}", data={"reason": reason})
+
         if live_sid:
-            # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
-            # turn in flight (the default busy mode does); arrivals queue in order.
+            # A live Bot Chat here that advertises no mailbox: land the DM through prompt.submit, the
+            # composer's choke point, so role alternation, persistence and streaming behave as a
+            # typed message would (#100523). queued=True: a teammate's DM runs as the NEXT turn and
+            # never interrupts or steers a turn in flight (the default busy mode does).
             submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
             if author:
                 submit_params["_turn_author"] = DeliveryAuthor(author)
@@ -112,22 +145,6 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             if "error" in submitted:
                 return submitted
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
-            return _ok(rid, {"reply": reply})
-
-        # This process's _sessions is not the ownership authority: the Desktop pools one backend per
-        # (connection, profile) and an SSH source runs one remote dashboard per profile, so the
-        # target's Bot Chat can be live in a sibling process on this host while the relay RPC lands
-        # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
-        # lease (#113753). Hand the DM to the live owner through the same mailbox local DMs use
-        # (tools/bot_mode_dm.py::_run_delivery); its poller admits it at the next idle boundary.
-        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
-        owner_home = live_home if live_home is not None else Path(_hermes_home)
-        owner = find_canonical_live_owner(owner_home)
-        if owner is not None:
-            deliver_to_live_owner(owner_home, owner, message, author=author)
-            # The owner's poller admits the mailbox record at its next idle boundary; this
-            # process only queued it, so say so (the in-process branch above really submitted).
-            reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
             return _ok(rid, {"reply": reply})
 
         def _detail(p) -> str:

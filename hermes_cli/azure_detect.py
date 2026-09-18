@@ -135,6 +135,39 @@ def _extract_model_ids(payload: dict) -> list[str]:
     return ids
 
 
+# Azure's resource-scoped deployment listing. Only this preview api-version serves it (2023-05-15+
+# 404); ``/openai/v1/models`` on the same host lists Microsoft's whole catalog (~400 ids incl.
+# embeddings/TTS/image), most of which the resource has never deployed and cannot serve (#27989).
+_AZURE_DEPLOYMENTS_API_VERSION = "2023-03-15-preview"
+_AZURE_ROUTE_SUFFIX_RE = re.compile(r"/(?:openai(?:/v1)?|anthropic(?:/v1)?|models(?:/v1)?|v1)/?$", re.IGNORECASE)
+
+
+def azure_resource_root(base_url: str) -> str:
+    """``https://r.openai.azure.com/openai/v1`` / ``.../anthropic`` -> ``https://r.openai.azure.com``."""
+    return _AZURE_ROUTE_SUFFIX_RE.sub("", str(base_url or "").strip().rstrip("/")).rstrip("/")
+
+
+def probe_azure_deployments(base_url: str, api_key: Any, *, token_provider: TokenProvider = None) -> list[str]:
+    """Deployment names of the Azure resource behind *base_url* (``[]`` when the route is unavailable).
+
+    Succeeded deployments first, still-provisioning ones after, portal order preserved.
+    """
+    root = azure_resource_root(base_url)
+    if not root:
+        return []
+    status, body = _http_get_json(f"{root}/openai/deployments?api-version={_AZURE_DEPLOYMENTS_API_VERSION}",
+                                  api_key, token_provider=token_provider)
+    rows = body.get("data") if status == 200 and isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return []
+    ready, pending = [], []
+    for row in rows:
+        name = str(row.get("id") or "").strip() if isinstance(row, dict) else ""
+        if name:
+            (ready if str(row.get("status") or "").lower() in {"", "succeeded"} else pending).append(name)
+    return list(dict.fromkeys([*ready, *pending]))
+
+
 def _probe_openai_models(base_url: str, api_key: Any, *, token_provider: TokenProvider = None) -> tuple[bool, list[str]]:
     """Probe ``<base>/models`` for an OpenAI-shaped response."""
     base_url = base_url.rstrip("/")

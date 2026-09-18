@@ -25,6 +25,18 @@ and reuse it automatically”.
 - ExecutionJournal/ArtifactStore experience/evidence plane.
 
 **Observed abstraction gap:**
+
+**Additional code-level discovery:** current `workstation/capabilities.py`
+already defines `RuntimeCapabilityRegistry` for environment dependencies
+(Python modules/system tools). It is not the new operational capability layer and
+must not be repurposed accidentally. Current `tools/workstation_work.py`
+registers `work_execute` explicitly as “decided repetitive work” with
+graph/Recipe/Routine-oriented inputs; that schema is the concrete compatibility
+surface to extend. Current `procedure_trace.py` writes
+`operation_fingerprint = structural_signature(...)`, confirming that semantic
+fingerprinting must be introduced below/alongside trace learning rather than only
+inside the top-level guard.
+
 - `execution_policy.py` can still promote structural repetition toward
   `REQUIRE_COMPILE`;
 - built-in native browser mutations do not yet expose a sufficient semantic

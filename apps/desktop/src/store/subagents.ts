@@ -58,13 +58,22 @@ export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
 // Clearing the session (or resetting the store) releases this history too.
 const retiredSubagents = new WeakMap<SubagentProgress[], Set<string>>()
 
-function setSessionSubagents(sid: string, previous: SubagentProgress[], next: SubagentProgress[]) {
+function setSessionSubagents(
+  sid: string,
+  previous: SubagentProgress[],
+  next: SubagentProgress[],
+  retireIds: readonly string[] = []
+) {
   const retired = retiredSubagents.get(previous) ?? new Set<string>()
 
   for (const item of previous) {
     if (TERMINAL.has(item.status)) {
       retired.add(item.id)
     }
+  }
+
+  for (const id of retireIds) {
+    retired.add(id)
   }
 
   if (retired.size) {
@@ -273,6 +282,40 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
 
   if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
     setSessionSubagents(sid, previous, next)
+  }
+}
+
+/** Remove native child rows the owning backend no longer reports as live.
+ * Queued rows are kept because spawn_requested can reach the renderer before
+ * the worker thread registers itself. Synthetic delegate-tool rows are kept
+ * because their IDs belong to the tool-call lifecycle, not delegation.status. */
+export function reconcileSubagentRoster(sid: string, children: SubagentPayload[]) {
+  const map = $subagentsBySession.get()
+  const previous = map[sid]
+
+  if (!previous?.length) {
+    return
+  }
+
+  const activeIds = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
+  const retired: string[] = []
+
+  const next = previous.filter(item => {
+    const keep =
+      TERMINAL.has(item.status) ||
+      item.status === 'queued' ||
+      item.id.startsWith('delegate-tool:') ||
+      activeIds.has(item.id)
+
+    if (!keep) {
+      retired.push(item.id)
+    }
+
+    return keep
+  })
+
+  if (next.length !== previous.length) {
+    setSessionSubagents(sid, previous, next, retired)
   }
 }
 

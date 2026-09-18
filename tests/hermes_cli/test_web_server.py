@@ -435,6 +435,121 @@ class TestWebServerEndpoints:
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
 
+    # ------------------------------------------------------------------
+    # GET /api/sessions/{id} lineage projection (compression tip rotation)
+    # ------------------------------------------------------------------
+
+    def _make_compressed_lineage(self):
+        """Build root → tip over a real compression rotation, root pinned.
+
+        Uses the production rotation path (publish_compression_child) so the
+        test exercises the same parent closure + child INSERT the desktop hits.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("lin_root", source="desktop")
+            db.set_session_pinned("lin_root", True)
+            db.publish_compression_child(
+                parent_session_id="lin_root",
+                child_session_id="lin_tip",
+                source="desktop",
+                messages=[{"role": "user", "content": "hi"}],
+                require_compression_lease=False,
+            )
+            db.append_message("lin_tip", role="user", content="after compress")
+        finally:
+            db.close()
+
+    def test_get_session_detail_projects_lineage_fields_on_tip(self):
+        """GET on the live tip stamps _lineage_root_id/_lineage_ids/effective pin.
+
+        The desktop's single-session upserts key their dedupe on
+        `_lineage_root_id` and their pin rendering on the projected flag; a raw
+        row (both absent) cannot be linked to the stale pre-compression sidebar
+        row and renders as a second, unpinned session (#bug duplicate row after
+        /compress).
+        """
+        self._make_compressed_lineage()
+
+        resp = self.client.get("/api/sessions/lin_tip")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["id"] == "lin_tip"
+        assert body["_lineage_root_id"] == "lin_root"
+        assert body["_lineage_ids"] == ["lin_root", "lin_tip"]
+        # The tip's raw flag is 0; the effective pin is projected from the lineage.
+        assert body["pinned"]
+
+    def test_get_session_detail_ancestor_row_is_not_tip_stamped(self):
+        """GET on the ROOT (pre-compression id) stays raw-shape: projection is
+        tip-only, matching _project_compression_tips. Ancestor rows must not
+        carry lineage fields — a stale root payload ingested by the desktop
+        would otherwise evict the live tip from its cache."""
+        self._make_compressed_lineage()
+
+        resp = self.client.get("/api/sessions/lin_root")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["id"] == "lin_root"
+        assert "_lineage_root_id" not in body
+        assert "_lineage_ids" not in body
+        # The root's own raw pin flag passes through untouched.
+        assert body["pinned"]
+
+    def test_get_session_detail_unpinned_lineage_stays_false(self):
+        """A lineage nobody pinned projects pinned=false (no false positives)."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("plain_root", source="desktop")
+            db.publish_compression_child(
+                parent_session_id="plain_root",
+                child_session_id="plain_tip",
+                source="desktop",
+                messages=[{"role": "user", "content": "hi"}],
+                require_compression_lease=False,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/plain_tip")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["_lineage_root_id"] == "plain_root"
+        assert not body["pinned"]
+
+    def test_get_session_detail_childless_row_has_no_lineage_fields(self):
+        """A session with no compression chain stays exactly as before: no
+        lineage keys, pin flag passed through untouched."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("loner", source="desktop")
+            db.set_session_pinned("loner", True)
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/loner")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "_lineage_root_id" not in body
+        assert "_lineage_ids" not in body
+        assert body["pinned"]
+
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
     )

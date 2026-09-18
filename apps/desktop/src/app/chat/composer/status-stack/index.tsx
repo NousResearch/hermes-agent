@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router'
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { AGENTS_ROUTE } from '@/app/routes'
+import { useSessionView } from '@/app/chat/session-view'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -97,6 +98,7 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const storedSessionId = useStore(useSessionView().$storedId)
   useSubagentSnapshot(sessionId)
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
@@ -185,7 +187,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
-          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+          <PreviewStatusRow
+            item={item}
+            key={item.id}
+            onDismiss={id => dismissPreviewArtifact(sessionId, id, storedSessionId ?? sessionId)}
+          />
         ))
       : []
 

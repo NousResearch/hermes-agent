@@ -418,7 +418,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const previewTarget = view.previewTarget
   // The session whose transcript this row is IN, which is not necessarily the
   // primary one: a tool row inside a session tile must feed that tile's composer.
-  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId, $storedId: $sessionStoredId } = useSessionView()
 
   useEffect(() => {
     if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
@@ -429,11 +429,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     // target appears, and subscribing re-rendered every tool row on any session
     // or cwd change.
     const sessionId = $sessionRuntimeId.get()
+    const dismissalSessionId = $sessionStoredId?.get() ?? sessionId
 
     if (sessionId) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '')
+      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', dismissalSessionId ?? '')
     }
-  }, [$sessionCwd, $sessionRuntimeId, isPending, previewTarget])
+  }, [$sessionCwd, $sessionRuntimeId, $sessionStoredId, isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

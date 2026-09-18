@@ -1,3 +1,5 @@
+import './tooltip.css'
+
 import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
@@ -5,6 +7,8 @@ import { useI18n } from '@/i18n'
 import { type InputModality, lastInputModality } from '@/lib/input-modality'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+
+import { TOOLTIP_PLACEMENTS, type TooltipPlacement } from './tooltip-placement'
 
 /** Default hover-open delay for `Tip`. Below 150ms a passing cursor still
  *  opens the tip; above 250ms an intentional hover feels broken. Call sites
@@ -20,6 +24,7 @@ const TIP_SKIP_DELAY_MS = 300
 /** True inside `RootTooltipProvider`. `Tip` uses this to decide whether it
  *  needs to supply its own provider — see the note on `Tip`. */
 const HasTooltipProvider = React.createContext(false)
+const TooltipAnchor = React.createContext<React.RefObject<HTMLButtonElement | null> | null>(null)
 
 function TooltipProvider({
   delayDuration = 0,
@@ -47,7 +52,13 @@ function TooltipProvider({
 }
 
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+  const anchor = React.useRef<HTMLButtonElement | null>(null)
+
+  return (
+    <TooltipAnchor value={anchor}>
+      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+    </TooltipAnchor>
+  )
 }
 
 // Radix opens a tooltip on ANY trigger focus (its pointer-down guard only
@@ -81,6 +92,38 @@ export function suppressNonKeyboardFocusOpen(
 }
 
 function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  const anchor = React.useContext(TooltipAnchor)
+  const { ref, ...triggerProps } = props
+
+  const setRef = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      if (anchor) {
+        anchor.current = node
+      }
+
+      const cleanup = typeof ref === 'function' ? ref(node) : undefined
+
+      if (ref && typeof ref !== 'function') {
+        ref.current = node
+      }
+
+      return () => {
+        if (anchor) {
+          anchor.current = null
+        }
+
+        if (typeof cleanup === 'function') {
+          cleanup()
+        } else if (typeof ref === 'function') {
+          ref(null)
+        } else if (ref) {
+          ref.current = null
+        }
+      }
+    },
+    [anchor, ref]
+  )
+
   return (
     <TooltipPrimitive.Trigger
       data-slot="tooltip-trigger"
@@ -88,48 +131,71 @@ function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof Toolt
         onFocus?.(event)
         suppressNonKeyboardFocusOpen(event)
       }}
-      {...props}
+      {...triggerProps}
+      ref={setRef}
     />
   )
 }
 
+interface TooltipContentProps extends React.ComponentProps<typeof TooltipPrimitive.Content> {
+  placement?: TooltipPlacement
+  /** Row descriptions may extend beyond a pane; local controls stay inside. */
+  boundary?: 'pane' | 'viewport'
+}
+
 function TooltipContent({
-  className,
-  sideOffset = 6,
+  align,
+  arrowPadding = 6,
   children,
+  className,
+  collisionBoundary,
+  collisionPadding = 12,
+  hideWhenDetached = true,
+  placement = 'control',
+  boundary = placement === 'control' || placement === 'toolbar' ? 'pane' : 'viewport',
+  side,
+  sideOffset = 5,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: TooltipContentProps) {
+  const preferred = TOOLTIP_PLACEMENTS[placement]
+  const anchor = React.useContext(TooltipAnchor)
+  const [pane, setPane] = React.useState<Element | null>(null)
+
+  React.useLayoutEffect(() => {
+    setPane(boundary === 'pane' ? (anchor?.current?.closest('[data-tree-group]') ?? null) : null)
+  }, [anchor, boundary])
+
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
-        // Transparent, width-capped wrapper. The visible chip is the inner inline
-        // span so `box-decoration-break: clone` gives a marker-style background
-        // that hugs EACH wrapped line (bg only on the text, ragged right — no
-        // rectangular dead space). No fade transition — once the hover delay
-        // elapses the chip appears at once.
-        // pointer-events-none: the tip must never steal hover/clicks from the
-        // chrome underneath (titlebar tools, adjacent tabs, etc.).
-        className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
+        align={align ?? preferred.align}
+        arrowPadding={arrowPadding}
+        className={cn(
+          'tooltip-bubble pointer-events-none z-(--z-over-modal) w-fit select-none bg-foreground px-2 py-1 text-[0.6875rem] font-medium leading-[1.4] text-background',
+          className
+        )}
+        collisionBoundary={collisionBoundary ?? pane ?? undefined}
+        collisionPadding={collisionPadding}
         data-slot="tooltip-content"
+        hideWhenDetached={hideWhenDetached}
+        side={side ?? preferred.side}
         sideOffset={sideOffset}
         {...props}
       >
-        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
-            keeps lines readable; py-1 makes the cloned line-boxes overlap just
-            enough to read as one continuous fill (no gaps between lines). */}
-        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
-            this inline decoration's geometry, so Radix measures a zero-size chip
-            and parks an empty rectangle in the corner (#62022). Force any direct
-            child inline-flex so every call site stays safe. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+        <div className="tooltip-bubble-label" data-slot="tooltip-label">
           {children}
-        </span>
+        </div>
+        <TooltipPrimitive.Arrow asChild height={5} width={10}>
+          <svg aria-hidden data-slot="tooltip-arrow" viewBox="0 0 10 5">
+            <path d="M0 0h10L5.7 4.3a1 1 0 0 1-1.4 0Z" />
+          </svg>
+        </TooltipPrimitive.Arrow>
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )
 }
 
-interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Content>, 'content'> {
+interface TipProps extends Omit<TooltipContentProps, 'content'> {
   label: React.ReactNode
   children: React.ReactNode
   delayDuration?: number
@@ -265,19 +331,17 @@ interface TipHintLabelProps {
   hint?: string
 }
 
-/** Tooltip label with an optional trailing hotkey hint. Uses `inline-flex` so it
- *  stays safe inside Tip's decoration wrapper — prefer this over a bespoke
- *  flex/gap span at the call site (see #62022). */
+/** Tooltip label with an optional trailing hotkey hint. */
 function TipHintLabel({ text, hint }: TipHintLabelProps) {
   if (!hint) {
     return <>{text}</>
   }
 
   return (
-    <span className="inline-flex items-center gap-2">
-      <span>{text}</span>
-      <span className="opacity-55">{hint}</span>
-    </span>
+    <>
+      {text}
+      <span className="ms-2 opacity-55">{hint}</span>
+    </>
   )
 }
 

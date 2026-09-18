@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -26,6 +26,7 @@ import {
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
+  preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
@@ -1263,6 +1264,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply
@@ -1544,7 +1585,7 @@ describe('resolveResumedBusy', () => {
   })
 })
 
-const runningProjection = (user: string): SessionResumeResponse =>
+const runningProjection = (user: string): SessionResumeResult =>
   ({
     session_id: 'runtime-1',
     session_key: 'stored-1',
@@ -1553,7 +1594,7 @@ const runningProjection = (user: string): SessionResumeResponse =>
     messages: [],
     running: true,
     inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResponse
+  }) as SessionResumeResult
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
@@ -1715,5 +1756,45 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: 'partial A' },
       { type: 'text', text: ' + delta B' }
     ])
+  })
+})
+
+describe('preserveEquivalentTranscript', () => {
+  it('keeps the current array BY REFERENCE when the replacement is content-equivalent', () => {
+    // The exact warm-resume shape of #95595: fresh objects, identical content.
+    const current = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'const x = 1')]
+    const freshObjects = current.map(message => ({ ...message, parts: [...message.parts] }))
+
+    const preserved = preserveEquivalentTranscript(current, freshObjects)
+
+    expect(preserved).toBe(current)
+    expect(preserved[0]).toBe(current[0])
+  })
+
+  it('keeps the current array when the arrays are the same reference', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+
+    expect(preserveEquivalentTranscript(current, current)).toBe(current)
+  })
+
+  it('accepts the replacement when anything changed', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'new turn')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when a message diverges in content', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello world')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when metadata a row renders diverges', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello', { pending: true })]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
   })
 })

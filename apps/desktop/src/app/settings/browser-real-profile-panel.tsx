@@ -14,7 +14,9 @@ interface BrowserRealProfilePanelProps {
   profile?: ProfileScope
 }
 
-function readUseRealProfile(record: Record<string, unknown> | undefined): boolean {
+/** Shared with the Browser pane's first-open consent prompt, so both surfaces
+ *  agree on what "on" means for `browser.use_real_profile`. */
+export function readUseRealProfile(record: Record<string, unknown> | undefined): boolean {
   const browser = record?.browser
 
   if (browser && typeof browser === 'object' && !Array.isArray(browser)) {
@@ -63,7 +65,9 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
       setConfig(next)
 
       try {
-        await saveHermesConfigRecord(next, profile)
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfigRecord({ browser: { use_real_profile: on } }, profile)
         notify({
           kind: 'info',
           title: on ? copy.enabledTitle : copy.disabledTitle,

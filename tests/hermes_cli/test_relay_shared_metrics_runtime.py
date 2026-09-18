@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from hermes_cli import lifecycle, plugins
-from hermes_cli.observability import relay_runtime, relay_shared_metrics
+from agent import relay_runtime
+from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.plugins import PluginManager
 
 
@@ -23,6 +24,12 @@ class _Request:
     def __init__(self, headers: dict[str, Any], content: dict[str, Any]) -> None:
         self.headers = headers
         self.content = content
+
+
+class _ToolExecutionResult:
+    def __init__(self, result: Any, annotation: Any = None) -> None:
+        self.result = result
+        self.annotation = annotation
 
 
 class _Relay:
@@ -39,6 +46,7 @@ class _Relay:
             Agent="agent", Function="function", Tool="tool"
         )
         self.LLMRequest = _Request
+        self.ToolExecutionResult = _ToolExecutionResult
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -174,11 +182,13 @@ class _Relay:
     def _tool_call_end(
         self,
         handle: Any,
-        result: dict[str, Any],
+        result: _ToolExecutionResult,
         **kwargs: Any,
     ) -> None:
+        assert isinstance(result, _ToolExecutionResult)
+        payload = result.result
         start = self._tool_starts.pop(handle)
-        self.events.append(("tool.call_end", handle, result, kwargs))
+        self.events.append(("tool.call_end", handle, payload, kwargs))
         event = SimpleNamespace(
             kind="scope",
             category="tool",
@@ -190,7 +200,7 @@ class _Relay:
                 **kwargs["metadata"],
                 "otel.status_code": "OK",
             },
-            data=result,
+            data=payload,
         )
         for callback in list(self._callbacks.values()):
             callback(event)
@@ -735,6 +745,8 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from tools import approval
+    import tools.approval_prompt as approval_prompt
+    import tools.approval_context as approval_context
 
     assert real_binding_runtime._native is not None
     base = {
@@ -755,9 +767,12 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(approval, "is_approved", lambda *args: False)
     monkeypatch.setattr(approval, "get_current_session_key", lambda: "session-key")
+    monkeypatch.setattr(approval_context, "get_current_session_key", lambda: "session-key")
     monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_context, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
 
     lifecycle.invoke_hook("on_session_start", **base)
     lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
@@ -939,7 +954,7 @@ def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
 
     assert result is tool_result
     assert observed_args is tool_args
-    assert relay_runtime.get_host(create=False) is None
+    assert relay_runtime.HOST_REGISTRY.for_profile(create=False) is None
     assert imports == []
 
 
@@ -958,7 +973,7 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
 
     assert relay_runtime.get_runtime() is None
-    host = relay_runtime.get_host()
+    host = relay_runtime.HOST_REGISTRY.for_profile()
     assert isinstance(host, relay_runtime.NoopRelayRuntime)
     assert host.profile_key == relay_runtime.current_profile_key()
     assert "nemo_relay" in host.reason
@@ -967,7 +982,6 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
         tool_name="terminal",
         args={"command": "true"},
     ) == {"command": "true"}
-    assert not relay_runtime.emit_mark("hermes.probe", session_id="s1")
     assert "Hermes Relay runtime initialization failed" in caplog.text
     relay_runtime._reset_for_tests()
 

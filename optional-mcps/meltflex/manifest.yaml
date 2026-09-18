@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: meltflex
+description: Generate photorealistic interior-design redesigns from a room photo. Restyle rooms, place furniture, and virtually stage spaces — billed to your own MeltFlex credits.
+source: https://github.com/MeltFlexDevs/skills
+
+# npm server: transport.command IS the install (`npx -y` fetches the package),
+# so no separate `install` block is needed.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "meltflex-mcp"
+
+# A MeltFlex API key (any active subscription). Generate one at
+# https://www.meltflexai.com/settings — or run `npx -y meltflex-mcp auth login`
+# to sign in via the browser, which stores the key on your machine instead.
+auth:
+  type: api_key
+  env:
+    - name: MELTFLEX_API_KEY
+      prompt: "MeltFlex API key (mf_sk_…) — get one at https://www.meltflexai.com/settings"
+      required: true
+      secret: true
+
+# MeltFlex exposes two tools; both are safe to enable by default.
+# generate_interior spends 10 credits per image (auto-refunded on failure);
+# check_credits is free.
+tools:
+  default_enabled:
+    - generate_interior
+    - check_credits
+
+post_install: |
+  MeltFlex restyles an existing room photo into a photorealistic redesign.
+  Every generation is billed to your own account credits (10 per image,
+  refunded automatically if a generation fails).
+
+  Get an API key at https://www.meltflexai.com/settings (any active
+  subscription). You can also run `npx -y meltflex-mcp auth login` to sign in
+  via your browser without pasting a key.
+
+  Start a new Hermes session to load the MeltFlex tools, then ask e.g.
+  "Here's my living room /path/room.jpg — redesign it in warm minimalist style."

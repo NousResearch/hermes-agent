@@ -218,6 +218,11 @@ curl -X POST localhost:9119/api/cron/jobs -H 'Content-Type: application/json' \
   -d '{"prompt":"Piano practice","schedule":"every 1d","category":"Family"}'
 ```
 
+In the dashboard the field is a picker over the labels already in use: focus it to see them, type to
+filter, click (or Enter) to reuse one, and a label that does not exist yet is offered as **New: …**
+so a first-of-its-kind category is one click. A typed label differing only in case from an existing
+one does not offer a twin.
+
 An empty string clears the label (same as `workdir`).
 
 ## Editing jobs

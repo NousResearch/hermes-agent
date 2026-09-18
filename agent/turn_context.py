@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.effort_updates import EFFORT_UPDATE_KEY, effort_update, record_effort_switch
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -1070,6 +1071,9 @@ def build_turn_context(
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
+    # A mid-session effort switch lands as a hidden marker BEFORE the user message so routes with a
+    # native per-message effort update keep the cached prefix (agent.effort_updates).
+    record_effort_switch(agent, messages)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
@@ -1235,6 +1239,9 @@ def build_api_messages(
         # and only chat-completions strips underscore keys. The token estimator drops
         # the same set, so it never prices bytes the provider never receives.
         _api_content = api_msg.pop("api_content", None)
+        # Carry the durable marker before removing persistence-only fields.
+        if (update := effort_update(msg)) is not None:
+            api_msg[EFFORT_UPDATE_KEY] = update
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
 

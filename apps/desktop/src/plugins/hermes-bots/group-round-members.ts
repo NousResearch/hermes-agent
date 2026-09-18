@@ -7,6 +7,7 @@ import {
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   groupThreadOf,
+  groupUserDisplayName,
   shouldCommitMemberTurn,
   updateGroupChat
 } from './group-chat'
@@ -93,6 +94,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   const prompt = buildGroupChatTurnPrompt({
     groupName: context.group,
     members,
+    userName: groupUserDisplayName(context.group),
     viewer: member,
     deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member, context.group))
   })

@@ -248,7 +248,10 @@ describe('approval card (#91706)', () => {
   it('submits the clicked choice at once, with no second Respond click', async () => {
     const answer = vi.fn(async () => undefined)
     vi.doMock('./group-turns', () => ({ answerGroupClarify: answer }))
-    vi.doMock('./group-chat', () => ({ appendGroupChatEntry: vi.fn() }))
+    vi.doMock('./group-chat', () => ({
+      appendGroupChatEntry: vi.fn(),
+      groupUserDisplayName: vi.fn(() => 'You')
+    }))
     const { GroupClarifyCard } = await import('./group-chat-parts')
 
     render(<GroupClarifyCard entry={entry} members={MEMBERS} />)

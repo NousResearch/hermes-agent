@@ -168,6 +168,10 @@ export interface GroupChat {
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
+  /** Optional room-local display name for the human participant. Empty/absent
+   *  falls back to the 'You' sentinel, which stays the persisted default so
+   *  existing logs render unchanged (#105194). */
+  userName?: null | string
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string
   running?: boolean

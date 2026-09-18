@@ -14,7 +14,7 @@ import { useRef, useState } from 'react'
 
 import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
 import { $botMeta, botHandle, botMentionTag } from './data'
-import { appendGroupChatEntry } from './group-chat'
+import { appendGroupChatEntry, groupUserDisplayName } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { answerGroupClarify } from './group-turns'
 import { useBots } from './i18n'
@@ -450,7 +450,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
         group,
         {
           kind: 'user',
-          name: 'You'
+          name: groupUserDisplayName(group)
         },
         summary,
         entry.thread || 'legacy'

@@ -351,6 +351,10 @@ declare global {
       }) => Promise<string>
       savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
+      /** Materialize the selected Apple Mail message referenced by a message: URI as a managed .eml file. */
+      exportAppleMailMessage?: (messageUri: string) => Promise<string>
+      /** Delete only a Desktop-managed Apple Mail export after staging or chip removal. */
+      removeManagedAppleMailExport?: (filePath: string) => Promise<boolean>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>

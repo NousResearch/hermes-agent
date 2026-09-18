@@ -32,6 +32,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
+import { cleanupSubmittedManagedAttachments } from './submit'
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -5346,6 +5347,24 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
   })
 
+  it('does not eagerly stage a managed Apple Mail source before submit recovery is settled', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const path = '/private/tmp/Hermes/apple-mail-drops/message.eml'
+
+    $composerAttachments.set([
+      { id: 'file:mail', kind: 'file', label: 'message.eml', managedTemporaryPath: path, path }
+    ])
+
+    await actRender(
+      <Harness onReady={() => undefined} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await Promise.resolve()
+
+    expect(requestGateway).not.toHaveBeenCalledWith('file.attach', expect.anything())
+    expect($composerAttachments.get()[0]?.path).toBe(path)
+  })
+
   it('flags the chip uploadState=error when the eager upload fails, keeping the path so submit can retry', async () => {
     $connection.set({ mode: 'remote' } as never)
     Object.defineProperty(window, 'hermesDesktop', {
@@ -5442,6 +5461,108 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+describe('uploadComposerAttachment managed temporary sources', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('retains the only eml source when file.attach reuses it without copying', async () => {
+    const managedTemporaryPath = '/private/tmp/Hermes/apple-mail-drops/message.eml'
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { removeManagedAppleMailExport }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:message.eml', uploaded: false } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'file:message.eml',
+        kind: 'file',
+        label: 'message.eml',
+        managedTemporaryPath,
+        path: managedTemporaryPath
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(removeManagedAppleMailExport).not.toHaveBeenCalled()
+    expect(uploaded.managedTemporaryPath).toBe(managedTemporaryPath)
+    expect(uploaded.managedTemporaryUploaded).toBe(false)
+    expect(uploaded.path).toBe(managedTemporaryPath)
+  })
+
+  it('marks a copied managed source for cleanup only after successful submit', async () => {
+    const managedTemporaryPath = '/private/tmp/Hermes/apple-mail-drops/copied.eml'
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:message/rfc822;base64,RnJvbTogdGVzdA=='),
+        removeManagedAppleMailExport
+      }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:attachments/copied.eml', uploaded: true } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'file:copied.eml',
+        kind: 'file',
+        label: 'copied.eml',
+        managedTemporaryPath,
+        path: managedTemporaryPath
+      },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(removeManagedAppleMailExport).not.toHaveBeenCalled()
+    expect(uploaded.managedTemporaryUploaded).toBe(true)
+
+    await cleanupSubmittedManagedAttachments([uploaded])
+
+    expect(removeManagedAppleMailExport).toHaveBeenCalledWith(managedTemporaryPath)
+  })
+
+  it('does not delete a managed source after submit when the gateway reused it in place', async () => {
+    const removeManagedAppleMailExport = vi.fn(async () => true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { removeManagedAppleMailExport }
+    })
+
+    await cleanupSubmittedManagedAttachments([
+      {
+        id: 'file:message.eml',
+        kind: 'file',
+        label: 'message.eml',
+        managedTemporaryPath: '/private/tmp/Hermes/apple-mail-drops/message.eml',
+        managedTemporaryUploaded: false,
+        path: '/private/tmp/Hermes/apple-mail-drops/message.eml'
+      }
+    ])
+
+    expect(removeManagedAppleMailExport).not.toHaveBeenCalled()
   })
 })
 

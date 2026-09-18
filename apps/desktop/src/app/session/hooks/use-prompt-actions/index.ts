@@ -204,6 +204,7 @@ export async function uploadComposerAttachment(
     return {
       ...attachment,
       attachedSessionId: liveSessionId,
+      managedTemporaryUploaded: attachment.managedTemporaryPath ? result.uploaded === true : undefined,
       refText: result.ref_text,
       uploadState: undefined
     }
@@ -397,6 +398,7 @@ export function usePromptActions({
               patchMainComposerAttachmentOccurrence(original, {
                 attachedSessionId: nextAttachment.attachedSessionId,
                 label: nextAttachment.label,
+                managedTemporaryUploaded: nextAttachment.managedTemporaryUploaded,
                 path: nextAttachment.path,
                 refText: nextAttachment.refText,
                 uploadState: nextAttachment.uploadState
@@ -469,6 +471,7 @@ export function usePromptActions({
       const needsUpload =
         attachment.kind === 'file' &&
         Boolean(attachment.path) &&
+        !attachment.managedTemporaryPath &&
         !attachment.attachedSessionId &&
         !attachment.uploadState &&
         !eagerUploadInFlight.current.has(attachment.id)

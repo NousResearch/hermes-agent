@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
@@ -80,6 +80,8 @@ async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: 
 export interface DroppedFile {
   /** Browser-native File handle. Absent for in-app drags (e.g. project tree). */
   file?: File
+  /** Apple Mail exposes dragged messages as a `message:` URI, not a File. */
+  mailUri?: string
   /** Absolute filesystem path. Empty when an OS drop didn't carry one. */
   path: string
   /** True if the entry is a directory. Set by in-app drags, and by OS drops via
@@ -108,10 +110,32 @@ export const HERMES_PATHS_MIME = 'application/x-hermes-paths'
  */
 export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   const result: DroppedFile[] = []
+  const seenMailUris = new Set<string>()
   const seenPaths = new Set<string>()
   const seenFiles = new Set<File>()
   const getPath = window.hermesDesktop?.getPathForFile
   const urls = droppedLinkUrls(transfer)
+
+  // Apple Mail does not expose a promised `.eml` through Chromium's File API.
+  // At drop time it does expose one or more `message:` references through
+  // text/uri-list. Preserve those references so the macOS main process can
+  // verify the selected message ID and materialize its raw source as `.eml`.
+  try {
+    const uriList = transfer.getData('text/uri-list')
+
+    for (const line of uriList.split(/\r?\n/)) {
+      const uri = line.trim()
+
+      if (!uri || uri.startsWith('#') || !/^message:/i.test(uri) || seenMailUris.has(uri)) {
+        continue
+      }
+
+      seenMailUris.add(uri)
+      result.push({ mailUri: uri, path: '' })
+    }
+  } catch {
+    // Non-Mail drops and protected drag phases may not expose string payloads.
+  }
 
   // In-app drags first — they carry richer metadata (isDirectory) than the
   // File-based fallback can provide, and produce no overlapping native files.
@@ -304,7 +328,7 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
   const inAppRefs: DroppedFile[] = []
 
   for (const candidate of candidates) {
-    if (candidate.file) {
+    if (candidate.file || candidate.mailUri) {
       osDrops.push(candidate)
     } else {
       inAppRefs.push(candidate)
@@ -334,6 +358,8 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
 
 interface ComposerActionsOptions {
   activeSessionId: string | null
+  /** Stable stored-session/draft identity. Unlike a runtime id, it survives backend recovery. */
+  attachmentTargetKey?: string | null
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   scope?: ComposerActionsScope
@@ -341,12 +367,29 @@ interface ComposerActionsOptions {
 
 export function useComposerActions({
   activeSessionId,
+  attachmentTargetKey,
   currentCwd,
   requestGateway,
   scope = MAIN_ACTIONS_SCOPE
 }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const resolvedAttachmentTargetKey = attachmentTargetKey === undefined ? activeSessionId : attachmentTargetKey
+  const mountedRef = useRef(true)
+  const attachmentSessionRef = useRef(resolvedAttachmentTargetKey)
+  const attachmentTargetRef = useRef(scope.target)
+
+  attachmentSessionRef.current = resolvedAttachmentTargetKey
+  attachmentTargetRef.current = scope.target
+
+  // eslint-disable-next-line no-restricted-syntax -- mount liveness is a local lifecycle fact, not mirrored reactive state
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   /** Add to this scope's composer and focus it. All sidebar/picker/drop
    *  attach paths funnel through here. */
@@ -443,7 +486,7 @@ export function useComposerActions({
   )
 
   const attachContextFilePath = useCallback(
-    (filePath: string) => {
+    (filePath: string, managedTemporaryPath?: string) => {
       if (!filePath) {
         return false
       }
@@ -455,6 +498,7 @@ export function useComposerActions({
         kind: 'file',
         label: pathLabel(filePath),
         detail: rel,
+        managedTemporaryPath,
         refText: `@file:${formatRefValue(rel)}`,
         path: filePath
       })
@@ -666,9 +710,49 @@ export function useComposerActions({
 
       let attached = false
       let lastFailure: string | null = null
+      // One immutable destination for the whole native drop. Multi-message
+      // drops must never follow a later session switch between awaited exports.
+      const dropSession = attachmentSessionRef.current
+      const dropTarget = attachmentTargetRef.current
 
       for (const candidate of candidates) {
-        const { file, isDirectory, path: knownPath } = candidate
+        const { file, isDirectory, mailUri, path: knownPath } = candidate
+
+        if (mailUri) {
+          const exportMessage = window.hermesDesktop?.exportAppleMailMessage
+
+          if (!exportMessage) {
+            lastFailure = 'Apple Mail message export is unavailable'
+
+            continue
+          }
+
+          try {
+            const exportedPath = await exportMessage(mailUri)
+
+            if (
+              !mountedRef.current ||
+              attachmentSessionRef.current !== dropSession ||
+              attachmentTargetRef.current !== dropTarget
+            ) {
+              await window.hermesDesktop?.removeManagedAppleMailExport?.(exportedPath).catch(() => undefined)
+
+              continue
+            }
+
+            if (exportedPath && attachContextFilePath(exportedPath, exportedPath)) {
+              attached = true
+
+              continue
+            }
+
+            lastFailure = 'Could not export Apple Mail message'
+          } catch (err) {
+            lastFailure = err instanceof Error ? err.message : 'Could not export Apple Mail message'
+          }
+
+          continue
+        }
 
         // Path-only entry (in-app drag from the file browser tree, etc.).
         if (!file) {
@@ -753,6 +837,10 @@ export function useComposerActions({
   const removeAttachment = useCallback(
     async (id: string) => {
       const removed = scope.remove(id)
+
+      if (removed?.managedTemporaryPath) {
+        await window.hermesDesktop?.removeManagedAppleMailExport?.(removed.managedTemporaryPath).catch(() => undefined)
+      }
 
       if (
         removed?.kind === 'image' &&

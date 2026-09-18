@@ -85,6 +85,18 @@ test('every device.* entitlement on the main app is also inherited', () => {
 })
 
 for (const plist of [MAIN_PLIST, INHERIT_PLIST]) {
+  test(`${path.basename(plist)} grants Apple Events automation`, () => {
+    const data = loadEntitlements(plist)
+
+    assert.equal(
+      data['com.apple.security.automation.apple-events'],
+      true,
+      `${path.basename(plist)} must grant Apple Events automation so a hardened build can export explicitly dropped Apple Mail messages`
+    )
+  })
+}
+
+for (const plist of [MAIN_PLIST, INHERIT_PLIST]) {
   test(`${path.basename(plist)} is a well-formed non-empty entitlement dict`, () => {
     const data = loadEntitlements(plist)
     assert.ok(

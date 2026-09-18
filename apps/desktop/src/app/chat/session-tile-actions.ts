@@ -251,6 +251,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
               scope.attachments.updateIfCurrent(attachment, {
                 attachedSessionId: next.attachedSessionId,
                 label: next.label,
+                managedTemporaryUploaded: next.managedTemporaryUploaded,
                 path: next.path,
                 refText: next.refText,
                 uploadState: next.uploadState

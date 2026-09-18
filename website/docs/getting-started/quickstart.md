@@ -133,6 +133,7 @@ Good defaults:
 | **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |
 | **Ramp Router** | Responses-native LLM gateway routing across OpenAI/Anthropic/xAI/... | Set `RAMP_ROUTER_API_KEY` |
 | **Nebius Token Factory** | Open models on Nebius AI cloud | Set `NEBIUS_API_KEY` |
+| **Phoenix Grove** | Curated open-weights coding plan (flat monthly, zero retention) | Set `PGS_API_KEY` |
 | **StepFun** | Step Plan models | Set `STEPFUN_API_KEY` |
 | **Xiaomi MiMo** | Xiaomi-hosted models | Set `XIAOMI_API_KEY` |
 | **Tencent TokenHub** | Tencent-hosted models | Set `TOKENHUB_API_KEY` |

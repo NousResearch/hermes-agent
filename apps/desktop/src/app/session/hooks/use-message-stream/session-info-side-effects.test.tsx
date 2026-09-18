@@ -10,6 +10,7 @@ import { setCurrentModel, setCurrentProvider } from '@/store/session'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { PRE_TURN_LIVE_SETTLE_GRACE_MS } from './utils'
+import { messageCompletePayload } from '@/test/contract'
 
 // Per-turn REST amplification guards: session.info must not refetch config for
 // background sessions nor invalidate the model-options catalog when the model
@@ -295,7 +296,7 @@ describe('empty message.complete after streamed text (#95514)', () => {
         type: 'message.delta'
       })
     )
-    act(() => stream.handleEvent({ payload: { text: '' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: '' }), session_id: ACTIVE_SID, type: 'message.complete' }))
 
     const assistant = stream.state(ACTIVE_SID).messages.find(message => message.role === 'assistant')
     expect(assistant?.parts.filter(part => part.type === 'text').map(part => part.text)).toEqual([
@@ -322,7 +323,7 @@ describe('empty message.complete after streamed text (#95514)', () => {
         type: 'message.interim'
       })
     )
-    act(() => stream.handleEvent({ payload: { text: '' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: '' }), session_id: ACTIVE_SID, type: 'message.complete' }))
 
     const assistant = stream.state(ACTIVE_SID).messages.find(message => message.role === 'assistant')
     expect(assistant?.parts.filter(part => part.type === 'text').map(part => part.text)).toEqual([
@@ -346,7 +347,7 @@ describe('empty message.complete after streamed text (#95514)', () => {
         type: 'message.delta'
       })
     )
-    act(() => stream.handleEvent({ payload: { text: '' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: '' }), session_id: ACTIVE_SID, type: 'message.complete' }))
 
     const assistant = stream.state(ACTIVE_SID).messages.find(message => message.role === 'assistant')
     expect(assistant?.parts.filter(part => part.type === 'text').map(part => part.text)).toEqual([
@@ -359,7 +360,7 @@ describe('empty message.complete after streamed text (#95514)', () => {
     mountStream()
 
     act(() => stream.handleEvent({ payload: {}, session_id: ACTIVE_SID, type: 'message.start' }))
-    act(() => stream.handleEvent({ payload: { text: '' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: '' }), session_id: ACTIVE_SID, type: 'message.complete' }))
 
     expect(hydrateFromStoredSession).toHaveBeenCalled()
   })
@@ -370,8 +371,8 @@ describe('message.complete sidebar refresh coalescing', () => {
     mountStream()
     vi.useFakeTimers()
 
-    act(() => stream.handleEvent({ payload: { text: 'a' }, session_id: 's1', type: 'message.complete' }))
-    act(() => stream.handleEvent({ payload: { text: 'b' }, session_id: 's2', type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: 'a' }), session_id: 's1', type: 'message.complete' }))
+    act(() => stream.handleEvent({ payload: messageCompletePayload({ text: 'b' }), session_id: 's2', type: 'message.complete' }))
 
     expect(refreshSessions).not.toHaveBeenCalled()
 

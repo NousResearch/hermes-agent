@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $activeGatewayProfile } from '@/store/profile'
-import { sessionLiveInfo } from '@/test/contract'
+import { sessionInfoPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -30,7 +30,7 @@ describe('live session.info approval mode reconciliation', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: sessionLiveInfo({ approval_mode: 'off' }),
+        payload: sessionInfoPayload({ approval_mode: 'off' }),
         profile: 'work',
         session_id: ACTIVE_SID,
         type: 'session.info'
@@ -46,7 +46,7 @@ describe('live session.info approval mode reconciliation', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: sessionLiveInfo({ approval_mode: 'off' }),
+        payload: sessionInfoPayload({ approval_mode: 'off' }),
         profile: 'work',
         session_id: 'session-stale',
         type: 'session.info'
@@ -60,7 +60,7 @@ describe('live session.info approval mode reconciliation', () => {
     mountStream()
     $activeGatewayProfile.set('personal')
 
-    act(() => stream.handleEvent({ payload: sessionLiveInfo({ approval_mode: 'off' }), session_id: ACTIVE_SID, type: 'session.info' }))
+    act(() => stream.handleEvent({ payload: sessionInfoPayload({ approval_mode: 'off' }), session_id: ACTIVE_SID, type: 'session.info' }))
 
     expect(approvalModeForProfile('personal')).toBe('smart')
     expect(approvalModeForProfile('work')).toBe('smart')

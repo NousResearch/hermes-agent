@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,7 +10,7 @@ import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 const SID = 'session-1'
 let stream: MessageStreamHarness
 
-function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) {
+function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K]) {
   act(() => stream.handleEvent({ payload, session_id: SID, type }))
 }
 

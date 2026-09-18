@@ -26,6 +26,7 @@ import type {
   SessionCompressResult,
   SessionControlDispatch,
   SessionControlSnapshot,
+  SessionInfoPayload,
   SessionLiveInfo,
   SessionResumeResult,
   SetupRuntimeCheckResult,
@@ -67,7 +68,7 @@ export const usage = (over: Partial<Usage> = {}): Usage => ({
   ...over
 })
 
-/** `session.info` payload and the `info` block of resume/activate/create share this shape. */
+/** The `info` block of resume/activate/create method results. */
 export const sessionLiveInfo = (over: Partial<SessionLiveInfo> = {}): SessionLiveInfo => ({
   model: null,
   provider: '',
@@ -98,6 +99,13 @@ export const sessionLiveInfo = (over: Partial<SessionLiveInfo> = {}): SessionLiv
   system_prompt: null,
   credential_warning: null,
   lazy: null,
+  ...over
+})
+
+/** `session.info` event payload: `SessionLiveInfo` plus the event-only `config_warning`. */
+export const sessionInfoPayload = (over: Partial<SessionInfoPayload> = {}): SessionInfoPayload => ({
+  ...sessionLiveInfo(),
+  config_warning: null,
   ...over
 })
 

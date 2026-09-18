@@ -8,7 +8,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
-import { sessionLiveInfo } from '@/test/contract'
+import { sessionInfoPayload } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -38,7 +38,7 @@ describe('session.info does not clobber composer model selection', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: sessionLiveInfo({ model: 'deepseek-chat', provider: 'deepseek' }),
+        payload: sessionInfoPayload({ model: 'deepseek-chat', provider: 'deepseek' }),
         type: 'session.info'
       })
     )

@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEventMap, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,6 +7,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $draftingToolSessions } from '@/store/tool-drafting'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
+import { messageDeltaPayload } from '@/test/contract'
 
 const SID = 'session-1'
 const OTHER_SID = 'session-2'
@@ -20,7 +21,7 @@ function mountStream() {
   stream = renderMessageStream(SID, { states: sessionStates })
 }
 
-function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}, sessionId = SID) {
+function emit<K extends GatewayEventName>(type: K, payload: GatewayEventMap[K], sessionId = SID) {
   act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
 }
 
@@ -75,7 +76,7 @@ describe('drafting-tool label lifecycle', () => {
     emit('tool.generating', { name: 'patch' }, OTHER_SID)
     emit('tool.generating', { name: 'write_file' })
 
-    emit('message.delta', { text: 'moving on' })
+    emit('message.delta', messageDeltaPayload({ text: 'moving on' }))
 
     expect(draftedTool()).toBeUndefined()
     expect(draftedTool(OTHER_SID)).toBe('patch')

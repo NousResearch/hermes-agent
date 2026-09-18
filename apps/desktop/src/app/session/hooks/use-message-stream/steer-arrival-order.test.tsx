@@ -28,6 +28,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 import { useMessageStream } from './index'
+import { messageCompletePayload, messageDeltaPayload, toolCompletePayload, toolStartPayload } from '@/test/contract'
 
 const SID = 'steer-order-session'
 
@@ -140,12 +141,12 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await mountHarness()
 
     emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'first half of the answer' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'first half of the answer' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     // Mid-turn tool activity belongs to the pre-steer bubble.
     emit({
-      payload: { args: { command: 'true' }, name: 'terminal', tool_id: 't1' },
+      payload: toolStartPayload({ args: { command: 'true' }, name: 'terminal', tool_id: 't1' }),
       session_id: SID,
       type: 'tool.start'
     })
@@ -154,7 +155,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await steer('actually do it differently')
 
     // Post-steer deltas must seed a FRESH bubble below the correction.
-    emit({ payload: { text: 'rebuilt answer after the steer' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'rebuilt answer after the steer' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     const midTurn = states.get(SID)!.messages
@@ -195,14 +196,14 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await mountHarness()
 
     emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'the whole reply already streamed' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'the whole reply already streamed' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     // Steer accepted during the final API call — the reply was already
     // complete, so the correction becomes the NEXT turn's prompt.
     await steer('one more thing')
 
-    emit({ payload: { text: 'the whole reply already streamed' }, session_id: SID, type: 'message.complete' })
+    emit({ payload: messageCompletePayload({ text: 'the whole reply already streamed' }), session_id: SID, type: 'message.complete' })
 
     const messages = states.get(SID)!.messages
     const steerIndex = messages.findIndex(message => message.role === 'user')
@@ -224,19 +225,19 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await mountHarness()
 
     emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'output before any steer' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'output before any steer' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     await steer('first correction')
 
-    emit({ payload: { text: 'output after first steer' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'output after first steer' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     await steer('second correction')
 
-    emit({ payload: { text: 'final output' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'final output' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
-    emit({ payload: { text: 'final output' }, session_id: SID, type: 'message.complete' })
+    emit({ payload: messageCompletePayload({ text: 'final output' }), session_id: SID, type: 'message.complete' })
 
     const roles = states.get(SID)!.messages.map(message => `${message.role}:${chatMessageText(message).slice(0, 24)}`)
 
@@ -253,7 +254,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await mountHarness()
 
     emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'streaming along' }, session_id: SID, type: 'message.delta' })
+    emit({ payload: messageDeltaPayload({ text: 'streaming along' }), session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
     requestGateway.mockImplementationOnce(async () => ({ status: 'not_running' }))
@@ -266,7 +267,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     // lie about the transcript. No user row, stream still live below.
     expect(states.get(SID)!.messages.some(message => message.role === 'user')).toBe(false)
 
-    emit({ payload: { text: 'streaming along — done' }, session_id: SID, type: 'message.complete' })
+    emit({ payload: messageCompletePayload({ text: 'streaming along — done' }), session_id: SID, type: 'message.complete' })
     expect(chatMessageText(states.get(SID)!.messages.at(-1)!)).toContain('done')
   })
 })

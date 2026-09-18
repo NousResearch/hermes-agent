@@ -497,6 +497,17 @@ class TestNousTagsScoping:
 
 
 class TestNormalizeAuxProvider:
+    def test_maps_opencode_family(self):
+        assert _normalize_aux_provider("opencode") == "opencode-zen"
+        assert _normalize_aux_provider("zen") == "opencode-zen"
+        assert _normalize_aux_provider("go") == "opencode-go"
+        assert _normalize_aux_provider("opencode-go-sub") == "opencode-go"
+
+    def test_covers_every_alias_the_main_path_resolves(self):
+        from hermes_cli.auth import _PROVIDER_ALIASES as auth_table
+        for alias, canonical in auth_table.items():
+            assert _normalize_aux_provider(alias) == canonical, alias
+
     def test_maps_github_copilot_aliases(self):
         assert _normalize_aux_provider("github") == "copilot"
         assert _normalize_aux_provider("github-copilot") == "copilot"

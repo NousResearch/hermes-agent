@@ -243,13 +243,41 @@ def _ssl_interop_hint(exc: BaseException) -> str:
     )
 
 
+def _is_transient_transport_error(exc: BaseException) -> bool:
+    """True when *exc* is transport-level (connection/TLS/socket) and safe to retry.
+
+    httpx raises ``httpx.TransportError`` subclasses wrapping the original ``ssl``/``socket``
+    error as ``__cause__``, so both spellings count. Anything else (decode errors, bugs) is
+    not a network blip and must surface immediately.
+    """
+    err: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while err is not None and id(err) not in seen:
+        if isinstance(err, (httpx.TransportError, OSError)):
+            return True
+        seen.add(id(err))
+        err = err.__cause__
+    return False
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
-    """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
-    try:
-        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
-            return client.post(url, **kwargs)
-    except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+    """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``.
+
+    A transient transport blip (a dropped connection mid-flow) is retried twice with a small
+    linear backoff before failing: losing the token exchange to a single SSL EOF wastes a
+    device-code approval the user already completed in the browser (#114610).
+    """
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt < attempts and _is_transient_transport_error(exc):
+                time.sleep(attempt)
+                continue
+            raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+    raise _codex_err(f"{failure[0]}: exhausted retries", failure[1])  # pragma: no cover
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -765,10 +793,12 @@ def _codex_poll_authorization_code(
     issuer: str, *, device_auth_id: str, user_code: str, poll_interval: int) -> Dict[str, Any]:
     """Step 3 of the Codex device flow: poll until sign-in completes (403/404 = still pending)."""
     max_wait = 15 * 60  # 15 minutes
+    max_consecutive_blips = 6  # survives transient drops, still fails fast on a dead network
     start = time.monotonic()
     code_resp = None
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+            consecutive_blips = 0
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
                 try:
@@ -777,9 +807,19 @@ def _codex_poll_authorization_code(
                         json={"device_auth_id": device_auth_id, "user_code": user_code},
                         headers={"Content-Type": "application/json"})
                 except Exception as exc:
-                    raise _codex_err(
-                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
-                        "device_code_poll_error") from exc
+                    if not _is_transient_transport_error(exc):
+                        raise _codex_err(
+                            f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    consecutive_blips += 1
+                    if consecutive_blips >= max_consecutive_blips:
+                        raise _codex_err(
+                            f"Device auth polling request failed after {consecutive_blips} consecutive"
+                            f" transport errors: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    print("Transient network error while waiting for sign-in; retrying...")
+                    continue
+                consecutive_blips = 0
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break
@@ -787,6 +827,9 @@ def _codex_poll_authorization_code(
                     raise _codex_err(
                         f"Device auth polling returned status {poll_resp.status_code}.",
                         "device_code_poll_error")
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
     except KeyboardInterrupt:
         print("\nLogin cancelled.")
         raise SystemExit(130)

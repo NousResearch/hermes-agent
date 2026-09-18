@@ -17,7 +17,6 @@ import asyncio
 import importlib.util
 import json
 import logging
-import os
 import re
 import sys
 from contextlib import contextmanager, suppress
@@ -55,10 +54,14 @@ HttpMethod = str  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult, cache_image_from_url, cache_media_bytes_async,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
+from gateway.platforms.base_exec_approval import (
+    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +147,18 @@ def check_requirements() -> bool:
 
 
 def _credentials(config) -> tuple[str, str, str]:
-    """(client_id, client_secret, tenant_id): env first, then ``config.extra``."""
+    """(client_id, client_secret, tenant_id): ``config.extra`` first, then the profile-scoped env.
+
+    client_id/tenant_id are read through the same scoped reader as the secret: under multiplex,
+    ``os.environ`` holds the DEFAULT profile's app identity, and pairing it with a secondary's
+    secret requests a Bot Framework token for the wrong app. ``extra`` wins so a per-profile
+    config.yaml identity is never overridden by the process env.
+    """
     extra = getattr(config, "extra", {}) or {}
     return (
-        os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", ""),
-        _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", ""),
-        os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", ""))
+        extra.get("client_id") or _get_scoped_secret("TEAMS_CLIENT_ID", ""),
+        extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", ""),
+        extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID", ""))
 
 
 def validate_config(config) -> bool:
@@ -161,23 +170,18 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env before adapter construction so ``gateway status`` reflects
-    env-only setups without the SDK. ``None`` when not minimally configured; ``home_channel`` becomes a
-    ``HomeChannel`` via the core hook."""
-    client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
-    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
-    tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
-    if not (client_id and client_secret and tenant_id):
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before adapter construction
+    so ``gateway status`` reflects env-only setups without the SDK; ``None`` when not minimally configured.
+    Every identity/endpoint is per-profile (the app the secret belongs to, its regional service URL, the
+    cron home conversation), so a secondary is never seeded with the default profile's Teams app."""
+    seed = _seed_extra_from_env((
+        ("TEAMS_CLIENT_ID", "client_id", None), ("TEAMS_CLIENT_SECRET", "client_secret", None),
+        ("TEAMS_TENANT_ID", "tenant_id", None), ("TEAMS_PORT", "port", int), ("TEAMS_SERVICE_URL", "service_url", None),
+    ), home_env="TEAMS_HOME_CHANNEL")
+    if not all(seed.get(k) for k in ("client_id", "client_secret", "tenant_id")):
         return None
-    seed: dict = {"client_id": client_id, "client_secret": client_secret, "tenant_id": tenant_id}
-    port = coerce_port(os.getenv("TEAMS_PORT", "").strip(), None)
-    if port is not None:
-        seed["port"] = port
-    if service_url := os.getenv("TEAMS_SERVICE_URL", "").strip():
-        seed["service_url"] = service_url
-    if home := os.getenv("TEAMS_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("TEAMS_HOME_CHANNEL_NAME", "Home")}
     return seed
+
 
 
 async def _standalone_send(
@@ -191,8 +195,8 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
-        return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
-    raw_service_url = os.getenv("TEAMS_SERVICE_URL") or extra.get("service_url", "") or _DEFAULT_TEAMS_SERVICE_URL
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+    raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
         (service_url is None, f"TEAMS_SERVICE_URL host is not on the Bot Framework allowlist; "
@@ -202,7 +206,7 @@ async def _standalone_send(
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
-            return {"error": f"Teams standalone send: {error}"}
+            return send_error(f"Teams standalone send: {error}")
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
@@ -216,11 +220,11 @@ async def _standalone_send(
             ) as token_resp:
                 if token_resp.status >= 400:
                     body = await token_resp.text()
-                    return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
+                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}")
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
             if not access_token:
-                return {"error": "Teams standalone send: token response missing access_token"}
+                return send_error("Teams standalone send: token response missing access_token")
             async with session.post(
                 activities_url, json={"type": "message", "text": message, "textFormat": "markdown"},
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -228,14 +232,14 @@ async def _standalone_send(
             ) as send_resp:
                 if send_resp.status >= 400:
                     body = await send_resp.text()
-                    return {"error": f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}"}
+                    return send_error(f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}")
                 send_payload = await send_resp.json()
         return {"success": True, "message_id": send_payload.get("id")}
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=True)
-        return {"error": f"Teams standalone send failed: {e}"}
+        return send_error(f"Teams standalone send failed: {e}")
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().
@@ -323,15 +327,17 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
     if cmd or always:
-        body.append(TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"))
+        body.append(TextBlock(text=f"⚠️ {EA_HEADER_TEXT}", wrap=True, weight="Bolder"))
         body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
     if desc or always:
-        body.append(TextBlock(text=f"Reason: {desc}", wrap=True, isSubtle=True))
+        body.append(TextBlock(text=f"{EA_REASON_LABEL_TEXT}: {desc}", wrap=True, isSubtle=True))
     return body
 
 
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -339,15 +345,13 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
-        self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
-        self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
-        self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
+        self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -394,15 +398,15 @@ class TeamsAdapter(BasePlatformAdapter):
 
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
-            self._runner = web.AppRunner(aiohttp_app)
-            await self._runner.setup()
-            site = web.TCPSite(self._runner, self._host, self._port)
-            await site.start()
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/api/messages.
+            from gateway.platforms.shared_ingress import bind_listener
+            self._runner = await bind_listener(self, aiohttp_app, self._host, self._port, _WEBHOOK_PATH)
             self._running = True
             self._mark_connected()
-            logger.info(
-                "[teams] Webhook server listening on %s:%d%s",
-                self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
+            if self._runner is not None:
+                logger.info(
+                    "[teams] Webhook server listening on %s:%d%s",
+                    self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
             return True
         except Exception as e:
             self._set_fatal_error("CONNECT_FAILED", f"Teams connection failed: {e}", retryable=True)
@@ -483,7 +487,8 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
-            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id)
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
@@ -598,9 +603,10 @@ class TeamsAdapter(BasePlatformAdapter):
         """Default-deny gate for approval clicks: require TEAMS_ALLOWED_USERS or an explicit
         TEAMS_ALLOW_ALL_USERS=true opt-in, else anyone who can message the bot could approve.
         Returns the user-facing denial text, or ``None`` when allowed."""
-        if os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
+        # Scoped reads: under multiplex os.environ is the DEFAULT profile's allow-all/allowlist.
+        if _get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
             return None
-        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allowed_csv = _get_scoped_secret("TEAMS_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "
@@ -613,31 +619,29 @@ class TeamsAdapter(BasePlatformAdapter):
             return "⛔ Not authorized."
         return None
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+    _EA_CMD_BUDGET = 2000
+    _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
+    _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": session_key, "cmd": _truncate(command, 200), "desc": description}
-
-        def _action(title: str, hermes_action: str, **kw) -> "ExecuteAction":
-            return ExecuteAction(
-                title=title, verb="hermes_approve", data={**btn_data_base, "hermes_action": hermes_action}, **kw)
-
-        actions = [_action("Allow Once", "approve_once", style="positive")]
-        if not smart_denied and allow_session:
-            actions.append(_action("Allow Session", "approve_session"))
-            if allow_permanent:
-                actions.append(_action("Always Allow", "approve_always"))
-        actions.append(_action("Deny", "deny", style="destructive"))
-        body = _approval_body(_truncate(command, 2000), description, always=True)
-        if smart_denied:
-            body.append(TextBlock(text="Smart DENY: owner override applies to this one operation only.", wrap=True))
+        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        actions = []
+        for label, choice, style in prompt.actions:
+            kw = {"style": self._EA_CARD_STYLES[style]} if style else {}
+            actions.append(ExecuteAction(
+                title=label, verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
+        body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
+        if prompt.smart_denied:
+            body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
         card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
         try:
-            result = await self._send_card(chat_id, card)
+            result = await self._send_card(prompt.chat_id, card)
             return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
@@ -739,11 +743,9 @@ _SETUP_INTRO = (  # "" → blank line
 def interactive_setup() -> None:
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_info, print_success, print_warning
-    existing_id = get_env_value("TEAMS_CLIENT_ID")
-    if existing_id:
-        print_info(f"Teams: already configured (app ID: {existing_id})")
-        if not prompt_yes_no("Reconfigure Teams?", False):
-            return
+    from hermes_cli.setup_platforms import declines_reconfigure
+    if declines_reconfigure("Teams", "Reconfigure Teams?", "TEAMS_CLIENT_ID"):
+        return
     for line in _SETUP_INTRO:
         print_info(line) if line else print()
     for label, env_key, prompt_kwargs in _SETUP_CREDENTIALS:

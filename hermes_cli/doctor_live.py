@@ -40,14 +40,6 @@ class ProbeResult:
 
 # ── Small seams (monkeypatchable in tests, and single points of control) ──
 
-def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
     """Single HTTP GET seam for all metadata probes."""
     import httpx
@@ -175,7 +167,8 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: List[str]) -> Pro
 def run_live_checks(issues: List[str]) -> List[ProbeResult]:
     """Run one bounded, read-only probe per configured tool backend — sequential by design (predictable output
     ordering). Appends a remediation line to ``issues`` per failed probe; skipped backends never append."""
-    config = _load_config()
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
     try:
         timeout = float((config.get("doctor") or {}).get("live_probe_timeout", DEFAULT_PROBE_TIMEOUT))
     except (TypeError, ValueError):

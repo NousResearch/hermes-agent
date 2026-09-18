@@ -120,12 +120,13 @@ _preset_cache: dict[tuple, Any] = {}
 
 
 def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
-    """``(preset, raw moa config)``; the resolved preset is cached per config mtime
+    """``(preset, raw moa config)``; the resolved preset is cached per config file signature
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
+    from utils import file_signature
     try:
-        cfg_stamp = get_config_path().stat().st_mtime_ns
+        cfg_stamp = file_signature(get_config_path().stat())
     except OSError:
         cfg_stamp = None
     moa_raw = load_config().get("moa") or {}
@@ -142,7 +143,7 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
 
 
 _runtime_cache_lock = threading.Lock()
-_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
@@ -245,12 +246,15 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
-    Cached per (provider, model) with a short TTL. Falls back to bare provider/model
+    Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
     on error — never cached, or a transient error would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
+    # multiplex gateway two profiles can share (provider, model) with different accounts.
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
@@ -885,26 +889,25 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
 
 
 def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
-    """Attach the per-turn reference block at the END of the aggregator prompt.
+    """Attach the per-turn reference block as its OWN trailing user message.
 
-    The block varies per iteration; appending keeps ``[system][task][tool-history]``
-    cache-stable. A trailing user turn is merged in place (string, or a new text part
-    AFTER the cache_control-marked part); otherwise a user message is appended (two
-    consecutive user turns would be rejected by strict providers).
+    The block varies per turn; appending keeps ``[system][task][tool-history]``
+    cache-stable. It is never merged into a trailing user turn: iteration 1 of a
+    tool loop ends on ``user(task)``, and a merged ``user(task + guidance)`` byte-differs
+    from the ``user(task)`` every later iteration replays, so the provider prefix cache
+    collapsed to the system prompt on iteration 2 of every turn (#112358). Converters
+    that require strict alternation (Anthropic Messages, Converse, native Gemini) merge
+    the two user turns as SEPARATE content blocks, so the task block stays byte-stable
+    there too; on the OpenAI-compatible wire the request ends ``user(task), user(guidance)``,
+    which a chat template that enforces strict user/assistant alternation rejects.
     """
-    last = agg_messages[-1] if agg_messages else None
-    last_content = last.get("content") if last is not None and last.get("role") == "user" else None
-    if isinstance(last_content, str):
-        last["content"] = last_content + "\n\n" + guidance
-    elif isinstance(last_content, list):
-        last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
-    else:
-        agg_messages.append({"role": "user", "content": guidance})
+    agg_messages.append({"role": "user", "content": guidance})
 
 
 def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
-    """Exact inverse of ``_attach_reference_guidance`` (the three attach shapes), so a
-    cache breakpoint never lands on the turn-varying guidance. Inputs are not mutated."""
+    """Exact inverse of ``_attach_reference_guidance`` (plain string, or its cache-decorated
+    single-text-part form), so a cache breakpoint never lands on the turn-varying guidance.
+    Inputs are not mutated."""
     if not guidance or not messages:
         return messages
     guidance_text = str(guidance)
@@ -912,21 +915,12 @@ def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> li
     if not isinstance(last, dict) or last.get("role") != "user":
         return messages
     content = last.get("content")
-    if content == guidance_text:  # shape (c): guidance was its own user message
+    if content == guidance_text:
         return list(messages[:-1])
-    suffix = "\n\n" + guidance_text
-    if isinstance(content, str) and content.endswith(suffix):  # shape (a): merged into a string turn
-        return [*messages[:-1], {**last, "content": content[: -len(suffix)]}]
-    if isinstance(content, list) and content:
-        last_part = content[-1]
-        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
-            text = last_part.get("text") or ""
-            if text in (suffix, guidance_text):
-                # Shape (b): guidance rode as its own trailing part. Guidance as the
-                # only content drops the whole message (mirrors shape c).
-                return list(messages[:-1]) if len(content) == 1 else [*messages[:-1], {**last, "content": list(content[:-1])}]
-            if text.endswith(suffix):
-                return [*messages[:-1], {**last, "content": [*content[:-1], {**last_part, "text": text[: -len(suffix)]}]}]
+    if isinstance(content, list) and len(content) == 1:
+        part = content[0]
+        if isinstance(part, dict) and part.get("type", "text") == "text" and (part.get("text") or "") == guidance_text:
+            return list(messages[:-1])
     return messages
 
 
@@ -1388,3 +1382,20 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         resolved_preset = "default"
     # ``agent`` lets the fan-out wait be aborted on a user interrupt.
     return MoAClient(resolved_preset, reference_callback=_moa_reference_relay, agent=agent)
+
+
+def bind_moa_runtime(agent, preset_name: Any, api_key: Any = None) -> None:
+    """Make ``agent`` act as the MoA preset: pin the virtual runtime fields and install the facade.
+
+    Every site that puts an agent onto ``provider: moa`` (init, ``/model`` switch, fallback
+    activation) must pin the same fields — the facade speaks only chat.completions, has no HTTP
+    endpoint and no OpenAI client kwargs — or the next dispatch/rebuild reaches a real wire with a
+    virtual identity (``moa://local`` 404, or the preset name sent as a model id).
+    """
+    agent.model = str(preset_name or "default")
+    agent.provider = agent.requested_provider = "moa"
+    agent.api_mode = "chat_completions"
+    agent.api_key = api_key or "moa-virtual-provider"
+    agent.base_url = "moa://local"
+    agent._client_kwargs = {}
+    agent.client = build_moa_facade(agent, agent.model)

@@ -312,8 +312,12 @@ export function HudShell() {
     const style = document.createElement('style')
     style.textContent = 'html,body,#root{background:transparent !important;}'
     document.head.appendChild(style)
+    document.documentElement.setAttribute('data-hud-window', '')
 
-    return () => style.remove()
+    return () => {
+      style.remove()
+      document.documentElement.removeAttribute('data-hud-window')
+    }
   }, [])
 
   return (

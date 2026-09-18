@@ -23,11 +23,10 @@ function asRecord(payload: unknown): Record<string, unknown> {
  * the newly focused chat. Exported so the event handler can tell which events
  * are pin-eligible when deciding whether an unpinned straggler is legitimate. */
 export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
-  'approval.request',
   'browser.progress',
   'clarify.request',
+  'connection.request',
   'error',
-  'mcp.setup.request',
   'message.complete',
   'message.delta',
   'message.interim',
@@ -40,8 +39,13 @@ export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'thinking.delta',
   'tool.complete',
   'tool.generating',
-  'tool.progress',
-  'tool.start'
+  'tool.start',
+  'vault.code.expire',
+  'vault.code.request',
+  'vault.save_login.expire',
+  'vault.save_login.request',
+  'vault.unlock.expire',
+  'vault.unlock.request'
 ])
 
 const UNSCOPED_STREAM_END_EVENT_TYPES = new Set(['error', 'message.complete'])

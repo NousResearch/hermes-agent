@@ -20,7 +20,7 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -28,6 +28,43 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _key_namespace(key: str) -> str:
+    """``agent:<profile>`` prefix of a session key (``build_session_key``'s first two slots)."""
+    return ":".join(key.split(":")[:2])
+
+
+def _tail_has_slot(tail: str, slot: str) -> bool:
+    """True when ``tail``'s FIRST slot is ``slot`` (``tail`` is ``""`` when the key ends at the
+    chat id). Mirrors ``build_session_key``'s ``key == prefix or key.startswith(prefix + ":")``
+    discipline, so an id that merely starts with another never matches."""
+    return tail == slot or tail.startswith(slot + ":")
+
+
+def _same_chat_key_slots(
+    key: str, *, namespace: str, platform: str, chat_id: str, scope_id: Optional[str],
+) -> Optional[Tuple[str, str]]:
+    """``(chat_type, tail)`` when ``key`` names the SAME chat, else None.
+
+    Key layout: ``agent:<profile>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
+    Only that fixed-shape head is split into slots (the namespace is always the first two); the chat
+    id and everything after it are matched as TEXT, because ids may themselves contain ``:`` (Matrix
+    ``!room:example.org``). ``scope_id`` is Slack's workspace slot — ``build_session_key`` emits it
+    there alone — and it may be absent from either side, since a key without it still names the same
+    chat; a key carrying a DIFFERENT known scope is another workspace's chat. ``tail`` is ``""`` when
+    the key ends at the chat id.
+    """
+    head = key.split(":", 3)
+    if len(head) < 4 or ":".join(head[:2]) != namespace or head[2] != platform:
+        return None
+    chat_type, _, rem = head[3].partition(":")
+    for prefix in ((f"{scope_id}:{chat_id}", chat_id) if scope_id else (chat_id,)):
+        if rem == prefix:
+            return chat_type, ""
+        if rem.startswith(prefix + ":"):
+            return chat_type, rem[len(prefix) + 1:]
+    return None
 
 
 class GatewayBusySessionMixin:
@@ -221,6 +258,40 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
+    @staticmethod
+    def _steer_active_subagents(running_agent: Any, text: str) -> int:
+        """Queue *text* into every live child of *running_agent*; returns how many accepted it.
+
+        A parent blocked inside ``delegate_task`` only drains its own steer queue after the tool
+        returns, i.e. after the child finishes — so a steer aimed at a looping child would sit
+        unread for the whole delegation (#112095, Telegram). Children are the parent's own
+        ``_active_children`` (identity-scoped, same snapshot ``interrupt()`` fans out to)."""
+        children = getattr(running_agent, "_active_children", None)
+        if not isinstance(children, (list, tuple, set)) or not children:
+            return 0
+        lock = getattr(running_agent, "_active_children_lock", None)
+        try:
+            with lock if lock is not None else contextlib.nullcontext():
+                snapshot = list(children)
+        except Exception:
+            return 0
+        accepted = 0
+        for child in snapshot:
+            steer = getattr(child, "steer", None)
+            if not callable(steer):
+                continue
+            try:
+                accepted += bool(steer(text))
+            except Exception as exc:
+                logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
+        return accepted
+
+    def _steer_running_agent(self, running_agent: Any, text: str) -> bool:
+        """``running_agent.steer(text)`` plus fan-out to its active subagents (see
+        :meth:`_steer_active_subagents`); True when the parent or any child queued it."""
+        accepted = bool(running_agent.steer(text))
+        return bool(self._steer_active_subagents(running_agent, text)) or accepted
+
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """True when a compression lock is held for this session's id (callers demote interrupt →
         queue, else a follow-up against the pre-rotation parent orphans compression siblings).
@@ -276,6 +347,7 @@ class GatewayBusySessionMixin:
     _SECURITY_METADATA_KEYS = (
         "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
         "gateway_session_id", "gateway_session_strict",
+        "notification_category",
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
@@ -535,6 +607,8 @@ class GatewayBusySessionMixin:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
+            if verb == "steer":
+                return self._steer_running_agent(running_agent, call_text)
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
@@ -615,7 +689,10 @@ class GatewayBusySessionMixin:
             except Exception:
                 pass
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if is_steer_mode and self._agent_has_active_subagents(running_agent):
+            head = "⏩ Steered into current run and its active subagent(s)"
+            tail = ". Your message arrives after their next tool call."
+        elif is_steer_mode:
             head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
         elif is_redirect_mode:
             head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
@@ -665,14 +742,19 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775.
-        if not self._is_user_authorized(event.source):
+        # See #17775. A primary transport can route a turn into a secondary
+        # profile, so authorize in the stamped transport scope.
+        if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
+        if not self._admit_bot_message_for_source(event.source):
+            return True
+        event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
@@ -753,7 +835,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "update", "version",
+        "commands", "profile", "login", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -934,14 +1016,15 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback("No active agent — /steer queued for the next turn.")
         try:
-            accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
+            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
             return "Steer rejected (empty payload)."
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+        target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
+        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
@@ -985,26 +1068,66 @@ class GatewayBusySessionMixin:
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys of OTHER participants in the same thread (per-user thread mode keys
-        are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's own
-        ``/stop``). Excludes the pending sentinel and ``own_key``; callers still gate on authz."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        thread_id = getattr(source, "thread_id", None)
-        chat_id = getattr(source, "chat_id", None)
-        if not thread_id or not chat_id:
+    def _same_chat_runs(self, source: SessionSource, own_key: str) -> list:
+        """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
+        the key text after the chat id, ``""`` when the key ends there).
+
+        The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
+        stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
+        drops the pending sentinel (a session still being set up has no agent). Callers gate on
+        authorization; ``own_key`` is excluded.
+        """
+        chat_id = str(getattr(source, "chat_id", None) or "")
+        if not chat_id:
             return []
+        namespace = _key_namespace(own_key)
         platform = source.platform.value
+        scope_id = getattr(source, "scope_id", None)
+        runs = []
+        for key in self._snapshot_running_agents():
+            if key == own_key:
+                continue
+            parsed = _same_chat_key_slots(
+                key, namespace=namespace, platform=platform, chat_id=chat_id, scope_id=scope_id,
+            )
+            if parsed is not None:
+                runs.append((key, parsed[0], parsed[1]))
+        return runs
+
+    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Running-agent keys of OTHER participants in the caller's own thread (per-user thread mode
+        keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's
+        own ``/stop``). Callers still gate on authz."""
+        thread_id = str(getattr(source, "thread_id", None) or "")
         chat_type = getattr(source, "chat_type", None) or ""
-        # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched.
-        prefix = ":".join(["agent:main", platform, chat_type, str(chat_id), str(thread_id)])
+        if not thread_id or not chat_type:
+            return []
         return [
             key
-            for key, agent in self._running_agent_items()
-            if key != own_key
-            and agent is not _AGENT_PENDING_SENTINEL and agent
-            and (key == prefix or key.startswith(prefix + ":"))
+            for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
+            if key_chat_type == chat_type and _tail_has_slot(tail, thread_id)
+        ]
+
+    def _chat_scoped_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Running-agent keys for ANY session of the same chat, regardless of the chat_type/thread/
+        participant slots. Two supported shapes make a /stop key miss a run in the same chat (found
+        via Slack's native stop button, gateway-gateway#286): a top-level channel turn keys
+        ``channel`` while an in-thread /stop normalizes to ``thread``, and rolling-DM configs key
+        without the thread slot the stop carries. "/stop" means "stop what's running in THIS chat",
+        so the handler falls back chat-wide on an exact + thread-sibling miss — which is also what
+        lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
+
+        A stop sent from INSIDE a thread only reaches runs whose own thread slot is that thread (or
+        that carry no thread slot at all — a top-level channel turn's relay-stamped slot is the
+        reply thread it belongs to, the rolling-DM shape is slotless). Anything else in the channel
+        is a different conversation: another reply thread, or a peer's top-level run. Callers gate
+        on authz.
+        """
+        thread_id = str(getattr(source, "thread_id", None) or "")
+        return [
+            key
+            for key, _key_chat_type, tail in self._same_chat_runs(source, own_key)
+            if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:

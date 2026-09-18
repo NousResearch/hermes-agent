@@ -250,7 +250,13 @@ def _coerce_seed_history(value: Any) -> list[dict]:
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
         if isinstance(content, str) and content.strip():
-            history.append({"role": item["role"], "content": content})
+            row = {"role": item["role"], "content": content}
+            # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
+            # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
+            # at turn time, so it is not accepted from the wire.
+            if item.get("display_kind") == "hidden":
+                row["display_kind"] = "hidden"
+            history.append(row)
     return history
 
 
@@ -258,9 +264,20 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(
+    session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    turn = {
+        "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
+        "user": _inflight_text(text),
+    }
+    if display_kind:
+        turn["display_kind"] = display_kind
+    if isinstance(display_metadata, dict):
+        turn["display_metadata"] = dict(display_metadata)
+    session["inflight_turn"] = turn
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -292,6 +309,9 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+    # A turn that never reached the agent (cancelled/refused before ready) leaves its submit-time row
+    # as the durable record of the send; a later turn must not adopt it as its own input.
+    session.pop("_submit_user_row", None)
 
 
 def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict] = None) -> None:
@@ -313,6 +333,9 @@ def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict]
         turn.pop("error_surface", None)
     turn.update(streaming=False, updated_at=now)
     session["inflight_turn"] = turn
+    # The turn is over (build failed, agent missing, prologue raised): the submit-time row stays as the
+    # durable record of the send, but a later turn must not adopt it as its own input.
+    session.pop("_submit_user_row", None)
 
 
 _TURN_FAILURE_DETAIL_LIMIT = 240

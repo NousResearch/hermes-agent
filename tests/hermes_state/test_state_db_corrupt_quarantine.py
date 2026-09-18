@@ -307,3 +307,26 @@ class TestVacuumAndMaintenanceRespectQuarantine:
             _clear_flag(db, flag_name)
             db._conn = real_conn
             db.close()
+
+    @pytest.mark.parametrize("flag_name,expected_exc", _QUARANTINE_FLAGS)
+    def test_rebuild_fts_refuses_when_quarantined(self, tmp_path, flag_name, expected_exc):
+        """rebuild_fts() is reachable outside _execute_write's own quarantine check — the gateway's
+        FTS-corruption transcript-retry path (gateway/session_transcript.py::_rebuild_fts_once)
+        calls it directly. Unlike optimize_fts ("merges existing segments"), rebuild_fts "discards
+        and recreates the index data entirely" — strictly more destructive — so it must refuse at
+        least as eagerly."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        real_conn = db._conn
+        try:
+            db.create_session(session_id="s1", source="cli", model="test")
+            db.append_message("s1", role="user", content="hello world")
+            recorder = _RecordingConn(real_conn)
+            db._conn = recorder
+            _force_flag(db, flag_name)
+            with pytest.raises(expected_exc):
+                db.rebuild_fts()
+            assert recorder.recorded == []
+        finally:
+            _clear_flag(db, flag_name)
+            db._conn = real_conn
+            db.close()

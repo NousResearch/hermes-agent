@@ -41,6 +41,8 @@ from typing import Optional
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
+# Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
+_RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
 _APPROVAL_CHOICE_LABELS = {
@@ -299,7 +301,7 @@ class CLITuiMixin:
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
@@ -634,6 +636,18 @@ class CLITuiMixin:
             hint = (
                 f"Current: {state.get('current_model', 'unknown')} "
                 f"on {state.get('current_provider', 'unknown')}")
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            result = state.get("switch_result")
+            picked = getattr(result, "new_model", "") or "model"
+            title = f"⚙ Model Picker — Reasoning effort for {picked}"
+            rc = self.reasoning_config
+            current = ("none" if isinstance(rc, dict) and rc.get("enabled") is False
+                       else (rc or {}).get("effort", "medium") if isinstance(rc, dict) else "medium")
+            choices = [f"{label}  ← current" if value == current else label
+                       for value, label in _picker_reasoning_rows()]
+            choices += ["← Back", "Cancel"]
+            hint = "Applies with the model switch (same scope) — Enter to choose"
         else:
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
@@ -688,6 +702,30 @@ class CLITuiMixin:
     def _get_sudo_display_fragments(self):
         if not self._sudo_state:
             return []
+        if code := self._sudo_state.get("vault_code"):
+            return self._render_sudo_style_panel(
+                f'🔐 Verification code for {code["site"]}',
+                [f'{code["site"]} is asking for a one-time code (text message, email or authenticator app).',
+                 'Type the code and press Enter; Hermes enters it into the page for you.',
+                 'Enter on an empty line skips. The model never sees the code.'])
+        if save := self._sudo_state.get("vault_save"):
+            if save["step"] == "identifier":
+                return self._render_sudo_style_panel(
+                    f'🔐 Save login for {save["site"]}',
+                    ['The agent reached a sign-in page with no saved login for this site.',
+                     'Type the email / username you sign in with (shown), then Enter.',
+                     'Enter on an empty line skips. Nothing here is shown to the model.'])
+            return self._render_sudo_style_panel(
+                f'🔐 Save login for {save["site"]}',
+                ['Now the password (hidden). It is encrypted on this machine, bound to',
+                 f'{save["origin"]}, and filled into the page without the model ever seeing it.',
+                 'Enter on an empty line skips.'])
+        if backend := self._sudo_state.get("vault_backend"):
+            return self._render_sudo_style_panel(
+                f'🔐 Unlock {backend}',
+                [f'The agent wants to sign into a site with a login saved in {backend}.',
+                 'Type your master password (hidden) to unlock it for this session.',
+                 'Enter on an empty line keeps it locked. The model never sees the password.'])
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 
@@ -713,6 +751,9 @@ class CLITuiMixin:
     def _tui_hint_text(self):
         for state_attr, deadline_attr, hint in self._TUI_MODAL_HINTS:
             if getattr(self, state_attr):
+                if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
+                                                    or self._sudo_state.get("vault_code")):
+                    hint = '  shown as you type · Enter to continue'
                 remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
                 return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
         if self._clarify_state:
@@ -743,6 +784,10 @@ class CLITuiMixin:
         if self._voice_processing:
             return "transcribing..."
         if self._sudo_state:
+            if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
+                return "type your email / username, Enter to continue · ESC to skip"
+            if self._sudo_state.get("vault_code"):
+                return "type the code, Enter to submit · ESC to skip"
             return "type password (hidden), Enter to submit · ESC to skip"
         if self._secret_state:
             return "type secret (hidden), Enter to submit · ESC to skip"
@@ -1133,6 +1178,9 @@ class CLITuiMixin:
             return
         if state.get("stage") == "provider":
             max_idx = len(state.get("providers") or [])
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
         else:
             # +1 for "← Back" and Cancel over the filtered visible rows.
             _fp = state.get("_filtered_pairs")
@@ -1153,10 +1201,14 @@ class CLITuiMixin:
         st["_scroll_offset"] = 0
 
     def _tui_model_picker_escape(self, event):
-        """ESC clears an active filter first, else closes the picker."""
+        """ESC clears an active filter first, else steps back from the effort stage, else closes."""
         st = self._model_picker_state
         if st and st.get("stage") == "model" and (st.get("filter") or ""):
             self._tui_set_filter(st, "")
+            event.app.invalidate()
+            return
+        if st and st.get("stage") == "reasoning":
+            st.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
             event.app.invalidate()
             return
         self._close_model_picker()
@@ -1319,6 +1371,8 @@ class CLITuiMixin:
             return
         buf = event.app.current_buffer
         raw_text = buf.text
+        # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
+        # whether the Enter was typed or arrived inside a paste.
         if (
             self._tui_multiline_shortcuts
             and buf.cursor_position == len(raw_text)
@@ -1327,6 +1381,13 @@ class CLITuiMixin:
             buf.text = continued
             buf.cursor_position = len(continued)
             event.app.invalidate()
+            return
+        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
+        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
+        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
+        # Enter is a line break inside one message, not a submit (#10994).
+        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
+            buf.insert_text("\n")
             return
         text = raw_text.strip()
         has_images = bool(self._attached_images)
@@ -1645,6 +1706,7 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
+        self._tui_last_text_change = time.monotonic()
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
@@ -1756,8 +1818,9 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
+        from utils import file_signature
         _cfg_path = _get_config_path()
-        self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
+        self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
@@ -2148,7 +2211,10 @@ class CLITuiMixin:
         # Mask input with '*' while a sudo/secret prompt is active.
         input_area.control.input_processors.append(ConditionalProcessor(
             PasswordProcessor(),
-            filter=Condition(lambda: bool(cli_ref._sudo_state) or bool(cli_ref._secret_state))))
+            filter=Condition(lambda: (bool(cli_ref._sudo_state)
+                                      and (cli_ref._sudo_state.get("vault_save") or {}).get("step") != "identifier"
+                                      and not cli_ref._sudo_state.get("vault_code"))
+                             or bool(cli_ref._secret_state))))
 
         class _PlaceholderProcessor(Processor):
             """Render grayed-out placeholder text inside the input when empty."""

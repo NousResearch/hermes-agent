@@ -45,6 +45,7 @@ function installWindowsSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.pl
         if (certificate.validToDate.getTime() <= now || seen.has(certificate.fingerprint256)) {
           return false
         }
+
         seen.add(certificate.fingerprint256)
       } catch {
         // Leave PEM acceptability to Node if its X.509 parser cannot inspect it.

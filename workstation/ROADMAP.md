@@ -76,11 +76,20 @@ already performs its principal inventory in one `webContents.executeJavaScript`
 round trip.
 
 
-## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — ACTIVE
+## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED / CONTRACT VERIFIED; NATIVE GATE OPEN
+
+Implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6` closes the
+operation-scoped policy, canonical effects/routes, bounded adaptive discovery,
+compact handoff/resume and verified reuse contracts below. Final Python gate:
+570 passed / 2 skipped (complete Workstation plus adjacent executor/guardrails).
+Work100: 30 PASS / 0 FAIL / 0 gaps; Desktop owner contracts: 36 passed.
+KI-011 is resolved at the contract layer. Remaining qualification is authenticated
+native/packaged Electron browser smoke; executable/build artifacts were absent.
+Simulated provider-call reductions do not establish paid-provider savings.
 
 Real native-browser dogfood exposed an architectural overreach in the durable
-compiler boundary: the mechanism introduced to keep repetitive mechanical work
-out of the LLM loop can currently turn a repeatability hint into a broad mutation
+compiler boundary: the baseline mechanism introduced to keep repetitive mechanical work
+out of the LLM loop could turn a repeatability hint into a broad mutation
 gate and block legitimate stateful/adaptive work before a deterministic procedure
 has been discovered.
 
@@ -104,7 +113,7 @@ novel/drifted work
   -> adapt only the unresolved segment
 ~~~
 
-Immediate implementation order:
+Implemented sequence (retained as the acceptance checklist):
 
 1. replace the session/turn-wide _work_batch_candidate latch with an
    operation-scoped compilation candidate / policy decision;
@@ -121,7 +130,7 @@ Immediate implementation order:
 8. add regressions proving both sides: native-browser adaptive progress works and
    homogeneous fan-out still cannot bypass TaskCompiler/canary.
 
-**Sequencing:** this is the active correction before further feature expansion.
+**Sequencing:** contract implementation is complete; retain the native qualification gate before claiming product-level closure.
 Do not weaken fan-out safety to fix usability, and do not require determinism as a
 precondition for discovering a safe deterministic path.
 

@@ -4,8 +4,10 @@
 
 O Task Compiler classifica planos estruturados e `work_execute`, capability de
 sessão em `desktop_ui`, conecta o agente ao DurableBatchRunner existente. Pedidos
-repetitivos quantificados exigem compilação antes de mutações avulsas; uma segunda
-tentativa sem plano resulta em halt. O modelo decide uma vez; o runtime processa
+repetitivos quantificados geram uma sugestão de otimização. Desde 2026-09-18, a
+terceira mutação distinta da mesma operação exige compilação; o sinal textual não
+bloqueia interações adaptativas independentes. Guardrails gerais continuam limitando
+repetição sem progresso. O modelo decide uma vez; o runtime processa
 WorkItems, valida, persiste checkpoints/evidências e retorna somente refs, ledger
 e exceções limitadas. Um teste de conversa com provider fake prova 100 operações
 com duas chamadas ao provider, sem LLM entre itens.
@@ -49,7 +51,7 @@ ADAPTIVE/DISCOVERY
 ~~~
 
 ALLOW_ADAPTIVE | SUGGEST_COMPILE | REQUIRE_COMPILE | REQUIRE_HUMAN substitui
-conceitualmente o latch binário. REQUIRE_COMPILE continua obrigatório para
+o latch binário na implementação 365794e29d. REQUIRE_COMPILE continua obrigatório para
 fan-out mutável homogêneo, mas deve pertencer a uma assinatura/operação concreta
 e não contaminar toda a sessão.
 
@@ -64,11 +66,23 @@ tools.effects é a taxonomia canônica; browser_console permanece potencialmente
 mutante. Tools do Workstation Browser devem normalizar para a rota native_browser
 antes de comparar constraints.
 
-O aprendizado deve capturar a experiência adaptativa no
-ExecutionJournal/ArtifactStore, gerar candidatos no RecipeStore/ProceduralMemory,
-validar/replay, promover via RoutinePromotionService e voltar ao Hermes apenas
+O aprendizado captura a experiência adaptativa durante dispatch no
+ExecutionJournal/ArtifactStore e, após acceptance canônica, gera candidatos no
+RecipeStore/ProceduralMemory. O ciclo preserva validação/replay e promoção via
+RoutinePromotionService, voltando ao Hermes apenas
 quando houver novidade/drift. O runtime deve auto-reusar receitas/rotinas
-verificadas quando scope/preconditions/fingerprint coincidirem.
+verificadas quando scope/preconditions/fingerprint coincidirem. A rotina promovida
+com condições semânticas estruturadas é convertida em WorkPlan/WorkItems existentes;
+formatos não suportados voltam à adaptação. Refs transitórios são readquiridos no
+inventário nativo; texto da página não é tratado como inventário de elementos.
+
+Evidência de contrato: gate final Workstation + executor/guardrails **570 passed,
+2 skipped in 346.25s**; Work100 **30 PASS / 0 FAIL / 0 gaps**; Desktop **36 passed**.
+Curva simulada **3 -> 0** chamadas ao provider no replay promovido; drift retoma só
+o trecho não confirmado. Native snapshot é E1 e não prova persistência externa E2.
+KI-011 está resolvido no contrato; smoke autenticado nativo/packaged está pendente
+por ausência de electron.exe e bundle main. Nenhuma economia com provider pago
+ou validação nativa é inferida desses testes.
 
 Nova métrica de harness: Guardrail Obstruction Rate — proporção de tarefas com um
 caminho seguro/autorizado que foram impedidas pela política do harness. O alvo é
@@ -2374,11 +2388,12 @@ observando a sessão. A inclusão do toolset continua sendo resolvida pela orige
 da sessão no Gateway, como os demais recursos de Desktop.
 
 No loop de conversa, `batch_intent()` reconhece pedidos repetitivos
-quantificados e `requires_compilation()` bloqueia mutações isoladas que seriam
-parte daquele lote. O primeiro bloqueio devolve um resultado compacto
-`durable_compile_required`: nenhuma ferramenta subjacente executa. Uma segunda
-tentativa sem plano produz `durable_compile_failed` e aciona o halt do
-guardrail. Isso é uma defesa de custo e de segurança: não deixe o modelo
+quantificados como hint. A política de operação permite exploração limitada,
+sugere compilação na segunda mutação distinta equivalente e exige compilação
+na terceira. Não contamina operações independentes. O bloqueio devolve um resultado compacto
+`durable_compile_required`: a mutação recusada não executa; reads e chamadas
+independentes continuam disponíveis. Repetições sem progresso permanecem sob os
+guardrails existentes. Isso é uma defesa de custo e de segurança: não deixe o modelo
 alternar “planejar um item, mutar um item” cem vezes e chamar isso de batch.
 
 O plano enviado a `work_execute` usa `operation_key`, `items` **ou**

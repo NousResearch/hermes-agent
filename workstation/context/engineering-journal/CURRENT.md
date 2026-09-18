@@ -1,6 +1,5 @@
 # CURRENT — Workstation Engineering Journal
 
-
 ## H-065 — Upstream reliability hardening code-to-PR gap audit (2026-09-18)
 
 **Classification:** VALIDATED for the code-level gap map; P0.0 Browser keepalive
@@ -121,6 +120,162 @@ P1 #115056 snapshot quality benchmark
 
 Canonical implementation plan:
 `../UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
+
+## AEPC-E001 — Adaptive execution and progressive compilation (2026-09-18)
+
+Baseline audited after fetch: main/origin/main
+`c04906aacee568bb6480287717c76afd230cf4a7`; tracked checkout initially clean.
+Implementation commit: `365794e29d66cd63a6134c5c67ecc1ef603d70a6`.
+The original native reproduction and hypothesis later in this journal are retained.
+
+**Hypothesis confirmed:** repeatability prose was promoted to a turn-wide mutation
+latch, although existing structural signatures already identify repeated operations.
+Guardrail effect lists disagreed with tools.effects about browser_console, and
+native route comparison mixed tool names with route names. Read-only controller
+health did not establish that compiler admission was correctly scoped.
+
+**Changes:** replaced admission authority with CompilationDecision and transient
+operation-scoped CompilationCandidates; retained the repeatability hint for learning.
+Third distinct equivalent writes still require TaskCompiler. The dispatcher rechecks
+middleware-final arguments and records mutable uncertainty before I/O in the
+existing ordered start section. Restart reads that ArtifactStore record. Canonical
+TaskRun checks and BrowserControlLeaseManager remain mutation authorities.
+Guardrail classification now consumes tools.effects; unknown effects and console
+remain MUTATION. Explicit native tool/runtime mapping normalizes constraints.
+
+Tool-owner registry contracts govern PREPARE/INTERACT/COMMIT/VERIFY, not planner
+labels. Semantic snapshot evidence is E1, never persisted readback. External commit
+needs persisted proof; the strict legacy graph cannot label native snapshot as E2.
+Adaptive traces are bounded/sanitized artifact and journal references captured
+during execution. Verified canonical acceptance seeds candidates in existing
+ProceduralMemory; validation/promotion remains explicit. Revisions preserve prior
+procedure content. RecipeStore automatically captures/locates exact verified
+graphs. Promoted compatible native routines with structured semantic conditions
+lower into existing WorkItem checkpoints and reacquire live click/type anchors.
+
+NEEDS_REASONING includes compact state_ref, completed_until and safe_to_resume.
+Seven confirmed read steps remain committed when step eight drifts; diagnosed
+resume executes only eight. Lost mutable ACK leaves safe_to_resume false and
+does not dispatch again. Routine resume checks procedure/version/content identity
+and requires revalidation after drift. No task, scheduler, memory, evidence,
+recipe, browser or approval database was duplicated.
+
+**Changed-file inventory:**
+
+- Agent/tool integration: agent/conversation_loop.py, agent/tool_executor.py,
+  agent/tool_guardrails.py, agent/turn_finalizer.py, run_agent.py,
+  tools/browser_workstation.py, tools/workstation_work.py.
+- Workstation owners/projections: workstation/batch_detection.py,
+  workstation/browser_transaction.py, workstation/contracts.py,
+  workstation/durable_tasks.py, workstation/evaluation.py,
+  workstation/execution_policy.py, workstation/kanban.py, workstation/memory.py,
+  workstation/procedure_trace.py, workstation/reasoning_handoff.py,
+  workstation/recipes.py, workstation/routines.py, workstation/routing.py,
+  workstation/task_compiler.py, workstation/work_contract.py,
+  workstation/work_intent.py.
+- Tests: workstation/tests/test_execution_policy.py,
+  workstation/tests/test_progressive_compilation.py,
+  workstation/tests/test_browser_workstation_route.py,
+  workstation/tests/test_durable_agent_integration.py,
+  workstation/tests/test_durable_hardening.py,
+  workstation/tests/test_readonly_preflight.py.
+- Reconciled documents: workstation/context/ADAPTIVE_EXECUTION_COMPILATION.md,
+  workstation/ROADMAP.md, workstation/context/CURRENT_STATE.md,
+  workstation/context/KNOWN_ISSUES.md, workstation/context/TESTING.md,
+  workstation/context/HERMES_WORKSTATION_INTELLIGENCE.md and this journal.
+
+**Intermediate evidence and failures (not erased):**
+
+- Initial execution-policy pytest had 5 setup errors with WinError 5 before useful
+  execution. Native Python + external basetemp / no cacheprovider resolved this
+  environment problem; no product permission workaround was added.
+- TDD policy stage: 5 failed in 0.32s (missing policy/route behavior); then
+  5 passed in 0.19s. Early reasoning/progressive stage: 2 failed in 1.82s;
+  initial compatible implementation/routine check: 4 passed in 0.64s.
+- First broad focused gate: 4 failed / 99 passed in 97.64s. Four fixtures still
+  treated the obsolete global latch as authority. Replaced their premises with
+  concrete two-operation mutation history; independent discovery/delegation
+  remains allowed. Did not reintroduce the global gate to satisfy those tests.
+- Semantic transaction tests first lacked actual-url preflight, then exposed
+  E1 evidence being discarded when merging dispatch/verifier records. Corrected
+  the fixture URL and canonical record preference. One browser assertion tried
+  to parse the untrusted-result wrapper as JSON; corrected the assertion to inspect
+  raw controller output and preserved the security wrapper.
+- Learning test initially produced no candidate because its verifier lacked a
+  linked evidence_ref. Linked the artifact rather than weakening acceptance;
+  7 progressive tests passed in 3.83s afterward.
+- Review exposed final-argument admission and native-snapshot proof-strength gaps.
+  Added regressions before final qualification, retained threshold three, moved
+  pre-dispatch counting inside existing serialization, and recorded E1 honestly.
+- Work100 initially reported 28 PASS / 2 FAIL: Vitest failed before tests on an
+  incomplete node_modules tree. Missing native binding, then caniuse-lite, were
+  restored at exact installed/lockfile versions. No manifest/lockfile changed.
+  A first Copy-Item encountered an existing directory; copying package contents
+  completed restoration. Canonical Work100 subsequently passed twice.
+- Earlier PYTEST_ADDOPTS Windows backslashes were consumed by its argument parser.
+  Final command uses forward slashes. Removed only the two generated temporary
+  checkout directories after resolved-path containment checks; pre-existing
+  inaccessible workstation/.pytest-tmp-consolidation was preserved.
+
+**Executed qualification, exact results:**
+
+Focused gate:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q workstation/tests/test_execution_policy.py workstation/tests/test_progressive_compilation.py workstation/tests/test_task_compiler.py workstation/tests/test_readonly_preflight.py workstation/tests/test_durable_agent_integration.py workstation/tests/test_durable_hardening.py workstation/tests/test_browser_workstation_route.py workstation/tests/test_routines.py -p no:cacheprovider --basetemp C:\Users\KEVYNL~1\AppData\Local\Temp\hermes-aepc-final-focused-18
+```
+
+Result: **113 passed in 185.06s**, exit 0. This precedes the additional final
+snapshot-strength regression and serialization refinement. Policy/progressive/
+compiler after the strength change: **39 passed in 64.41s**, exit 0.
+Earlier full Workstation gates: **488 passed / 2 skipped in 458.17s**, then
+**490 passed / 2 skipped in 480.32s**. Adjacent core alone: **79 passed in 14.02s**.
+
+Final frozen-code gate, including all those paths:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q workstation/tests tests/agent/test_tool_guardrails.py tests/agent/test_stall_guards.py tests/agent/test_tool_dispatch_helpers.py tests/agent/test_tool_executor_checkpoint_paths.py tests/run_agent/test_tool_executor_contextvar_propagation.py -p no:cacheprovider --basetemp C:/Users/KEVYNL~1/AppData/Local/Temp/hermes-aepc-locked-final-21
+```
+
+Result: **570 passed, 2 skipped in 346.25s**, exit 0; all Workstation tests plus
+79 adjacent core tests. The two pre-existing Workstation skips remain.
+
+```powershell
+$env:PYTEST_ADDOPTS='-p no:cacheprovider --basetemp C:/Users/KEVYNL~1/AppData/Local/Temp/hermes-aepc-locked-work100-22'
+.venv\Scripts\python.exe -m workstation.work100 --run
+```
+
+Result: **30 PASS / 0 FAIL / 0 COVERAGE_GAP / 0 NOT_RUN_ENVIRONMENT**, exit 0.
+Desktop direct gate (cwd apps/desktop):
+
+```powershell
+node C:/Github/hermes-agent/node_modules/vitest/vitest.mjs run --project electron electron/workstation-browser-task.test.ts electron/session-windows.test.ts
+```
+
+Result: **2 files / 36 tests passed**, exit 0 (401ms reported duration).
+git diff --check and git diff --cached --check: exit 0 before implementation commit.
+Documentation reconciliation occurred after qualification.
+
+**Final classification:** KI-011 RESOLVED AT CONTRACT LAYER. Provider-free
+authenticated HTTP-controller loop retains one BrowserTask/card/run and does not
+enter a compiler/preflight refusal loop. New regressions cover the opposite
+boundary too: third homogeneous mutation, owner-only transaction contracts,
+console mutation, persistent uncertainty, exact scope selection, E1 versus E2,
+compact drift and no confirmed-effect replay. Final qualification has no failing
+test. Prior environment failures are classified above, not reported as green.
+
+**Metrics / limitations:** simulated first discovery uses 3 provider calls versus
+0 during promoted replay. The efficiency fixture independently exercises 8 -> 0,
+estimated savings 8 in fixture units, and obstruction rate 0 for one explicitly
+safe/authorized eligible task. Unknown denominators/measurements remain null.
+No paid-provider token/cost savings were measured. Automatic routine lowering is
+restricted to supported semantic native actions and structured condition contracts;
+other formats require adaptation. No model similarity match grants execution.
+Neither local electron.exe nor apps/desktop/dist-electron/main.js existed.
+Native authenticated Chromium/packaged Desktop smoke is NOT RUN / environment
+blocked; Vitest Electron mocks and loopback controller tests do not satisfy that
+product gate. No real external application was mutated in qualification.
+>>>>>>> ba85f322b3 (docs(workstation): record progressive compilation evidence and native boundary)
 
 ## H-064 — Canonical Work Loop (2026-09-17)
 

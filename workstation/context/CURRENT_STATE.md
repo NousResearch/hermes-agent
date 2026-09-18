@@ -5,9 +5,9 @@ Snapshot date: 2026-09-18.
 The 2026-09-15 hardening snapshot below remains valid as implementation and test
 history, but a 2026-09-17 forensic audit of current `main`, persisted Workstation
 state and historical behavioral traces found a stronger cross-domain reliability
-boundary that was not exercised by the existing green suites. The active next correction is therefore
+boundary that was not exercised by the existing green suites. The subsequent correction is
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md),
-which refines the already-implemented reliability gate before further feature expansion.
+which now has implementation/contract evidence and retains a native qualification gate.
 
 This file describes **observed implementation state**, not target architecture.
 When it disagrees with code on current `main`, inspect the code and update this
@@ -15,17 +15,17 @@ file. “Implemented”, “contract layer validated” and “tests green” do
 a product-level causal invariant has been proven across Task -> Run -> operation ->
 evidence -> canonical commit -> projection.
 
-## 2026-09-18 native-browser compiler obstruction — active correction
+## 2026-09-18 native-browser compiler obstruction — implemented contract; native gate open
 
 The Canonical Execution Reliability Gate remains implemented history, but real
-native-browser dogfood exposed a new execution-policy regression: the durable
-compiler can prevent safe stateful work from progressing when a repeatability
-signal is treated as a broad mutation latch.
+native-browser dogfood exposed an execution-policy regression: the baseline
+durable compiler prevented safe stateful progress when a repeatability signal
+was treated as a broad mutation latch.
 
 Current target architecture is defined in
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
-The active work is to replace the binary/session-wide gate with operation-scoped
-progressive compilation:
+Implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6` replaces the
+binary/session-wide gate with operation-scoped progressive compilation:
 
 ADAPTIVE -> COMPILED SEGMENT -> COMPILED WORK -> PROMOTED ROUTINE, with compact
 NEEDS_REASONING escalation on drift.
@@ -33,6 +33,20 @@ NEEDS_REASONING escalation on drift.
 All prior safety invariants remain required. This is a correction to admission
 and learning, not a rollback of durable execution.
 
+Verified recipe selection is automatic by exact compatibility; promoted routines
+with structured semantic conditions lower into existing WorkItem checkpoints.
+Adaptive observations enter the existing artifact/journal owners during dispatch;
+canonical acceptance can seed a versioned candidate, not automatic promotion.
+Unknown effects remain mutating, native snapshot is E1 rather than persisted
+readback, and outstanding mutable dispatch cannot blind-resume.
+
+Final gate: 570 passed / 2 skipped in 346.25s across all Workstation tests and 79
+adjacent executor/guardrail tests. Work100: 30 PASS / 0 FAIL / 0 gaps. Desktop
+owner contracts: 36 passed. Focused gate: 113 passed before the final additional
+snapshot-strength regression (included in the full gate). No TS product source
+changed. Native Electron executable and built main bundle were absent, so no
+authenticated native/packaged browser smoke or paid-provider savings is claimed.
+See TESTING.md and the current engineering journal for commands and failure history.
 
 ## 2026-09-18 upstream reliability hardening — confirmed parallel P0 lane
 

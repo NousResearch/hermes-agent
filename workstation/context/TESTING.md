@@ -4,7 +4,7 @@ A Workstation change is stable only when its **behavioral contract** is proven a
 
 ## Adaptive execution / progressive compilation regression gate
 
-The active 2026-09-18 correction is specified in
+The implemented 2026-09-18 correction is specified in
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
 
 Focused tests must prove both usability and safety:
@@ -31,7 +31,6 @@ test_readonly_preflight.py, test_durable_agent_integration.py,
 test_durable_hardening.py, test_browser_workstation_route.py,
 test_routines.py and canonical-work-loop coverage before adding broader
 product gates.
-
 
 ## Upstream reliability hardening regression gate
 
@@ -103,6 +102,63 @@ After the affected focused tests pass, run the relevant Workstation Python suite
 Desktop UI/platform suites and typecheck. Native/E2E reruns are mandatory when
 the product/runtime/probe paths exercised by H004/H013 change; documentation-only
 heads may use the existing carry-forward rule only when Git proves equivalence.
+
+### Observed evidence — implementation 365794e29d
+
+Baseline: c04906aacee568bb6480287717c76afd230cf4a7. Native Windows Python,
+provider-free fixtures and isolated HERMES_HOME; no live external mutation.
+
+- Focused compiler/preflight/hardening/browser/routine/policy/progressive gate:
+  **113 passed in 185.06s**. This precedes the final snapshot-strength regression
+  and ordered-start refinement; both are covered in the final gate below.
+- New policy/progressive + compiler gate after evidence-strength correction:
+  **39 passed in 64.41s**.
+- Final full Workstation and adjacent core gate:
+  **570 passed, 2 skipped in 346.25s**, exit 0. The two existing Workstation
+  skips remain; adjacent core contributes 79 passing tests.
+- Canonical Work100: **30 PASS, 0 FAIL, 0 COVERAGE_GAP,
+  0 NOT_RUN_ENVIRONMENT**, exit 0. This catalog result is separate from test counts.
+- Desktop owner contracts: **2 files / 36 tests passed**, exit 0.
+- git diff --check and git diff --cached --check: exit 0.
+
+Final full gate (repository root):
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q workstation/tests tests/agent/test_tool_guardrails.py tests/agent/test_stall_guards.py tests/agent/test_tool_dispatch_helpers.py tests/agent/test_tool_executor_checkpoint_paths.py tests/run_agent/test_tool_executor_contextvar_propagation.py -p no:cacheprovider --basetemp C:/Users/KEVYNL~1/AppData/Local/Temp/hermes-aepc-locked-final-21
+```
+
+Canonical gate (repository root; forward slashes keep PYTEST_ADDOPTS paths intact):
+
+```powershell
+$env:PYTEST_ADDOPTS='-p no:cacheprovider --basetemp C:/Users/KEVYNL~1/AppData/Local/Temp/hermes-aepc-locked-work100-22'
+.venv\Scripts\python.exe -m workstation.work100 --run
+```
+
+Desktop contracts (cwd apps/desktop):
+
+```powershell
+node C:/Github/hermes-agent/node_modules/vitest/vitest.mjs run --project electron electron/workstation-browser-task.test.ts electron/session-windows.test.ts
+```
+
+Initial pytest setup WinError 5 was environmental and resolved by native execution
+with external basetemp/no cacheprovider. Initial Work100 had 28 PASS / 2 FAIL
+because Vitest could not start: missing Rolldown Windows binding and caniuse-lite.
+Restored only @rolldown/binding-win32-x64-msvc@1.2.1 and
+caniuse-lite@1.0.30001810 in ignored node_modules, matching installed metadata /
+lockfile. No manifest/lockfile or product TS changes. The subsequent Work100 is
+green. These contracts use Electron mocks; electron.exe and dist-electron/main.js
+were absent. Native authenticated/packaged smoke remains NOT RUN / environment
+blocked, not passed. Paid-provider token/cost savings remain unmeasured.
+
+New regressions live in test_execution_policy.py, test_progressive_compilation.py
+and the authenticated-controller loop in test_browser_workstation_route.py.
+They cover scoped third-operation admission, final middleware arguments,
+uncertainty across restart, exact automatic recipe/routine reuse, semantic anchor
+reacquisition, owner-declared phases, E1/E2 distinction, seven confirmed steps
+before drift, compact handoff and no lost-ACK replay. Simulated discovery uses
+3 provider calls versus 0 on promoted replay. Efficiency fixtures additionally
+exercise 8 -> 0 and null denominators; neither result measures paid-provider cost.
+>>>>>>> ba85f322b3 (docs(workstation): record progressive compilation evidence and native boundary)
 
 ## Validation ladder
 

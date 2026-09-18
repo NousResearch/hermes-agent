@@ -2,13 +2,84 @@
 
 Date established: 2026-09-18
 
-Status: **ACTIVE ARCHITECTURAL CORRECTION — implementation required**
+Status: **IMPLEMENTED / CONTRACT VERIFIED — native product validation pending**
 
 This document refines the durable-execution boundary after real native-browser
-dogfood showed that the current compiler guard can prevent legitimate work.
+dogfood showed that the baseline compiler guard could prevent legitimate work.
 It does **not** revoke the Canonical Execution Reliability Gate, canary admission,
 uncertain-mutation handling, TaskRun fencing, acceptance, circuit breaking or
 canonical evidence requirements.
+
+## Implemented boundary — 2026-09-18
+
+Baseline/main audited: `c04906aacee568bb6480287717c76afd230cf4a7`.
+Implementation: `365794e29d66cd63a6134c5c67ecc1ef603d70a6`.
+The original reproduction below remains historical evidence.
+
+`execution_policy.py` projects CompilationCandidates from the existing mutation
+ledger. ExecutionMode names ADAPTIVE, COMPILED, ROUTINE and HUMAN;
+CompilationDecision distinguishes ALLOW_ADAPTIVE, SUGGEST_COMPILE,
+REQUIRE_COMPILE and REQUIRE_HUMAN. Repeatability prose is only
+`_work_repeatability_hint`. First and second distinct equivalent mutations permit
+bounded adaptive execution; the second suggests compilation, and the third
+requires it. Signatures include owner target family, operation selectors and
+declared routes. An unrelated action is evaluated independently. Exact duplicates
+remain under ordinary guardrails; uncertainty overrides adaptive permission.
+
+The central dispatcher rechecks final middleware arguments and records mutable
+dispatch in ArtifactStore before I/O, inside the existing ordered start section.
+Restart can recover uncertainty without a new database. Canonical run checks,
+BrowserTask lease generations, approvals and session tool scope remain authority.
+Guardrail effects come from tools.effects, including registry declarations;
+unknown effects and browser_console remain MUTATION. Legacy guardrail effect-list
+configuration slots are retained but no longer override the canonical taxonomy.
+
+Known native tool constraints normalize to native_browser. This is an explicit
+tool/runtime mapping, not a browser-prefix admission exemption. Recognized
+browser_transaction phases require tool-owner registry metadata for an exact
+operation, semantic anchors, bounded read-only preflight and effect-boundary
+verifiers. A planner cannot grant itself INTERACT/COMMIT authority. No blanket
+transaction contract was granted to native actions or arbitrary JavaScript.
+
+EvidenceStrength distinguishes E0 ACK, E1 same-session semantic observation,
+E2 persisted semantic readback and E3 independent persisted readback. Native
+snapshot is E1 and is never recorded as persisted proof. Recognized external
+COMMIT requires E2 or stronger; explicit external work cannot substitute a native
+snapshot for persisted readback. HTTP status or action ACK alone is insufficient.
+
+Adaptive dispatch captures bounded sanitized traces and raw-result references
+through ArtifactStore/ExecutionJournal during execution. Only semantic,
+reacquirable actions enter a candidate after canonical acceptance. Transient refs,
+tab/WebContents IDs and credentials do not enter durable procedure arguments;
+typed text is parameterized. Trace truncation prevents learning an incomplete
+procedure. ProceduralMemory owns versioned candidates; existing promotion still
+requires validation. Changed or already-promoted procedures create revisions.
+
+TaskCompiler captures verified graphs in RecipeStore without requiring recipe_key
+and selects exact compatible fingerprint/scope/target/preflight matches.
+Promoted native routines with structured semantic pre/postconditions can be
+selected by operation_fingerprint + recipe_scope, then lowered into existing
+WorkPlan/WorkItem checkpoints. Click/type anchors are reacquired from the live
+native snapshot inventory; untrusted page text is excluded. Unsupported routine
+formats need adaptive reasoning; similarity never grants replay authority.
+
+Compiler drift returns NEEDS_REASONING with completed_until, expected, observed,
+state_ref and safe_to_resume. Expected/observed details stay in artifacts. Resume
+checks the owning session, retains confirmed steps and resets only a diagnosed
+unexpected-state item. Outstanding mutable dispatch, stale authority or systemic
+failure is not safe to resume. Routine drift exposes the same compact handoff;
+its procedure/version/content fingerprint must remain compatible after diagnosis.
+
+Validation on this implementation: final Workstation + adjacent core gate
+**570 passed, 2 skipped in 346.25s**; Work100 **30 PASS / 0 FAIL / 0 gaps**;
+Desktop owner contracts **36 passed**. Provider-free learning demonstrates
+simulated calls **3 -> 0** on promoted replay, and only the unresolved segment
+after drift. Efficiency calculations retain null for unknown observations and
+denominators, including Guardrail Obstruction Rate. These are contract/simulated
+results, not paid-provider savings or native Electron product proof. Electron
+executable and built main bundle were absent; packaged/native authenticated smoke
+remains open. Full commands, intermediate failures and limits are in
+[the journal](engineering-journal/CURRENT.md) and [TESTING.md](TESTING.md).
 
 ## Executive principle
 

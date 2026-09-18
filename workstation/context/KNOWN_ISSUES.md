@@ -1,7 +1,24 @@
 # Workstation Known Issues
 
 
-## KI-011 — Durable compiler can obstruct stateful native-browser work [OPEN — 2026-09-18]
+## KI-011 — Durable compiler can obstruct stateful native-browser work [RESOLVED AT CONTRACT LAYER — NATIVE VALIDATION PENDING — 2026-09-18]
+
+**Resolution:** implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6`
+replaces the global mutation latch with operation-scoped admission, canonical
+effect classification and native route normalization. The authenticated loopback
+controller regression completes navigate -> snapshot -> type -> press -> snapshot
+under one BrowserTask/card/run despite repeatability hints. Homogeneous third
+mutations still require compilation. Compact reasoning handoff, checkpoint resume,
+semantic E1 evidence and lost-ACK safety have regressions.
+
+**Evidence:** focused gate 113 passed; final Workstation + adjacent core gate
+570 passed / 2 skipped; Work100 30 PASS / 0 FAIL; Desktop contracts 36 passed.
+The earlier focused count predates the additional snapshot-strength regression,
+which is included in the final full gate. These are provider-free/controller
+contracts. Electron executable and built main bundle are missing locally;
+authenticated native/packaged browser smoke is still required before declaring
+the original product symptom fully validated. Original reproduction is retained
+below; its contributor list describes baseline `c04906aacee568bb6480287717c76afd230cf4a7`.
 
 **Observed:** on an authenticated internal Electron Chromium session,
 browser_navigate, browser_snapshot and browser_extract_items succeeded, while
@@ -10,7 +27,7 @@ Attempting to express the work as durable execution then exposed
 PREFLIGHT_REQUIRED/verifier requirements unsuitable for the unknown stateful UI
 step, plus a native_browser route-constraint namespace mismatch in one path.
 
-**Confirmed architectural contributors on current code:**
+**Confirmed architectural contributors at the audited baseline (historical):**
 
 - prepare_turn_work() stores a broad _work_batch_candidate boolean;
 - requires_compilation() can use that boolean to reject any later non-read /

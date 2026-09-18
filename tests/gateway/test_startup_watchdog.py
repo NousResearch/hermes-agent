@@ -2,8 +2,7 @@
 
 The watchdog covers the pre-event-loop window: armed at process entry
 (before the gateway package imports — the implementation is the stdlib-only
-top-level module ``hermes_startup_watchdog``; ``gateway.startup_watchdog``
-is a re-export shim), disarmed once the gateway's asyncio loop is confirmed
+top-level module ``hermes_startup_watchdog``), disarmed once the gateway's asyncio loop is confirmed
 live. If neither happens within the deadline — and the process shows no CPU
 progress, so slow-but-alive schema migrations are exempt — it must dump
 diagnostics, record a lifecycle exit, and hard-exit with the service-restart
@@ -19,6 +18,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+import hermes_state_repair
 
 import hermes_startup_watchdog as sw
 from hermes_startup_watchdog import (
@@ -83,13 +84,6 @@ class TestContracts:
         from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 
         assert SERVICE_RESTART_EXIT_CODE == GATEWAY_SERVICE_RESTART_EXIT_CODE
-
-    def test_gateway_shim_reexports_same_objects(self):
-        import gateway.startup_watchdog as shim
-
-        assert shim.arm_startup_watchdog is arm_startup_watchdog
-        assert shim.disarm_startup_watchdog is disarm_startup_watchdog
-        assert shim.kick_startup_watchdog is kick_startup_watchdog
 
     def test_implementation_module_is_stdlib_only(self):
         """Import-lightness is a correctness property (arm-before-imports,
@@ -461,7 +455,7 @@ class TestProgressLease:
 
         import hermes_state
 
-        src = inspect.getsource(hermes_state.repair_state_db_schema)
+        src = inspect.getsource(hermes_state_repair.repair_state_db_schema)
         assert "report_startup_progress" in src
 
 
@@ -488,6 +482,24 @@ class TestFire:
         # File-based faulthandler dump follows the JSON record (stderr may be
         # absent on detached runs).
         assert "Thread" in content or "Current thread" in content
+
+    def test_file_dump_precedes_stderr_dump(self, monkeypatch):
+        """A blocked stderr must not hide the durable stack dump."""
+        writes = []
+
+        def _dump(*, file=None, all_threads=True):
+            writes.append("file" if file is not None else "stderr")
+
+        monkeypatch.setattr(sw.faulthandler, "dump_traceback", _dump)
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_exit", staticmethod(lambda code: None)
+        )
+
+        StartupWatchdogHandle(
+            timeout_s=60, exit_code=SERVICE_RESTART_EXIT_CODE
+        )._fire()
+
+        assert writes[:2] == ["file", "stderr"]
 
     def test_fire_marks_lifecycle_exit(self, exit_capture, monkeypatch):
         marked = {}

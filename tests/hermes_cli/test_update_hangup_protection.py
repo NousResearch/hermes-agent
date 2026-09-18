@@ -14,14 +14,8 @@ import sys
 
 import pytest
 
-from hermes_cli.main import (
-    _UpdateOutputStream,
-    _finalize_update_output,
-    _install_hangup_protection,
-    _log_only_write,
-    _print_update_completion,
-    _run_logged_subprocess,
-)
+from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
+from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
 
 
 def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
@@ -205,9 +199,8 @@ class TestFinalizeUpdateOutput:
 
 class TestLogOnlyWrite:
 
-    def test_noop_without_update_stream(self, monkeypatch):
-        """When stdout isn't the mirroring update stream (no ``_log``), it must
-        be a silent no-op rather than crash."""
+    def test_plain_stdout_keeps_build_output_off_screen(self, monkeypatch):
+        """An unwrapped stdout must not receive log-only build output."""
         plain = io.StringIO()
         monkeypatch.setattr(sys, "stdout", plain)
         _log_only_write("something")  # should not raise

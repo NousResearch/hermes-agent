@@ -90,6 +90,47 @@ class TestSupportsMediaInToolResults:
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]
 
+    def test_profile_tool_message_veto_overrides_supports_vision(self):
+        """supports_vision_tool_messages=False is a hard veto even when the
+        profile declares supports_vision=True (xiaomi/MiMo 400s on list-type
+        tool-result content, #89981)."""
+        assert _supports_media_in_tool_results("xiaomi", "mimo-v2.5") is False
+
+    def test_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
+        """A capability source marking the model vision-capable must not
+        re-open the native fast path for a provider that rejects it."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("xiaomi", "mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
+    def test_openrouter_xiaomi_route_vetoes_native_fast_path(self):
+        """A vision-capable catalog entry cannot override a routed Xiaomi veto."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("openrouter", "xiaomi/mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 
@@ -299,7 +340,7 @@ class TestVisionAnalyzeNative:
         except ImportError:
             pytest.skip("Pillow not installed — proactive resize is a no-op")
 
-        from tools.vision_tools import _EMBED_TARGET_BYTES
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
         big = tmp_path / "big.png"
@@ -323,7 +364,8 @@ class TestVisionAnalyzeNative:
     def test_embed_caps_are_sized_for_history_reuse(self):
         """Native embeds ride every later turn, so caps must stay well below
         the Anthropic 5 MB / 8000px reject limits (#92699)."""
-        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+        from tools.vision_tools import _EMBED_MAX_DIMENSION
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         assert _EMBED_TARGET_BYTES <= 512 * 1024
         assert _EMBED_MAX_DIMENSION <= 2048

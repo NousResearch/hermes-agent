@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -21,6 +22,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
+  $sidebarShowAllSessions,
   $sidebarWorkspaceNodeOpen,
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
@@ -29,6 +31,7 @@ import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
@@ -113,6 +116,8 @@ interface SidebarSessionsSectionProps {
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
+  /** Create a new session as a tile at a drop target (drag from a project "+"). */
+  onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -129,6 +134,10 @@ interface SidebarSessionsSectionProps {
   projectOverview?: SidebarProjectTree[]
   // Per-project preview rows (from the backend tree), keyed by project id.
   projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // The exclusion the previews were built with (pins, filter misses, removed
+  // ids) plus how many of each project's `sessionCount` it hides — applied
+  // again when a row hydrates its full lanes on "Show all".
+  projectOverviewHidden?: { isHidden: (session: SessionInfo) => boolean; counts: Record<string, number> }
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -191,6 +200,7 @@ export function SidebarSessionsSection({
   onTogglePin,
   onToggleUnread,
   onNewSessionInWorkspace,
+  onNewSessionSplit,
   pinned,
   rootClassName,
   contentClassName,
@@ -201,6 +211,7 @@ export function SidebarSessionsSection({
   groups,
   projectOverview,
   projectOverviewPreviews,
+  projectOverviewHidden,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -222,6 +233,7 @@ export function SidebarSessionsSection({
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
+  const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
@@ -300,10 +312,29 @@ export function SidebarSessionsSection({
 
   // Date dividers head a group the same way a repo header does, so they carry
   // the same hover-revealed "+". Only for dates: "new session in WORKING" is
-  // not a thing.
+  // not a thing. The divider "+" is a drag source too (the same gesture as the
+  // nav's "New session" row): drag it onto a chat zone to create the session
+  // exactly there; a sub-threshold release stays the ordinary click. The ONE
+  // element here feeds both the plain and the virtualized list paths, so this
+  // single wiring covers every date-divider "+" on screen.
   const dividerAction =
     grouping === 'date' && onNewSessionInWorkspace ? (
-      <WorkspaceAddButton label={t.sidebar.nav['new-session']} onClick={() => onNewSessionInWorkspace(null)} />
+      <WorkspaceAddButton
+        label={t.sidebar.nav['new-session']}
+        onClick={() => onNewSessionInWorkspace(null)}
+        onPointerDown={
+          onNewSessionSplit
+            ? event => {
+                startNewSessionDrag(placement => {
+                  onNewSessionSplit(placement.dir, {
+                    anchor: placement.anchor,
+                    before: placement.before
+                  })
+                }, event)
+              }
+            : undefined
+        }
+      />
     ) : null
 
   const dividerToggle = useMemo(
@@ -346,6 +377,24 @@ export function SidebarSessionsSection({
     (items: SessionInfo[]) =>
       flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
     [renderRow]
+  )
+
+  // Limit complete groups, not sessions, so a burst and its branches stay
+  // together. Compute boundaries from the whole pool, just like Updated.
+  const renderPreviewRows = useCallback(
+    (items: SessionInfo[], projectId: string) => {
+      const rows = groupEntriesByRecency(
+        flattenSessionsWithBranches(items),
+        undefined,
+        undefined,
+        showAllSessions ? Infinity : 2
+      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
+
+      const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
+
+      return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
+    },
+    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -443,6 +492,7 @@ export function SidebarSessionsSection({
           <EnteredProjectContent
             liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
+            onNewSessionSplit={onNewSessionSplit}
             project={projectContent}
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
@@ -468,12 +518,19 @@ export function SidebarSessionsSection({
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
       <Component
         activeProjectId={activeProjectId}
+        hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
+        isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
+        // Keyed by project ID to match the producer: `overlayLivePreviews`
+        // writes `out[node.id]` (workspace-groups.ts). A path key made Home
+        // (path: null) and any id/path-divergent project fall back to stale
+        // preview rows instead of the live overlay.
         previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
-        renderRows={renderRows}
+        renderRows={showAllSessions ? items => renderPreviewRows(items, project.id) : renderRows}
       />
     )
 
@@ -495,13 +552,22 @@ export function SidebarSessionsSection({
         )}
       </>
     )
+  } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
+    inner = (
+      <GatewayProfileGroups
+        groups={groups}
+        onNewSessionSplit={onNewSessionSplit}
+        renderRows={renderRows}
+        sensors={dndSensors}
+      />
+    )
   } else if (groups?.length) {
-    // Profile/source groups never reorder; render them flat with static rows.
     inner = groups.map(group => (
       <SidebarWorkspaceGroup
         group={group}
         key={group.id}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}
       />
     ))

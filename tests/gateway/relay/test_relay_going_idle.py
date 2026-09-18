@@ -227,16 +227,11 @@ async def test_go_dormant_redials_on_wake_and_drains(server):
     finally:
         await t.disconnect()
 
-
-@pytest.mark.asyncio
-async def test_adapter_go_dormant_delegates_to_transport(server):
-    """RelayAdapter.go_dormant() drives the transport's go_dormant (going_idle +
-    dormant close) without the terminal teardown disconnect() does."""
-    from gateway.config import PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
+def _relay_descriptor():
+    """Placeholder descriptor for the adapter tests below."""
     from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
-    placeholder = CapabilityDescriptor(
+    return CapabilityDescriptor(
         contract_version=CONTRACT_VERSION,
         platform="discord",
         label="Relay",
@@ -247,6 +242,97 @@ async def test_adapter_go_dormant_delegates_to_transport(server):
         markdown_dialect="plain",
         len_unit="chars",
     )
+
+
+
+def test_adapter_reports_false_when_the_transport_hold_fails():
+    """The runner suspends on the strength of this answer, so a transport that is missing the method or throws must read as 'not held' rather than pass for success on the mere absence of an exception."""
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+
+    placeholder = _relay_descriptor()
+
+    class Throwing:
+        def hold_redial(self):
+            raise RuntimeError("transport refused the hold")
+
+        def release_redial(self):
+            raise RuntimeError("transport refused the release")
+
+    class Missing:
+        pass
+
+    for transport in (Throwing(), Missing()):
+        adapter = RelayAdapter(PlatformConfig(), placeholder, transport=transport)
+        assert adapter.hold_redial() is False, type(transport).__name__
+        assert adapter.release_redial() is False, type(transport).__name__
+
+    class Working:
+        def __init__(self):
+            self.calls = []
+
+        def hold_redial(self):
+            self.calls.append("hold")
+
+        def release_redial(self):
+            self.calls.append("release")
+
+    working = Working()
+    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=working)
+    assert adapter.hold_redial() is True
+    assert working.calls == ["hold"]
+
+
+@pytest.mark.asyncio
+async def test_adapter_redial_hold_delegates_to_transport(server):
+    """The runner only holds the adapter, so this delegation is the only thing
+    wiring its suspend decision to the transport."""
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+
+    placeholder = _relay_descriptor()
+    transport = WebSocketRelayTransport(
+        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
+    )
+    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=transport)
+    await adapter.connect()
+    try:
+        adapter.hold_redial()
+        assert transport._redial_held is True
+        adapter.release_redial()
+        assert transport._redial_held is False
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_go_dormant_leaves_the_socket_open_when_the_ack_is_missed(server):
+    """No ack means nothing will suspend us, so closing would only cost a needless disconnect/reconnect cycle while the agent keeps serving."""
+    t = WebSocketRelayTransport(
+        server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
+    )
+    await t.connect()
+    try:
+        async def no_ack(timeout_s=None):
+            return False
+
+        t.go_idle = no_ack
+        assert await t.go_dormant() is False
+        assert t._dormant is False, "must not enter the dormant cadence"
+        assert t._ws is not None, "socket must stay open"
+        assert t._closing is False
+    finally:
+        await t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_adapter_go_dormant_delegates_to_transport(server):
+    """RelayAdapter.go_dormant() drives the transport's go_dormant (going_idle +
+    dormant close) without the terminal teardown disconnect() does."""
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+
+    placeholder = _relay_descriptor()
     transport = WebSocketRelayTransport(
         server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
     )

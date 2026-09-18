@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -17,13 +19,16 @@ import {
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
+  $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
   sessionBelongsToProfile,
   setRememberedRoute,
   setRememberedSessionId
 } from '@/store/session'
+import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -41,6 +46,8 @@ interface DesktopIntegrationsParams {
   navigate: (to: string, options?: { replace?: boolean }) => void
   profileReady: boolean
   refreshSessions: () => Promise<unknown> | unknown
+  /** `display.resume_last_session`; `undefined` while the config record is still loading. */
+  resumeLastSession: boolean | undefined
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
@@ -60,6 +67,7 @@ export function useDesktopIntegrations({
   navigate,
   profileReady,
   refreshSessions,
+  resumeLastSession,
   resumeExhaustedSessionId,
   routedSessionId,
   runtimeIdByStoredSessionId,
@@ -73,7 +81,12 @@ export function useDesktopIntegrations({
     // Background MCP health: HTTP/SSE servers only (never spawns stdio),
     // notifies on transitions into needs-auth/error with a Sign in action.
     startMcpHealthChecker()
-    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    // The native "Check for Updates…" menu item lives in the app menu next to
+    // "About Hermes" — it is the OS-standard affordance for updating THIS app,
+    // so it always opens the client overlay. Inheriting the connection-mode
+    // default pointed a Mac at its remote Linux backend and left the app itself
+    // silently stale (#70266).
+    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow('client'))
 
     return () => {
       unsubscribe?.()
@@ -90,6 +103,7 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
   // navigation exactly once. The same effect owns subsequent writes so the
@@ -105,6 +119,20 @@ export function useDesktopIntegrations({
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
+        // display.resume_last_session (#60812): hold the latch until the config
+        // record answers, then either restore below or stay on the fresh chat.
+        // Remembered ids keep being written either way, so flipping the switch
+        // back on resumes from the very next launch.
+        if (resumeLastSession === undefined) {
+          return
+        }
+
+        if (!resumeLastSession) {
+          restoredRef.current = true
+
+          return
+        }
+
         const route = getRememberedRoute(activeProfile)
         const routeSession = route ? routeSessionId(route) : null
         const last = getRememberedSessionId(activeProfile)
@@ -117,6 +145,14 @@ export function useDesktopIntegrations({
         // decided; treating an unloaded list as authoritative would erase valid
         // remembered navigation permanently.
         if (sessions.length === 0 && !restorableNonSessionRoute && (routeSession || last)) {
+          return
+        }
+
+        // A remembered plugin page looks session-shaped until its route
+        // registers, and disk plugins load async. Hold the latch through the
+        // first disk scan so a page that is merely late is not erased as stale
+        // (an already-running backend can hand us the session list first).
+        if (routeSession && diskPluginsScanPending) {
           return
         }
 
@@ -163,7 +199,7 @@ export function useDesktopIntegrations({
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, locationPathname, navigate, profileReady, routedSessionId, sessions])
+  }, [activeProfile, diskPluginsScanPending, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {
@@ -187,12 +223,29 @@ export function useDesktopIntegrations({
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
+        // Reloads and runtime recovery can leave only the shared mirror bound.
+        const viaLocalMap = storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)
+        const storedId = viaLocalMap !== sessionId ? viaLocalMap : (storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+
+        // A notification reveals a tab; it must not reclassify a Bot chat.
+        const scope =
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedId) ?? $botChatScopes.get()[storedId]
+
+        if (isOverlayView(appViewForPath(locationPathname))) {
+          navigate(sessionRoute($selectedStoredSessionId.get() ?? ''), { replace: true })
+        }
+
+        openSession(
+          storedId,
+          navigate,
+          'stack',
+          scope && { ...scope, workspaceMode: scope.workspaceMode ?? 'sessions' }
+        )
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate, runtimeIdByStoredSessionId])
+  }, [locationPathname, navigate, runtimeIdByStoredSessionId])
 
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
@@ -238,6 +291,7 @@ export function useDesktopIntegrations({
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -276,9 +330,21 @@ export function useDesktopIntegrations({
           repo: action.repo,
           enable: action.enable,
           force: action.force,
-          legacyHint: action.legacyHint
+          legacyHint: action.legacyHint,
+          catalogName: action.catalogName,
+          sha: action.sha
         })
 
+        return
+      }
+
+      if (action.type === 'skill-install') {
+        void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (payload.kind === 'skill') {
         return
       }
 

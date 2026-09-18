@@ -13,7 +13,7 @@ ordering invariant that ``_hoist_tool_results_to_front`` enforces.
 
 import pytest
 
-from agent.anthropic_adapter import (
+from agent.anthropic_message_convert import (
     convert_messages_to_anthropic,
     _hoist_tool_results_to_front,
     _merge_consecutive_roles,

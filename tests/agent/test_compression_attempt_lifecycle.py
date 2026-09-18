@@ -32,6 +32,7 @@ from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.conversation_compression import (
     CompressionCommitFence,
     _claim_compressor_attempt,
+    _mark_compressor_working_attempt,
     compress_context,
     compression_blocked_transiently,
     run_compress_context_with_progress_timeout,
@@ -100,7 +101,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
+            # Keep idle expiry out of this total-ceiling test under runner load.
+            idle_timeout_seconds=2.0,
             total_ceiling_seconds=0.2,
             fence=fence,
             stall_fallback=False,
@@ -227,6 +229,27 @@ class TestDurableAttemptBackoff:
         assert compressor.should_compress_info(500_000)[0] is True
 
 
+    def test_stall_backoff_is_never_shorter_than_the_idle_window(self, tmp_path: Path, monkeypatch):
+        """The ladder's first rung (60s) undercut a 120s idle stall window, so the next oversized turn
+        re-entered the same silent route ~1 min after burning the whole window (#112420). The recorded
+        cooldown must cover at least one idle window; a window below the rung leaves the ladder as is."""
+        import agent.conversation_compression as cc
+
+        db, agent = _build_agent(tmp_path, "BACKOFF_FLOOR")
+        compressor = agent.context_compressor
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (120.0, 600.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        assert compressor._summary_failure_cooldown_until - time.monotonic() >= 119.0
+        durable = db.get_compression_failure_cooldown("BACKOFF_FLOOR")
+        assert durable is not None and durable["remaining_seconds"] >= 119.0
+
+        compressor._clear_compression_failure_cooldown()
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.05, 1.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        remaining = compressor._summary_failure_cooldown_until - time.monotonic()
+        assert 55.0 <= remaining <= 60.0
+
+
 class TestSupersessionDiscardsLateResults:
     def test_superseded_attempt_candidate_never_commits(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "SUPERSEDE")
@@ -235,8 +258,10 @@ class TestSupersessionDiscardsLateResults:
 
         def compress_and_get_superseded(messages, **_kwargs):
             # While this attempt's summary was in flight, a NEWER attempt
-            # claimed the compressor (what a retry/fallback does).
-            _claim_compressor_attempt(agent.context_compressor)
+            # claimed the compressor AND began its own summary work (what a
+            # retry/fallback reaching dispatch does).
+            newer = _claim_compressor_attempt(agent.context_compressor)
+            _mark_compressor_working_attempt(agent.context_compressor, newer)
             return [{"role": "assistant", "content": "stale summary"}]
 
         agent.context_compressor.compress = compress_and_get_superseded
@@ -287,3 +312,73 @@ class TestTransientBlockIsNotExhaustion:
         mock_agent = MagicMock()
         # MagicMock auto-attributes are truthy but not str.
         assert compression_blocked_transiently(mock_agent) is False
+
+
+def _summary_response(content: str):
+    from unittest.mock import MagicMock
+
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = content
+    return response
+
+
+class TestProviderOverflowBypassesCooldown:
+    """#100661: a provider-proven overflow must get one REAL summary attempt
+    while the summary-failure cooldown is armed. Before the fix every turn of
+    a wedged session hit the cooldown gate, returned the soft "temporarily
+    paused" deferral, and the next failure extended the ladder — 4 long
+    sessions were lost this way. Ordinary (non-overflow) automatic passes
+    must still defer."""
+
+    def _armed_agent(self, tmp_path: Path, session_id: str):
+        db, agent = _build_agent(tmp_path, session_id)
+        # Realistic arming: a failed/stalled attempt recorded the ladder.
+        agent.context_compressor.record_timeout_failure(
+            "stall", failure_kind="stalled"
+        )
+        assert agent.context_compressor.should_compress_info(500_000)[0] is False
+        return db, agent
+
+    def test_overflow_attempt_invokes_summarizer_while_cooldown_armed(
+        self, tmp_path: Path
+    ):
+        db, agent = self._armed_agent(tmp_path, "OVERFLOW_BYPASS")
+        calls = []
+
+        def fake_call_llm(**kwargs):
+            calls.append(kwargs)
+            return _summary_response("## Goal\nRecovered after overflow.")
+
+        # Bulky turns so the compacted transcript is genuinely smaller.
+        live = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i} " * 400}
+            for i in range(20)
+        ]
+        with patch("agent.context_compressor.call_llm", fake_call_llm):
+            out, _ = compress_context(
+                agent, live, "sys", approx_tokens=500_000, bypass_cooldown=True
+            )
+        assert len(calls) == 1, (
+            "provider-proven overflow must reach the summary LLM even while "
+            "the failure cooldown is armed (#100661)"
+        )
+        assert compression_blocked_transiently(agent) is False
+        assert len(out) < len(live), "the attempt must actually compact"
+
+    def test_non_overflow_pass_still_deferred_by_cooldown(self, tmp_path: Path):
+        db, agent = self._armed_agent(tmp_path, "OVERFLOW_ORDINARY")
+        calls = []
+
+        def fake_call_llm(**kwargs):  # pragma: no cover - must not run
+            calls.append(kwargs)
+            return _summary_response("unexpected")
+
+        live = _messages()
+        before = copy.deepcopy(live)
+        with patch("agent.context_compressor.call_llm", fake_call_llm):
+            out, _ = compress_context(agent, live, "sys", approx_tokens=500_000)
+        assert calls == [] and out == before
+        assert compression_blocked_transiently(agent) is True, (
+            "ordinary threshold pressure keeps honoring the cooldown (#11529)"
+        )

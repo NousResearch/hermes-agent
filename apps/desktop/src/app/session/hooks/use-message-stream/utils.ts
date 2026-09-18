@@ -201,6 +201,10 @@ export function delegateTaskPayloads(
   return tasks.map((task, index) => {
     const goal = firstString(task.goal, args.goal, payload.context) || 'Delegated task'
     const summary = firstString(result.summary, payload.summary, payload.message)
+    // Per-child spend and the classified verdict live on the child's own entry
+    // (delegate_task returns ``{results: [...]}``); fall back to the flat result
+    // for single-task payloads. The row still renders without either.
+    const childEntry = parseMaybeRecord(Array.isArray(result.results) ? result.results[index] : result)
 
     return {
       goal,
@@ -228,10 +232,8 @@ export function delegateTaskPayloads(
       summary: summary || null,
       duration_seconds: payload.duration_s ?? null,
       tool_preview: starting ? progressText || null : null,
-      // Per-child spend and the classified verdict ride the delegate_task result when the
-      // backend reported them; the row still renders without either.
-      cost_usd: typeof result.cost_usd === 'number' ? result.cost_usd : null,
-      failure_reason: firstString(result.failure_reason) || null
+      cost_usd: typeof childEntry.cost_usd === 'number' ? childEntry.cost_usd : null,
+      failure_reason: firstString(childEntry.failure_reason) || null
     }
   })
 }

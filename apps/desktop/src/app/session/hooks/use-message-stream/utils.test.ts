@@ -85,4 +85,26 @@ describe('delegateTaskPayloads', () => {
 
     expect(spec).toMatchObject({ status: 'completed', summary: 'done', tool_name: null })
   })
+
+  it('reads spend and the classified reason off the child s own result entry', () => {
+    const [spec] = delegateTaskPayloads(
+      payload({
+        name: 'delegate_task',
+        args: { tasks: [{ goal: 'do it' }] },
+        result: { results: [{ cost_usd: 0.5, failure_reason: 'timeout', status: 'failed', summary: 'timed out' }] }
+      }),
+      'complete'
+    )
+
+    expect(spec).toMatchObject({ cost_usd: 0.5, failure_reason: 'timeout' })
+  })
+
+  it('falls back to a flat result for a single-task payload', () => {
+    const [spec] = delegateTaskPayloads(
+      payload({ name: 'delegate_task', result: { cost_usd: 0.25, failure_reason: 'billing', status: 'failed' } }),
+      'complete'
+    )
+
+    expect(spec).toMatchObject({ cost_usd: 0.25, failure_reason: 'billing' })
+  })
 })

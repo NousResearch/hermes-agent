@@ -29,6 +29,7 @@ class SkillsShSource(SkillSource):
     # skills.sh serves per-skill sitemaps brotli-compressed and httpx's optional
     # brotlicffi backend has a streaming-decode bug on them; asking for gzip
     # only makes the server fall back to gzip/identity on every httpx install.
+    _SITEMAP_HEADERS = {"Accept-Encoding": "gzip"}
     _SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>", re.IGNORECASE)
     _SITEMAP_SKILL_RE = re.compile(
         r"^https?://(?:www\.)?skills\.sh/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<skill>[^/]+)/?$", re.IGNORECASE,
@@ -126,7 +127,7 @@ class SkillsShSource(SkillSource):
         # that may redirect, and its <loc> entries are remote-party-controlled — a
         # hostile index could point a sitemap at an internal address.
         def _xml(url: str, timeout: int) -> Optional[str]:
-            resp = hub()._guarded_http_get(url, timeout=timeout)
+            resp = hub()._guarded_http_get(url, timeout=timeout, headers=self._SITEMAP_HEADERS)
             return resp.text if resp is not None and resp.status_code == 200 else None
 
         # Step 1: sitemap index -> per-skill sitemap URLs.

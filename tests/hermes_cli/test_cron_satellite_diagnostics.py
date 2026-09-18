@@ -72,6 +72,32 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "STALLED" not in output
 
 
+@pytest.mark.parametrize("heartbeat", ["missing", "fresh", "stale"])
+def test_satellite_list_and_create_require_own_heartbeat(served_root, capsys, monkeypatch, heartbeat):
+    from argparse import Namespace
+    from cron import jobs
+    from hermes_cli import cron
+
+    # A fresh host heartbeat must not hide the satellite's missing or stale heartbeat.
+    host_cron = served_root / "cron"
+    host_cron.mkdir()
+    (host_cron / "ticker_heartbeat").write_text(str(time.time()))
+    if heartbeat != "missing":
+        jobs.record_ticker_heartbeat(success=True)
+        if heartbeat == "stale":
+            (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time() - 3600))
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+    assert cron._builtin_gateway_liveness() is (heartbeat == "fresh")
+    cron.cron_command(Namespace(cron_command="create", schedule="every 1h", prompt="probe"))
+    created = capsys.readouterr().out
+    cron.cron_list()
+    listed = capsys.readouterr().out
+    for output in (created, listed):
+        assert ("Check status:  hermes cron status" in output) == (heartbeat != "fresh")
+    cron.cron_status()
+    assert ("will fire automatically" in capsys.readouterr().out) == (heartbeat == "fresh")
+
+
 @pytest.mark.parametrize("home_kind", ["default", "custom", "named"])
 def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch, capsys, home_kind):
     from hermes_cli.cron import cron_status

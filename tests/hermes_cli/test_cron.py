@@ -310,7 +310,7 @@ class TestGatewayNotRunningWarning:
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "Scheduler is not ready" in out
 
 
 class TestExternalCronProviderStatus:
@@ -338,7 +338,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "Gateway is not running" not in out
+        assert "Scheduler is not ready" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
@@ -369,7 +369,7 @@ class TestExternalCronProviderStatus:
         )
         out = capsys.readouterr().out
         assert "Created job" in out
-        assert "Gateway is not running" not in out
+        assert "Scheduler is not ready" not in out
 
 
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
@@ -393,7 +393,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     cron_cli.cron_list()
 
     out = capsys.readouterr().out
-    assert "Gateway is not running" in out
+    assert "Scheduler is not ready" in out
     assert "Nightly docs" in out
 
 

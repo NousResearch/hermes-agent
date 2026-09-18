@@ -938,6 +938,87 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print()
 
 
+# --- lint ---
+
+def _lint_scope(targets: List[str], all_skills: bool, lint_dir: Optional[str]):
+    """(skill_dirs, is_collection, error). A collection scope (no targets / --all / --dir) also
+    runs the cross-skill rules; explicit targets run per-file rules only."""
+    from agent.skill_utils import get_all_skills_dirs, get_project_skills_dirs, iter_skill_index_files
+
+    def _walk(root: Path) -> List[Path]:
+        return [p.parent for p in iter_skill_index_files(root, "SKILL.md")]
+
+    if lint_dir:
+        root = Path(lint_dir).expanduser()
+        if not root.is_dir():
+            return [], True, f"'{lint_dir}' is not a directory."
+        return _walk(root), True, None
+    installed: List[Path] = []
+    for root in [*get_all_skills_dirs(), *get_project_skills_dirs()]:
+        if root.is_dir():
+            installed.extend(d for d in _walk(root) if d not in installed)
+    if all_skills or not targets:
+        return installed, True, None
+    chosen: List[Path] = []
+    for target in targets:
+        candidate = Path(target).expanduser()
+        if candidate.name == "SKILL.md" and candidate.is_file():
+            chosen.append(candidate.parent)
+        elif candidate.is_dir() and (candidate / "SKILL.md").is_file():
+            chosen.append(candidate)
+        else:
+            by_name = [d for d in installed if d.name == target]
+            if not by_name:
+                return [], False, f"'{target}' is neither a skill directory nor an installed skill name."
+            chosen.extend(by_name)
+    return chosen, False, None
+
+
+def do_lint(targets: Optional[List[str]] = None, all_skills: bool = False,
+            lint_dir: Optional[str] = None, strict: bool = False, as_json: bool = False,
+            console: Optional[Console] = None) -> int:
+    """Run the advisory SKILL.md linter; returns an exit status (0 clean, 1 findings, 2 usage)."""
+    from rich.markup import escape
+    from tools.skill_linter import ERROR, lint_collection, lint_skill
+    c = console or _console
+    targets = list(targets or [])
+    if all_skills and targets:
+        _print_error(c, "--all cannot be combined with explicit targets.")
+        return 2
+    skill_dirs, is_collection, error = _lint_scope(targets, all_skills, lint_dir)
+    if error:
+        _print_error(c, error)
+        return 2
+    per_skill = []
+    for skill_dir in skill_dirs:
+        findings = lint_skill(skill_dir / "SKILL.md")
+        per_skill.append({"name": skill_dir.name, "path": str(skill_dir), "findings": [
+            {"severity": f.severity, "rule": f.rule, "message": f.message} for f in findings]})
+    collection = [{"skill": f.skill, "severity": f.severity, "rule": f.rule, "message": f.message}
+                  for f in (lint_collection(skill_dirs) if is_collection else [])]
+    flat = [f for entry in per_skill for f in entry["findings"]] + collection
+    errors = sum(f["severity"] == ERROR for f in flat)
+    summary = {"skills": len(skill_dirs), "errors": errors, "warnings": len(flat) - errors}
+    if as_json:
+        print(json.dumps({"skills": per_skill, "collection": collection, "summary": summary}, indent=2))
+    else:
+        for entry in per_skill:
+            for f in entry["findings"]:
+                c.print(f"{escape(entry['path'])}: [{_sev_style(f['severity'])}]{f['severity']}[/] "
+                        f"{f['rule']} — {escape(f['message'])}")
+        for f in collection:
+            c.print(f"{escape(f['skill'])}: [{_sev_style(f['severity'])}]{f['severity']}[/] "
+                    f"{f['rule']} — {escape(f['message'])}")
+        style = "bold red" if errors else ("yellow" if flat else "bold green")
+        c.print(f"[{style}]{summary['skills']} skill(s) linted: {errors} error(s), "
+                f"{summary['warnings']} warning(s)[/]" + ("" if skill_dirs else " — no SKILL.md found") + "\n")
+    return 1 if errors or (strict and flat) else 0
+
+
+def _sev_style(severity: str) -> str:
+    return "bold red" if severity == "error" else "yellow"
+
+
 # --- uninstall / reset / bundled-skill management ---
 
 def do_uninstall(name: str, console: Optional[Console] = None, skip_confirm: bool = False,
@@ -1355,6 +1436,11 @@ _CLI_ACTIONS = {
     "check": lambda a: do_check(name=getattr(a, "name", None)),
     "update": lambda a: do_update(name=getattr(a, "name", None), force=getattr(a, "force", False)),
     "audit": lambda a: do_audit(name=getattr(a, "name", None), deep=getattr(a, "deep", False)),
+    "lint": lambda a: do_lint(targets=getattr(a, "targets", None),
+                              all_skills=getattr(a, "all_skills", False),
+                              lint_dir=getattr(a, "lint_dir", None),
+                              strict=getattr(a, "strict", False),
+                              as_json=getattr(a, "json", False)),
     "uninstall": lambda a: do_uninstall(a.name, skip_confirm=getattr(a, "yes", False)),
     "reset": lambda a: do_reset(a.name, restore=getattr(a, "restore", False),
                                 skip_confirm=getattr(a, "yes", False)),
@@ -1370,14 +1456,17 @@ _CLI_ACTIONS = {
     "snapshot": _snapshot_cli, "tap": _tap_cli}
 
 
-def skills_command(args) -> None:
-    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
+def skills_command(args) -> Optional[int]:
+    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py.
+
+    Returns the handler's int exit status when it has one (``lint`` gates CI on it); main()
+    turns a non-zero int into the process exit code."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|lint|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
-        return
-    handler(args)
+        return None
+    return handler(args)
 
 
 # --- Slash command entry point (/skills in chat) ---
@@ -1454,6 +1543,10 @@ _SLASH_ACTIONS = {
         force="--force" in args),
     "audit": lambda args, c: do_audit(name=_first_positional(args), console=c,
                                       deep="--deep" in args),
+    "lint": lambda args, c: do_lint(
+        targets=[a for a in args if not a.startswith("--")], all_skills="--all" in args,
+        lint_dir=_opt_value(args, "--dir", "") or None, strict="--strict" in args,
+        as_json="--json" in args, console=c),
     "uninstall": lambda args, c: do_uninstall(
         args[0], console=c, skip_confirm=True, invalidate_cache="--now" in args),
     "reset": lambda args, c: do_reset(
@@ -1520,6 +1613,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]lint[/] [name|path ...] [--all] [--dir PATH] [--strict] [--json]\n"
+        "       Lint SKILL.md files against the authoring conventions (collection checks with --all/--dir)\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"

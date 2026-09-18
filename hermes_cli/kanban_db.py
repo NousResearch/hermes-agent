@@ -109,6 +109,10 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+# Independent review-lane breaker budget (implementation lives in
+# kanban_db_dispatch.DEFAULT_REVIEW_FAILURE_LIMIT; re-exported for consumers
+# that still read it from kanban_db).
+DEFAULT_REVIEW_FAILURE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -705,8 +709,14 @@ class Task:
     idempotency_key: Optional[str] = None
     # Column semantics: see SCHEMA_SQL.
     consecutive_failures: int = 0
+    # Review infrastructure uses an independent breaker budget.  A strict
+    # implementation max_retries value must not make the first reviewer
+    # provider hiccup permanently block the card.
+    review_consecutive_failures: int = 0
     worker_pid: Optional[int] = None
     last_failure_error: Optional[str] = None
+    # Equivalent failure excerpt for the independent-review lane.
+    review_last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
     current_run_id: Optional[int] = None
@@ -740,6 +750,8 @@ class Task:
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
+            review_consecutive_failures=int(g("review_consecutive_failures", 0) or 0),
+            review_last_failure_error=g("review_last_failure_error"),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
@@ -889,6 +901,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- The circuit breaker in _record_task_failure trips when this
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    -- Independent reviewer-infrastructure failure budget.  It must not inherit
+    -- the implementation lane's per-task max_retries override.
+    review_consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
     -- Restart-stable fingerprint of worker_pid ("<boot/instantiation epoch>|<start time>",
     -- kanban_db_dispatch._process_fingerprint) recorded at spawn: liveness and kills require pid
@@ -897,8 +912,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- spawn (held while live, never signalled). Column keeps its INTEGER affinity for the
     -- start-time-only integer values older rows carry.
     worker_started_at    INTEGER,
-    -- Short excerpt of the most recent failure's error text.
+    -- Short excerpt of the most recent implementation-lane failure.
     last_failure_error   TEXT,
+    -- Short excerpt of the most recent review-lane failure.
+    review_last_failure_error TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
@@ -2265,7 +2282,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"},
         )
         if run_id is None:
             return None
@@ -3333,7 +3351,9 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
+                   worker_pid = NULL, worker_started_at = NULL,
+                   review_consecutive_failures = 0,
+                   review_last_failure_error = NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -4257,6 +4277,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+    DEFAULT_REVIEW_FAILURE_LIMIT,
 )
 
 

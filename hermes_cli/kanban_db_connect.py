@@ -814,6 +814,9 @@ _RENAMED_TASK_COLUMNS = (
 # NULL / 0 defaults below reproduce the behaviour existing rows had before the
 # column existed.
 _LATER_TASK_COLUMNS = (
+    ("review_consecutive_failures", "review_consecutive_failures INTEGER NOT NULL DEFAULT 0"),
+    ("task_role", "task_role TEXT NOT NULL DEFAULT 'implementation'"),
+    ("review_last_failure_error", "review_last_failure_error TEXT"),
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
     ("current_run_id", "current_run_id INTEGER"),

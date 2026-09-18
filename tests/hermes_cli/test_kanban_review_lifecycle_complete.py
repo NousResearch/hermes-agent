@@ -383,8 +383,24 @@ def test_interrupted_review_runs_retry_in_review_phase(
     assert event.payload.get("retry_status") == "review"
 
 
-def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
+def test_review_retry_uses_an_independent_bounded_failure_budget(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
+    assert not kbd._record_task_failure(
+        conn,
+        task_id,
+        "reviewer cannot start",
+        outcome="spawn_failed",
+        failure_limit=1,
+        release_claim=True,
+        end_run=True,
+    )
+    retryable = kb.get_task(conn, task_id)
+    assert retryable is not None
+    assert retryable.status == "review"
+    assert retryable.consecutive_failures == 0
+    assert retryable.review_consecutive_failures == 1
+
+    assert kb.claim_review_task(conn, task_id) is not None
     assert kbd._record_task_failure(
         conn,
         task_id,
@@ -397,9 +413,12 @@ def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
     assert blocked.status == "blocked"
+    assert blocked.consecutive_failures == 0
+    assert blocked.review_consecutive_failures == 2
     gave_up = _event(kb.list_events(conn, task_id), "gave_up")
     assert gave_up.payload is not None
     assert gave_up.payload["retry_status"] == "review"
+    assert gave_up.payload["limit_source"] == "review_dispatcher"
     assert kb.unblock_task(conn, task_id)
     unblocked = kb.get_task(conn, task_id)
     assert unblocked is not None
@@ -715,3 +734,101 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
         )
     assert kb.complete_task(conn, ok_id, summary="done")
     assert _failures(conn, ok_id) == 0
+
+
+def _review_failures(conn, task_id: str) -> int:
+    return int(conn.execute(
+        "SELECT review_consecutive_failures FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()[0])
+
+
+def _claimed_review_with_policy(conn, *, max_retries: int = 1):
+    task_id = kb.create_task(
+        conn, title="review infra policy", assignee="builder", max_retries=max_retries,
+    )
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn, task_id, summary="ready", reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    return task_id, review
+
+
+def test_review_failure_budget_is_independent_from_implementation_override(conn) -> None:
+    task_id, review = _claimed_review_with_policy(conn, max_retries=1)
+
+    first = kb._record_task_failure(
+        conn,
+        task_id,
+        "HTTP 503 Service Unavailable",
+        outcome="spawn_failed",
+        release_claim=True,
+        end_run=True,
+    )
+    assert first is False
+    task = kb.get_task(conn, task_id)
+    assert task.status == "review"
+    assert task.consecutive_failures == 0
+    assert task.review_consecutive_failures == 1
+
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    second = kb._record_task_failure(
+        conn,
+        task_id,
+        "HTTP 503 Service Unavailable",
+        outcome="spawn_failed",
+        release_claim=True,
+        end_run=True,
+    )
+    assert second is True
+    task = kb.get_task(conn, task_id)
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 0
+    assert task.review_consecutive_failures == kb.DEFAULT_REVIEW_FAILURE_LIMIT == 2
+    gave_up = [e for e in kb.list_events(conn, task_id) if e.kind == "gave_up"][-1]
+    assert gave_up.payload["failure_phase"] == "review"
+    assert gave_up.payload["failure_class"] == "transient_provider"
+    assert gave_up.payload["limit_source"] == "review_dispatcher"
+
+
+def test_review_auth_failure_trips_immediately(conn) -> None:
+    task_id, _review = _claimed_review_with_policy(conn, max_retries=9)
+    tripped = kb._record_task_failure(
+        conn,
+        task_id,
+        "HTTP 403 Forbidden: invalid API key",
+        outcome="spawn_failed",
+        release_claim=True,
+        end_run=True,
+    )
+    assert tripped is True
+    task = kb.get_task(conn, task_id)
+    assert task.status == "blocked"
+    assert task.consecutive_failures == 0
+    assert task.review_consecutive_failures == 1
+    gave_up = [e for e in kb.list_events(conn, task_id) if e.kind == "gave_up"][-1]
+    assert gave_up.payload["failure_class"] == "terminal_provider"
+    assert gave_up.payload["effective_limit"] == 1
+
+
+def test_review_success_decision_resets_only_review_failure_budget(conn) -> None:
+    task_id, review = _claimed_review_with_policy(conn)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 1, "
+            "review_consecutive_failures = 1, review_last_failure_error = 'HTTP 502' "
+            "WHERE id = ?",
+            (task_id,),
+        )
+    assert kb.request_changes(
+        conn, task_id, reason="real implementation defect",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    task = kb.get_task(conn, task_id)
+    assert task.consecutive_failures == 1
+    assert task.review_consecutive_failures == 0
+    assert task.review_last_failure_error is None

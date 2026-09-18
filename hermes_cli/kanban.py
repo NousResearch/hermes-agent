@@ -196,6 +196,33 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: {exc}")
 
 
+def _task_route_labels(task) -> dict[str, str]:
+    """Describe implementation and independent-review model routes."""
+    from hermes_cli import profiles
+
+    def _format(model, provider) -> str:
+        if not model:
+            return "profile default"
+        return str(model) + (f" (provider: {provider})" if provider else "")
+
+    implementation = _format(task.model_override, task.provider_override)
+    review_model = review_provider = None
+    if task.assignee:
+        try:
+            review_model, review_provider = profiles._read_config_model(
+                profiles.get_profile_dir(task.assignee)
+            )
+        except Exception:
+            pass
+    review = _format(review_model, review_provider)
+    current = "review" if task.status == "review" else "implementation"
+    return {
+        "implementation": implementation,
+        "review": review,
+        "current": current,
+    }
+
+
 # --- Handlers ---
 
 def _profile_author() -> str:
@@ -509,18 +536,26 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("branch", task.branch_name)
     if task.skills:
         field("skills", ", ".join(task.skills))
+    routes = _task_route_labels(task)
     if task.model_override:
-        _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
-        field("model", f"{task.model_override}{_prov}")
+        print(f"  implementation-model: {routes['implementation']}")
+    if task.status == "review":
+        print(f"  review-model:         {routes['review']}")
+        print(f"  current-route:        review → {routes['review']}")
     # Effective retry threshold (task > config > default) explains auto-blocks.
     if task.max_retries is not None:
-        print(f"  max-retries: {task.max_retries} (task)")
+        print(f"  implementation-retries: {task.max_retries} (task)")
     else:
         cfg_val = _kanban_config().get("failure_limit")
         if cfg_val is not None and int(cfg_val) != kb.DEFAULT_FAILURE_LIMIT:
-            print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
+            print(f"  implementation-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    if task.status in {"review", "blocked"} or task.review_consecutive_failures:
+        print(
+            f"  review-retries: {kb.DEFAULT_REVIEW_FAILURE_LIMIT} (independent default; "
+            f"failures={task.review_consecutive_failures})"
+        )
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.

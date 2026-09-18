@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
+# Review is a separate infrastructure lane.  Two attempts means one bounded
+# retry even when the implementation card deliberately sets max_retries=1.
+DEFAULT_REVIEW_FAILURE_LIMIT = 2
 
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -211,19 +214,18 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
-    return ("unknown", None)
+    # Portable POSIX wait-status decode (os.WIFEXITED etc. don't exist on Windows):
+    # low 7 bits = signal number (0 => normal exit), bits 8-15 = exit code.
+    raw = int(raw)
+    signal_number = raw & 0x7F
+    if signal_number == 0:
+        code = (raw >> 8) & 0xFF
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
+    return ("signaled", signal_number)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -1216,17 +1218,35 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     return sweep.crashed
 
 
+_TRANSIENT_PROVIDER_FAILURE_RE = re.compile(
+    r"\b(429|502|503|504|rate[\s_\-]?limit|quota|"
+    r"service[\s_\-]?unavailable|bad[\s_\-]?gateway|gateway[\s_\-]?timeout|"
+    r"connection[\s_\-]?(?:reset|timed?[\s_\-]?out)|temporar(?:y|ily))\b",
+    re.IGNORECASE,
+)
+
+def _provider_failure_class(error: str) -> str:
+    """Return terminal_provider, transient_provider, or generic."""
+    text = str(error or "")
+    if _RESPAWN_BLOCKER_RE.search(text):
+        return "terminal_provider"
+    if _TRANSIENT_PROVIDER_FAILURE_RE.search(text):
+        return "transient_provider"
+    return "generic"
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
     error: str,
     *,
-    outcome: str,
+    outcome: str = "spawn_failed",
     failure_limit: int = None,
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    run_metadata_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1245,8 +1265,9 @@ def _record_task_failure(
     error = error[:500]
     with _kb.write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries, current_run_id "
-            "FROM tasks WHERE id = ?", (task_id,),
+            "SELECT consecutive_failures, review_consecutive_failures, status, "
+            "max_retries, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if row is None:
             return False
@@ -1255,79 +1276,111 @@ def _record_task_failure(
             if release_claim
             else ("review" if row["status"] == "review" else "ready")
         )
-        failures = int(row["consecutive_failures"]) + 1
-
-        # Per-task override wins over caller-supplied and default thresholds.
-        task_override = _kb._row_get(row, "max_retries")
-        if task_override is not None:
-            effective_limit, limit_source = int(task_override), "task"
+        # Lane-aware failure budget: the review lane has its own counter and
+        # its own bounded default so an implementer's crashes never consume
+        # the reviewer's runway (and a strict task max_retries never makes
+        # the first reviewer provider hiccup permanently block the card).
+        failure_phase = "review" if retry_status == "review" else "implementation"
+        failure_class = _provider_failure_class(error)
+        if failure_phase == "review":
+            counter_col = "review_consecutive_failures"
+            error_col = "review_last_failure_error"
+            failures = int(row["review_consecutive_failures"] or 0) + 1
+            effective_limit = DEFAULT_REVIEW_FAILURE_LIMIT
+            limit_source = "review_dispatcher"
         else:
-            effective_limit, limit_source = int(failure_limit), "dispatcher"
-
-        if not (force_trip or failures >= effective_limit):
-            if release_claim:
-                # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
-                )
+            counter_col = "consecutive_failures"
+            error_col = "last_failure_error"
+            failures = int(row["consecutive_failures"] or 0) + 1
+            task_override = _kb._row_get(row, "max_retries")
+            if task_override is not None:
+                effective_limit, limit_source = int(task_override), "task"
             else:
+                effective_limit, limit_source = int(failure_limit), "dispatcher"
+
+        terminal_provider = failure_class == "terminal_provider"
+        if terminal_provider:
+            # Authentication/provider configuration failures require an operator;
+            # retrying them cannot heal the run and only burns worker slots.
+            effective_limit = 1
+            limit_source = "terminal_provider"
+
+        if force_trip or terminal_provider or failures >= effective_limit:
+            # Breaker tripped: transition to blocked (+ gave_up) and stop retrying.
+            if release_claim:
+                # Spawn path is still running; also clear the claim state.
                 conn.execute(
-                    "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                    f"{counter_col} = ?, {error_col} = ? "
+                    "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error, task_id),
                 )
-            # Timeout/crash path's caller already emitted its own event.
+            else:
+                # Timeout/crash path already released the claim.
+                conn.execute(
+                    f"UPDATE tasks SET status = 'blocked', {counter_col} = ?, {error_col} = ? "
+                    "WHERE id = ? AND status IN ('ready', 'review', 'running')",
+                    (failures, error, task_id),
+                )
+            run_id = None
+            _gave_up_md = {
+                "failures": failures,
+                "trigger_outcome": outcome,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "retry_status": retry_status,
+                "failure_phase": failure_phase,
+                "failure_class": failure_class,
+            }
+            if run_metadata_extra:
+                _gave_up_md.update(run_metadata_extra)
             if end_run:
+                # Only the spawn path has an open run to close.
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error,
-                    metadata={"failures": failures, "retry_status": retry_status},
+                    conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                    metadata=_gave_up_md,
                 )
-                _kb._append_event(
-                    conn, task_id, outcome,
-                    {"error": error, "failures": failures, "retry_status": retry_status},
-                    run_id=run_id,
-                )
-            return False
+            payload = dict(_gave_up_md)
+            payload["error"] = error
+            if event_payload_extra:
+                payload.update(event_payload_extra)
+            _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+            return True
 
-        # Spawn path (release_claim) is still running and also clears claim
-        # state; the timeout/crash path already did.
-        conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
-            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-               if release_claim else "")
-            + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
-        )
-        payload = {
-            "failures": failures,
-            "effective_limit": effective_limit,
-            "limit_source": limit_source,
-            "error": error,
-            "trigger_outcome": outcome,
-            "retry_status": retry_status,
-        }
-        run_id = None
-        if end_run:
-            # Only the spawn path has an open run to close.
-            run_id = _kb._end_run(
-                conn, task_id, outcome="gave_up", status="gave_up", error=error,
-                metadata={
-                    "failures": failures,
-                    "trigger_outcome": outcome,
-                    "effective_limit": effective_limit,
-                    "limit_source": limit_source,
-                    "retry_status": retry_status,
-                },
+        # Below the limit: retry in place.
+        if release_claim:
+            # Spawn path: restore the claimed source phase + clear claim.
+            conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                f"{counter_col} = ?, {error_col} = ? "
+                "WHERE id = ? AND status = 'running'",
+                (retry_status, failures, error, task_id),            )
+        else:
+            conn.execute(
+                f"UPDATE tasks SET {counter_col} = ?, "
+                f"{error_col} = ? WHERE id = ?",
+                (failures, error, task_id),
             )
-        if event_payload_extra:
-            payload.update(event_payload_extra)
-        _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
-        return True
+        # Timeout/crash path's caller already emitted its own event.
+        if end_run:
+            _run_md = {
+                "failures": failures,
+                "retry_status": retry_status,
+                "failure_phase": failure_phase,
+                "failure_class": failure_class,
+            }
+            if run_metadata_extra:
+                _run_md.update(run_metadata_extra)
+            run_id = _kb._end_run(
+                conn, task_id, outcome=outcome, status=outcome, error=error,
+                metadata=_run_md,
+            )
+            event_payload = dict(_run_md)
+            event_payload["error"] = error
+            _kb._append_event(conn, task_id, outcome, event_payload, run_id=run_id)
+        return False
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -1356,8 +1409,9 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
+            "UPDATE tasks SET consecutive_failures = 0, last_failure_error = NULL, "
+            "review_consecutive_failures = 0, review_last_failure_error = NULL "
+            "WHERE id = ?",
             (task_id,),
         )
 
@@ -1382,7 +1436,7 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, review_last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1413,7 +1467,10 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
+    err = (
+        row["review_last_failure_error"]
+        if lane == "review" else row["last_failure_error"]
+    )
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

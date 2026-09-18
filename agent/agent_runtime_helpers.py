@@ -79,7 +79,8 @@ def _ra():
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
-    "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task",
+    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
+    "delegate_task",
 })
 
 _TRAJECTORY_SYSTEM_PROMPT = (
@@ -842,6 +843,9 @@ def recover_with_credential_pool(
                 from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
+        model = getattr(agent, "model", None)
+        if isinstance(model, str) and model.strip():
+            kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
@@ -849,7 +853,24 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        return agent._swap_credential(next_entry) is not False
+        swapped = agent._swap_credential(next_entry) is not False
+        benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
+        if (
+            swapped
+            and benched is not None
+            and benched.priority < getattr(next_entry, "priority", benched.priority)
+            and not getattr(agent, "_credential_pool_revert_id", None)
+            and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
+        ):
+            # A quota bench (429/402) lifts when the window reopens, and a fresh session's
+            # select() would go straight back to this entry; arm the per-turn hook so the live
+            # session does too (#114501). Only when the benched entry OUTRANKS the one we rotated
+            # to: a session that was already on the fallback (preferred benched elsewhere) and
+            # rotates UP once the preferred window reopened must not be pulled back down when
+            # the fallback's cooldown lifts. Keep the FIRST benched entry across chained
+            # rotations — it is the preferred one. Auth benches are not windows; they stay.
+            agent._credential_pool_revert_id = credential_id
+        return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
@@ -966,7 +987,7 @@ def try_recover_primary_transport(
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
-            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True,
+            f"rebuilt client, waiting {wait_time}s before one last primary attempt.", force=True, diagnostic=True,
         )
         time.sleep(wait_time)
         return True
@@ -1038,7 +1059,8 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
         if not matches_primary(pool):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
-        next_at = getattr(pool, "next_available_at", lambda: None)()
+        primary_model = str(rt.get("model") or "").strip()
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
         if next_at is not None and next_at > time.time():
             if not getattr(agent, "_restore_wait_logged", False):
                 agent._restore_wait_logged = True
@@ -1063,7 +1085,7 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
-def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
     401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
@@ -1082,7 +1104,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
-    entry = pool.select() if pool is not None and pool.has_available() else None
+    entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
@@ -1103,6 +1125,33 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
         )
 
 
+def _revert_credential_rotation(agent) -> None:
+    """Move a live session back onto the credential a quota bench rotated it off, once the bench
+    lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
+    session keeps billing the fallback for its whole life (#114501). Credential-only: the
+    model/base_url/compressor restore stays gated on ``_fallback_activated``."""
+    revert_id = getattr(agent, "_credential_pool_revert_id", None)
+    if not revert_id:
+        return
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
+        agent._credential_pool_revert_id = None
+        return
+    try:
+        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
+    except Exception as exc:
+        logger.warning("Credential revert check failed: %s", exc)
+        return
+    if entry is None:
+        return  # still cooling down; check again next turn
+    if agent._swap_credential(entry) is not False:
+        logger.info(
+            "Credential %s (%s) available again — reverted pool rotation",
+            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+        )
+    agent._credential_pool_revert_id = None
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
@@ -1110,6 +1159,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
+        _revert_credential_rotation(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -1168,8 +1218,12 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
         )
+        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
+        if getattr(agent, "_compression_feasibility_checked", False) is True:
+            from agent.conversation_compression import revalidate_compression_feasibility
+            revalidate_compression_feasibility(agent)
         _rebind_primary_credential_pool(
-            agent, primary_provider, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
@@ -1190,7 +1244,7 @@ def restore_primary_runtime(agent) -> bool:
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
-                agent._emit_status(
+                agent._emit_diagnostic_status(
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
@@ -1202,7 +1256,7 @@ def restore_primary_runtime(agent) -> bool:
 
 # Transient transport failures worth one more attempt with a rebuilt client / connection pool.
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
-    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "RemoteProtocolError",
+    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "ReadError", "RemoteProtocolError",
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
@@ -1772,11 +1826,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
-    # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
@@ -1888,15 +1937,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
-        from agent.moa_loop import build_moa_facade
+        from agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
-        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
-        # client.responses.create against the facade (matches agent_init.py).
-        agent.api_mode = "chat_completions"
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
+        # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
+        # client.responses.create against the facade (same pins as agent_init / fallback).
+        bind_moa_runtime(agent, agent.model, api_key)
         return
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
@@ -1910,7 +1955,9 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
-        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
+        effective_key = api_key or agent.api_key or (
+            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+        ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
         if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
@@ -2063,6 +2110,10 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
+    # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
+    # clamp lands before the first compaction on the new window, not after it (#114707).
+    from agent.conversation_compression import revalidate_compression_feasibility
+    revalidate_compression_feasibility(agent)
 
 
 def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
@@ -2108,6 +2159,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
@@ -2927,6 +2979,34 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
+# Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
+# and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
+# reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan
+# ("Let me batch the terminal calls and run them in parallel.", "I need to check the log.") is a
+# stalled model whose turn would otherwise report "complete" with zero tool calls (#111761).
+# Tail-only and anchored on the last sentence, so reasoning that merely mentions a plan before
+# stating its answer ("...Let me check. The answer is 42.") still promotes.
+_PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
+    r"(?:^|[.!?:\u3002\uff01\uff1f\n]\s*|\u2026\s*)"
+    r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
+    r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b)"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def promoted_reasoning_announces_action(text: str) -> bool:
+    """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
+
+    No overall length cap: the reasoning block of a stalled model is often 300-1600 chars of
+    planning monologue; only the tail decides.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
+
+
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}
 _INTENT_ACK_OFF = {"false", "never", "no", "off"}
 
@@ -3009,12 +3089,28 @@ def _iter_httpx_pool_objects(http_client: Any):
 
 
 def _connection_candidates(conn: Any):
-    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
+    stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →
+    ResponseStream → connection byte stream → HTTP11/2 connection)."""
     seen: set[int] = set()
-    while conn is not None and id(conn) not in seen:
-        seen.add(id(conn))
-        yield conn
-        conn = getattr(conn, "_connection", None)
+    stack = [conn]
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        yield obj
+        for attr in ("_connection", "_stream", "_httpcore_stream"):
+            nxt = getattr(obj, attr, None)
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def _socket_from_candidate(candidate: Any):
+    """Raw socket behind a connection/stream wrapper yielded by ``_connection_candidates``."""
+    stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
+    sock = _socket_from_stream(stream) if stream is not None else None
+    return sock if sock is not None else _socket_from_stream(candidate)
 
 
 def _socket_from_stream(stream: Any):
@@ -3067,8 +3163,7 @@ def _iter_pool_sockets(client: Any):
                 connections.append(conn)
         for conn in connections:
             for candidate in _connection_candidates(conn):
-                stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
-                sock = _socket_from_stream(stream) if stream is not None else None
+                sock = _socket_from_candidate(candidate)
                 if sock is not None and id(sock) not in seen:
                     seen.add(id(sock))
                     yield sock
@@ -3205,24 +3300,30 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O via ``shutdown(SHUT_RDWR)`` WITHOUT closing FDs. ``close()`` from
-    a non-owner thread is unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a
-    flushed TLS record lands in the wrong file (once clobbered a SQLite header). ``shutdown()``
-    is FD-safe from any thread. Returns the count (logged as ``tcp_force_closed=N``)."""
+def _shutdown_socket(sock: Any) -> None:
+    """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
+    unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
+    in the wrong file (once clobbered a SQLite header). ``shutdown()`` is FD-safe from any thread.
+    Already shut down / not connected / FD invalid are all benign."""
     import socket as _socket
+    try:
+        # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            with contextlib.suppress(OSError):
+                settimeout(0)
+        sock.shutdown(_socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O on every pool socket via ``_shutdown_socket``. Returns the count
+    (logged as ``tcp_force_closed=N``)."""
     shutdown_count = 0
     try:
         for sock in _iter_pool_sockets(client):
-            try:
-                # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
-                settimeout = getattr(sock, "settimeout", None)
-                if callable(settimeout):
-                    with contextlib.suppress(OSError):
-                        settimeout(0)
-                sock.shutdown(_socket.SHUT_RDWR)
-            except OSError:
-                pass  # already shut down / not connected / FD invalid: all benign
+            _shutdown_socket(sock)
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

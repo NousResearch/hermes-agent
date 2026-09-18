@@ -510,7 +510,7 @@ export function StatusRule({
   onSessionCountClick,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
+  const pct = usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -526,8 +526,8 @@ export function StatusRule({
       ? usage.context_max
         ? segs.compactCtx
           ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
-        : usage.total > 0
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+        : (usage.total ?? 0) > 0
           ? `${compactNumber(usage.total)} tok`
           : ''
       : ''

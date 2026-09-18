@@ -52,6 +52,17 @@ class _StubAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "im"}
 
 
+class _CardAdapter(_StubAdapter):
+    """Adapter with a persistent native card: records the gateway's retire callback."""
+
+    def __init__(self):
+        super().__init__()
+        self.retired: list[tuple[str, str]] = []
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        self.retired.append((clarify_id, notice))
+
+
 class _FellThroughIntercept(Exception):
     """Sentinel: _handle_message got PAST the clarify text-intercept."""
 
@@ -129,6 +140,41 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == ""
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_thread_prose_retires_the_native_card_before_falling_through():
+    """The card adapter gets one retire call (cancel notice) while the prose still falls through."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    cm.register("cl-slack-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
+
+    assert [cid for cid, _ in adapter.retired] == ["cl-slack-card"]
+    assert "cancelled" in adapter.retired[0][1].lower()
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_typed_selection_retires_the_native_card_with_the_answer():
+    """A numeric pick typed into the thread resolves the clarify AND rewrites the card."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register("cl-typed-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    assert await _dispatch(runner, _event("2")) == ""
+
+    assert entry.response == "dropdown"
+    assert adapter.retired == [("cl-typed-card", "✅ answered: dropdown")]
     _clear_clarify_state()
 
 
@@ -262,4 +308,3 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
     _clear_clarify_state()
-

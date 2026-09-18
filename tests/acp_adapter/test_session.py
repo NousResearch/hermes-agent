@@ -66,12 +66,19 @@ class TestCreateSession:
         assert fetched is state
 
 
-    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+    def test_make_agent_uses_session_cwd_during_init_and_stamps_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        observed = {}
+
         class FakeAgent:
             model = "fake-model"
 
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+                observed["cwd"] = kwargs.get("cwd")
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
@@ -106,9 +113,34 @@ class TestCreateSession:
         )
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
 
-        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+        state = SessionManager(db=None).create_session(cwd=str(workspace))
 
-        assert state.agent.session_cwd == "/tmp/project"
+        assert observed["cwd"] == str(workspace)
+
+    def test_make_agent_prefers_passed_toolsets_over_config_servers(self, monkeypatch):
+        """#42719: a rebuild (model switch) passes the live session's toolsets and they are kept
+        verbatim; a fresh session still derives them from the config-declared MCP servers."""
+        seen: list[dict] = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.append(kwargs)
+
+        config = {"model": {"default": "m", "provider": "p"}, "mcp_servers": {"cfg-server": {}}}
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        manager = SessionManager(db=None)
+
+        manager._make_agent(session_id="fresh", cwd=".")
+        manager._make_agent(
+            session_id="rebuilt", cwd=".", enabled_toolsets=["hermes-acp", "mcp-acp-server"], disabled_toolsets=["browser"],
+        )
+
+        assert (seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"]) == (["hermes-acp", "mcp-cfg-server"], None)
+        assert (seen[1]["enabled_toolsets"], seen[1]["disabled_toolsets"]) == (["hermes-acp", "mcp-acp-server"], ["browser"])
 
 
 

@@ -179,6 +179,8 @@ terminal:
 
 Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
 
+Independently of the init files, every terminal command's `PATH` is completed with the standard system directories (`/usr/local/bin`, `/opt/homebrew/bin`, …), the Hermes-managed runtime dirs, and `~/.local/bin` when it exists (the `pip --user` / `pipx` / `uv tool` install target) — appended after your own entries, so precedence is unchanged. This covers backends started with a thin non-interactive PATH (systemd, GUI launchers, the Desktop SSH remote backend) without any configuration.
+
 To disable the auto-source behaviour (strict login-shell semantics only):
 
 ```yaml
@@ -643,7 +645,7 @@ This isolation is also the reason to never run two agents against the *same* pro
 
 ### How many profiles can I run?
 
-There is no hard limit. Each profile is just a directory under `~/.hermes/profiles/`. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
+There is no hard limit. Each profile is a directory under `~/.hermes/profiles/` that carries at least one identity file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`); a bare directory without one (a leftover from a log rotation or cron tick) is not a profile — it is not listed or served, `-p <name>` reports it as missing, and `hermes profile create <name>` refuses to overwrite it until you move or remove it. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
 ---
 

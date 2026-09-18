@@ -18,8 +18,10 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from hermes_cli._subprocess_compat import (
@@ -258,6 +260,11 @@ def _legacy_startup_entry_path() -> Path:
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
 
 
+def _startup_staging_path() -> Path:
+    """The Startup-folder staging file; also the debris a pre-fix failed swap left behind (#114093)."""
+    return get_startup_entry_path().with_suffix(".tmp")
+
+
 def _stable_gateway_working_dir(project_root: Path) -> str:
     """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
     service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
@@ -283,11 +290,12 @@ def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
     return argv
 
 
-def _launcher_settings() -> tuple[str, str, str, str]:
-    """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers."""
+def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
+    """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers.
+    ``home`` targets another profile's HERMES_HOME (per-profile cold-start, #110959)."""
     from hermes_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path  # avoid circular init
 
-    hermes_home = str(_hermes_home())
+    hermes_home = str(home if home is not None else _hermes_home())
     return (
         _preserve_hermes_home_path(get_python_path()),
         _stable_gateway_working_dir(PROJECT_ROOT),
@@ -402,9 +410,20 @@ def _write_task_script() -> Path:
 
 
 def _atomic_write(path: Path, content: str, tmp: Path) -> None:
-    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``."""
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(path)
+    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
+
+    The staging file is removed even when the rename fails: the Startup-folder caller stages
+    inside the Startup folder itself, and Windows opens every file there at login — a leftover
+    ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+    """
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ── Install / uninstall
@@ -515,7 +534,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), entry.with_suffix(".tmp"))
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():
@@ -572,13 +591,13 @@ def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None
     env_overlay["PYTHONPATH"] = os.pathsep.join(clean_entries)
 
 
-def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
+def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[str, str]]:
     """Build (argv, working_dir, env_overlay) for the gateway subprocess — the same logical command
     as gateway.cmd, assembled as a native argv so no cmd.exe layer sits in between."""
     _assert_windows()
     from hermes_cli.gateway import PROJECT_ROOT
 
-    python_path, working_dir, hermes_home, profile_arg = _launcher_settings()
+    python_path, working_dir, hermes_home, profile_arg = _launcher_settings(home)
     python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     env_overlay = {"HERMES_HOME": hermes_home, **dict(_GATEWAY_ENV), "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir)}
     _prepend_pythonpath(env_overlay, [_preserve_hermes_home_path(p) for p in (PROJECT_ROOT, *extra_pythonpath)])
@@ -617,9 +636,9 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     return [hidden_console_python, *run_argv[1:]], _stable_gateway_working_dir(PROJECT_ROOT), env_overlay
 
 
-def _spawn_detached(script_path: Path | None = None) -> int:
+def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process (``script_path`` is ignored; kept
-    for API symmetry). Spawns python.exe directly — a cmd.exe shim inherits the parent console and
+    for API symmetry; ``home`` spawns another profile's gateway — ``--profile`` is derived from it). Spawns python.exe directly — a cmd.exe shim inherits the parent console and
     gets reaped when the shell exits. Flags: CREATE_NEW_PROCESS_GROUP (no Ctrl+C from our group),
     CREATE_NO_WINDOW (hidden console descendants inherit, so nothing flashes — #54220/#56747; the old
     DETACHED_PROCESS made every descendant spawn flash), CREATE_BREAKAWAY_FROM_JOB
@@ -632,7 +651,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     process is independent of whichever shell started it.
     """
     _assert_windows()
-    argv, working_dir, env_overlay = _build_gateway_argv()
+    argv, working_dir, env_overlay = _build_gateway_argv(home)
     env = {**os.environ, **env_overlay}
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
@@ -771,6 +790,12 @@ def install(
 
     task_name = get_task_name()
     script_path = _write_task_script()
+    # A pre-fix install that failed its Startup-folder swap left `Hermes_Gateway.tmp` there, and the
+    # Scheduled Task path below never touches that folder — sweep it so a re-run clears the debris.
+    try:
+        _startup_staging_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
     # On locked-down accounts schtasks can sit for the full timeout before returning Access Denied.
     # All intent questions were asked above, so ask for UAC before touching schtasks.
@@ -810,7 +835,23 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
-def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False) -> list[int]:
+def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> list[int]:
+    """Live gateway PIDs for the readiness poll. ``home`` scopes the probe to ONE profile's identity
+    files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
+    process-table discovery for the active profile or the whole fleet."""
+    if home is not None:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
+        return [pid] if pid else []
+    from hermes_cli.gateway import find_gateway_pids
+
+    return list(find_gateway_pids(all_profiles=all_profiles))
+
+
+def _confirm_gateway_stable(
+    initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False, home: Path | None = None,
+) -> list[int]:
     """Re-check a freshly detected gateway for ``confirm_s`` seconds: one process-table hit proves
     the child was *created*, not that it survived startup (or a parent Job Object teardown).
 
@@ -822,13 +863,11 @@ def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_
     """
     if confirm_s <= 0:
         return initial_pids
-    from hermes_cli.gateway import find_gateway_pids
-
     pids = initial_pids
     confirm_deadline = time.monotonic() + confirm_s
     while time.monotonic() < confirm_deadline:
         time.sleep(interval_s)
-        pids = list(find_gateway_pids(all_profiles=all_profiles))
+        pids = _live_gateway_pids(all_profiles, home)
         if not pids:
             return []
     return pids
@@ -836,16 +875,15 @@ def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_
 
 def _wait_for_gateway_ready(
     timeout_s: float = 6.0, interval_s: float = 0.4, confirm_s: float = 2.0, all_profiles: bool = False,
+    home: Path | None = None,
 ) -> list[int]:
     """Poll for a live gateway for up to ``timeout_s``; a first hit is provisional until the gateway
     stays visible for ``confirm_s`` more seconds (a child that dies right after spawn earns no ✓)."""
-    from hermes_cli.gateway import find_gateway_pids
-
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        pids = list(find_gateway_pids(all_profiles=all_profiles))
+        pids = _live_gateway_pids(all_profiles, home)
         if pids:
-            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s, all_profiles=all_profiles)
+            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s, all_profiles=all_profiles, home=home)
             if confirmed:
                 return confirmed
             continue  # died during confirmation — keep polling until deadline
@@ -865,16 +903,30 @@ def _wait_for_gateway_ready(
 _START_ATTESTATION_RELATIVE = ("state", "gateway.start-attestation.json")
 
 
-def _start_attestation_path() -> Path:
-    return _hermes_home().joinpath(*_START_ATTESTATION_RELATIVE)
+def _start_attestation_path(home: Path | None = None) -> Path:
+    """Marker path; ``home`` addresses another profile's marker (per-profile cold-start, #110959)."""
+    return (home if home is not None else _hermes_home()).joinpath(*_START_ATTESTATION_RELATIVE)
 
 
-def _write_start_attestation(pids: list[int], via: str) -> None:
-    """Persist the PIDs a ✓ vouched for. Best-effort, never raises."""
+def _write_start_attestation(pids: list[int], via: str, home: Path | None = None) -> None:
+    """Persist the PIDs a ✓ vouched for. Best-effort, never raises.
+
+    ``generation`` identifies this marker instance: the update resume token records the generation
+    whose death authorized a cold-start, so execution consumes exactly that marker and never a
+    newer one written by a concurrent ``hermes gateway start`` (#110020 review)."""
     try:
-        path = _start_attestation_path()
+        path = _start_attestation_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat()}
+        from hermes_cli.process_identity import _process_create_time
+
+        payload = {
+            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
+            "generation": uuid.uuid4().hex,
+        }
+        # Bind each PID to its incarnation (#110020 review): the ledger sentinel is matched by PID
+        # only otherwise, so a stale marker would be re-read against whatever lifecycle wrote last.
+        create_times = {str(int(p)): _process_create_time(int(p)) for p in pids}
+        payload["create_times"] = {k: v for k, v in create_times.items() if v is not None}
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
@@ -882,32 +934,141 @@ def _write_start_attestation(pids: list[int], via: str) -> None:
         logger.debug("Failed to write gateway start attestation", exc_info=True)
 
 
-def _clear_start_attestation() -> None:
+def _clear_start_attestation(home: Path | None = None) -> None:
     try:
-        _start_attestation_path().unlink(missing_ok=True)
+        _start_attestation_path(home).unlink(missing_ok=True)
     except OSError:
         pass
 
 
-def _attested_pid_exited_cleanly(pid: int) -> bool:
-    """True when the lifecycle ledger shows a clean exit for ``pid``."""
+# A start attestation older than this is no authority (#110020 review (d)): the marker is a one-shot
+# meant to bridge the seconds between a ✓ and the next ``hermes gateway status``/``update``; a
+# historical marker must never later override Desktop ownership into a duplicate gateway (#76129).
+START_ATTESTATION_MAX_AGE_S = 24 * 3600
+# Same slack process_identity uses for psutil create_time comparisons (PID reuse disambiguation).
+_CREATE_TIME_TOLERANCE_S = 2.0
+# A backwards clock step (NTP) between write and read must not kill a fresh marker.
+_ATTESTATION_CLOCK_SLACK_S = 60.0
+
+
+def _attestation_within_horizon(data: object) -> bool:
+    """False for a marker whose ``ts`` is missing, unparsable or older than the horizon (fail closed)."""
+    try:
+        ts = datetime.fromisoformat(str(data["ts"])) if isinstance(data, dict) else None
+        if ts is None:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = time.time() - ts.timestamp()
+        return -_ATTESTATION_CLOCK_SLACK_S <= age <= START_ATTESTATION_MAX_AGE_S
+    except Exception:
+        return False
+
+
+def _attestation_generation(data: object) -> str | None:
+    """The marker instance identity, or ``None`` for a marker that carries none."""
+    return str(data["generation"]) if isinstance(data, dict) and data.get("generation") else None
+
+
+def _consume_start_attestation(generation: str, home: Path | None = None) -> None:
+    """Clear the marker only while it is still the ``generation`` that was acted on; a newer
+    marker belongs to a gateway start this caller knows nothing about and keeps its own report."""
+    # Best-effort read-then-unlink: a marker written in between loses one post-start report, never authority.
+    if _attestation_generation(_read_start_attestation(home)) == generation:
+        _clear_start_attestation(home)
+
+
+def _read_start_attestation(home: Path | None = None) -> object | None:
+    """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
+    try:
+        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _attested_pids_from(data: object) -> list[int]:
+    """PID list from an attestation payload; empty for anything malformed."""
+    if not isinstance(data, dict):
+        return []
+    pids = data.get("pids")
+    # Fail closed: a null/malformed marker must never authorize a cold start (or raise on iteration).
+    # Exact positive ints only — ``isinstance(True, int)`` holds, and 0 / negatives are not PIDs; one
+    # bad item taints the whole list because the writer never emits such values.
+    if not isinstance(pids, list) or not all(type(p) is int and p > 0 for p in pids):
+        return []
+    return list(pids)
+
+
+def _attested_create_time(data: object, pid: int) -> float | None:
+    """The process create time the marker bound ``pid`` to, or ``None`` (older marker / psutil silent)."""
+    times = data.get("create_times") if isinstance(data, dict) else None
+    value = times.get(str(pid)) if isinstance(times, dict) else None
+    return float(value) if type(value) in (int, float) else None
+
+
+def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, home: Path | None = None) -> bool:
+    """True when the lifecycle ledger shows a clean exit for ``pid`` — or, for a marker that bound
+    ``pid`` to a ``create_time``, whenever the sentinel cannot be shown to describe THAT incarnation
+    (#110020 review): a sentinel for another PID or another start time means an unrelated lifecycle
+    has run since and the marker is stale; "unknown" must never read as "dead". A missing sentinel
+    still reads as dead (the attested process never booted far enough to claim it)."""
     try:
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
-        data = json.loads(get_lifecycle_sentinel_path(_hermes_home()).read_text(encoding="utf-8"))
-    except Exception:
+        sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
+        data = json.loads(sentinel.read_text(encoding="utf-8"))
+    except OSError:
         return False
-    return isinstance(data, dict) and data.get("phase") == "exited" and data.get("pid") == pid
+    except Exception:
+        return create_time is not None
+    if not isinstance(data, dict):
+        return create_time is not None
+    if create_time is not None:
+        if data.get("pid") != pid:
+            return True
+        sentinel_birth = data.get("create_time")
+        # A sentinel from a gateway older than the identity stamp cannot be told apart: PID-only rule.
+        if type(sentinel_birth) in (int, float) and abs(float(sentinel_birth) - create_time) > _CREATE_TIME_TOLERANCE_S:
+            return True
+    return data.get("phase") == "exited" and data.get("pid") == pid
+
+
+def _attested_dead(
+    attested: list[int], current_pids: list[int], data: object = None, home: Path | None = None
+) -> bool:
+    """The liveness rule shared by the consuming and read-only probes: attested PIDs are dead when
+    no gateway runs now and the lifecycle ledger shows no clean exit for any of them."""
+    return not current_pids and not any(
+        _attested_pid_exited_cleanly(pid, _attested_create_time(data, pid), home) for pid in attested
+    )
+
+
+def attested_death_generation(current_pids: list[int], home: Path | None = None) -> str | None:
+    """The generation of a start attestation that vouches for gateway PID(s) gone without a clean exit,
+    or ``None``.
+
+    Read-only twin of :func:`check_start_attestation` for callers that must not consume the
+    one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
+    still owes a gateway cold-start (#109538) and records the generation in its resume token so the
+    execution step consumes exactly the marker it was authorized by. Callers pass the liveness they
+    already established (``[]`` after their own discovery came back empty) so the process table is
+    not scanned twice. ``None`` for anything undecidable (no marker, no generation, a clean ledger
+    exit): "unknown" must never read as "dead". ``home`` probes another profile's marker and ledger
+    (the updater evaluates every profile that is not running, #110959)."""
+    data = _read_start_attestation(home)
+    attested = _attested_pids_from(data)
+    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids, data, home):
+        return None
+    return _attestation_generation(data)
 
 
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
     """Surface (once) a gateway that died after a ✓ was printed for it. Never raises. Gateway running
     or a clean-exit ledger record: clear silently; otherwise return a warning and consume the marker."""
-    try:
-        data = json.loads(_start_attestation_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = _read_start_attestation()
+    if data is None:
         return None
-    attested = [p for p in data.get("pids", []) if isinstance(p, int)] if isinstance(data, dict) else []
+    attested = _attested_pids_from(data)
     if not attested:
         _clear_start_attestation()
         return None
@@ -921,9 +1082,12 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
             return None
 
     _clear_start_attestation()
-    if current_pids or any(_attested_pid_exited_cleanly(pid) for pid in attested):
+    if not _attested_dead(attested, current_pids, data):
         return None
+    return _format_attestation_warning(attested, data)
 
+
+def _format_attestation_warning(attested: list[int], data: dict) -> str:
     via = data.get("via") or "direct spawn"
     ts = data.get("ts") or "unknown time"
     lines = [
@@ -1016,6 +1180,7 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (_startup_staging_path(), "Windows login item staging file"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
     ):
         try:
@@ -1037,6 +1202,101 @@ def is_task_registered() -> bool:
 
 def is_startup_entry_installed() -> bool:
     return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+
+
+def _query_scheduled_task_xml(task_name: str) -> str | None:
+    """Return a registered task's XML, or ``None`` when it cannot be inspected (fail open: a
+    localized ``schtasks`` failure is not evidence about an otherwise working task)."""
+    code, out, err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0 or not out.strip():
+        logger.debug("Could not query Scheduled Task XML for %r: %s", task_name, (err or out).strip())
+        return None
+    return out
+
+
+def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
+    """Namespace-agnostic ``Task/Settings/...`` leaf-path → text map, or ``None`` for invalid XML.
+    The root ``version`` attribute is exposed as ``Task@version``."""
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    values: dict[str, str] = {"Task@version": root.attrib.get("version", "")}
+
+    def visit(element: ElementTree.Element, path: tuple[str, ...]) -> None:
+        current_path = (*path, element.tag.rsplit("}", 1)[-1])
+        children = list(element)
+        if not children:
+            values["/".join(current_path)] = " ".join((element.text or "").split())
+        for child in children:
+            visit(child, current_path)
+
+    visit(root, ())
+    return values
+
+
+# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
+# template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
+# writes DOMAIN\user, so equality would flag every healthy registration.
+_TASK_DRIFT_LEAVES = {
+    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
+    "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
+    "Task/Actions/Exec/Arguments": "launcher arguments",
+}
+
+
+def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list[str]:
+    """Human-readable drift fragments between a registered task export and the current template,
+    over ``_TASK_DRIFT_LEAVES`` plus the Task ``version``. Empty when aligned or when either side
+    does not parse (fail open)."""
+    live = _task_xml_leaf_values(registered_xml)
+    want = _task_xml_leaf_values(template_xml)
+    if live is None or want is None:
+        return []
+    missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
+    differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    drift = []
+    if missing:
+        drift.append(f"missing: {', '.join(missing)}")
+    drift.extend(f"{label} differs" for label in differs)
+    if live["Task@version"] != want["Task@version"]:
+        drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
+    return drift
+
+
+def scheduled_task_drift(task_name: str) -> list[str]:
+    """Drift fragments between the registered task and ``_build_scheduled_task_xml``; empty when
+    aligned or when the task cannot be queried."""
+    registered = _query_scheduled_task_xml(task_name)
+    if registered is None:
+        return []
+    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    return compare_scheduled_task_drift(registered, template)
+
+
+def _print_scheduled_task_drift(task_name: str) -> None:
+    """Warn when the registered task predates the current template (status is read-only; the
+    repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
+    drift = scheduled_task_drift(task_name)
+    if drift:
+        print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")
+        print("  Repair: hermes gateway start  (or: hermes gateway install)")
+
+
+def reconcile_scheduled_task(task_name: str) -> bool:
+    """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
+    of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
+    ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
+    ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
+    drift = scheduled_task_drift(task_name)
+    if not drift:
+        return False
+    print(f"↻ Repairing outdated Scheduled Task registration ({'; '.join(drift)})")
+    ok, detail = _install_scheduled_task(task_name, _write_task_script())
+    print(f"{'✓' if ok else '⚠'} {detail}")
+    if not ok:
+        print("  Repair manually: hermes gateway install")
+    return ok
 
 
 def is_installed() -> bool:
@@ -1203,6 +1463,7 @@ def status(deep: bool = False) -> None:
         for key in ("status", "last run time", "last run result"):
             if key in info:
                 print(f"  {key.title()}: {info[key]}")
+        _print_scheduled_task_drift(task_name)
     elif startup_installed:
         entry = get_startup_entry_path()
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")
@@ -1243,6 +1504,8 @@ def start() -> None:
             print("⚠ Gateway install did not complete in this process.")
             print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
             return
+    elif is_task_registered():
+        reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.
@@ -1284,24 +1547,35 @@ def _windows_stop_drain_timeout() -> float:
     return max(1.0, min(configured, 30.0))
 
 
-def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
-    """Force-kill known gateway PIDs without a broad process sweep."""
+def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
+    """``{pid: start_time}`` fingerprints, captured BEFORE any drain/wait so a later force-kill can
+    detect that the PID was recycled meanwhile."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
+        from gateway.status import get_process_start_time
+    except ImportError:
+        return {pid: None for pid in pids}
+    return {pid: get_process_start_time(pid) for pid in pids}
+
+
+def _force_terminate_known_gateway_pids(identities: dict[int, int | None]) -> int:
+    """Force-kill known gateway PIDs without a broad process sweep. ``identities`` maps each PID to
+    the start time observed when it was identified as a gateway (``_gateway_pid_identities``);
+    ``terminate_pid`` refuses the kill when the live process no longer matches. Re-reading the start
+    time here would compare the process with itself and taskkill whatever now owns the PID."""
+    try:
+        from gateway.status import _pid_exists, terminate_pid
     except ImportError:
         return 0
 
     own_pid = os.getpid()
     killed = 0
-    seen: set[int] = set()
-    for pid in pids:
-        if pid <= 0 or pid == own_pid or pid in seen:
+    for pid, expected_start_time in identities.items():
+        if pid <= 0 or pid == own_pid:
             continue
-        seen.add(pid)
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(pid, force=True, expected_start_time=get_process_start_time(pid))
+            terminate_pid(pid, force=True, expected_start_time=expected_start_time)
             killed += 1
         except ProcessLookupError:
             continue
@@ -1338,6 +1612,8 @@ def stop() -> None:
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
+    # Fingerprint before the drain: the kill below must refuse a PID recycled during the wait.
+    identities = _gateway_pid_identities(stop_pids)
     drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
 
     stopped_any = drained
@@ -1350,8 +1626,9 @@ def stop() -> None:
             print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
     # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
-    stop_pids.extend(pid for pid in _collect_gateway_stop_pids() if pid not in stop_pids)
-    killed = _force_terminate_known_gateway_pids(stop_pids)
+    late_pids = [pid for pid in _collect_gateway_stop_pids() if pid not in identities]
+    identities.update(_gateway_pid_identities(late_pids))
+    killed = _force_terminate_known_gateway_pids(identities)
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
@@ -1387,7 +1664,7 @@ def restart() -> None:
 
     if not _wait_for_gateway_absent(timeout_s=30.0):
         print("⚠ Gateway still present after stop; forcing termination before restart...")
-        _force_terminate_known_gateway_pids(_collect_gateway_stop_pids())
+        _force_terminate_known_gateway_pids(_gateway_pid_identities(_collect_gateway_stop_pids()))
         if not _wait_for_gateway_absent(timeout_s=10.0):
             raise RuntimeError(
                 "Gateway process still detected after force kill; refusing to "

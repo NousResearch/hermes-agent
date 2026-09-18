@@ -65,10 +65,21 @@ def _has_configured_mcp_servers() -> bool:
         return True  # conservative: still try discovery in the background; startup can't block
 
 
+def _discovery_registered_servers(status) -> bool:
+    """True when a discovery run left servers usable: a live session OR a lazy registration.
+
+    A ``lazy: true`` server never connects until first use, so an all-lazy config (the
+    memory-saving setup the feature exists for) looked like a run that achieved nothing:
+    the zero-connected warning fired on every startup and the retry path re-ran discovery
+    on every later call (#111717).
+    """
+    return any(entry.get("connected") or entry.get("status") == "lazy" for entry in (status or []))
+
+
 def _any_mcp_connected() -> bool:
     from tools.mcp_tool_discovery import get_mcp_status
 
-    return any(entry.get("connected") for entry in (get_mcp_status() or []))
+    return _discovery_registered_servers(get_mcp_status() or [])
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:

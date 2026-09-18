@@ -57,6 +57,7 @@ def multiplex_homes(tmp_path, monkeypatch):
     profile = root / "profiles" / "fitness"
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     # The suite-wide fixture in conftest re-points ``hermes_state.DEFAULT_DB_PATH``
@@ -618,6 +619,9 @@ def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes)
     assert store._profile_home_for_key(key) is None
 
     (root / "profiles" / "latecomer").mkdir(parents=True)
+    # A bare dir is still not a profile; the bridge publishes identity files (create_profile).
+    assert store._profile_home_for_key(key) is None
+    (root / "profiles" / "latecomer" / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     assert store._profile_home_for_key(key) == root / "profiles" / "latecomer"
 
@@ -642,6 +646,7 @@ def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
     # Once the bridge provisions it, the same key owns a real store.
     home = root / "profiles" / "latecomer"
     home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     db = store._db_for_key(key)
     assert db is not None
     db.create_session("20260829_120000_abcdef01", "telegram")
@@ -803,6 +808,7 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
     root, _profile = multiplex_homes
     main_home = root / "profiles" / "main"
     main_home.mkdir(parents=True)
+    (main_home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     store = _multiplex_store(root)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="main")
 

@@ -19,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -231,6 +232,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       <div className="space-y-6">
         <section>
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.customEndpoints.title} />
@@ -276,11 +278,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </Button>
                     {endpoint.source !== 'direct-config' && (
                       <Button
+                        aria-label={t.settings.customEndpoints.deleteEndpoint}
                         className="hover:text-destructive"
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title={t.settings.customEndpoints.deleteEndpoint}
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}

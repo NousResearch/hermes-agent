@@ -162,7 +162,8 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
    - **Telegram** — 开启新的论坛话题（如果在聊天中启用了 Bot API 9.4+ Topics 模式则为私信话题，或论坛超级群组话题）。
    - **Discord** — 在主文字频道下创建 1440 分钟自动归档的线程。
    - **Slack** — 发布一条种子消息并使用其 `ts` 作为线程锚点。
-   - **WhatsApp / Signal / Matrix / SMS** — 无原生线程，回退到直接使用主频道。
+   - **Matrix** — 发布一条种子消息并使用其事件 id 作为线程根（`m.thread` 关系）。
+   - **WhatsApp / Signal / SMS** — 无原生线程，回退到直接使用主频道。
 4. Gateway 将目标键重新绑定到你现有的 CLI session id，然后伪造一个合成用户轮次，要求 agent 确认并总结。回复会出现在新线程中。
 5. Gateway 确认成功后，CLI 打印 `/resume` 提示并干净退出：
 
@@ -181,7 +182,7 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 - 线程创建失败（权限不足、话题模式未开启）→ 直接回退到主频道并仍然完成切换；没有线程隔离，但切换本身有效。
 - `adapter.send` 失败（速率限制、临时 API 错误）→ 切换标记为失败并附带原因；行被清除以便重试。
 
-**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack——这是最常见的情况——因此大多数设置不会遇到此问题。
+**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack / Matrix——这是最常见的情况——因此大多数设置不会遇到此问题。
 
 ## Session 命名 {#session-naming}
 

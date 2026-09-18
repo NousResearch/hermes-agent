@@ -187,3 +187,37 @@ def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):
             not k.startswith("_") or k in {"_row_id", "_db_persisted"}
             for k in message
         )
+
+
+@pytest.fixture
+def compacted(session, db):
+    """The parent segment ended by compaction; ``react-tip`` is the continuation the client now holds."""
+    parent, rows = session
+    assert db.try_acquire_compression_lock(parent, "w", ttl_seconds=60)
+    db.publish_compression_child(parent_session_id=parent, child_session_id="react-tip", source="test",
+                                 messages=[{"role": "user", "content": "summary"}], compression_lock_holder="w")
+    return parent, rows, "react-tip"
+
+
+def test_ancestor_rows_react_through_the_continuation_key(compacted, db):
+    """A display resume shows the whole compression lineage with row ids, so a row in an ended parent
+    segment must react, read back and announce through the CONTINUATION key the client holds (#80670)."""
+    _parent, rows, tip = compacted
+    assert rows[1] in [m["_row_id"] for m in db.get_resume_conversations(tip)[1]]
+
+    assert db.set_message_reaction(tip, rows[1], "👍") == db.get_message_reactions(tip, rows[1])
+    assert db.get_message_reactions(tip, rows[1])[0]["emoji"] == "👍"
+    assert [p["row_id"] for p in db.take_unseen_reactions(tip)] == [rows[1]]
+
+
+def test_lineage_scope_still_rejects_foreign_and_branch_rows(compacted, db):
+    """Lineage widening must not turn row ids into a global lookup: an unrelated session's row and a row
+    of an explicit /branch copy (which keeps its own rows) stay foreign to the continuation."""
+    parent, rows, tip = compacted
+    other = db.create_session("elsewhere", "test")
+    foreign = db.append_message(other, "user", "other conversation")
+    branch = db.create_session("branch", "test", parent_session_id=parent, model_config={"_branched_from": parent})
+
+    assert db.set_message_reaction(tip, foreign, "👍") is None
+    assert db.set_message_reaction(branch, rows[0], "👍") is None
+    assert db.get_message_reactions(branch, rows[0]) == []

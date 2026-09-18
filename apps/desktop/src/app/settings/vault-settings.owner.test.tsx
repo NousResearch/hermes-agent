@@ -15,7 +15,7 @@ let respond: (profile: string, method: string) => Promise<unknown> = async () =>
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (profile: string, method: string, params?: Record<string, unknown>) => {
+  requestGatewayForAgent: (_connectionId: null | string, profile: string, method: string, params?: Record<string, unknown>) => {
     calls.push({ method, params: params ?? {}, profile })
 
     return respond(profile, method)

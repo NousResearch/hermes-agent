@@ -23,7 +23,6 @@ class HermesOverlay:
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
-    keyless: bool = False                 # served anonymously — no credential exists to configure
 
 
 HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
@@ -59,7 +58,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "vercel": HermesOverlay(is_aggregator=True),
     "opencode": HermesOverlay(is_aggregator=True, base_url_env_var="OPENCODE_ZEN_BASE_URL"),
     "opencode-go": HermesOverlay(is_aggregator=True, base_url_env_var="OPENCODE_GO_BASE_URL"),
-    "opencode-free": HermesOverlay(is_aggregator=True, base_url_override="https://opencode.ai/zen/v1", keyless=True),
     "kilo": HermesOverlay(is_aggregator=True, base_url_env_var="KILOCODE_BASE_URL"),
     "huggingface": HermesOverlay(is_aggregator=True, base_url_env_var="HF_BASE_URL"),
     "novita": HermesOverlay(is_aggregator=True, base_url_env_var="NOVITA_BASE_URL"),
@@ -122,8 +120,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
     "copilot-acp": ("github-copilot-acp",), "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
-    "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"),
-    "opencode-free": ("free", "opencode_free"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
+    "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
     "alibaba-coding-plan": ("alibaba_coding", "alibaba-coding", "alibaba_coding_plan"),
     "huggingface": ("hf", "hugging-face", "huggingface-hub"), "novita": ("novita-ai", "novitaai"),
@@ -147,7 +144,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
-    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)", "opencode-free": "OpenCode Free",
+    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 

@@ -4,7 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
+import {
+  PTY_RECONNECT_MAX_ATTEMPTS,
+  PTY_RECONNECT_MAX_MS,
+  PTY_TICKET_TIMEOUT_MS,
+} from "@/lib/pty-reconnect";
 
 class FakeFitAddon {
   fit() {}
@@ -82,6 +86,14 @@ const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
 }));
+const uploadChatImage = vi.hoisted(() =>
+  vi.fn(async () => ({ path: "/tmp/pasted.png" })),
+);
+
+vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatImage,
+}));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
@@ -146,7 +158,7 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
+  send = vi.fn();
 }
 
 type CloseEventLike = {
@@ -255,6 +267,115 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(socket.send).toHaveBeenCalledWith("\x1b[RESIZE:80;24]");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers a reconnect while the chat tab is inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => {
+        socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+        root.render(
+          <MemoryRouter initialEntries={["/chat"]}>
+            <ChatPage isActive={false} />
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+
+    // A failed image paste leaves a non-rejection banner behind.
+    uploadChatImage.mockRejectedValueOnce(new Error("disk full"));
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [file],
+        items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+      },
+    });
+    await act(async () => {
+      host!.dispatchEvent(paste);
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Image upload failed"),
+    );
+
+    // The socket dies while the tab is hidden: the reconnect is deferred.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await act(async () => {
+      socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Coming back must start the deferred reconnect despite the old banner.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 
@@ -273,6 +394,96 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("explains an expired login in plain words with a Reload button when auto-reload is spent", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4401, reason: "auth: bad-token", wasClean: true });
+    });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/login expired/i);
+    expect(alert?.textContent).not.toMatch(/auth failed|bad-token|4401/i);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Reload page");
+  });
+
+  it("renders Start new session after the server could not start the chat (1011)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "", wasClean: true });
+    });
+
+    expect(container.textContent).toMatch(/Chat could not start/);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+  });
+
+  it("offers Open logs when the agent process ended, since a crash looks like /exit", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4410, reason: "", wasClean: true });
+    });
+
+    expect(container.textContent).toMatch(/may have crashed/i);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+    expect(labels).toContain("Open logs");
+  });
+
+  it("stops retrying after the ladder is spent and offers Check server status", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+      // Drop the socket abnormally; walk every scheduled retry to failure.
+      for (let attempt = 0; attempt <= PTY_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+        const sockets = FakeWebSocket.instances.length;
+        await act(async () => {
+          FakeWebSocket.instances[sockets - 1].onclose?.({ code: 1006, reason: "", wasClean: false });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PTY_RECONNECT_MAX_MS + 100);
+        });
+      }
+
+      expect(container.textContent).not.toMatch(/code 1006/);
+      expect(container.textContent).toMatch(/Lost connection to the Hermes dashboard server/);
+      expect(container.textContent).toContain("hermes dashboard");
+      const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+      expect(labels).toContain("Reconnect now");
+      expect(labels).toContain("Check server status");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {

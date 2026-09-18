@@ -108,8 +108,11 @@ class SessionTranscriptMixin:
         return self._lazy("_transcript_drain_lock", threading.RLock)
 
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Serialize transcript draining across queue migration boundaries."""
-        if not self._db_for_session_id(session_id) or skip_db:
+        """Serialize transcript draining across queue migration boundaries. A session with no usable
+        store is NOT skipped: the write is queued and counted like any other failed append, so a
+        dead/unopenable state.db escalates and spools instead of dropping turns silently
+        (#114266)."""
+        if skip_db:
             return
         with self._get_transcript_drain_lock():
             self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
@@ -241,6 +244,9 @@ class SessionTranscriptMixin:
 
         # DB write outside the retry lock so other sessions can append.
         while True:
+            # Spooled backlog (cap eviction or a stalled session) is older than ``msg``: replay it
+            # first so recovery keeps transcript order; a still-dead DB just fails both.
+            self._drain_spooled_drops(session_id)
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
@@ -295,10 +301,11 @@ class SessionTranscriptMixin:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
                     self._transcript_append_failures[session_id] = failures
                 if failures >= self._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD:
+                    spooled = self._spool_stalled_backlog(session_id, queue_session_id)
                     logger.error(
                         "Session DB transcript append failed for %s (failure_count=%d, "
-                        "pending=%d); session is stalled and needs operator attention: %s",
-                        session_id, failures, len(pending), exc)
+                        "pending=%d, spooled_to_disk=%d); session is stalled and needs operator "
+                        "attention: %s", session_id, failures, len(pending), spooled, exc)
                 else:
                     logger.warning(
                         "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
@@ -310,11 +317,29 @@ class SessionTranscriptMixin:
                     if not queue_empty:
                         msg = pending[0]
                 if queue_empty:
-                    # Backlog clear: replay cap-dropped messages spooled to disk.
-                    # See #78182.
-                    self._drain_spooled_drops(session_id)
                     return
                 continue
+
+    def _spool_stalled_backlog(self, session_id: str, queue_session_id: str) -> int:
+        """Move a stalled session's in-memory backlog (oldest first) to the on-disk pending spool so
+        a crash/restart during the outage no longer loses it (#114266): ``recover_pending_to_db``
+        replays it at boot, ``_drain_spooled_drops`` before the next live write. Stops at the first
+        spool failure so order holds; whatever stays in memory remains under the cap."""
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.get(queue_session_id, [])
+            backlog = list(pending)
+        spooled = 0
+        for message in backlog:
+            if _spool_dropped(session_id, message) is None:
+                break
+            spooled += 1
+        if spooled:
+            self._lazy("_spooled_drop_sessions", set).add(session_id)
+            with self._transcript_retry_lock:
+                del pending[:spooled]
+                if not pending:
+                    self._dirty_transcripts.pop(queue_session_id, None)
+        return spooled
 
     def _drain_spooled_drops(self, session_id: str) -> None:
         """Replay cap-dropped spooled transcript messages after DB recovery. Best-effort: replay

@@ -1500,7 +1500,9 @@ class TestGatewaySessionDbRecovery:
                 {"role": "assistant", "content": "old-2"},
             ]
         }
-        store._transcript_append_failures = {"parent": 2}
+        # One short of the escalation threshold: the migrated backlog must stay in memory here
+        # (at the threshold the stalled-session path spools it to disk instead).
+        store._transcript_append_failures = {"parent": 1}
         store._fts_rebuild_last_attempt_at = time.monotonic()
         child_attempts = []
         failed_old_2 = False
@@ -1620,6 +1622,42 @@ class TestGatewaySessionDbRecovery:
         levels = [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()]
         assert levels == [logging.WARNING] * (threshold - 1) + [logging.ERROR]
         assert store._transcript_append_failures["s-esc"] == threshold
+
+    def test_no_usable_db_counts_failures_and_spools_backlog_before_cap(
+        self, caplog, tmp_path, monkeypatch
+    ):
+        """The reporter's outage shape (#114266): ``SessionStore._db is None`` used to early-return
+        silently — no counter, no log, turns held in memory until a crash. Now each append counts
+        toward the same ERROR escalation and, once the session is stalled, the backlog is spooled
+        to disk (long before the 200-message cap) and replayed in order on recovery."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        store = object.__new__(SessionStore)
+        store._db = None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold):
+                store.append_to_transcript("s-dead", {"role": "user", "content": f"m{i}"})
+        assert store._transcript_append_failures["s-dead"] == threshold
+        assert [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()][-1] == logging.ERROR
+        spooled = sorted(json.loads(p.read_text())["data"]["message"]["content"]
+                         for p in (tmp_path / "pending_messages").glob("pending-*.json"))
+        assert spooled == [f"m{i}" for i in range(threshold)]  # durable before the cap
+        assert "s-dead" not in store._dirty_transcripts
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-dead", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(threshold)] + ["recovered"]  # replayed in order
+        assert list((tmp_path / "pending_messages").glob("pending-*.json")) == []
 
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap

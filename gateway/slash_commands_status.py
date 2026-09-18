@@ -82,32 +82,56 @@ def _quiet_sync(call, default=None):
 
 
 def _status_model_route(
-    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry,
+    channel_override=None,
 ):
     """``(model, provider, context_used, context_total, route)`` for /status.
 
-    Order: live/cached agent route -> active session override -> persisted recent route ->
-    SessionDB row -> gateway config (only loaded when something is still missing). ``route`` carries
-    the ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
+    Order mirrors the turn resolver: an enforced channel route -> live/cached agent route ->
+    active session override -> ordinary channel route -> persisted recent route -> SessionDB row ->
+    gateway config (only loaded when something is still missing). ``route`` carries the
+    ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
     lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
     a winner without a ``base_url`` leaves the lookup on the default runtime route.
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
     routes: list[tuple[str, str, dict]] = []
+    channel_model = _clean_str(getattr(channel_override, "model", "")) if channel_override else ""
+    channel_provider = _clean_str(getattr(channel_override, "provider", "")) if channel_override else ""
+    channel_runtime = {}
+    if channel_provider:
+        try:
+            from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+            resolved_channel_runtime = _resolve_runtime_agent_kwargs_for_provider(channel_provider)
+            channel_runtime = {
+                key: _clean_str(resolved_channel_runtime.get(key))
+                for key in ("base_url", "api_key")
+                if resolved_channel_runtime.get(key)
+            }
+        except Exception:
+            channel_runtime = {}
+    channel_route = (channel_model, channel_provider, channel_runtime)
+    channel_enforced = bool(channel_override and getattr(channel_override, "enforce", False))
+    if channel_enforced:
+        routes.append(channel_route)
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
                        _clean_str(getattr(status_agent, "provider", "")),
                        {"base_url": _clean_str(getattr(status_agent, "base_url", "")),
                         "api_key": _clean_str(getattr(status_agent, "api_key", ""))}))
         ctx = getattr(status_agent, "context_compressor", None)
-        if ctx is not None:
+        # An enforced route supersedes a resident agent created under the old route. Do not pair
+        # the new model with the old agent's context window; resolve the new route below instead.
+        if not channel_enforced and ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
     routes.append((_clean_str(active_override.get("model")),
                    _clean_str(active_override.get("provider")),
                    {"base_url": _clean_str(active_override.get("base_url")),
                     "api_key": _clean_str(active_override.get("api_key"))}))
+    if not channel_enforced:
+        routes.append(channel_route)
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider")), {}))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
@@ -227,7 +251,7 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import _AGENT_PENDING_SENTINEL, _get_channel_override
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -247,8 +271,22 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
+        channel_override = None
+        if source is not None:
+            config_for_source = getattr(self, "_config_for_source", None)
+            config = (
+                config_for_source(source) if callable(config_for_source) else getattr(self, "config", None)
+            )
+            if config is not None:
+                channel_override = _get_channel_override(
+                    config,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                    parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                )
         model_name, provider_name, context_used, context_total, route = _status_model_route(
-            status_agent, active_override, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry, channel_override
         )
         if not context_total and model_name:
             # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only

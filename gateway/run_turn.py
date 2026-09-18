@@ -119,8 +119,10 @@ class GatewayTurnMixin:
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
-        (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
+        Priority (highest first): enforced ``channel_overrides`` → session ``/model`` → ordinary
+        ``channel_overrides`` → global config/env (``_resolve_gateway_model(user_config)`` and
+        default provider resolution). A channel-scoped Telegram ``/model`` switch sets the enforced
+        form so old sender-specific overrides cannot split one room across models."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
@@ -132,7 +134,19 @@ class GatewayTurnMixin:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
-        if override:
+        config_for_source = getattr(self, "_config_for_source", None)
+        cfg = (
+            config_for_source(source) if callable(config_for_source) else getattr(self, "config", None)
+        )  # getattr: bare object.__new__ test runners
+        ch = None
+        if cfg and source is not None:
+            ch = _get_channel_override(
+                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+        channel_enforced = bool(ch and getattr(ch, "enforce", False))
+        if override and not channel_enforced:
             override_model = override.get("model", model)
             override_runtime = {
                 k: override.get(k) for k in (
@@ -170,24 +184,17 @@ class GatewayTurnMixin:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
 
-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None:
-            ch = _get_channel_override(
-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+        if ch:
+            if ch.model:
+                model = ch.model
+            if ch.provider:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                ch_runtime_model = runtime_kwargs.pop("model", None)
+                # Adopt the provider's bundled model only when the override named none.
+                if ch_runtime_model and not ch.model:
+                    model = ch_runtime_model
 
-        if override and skey:
+        if override and skey and not channel_enforced:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the

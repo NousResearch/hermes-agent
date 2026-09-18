@@ -262,6 +262,188 @@ class TestOneTurnNeverPersisted:
         )
 
     @pytest.mark.asyncio
+    async def test_plain_group_switch_persists_a_room_route(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        group_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="u1",
+            chat_id="-1000000000001",
+            chat_type="group",
+        )
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, channel_overrides={})}
+        )
+        runner._agent_cache = {}
+        runner._agent_cache_lock = None
+        runner._session_model_overrides[build_session_key(group_source)] = {
+            "model": "sender/model",
+            "provider": "opencode-go",
+            "api_key": "sender-key",
+        }
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="channel/model",
+                target_provider="opencode-go",
+                api_key="channel-key",
+                base_url="https://example.invalid",
+                api_mode="chat_completions",
+                provider_label="OpenCode Go",
+            ),
+        )
+        event = MessageEvent(
+            text="/model channel/model",
+            message_type=MessageType.TEXT,
+            source=group_source,
+        )
+
+        reply = await runner._handle_model_command(event)
+
+        assert reply is not None and "saved for this Telegram group" in reply
+        assert runner._session_model_overrides[build_session_key(group_source)]["model"] == "sender/model"
+        config = _yaml.safe_load((tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["telegram"]["channel_overrides"]["-1000000000001"] == {
+            "model": "channel/model",
+            "provider": "opencode-go",
+            "enforce": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_group_once_stays_ephemeral_and_does_not_write_channel_config(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml as _yaml
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        group_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="user-a",
+            chat_id="-1000000000001",
+            chat_type="group",
+        )
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, channel_overrides={})}
+        )
+        runner._agent_cache = {}
+        runner._agent_cache_lock = None
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="temporary/model",
+                target_provider="openrouter",
+                api_key="temporary-key",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+                provider_label="OpenRouter",
+            ),
+        )
+
+        reply = await runner._handle_model_command(
+            MessageEvent(
+                text="/model temporary/model --once",
+                message_type=MessageType.TEXT,
+                source=group_source,
+            )
+        )
+
+        assert reply is not None and "next turn only" in reply
+        assert runner.config.platforms[Platform.TELEGRAM].channel_overrides == {}
+        config = _yaml.safe_load((tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
+        assert "channel_overrides" not in config.get("telegram", {})
+        assert runner._session_model_overrides[build_session_key(group_source)]["model"] == "temporary/model"
+        runner.async_session_store.set_model_override.assert_not_awaited()
+
+    def test_channel_persistence_targets_the_loader_selected_platform_block(self, tmp_path):
+        import yaml
+        from gateway.config_loader import load_yaml_layer
+        from hermes_cli.model_switch import ModelSwitchResult, persist_channel_model_selection
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "platforms": {"telegram": {}},
+                "gateway": {
+                    "platforms": {
+                        "telegram": {
+                            "channel_overrides": {
+                                "keep": {"model": "existing", "provider": "provider"},
+                            },
+                        },
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        persist_channel_model_selection(
+            ModelSwitchResult(
+                success=True,
+                new_model="new",
+                target_provider="provider",
+                api_mode="chat_completions",
+            ),
+            config_path,
+            platform="telegram",
+            channel_id="new-channel",
+        )
+
+        loaded = {}
+        load_yaml_layer(tmp_path, loaded)
+        assert loaded["platforms"]["telegram"]["channel_overrides"] == {
+            "keep": {"model": "existing", "provider": "provider"},
+            "new-channel": {"model": "new", "provider": "provider", "enforce": True},
+        }
+
+    def test_channel_persistence_preserves_nested_overrides_when_top_level_platform_exists(
+        self, tmp_path
+    ):
+        import yaml
+        from gateway.config_loader import load_yaml_layer
+        from hermes_cli.model_switch import ModelSwitchResult, persist_channel_model_selection
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "telegram": {"require_mention": True},
+                "platforms": {
+                    "telegram": {
+                        "channel_overrides": {
+                            "keep": {"model": "existing", "provider": "provider"},
+                        },
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        persist_channel_model_selection(
+            ModelSwitchResult(
+                success=True,
+                new_model="new",
+                target_provider="provider",
+                api_mode="chat_completions",
+            ),
+            config_path,
+            platform="telegram",
+            channel_id="new-channel",
+        )
+
+        loaded = {}
+        load_yaml_layer(tmp_path, loaded)
+        assert loaded["platforms"]["telegram"]["channel_overrides"] == {
+            "keep": {"model": "existing", "provider": "provider"},
+            "new-channel": {"model": "new", "provider": "provider", "enforce": True},
+        }
+
+    @pytest.mark.asyncio
     async def test_once_skips_session_store_write_through(
         self, tmp_path, monkeypatch
     ):

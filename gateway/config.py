@@ -336,17 +336,32 @@ class SessionResetPolicy:
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``).
+
+    ``enforce`` is used by a channel-scoped ``/model`` switch: it makes the room policy
+    authoritative over sender-specific session overrides in that channel.
+    """
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    enforce: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {k: v for k, v in asdict(self).items() if v is not None}
+        return {
+            k: v for k, v in asdict(self).items()
+            if v is not None and (k != "enforce" or v)
+        }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        return cls(
+            model=data.get("model"),
+            provider=data.get("provider"),
+            system_prompt=data.get("system_prompt"),
+            enforce=_coerce_bool(data.get("enforce"), False),
+        )
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

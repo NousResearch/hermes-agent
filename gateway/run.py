@@ -3564,6 +3564,9 @@ class GatewayRunner(
         # Value: (AIAgent, config_signature); LRU cap in _enforce_agent_cache_cap, TTL in expiry watcher.
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = threading.Lock()
+        # Secondary profile configs are kept separately from the launch profile's self.config so
+        # routed channel overrides cannot leak across profiles that share a platform chat ID.
+        self._profile_configs: Dict[str, GatewayConfig] = {}
         # Launch-time identity of the profile that owns ``self.adapters``; ``_authorization_adapter``
         # compares against this rather than the per-turn ``_active_profile_name()``.
         self._primary_profile_name = self._kanban_notifier_profile = self._active_profile_name()

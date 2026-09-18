@@ -35,6 +35,22 @@ _FAST_SELECTIONS = {
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
 
 
+def model_scope_for_source(source: Any, request: Any) -> str:
+    """Return the effective /model scope for a message source.
+
+    Telegram group/forum commands default to a channel policy so one sender's command controls
+    the room. Explicit ``--session``, ``--once`` and ``--global`` retain their existing meanings.
+    """
+    if request.scope != "default":
+        return request.scope
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+    if str(platform) == "telegram" and getattr(source, "chat_type", "") in {
+        "group", "forum", "channel", "thread",
+    }:
+        return "channel"
+    return "default"
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code: a first-time lazy import on
     a new code path can crash on a stale cached dependency. Scoped to the highest-risk trigger."""
@@ -61,6 +77,18 @@ async def _persist_model_switch_to_config(result, config_path) -> None:
     await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
+async def _persist_model_switch_to_channel(result, config_path, source) -> None:
+    """Write-through a resolved /model switch to one messaging channel, off the event loop."""
+    from hermes_cli.model_switch import persist_channel_model_selection
+    await asyncio.to_thread(
+        persist_channel_model_selection,
+        result,
+        config_path,
+        platform=source.platform,
+        channel_id=str(source.chat_id),
+    )
+
+
 @dataclasses.dataclass
 class _ModelSwitchContext:
     """Everything a /model switch needs beyond the target: current route + persistence policy."""
@@ -69,6 +97,7 @@ class _ModelSwitchContext:
     source: Any
     config_path: Any
     persist_global: bool
+    persist_channel: bool = False
     one_turn: bool = False
     reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
@@ -193,6 +222,39 @@ class GatewayModelCommandsMixin:
             )
         return None
 
+    def _apply_channel_model_override(self, source, result) -> None:
+        """Install a durable channel route in the live config object after a successful switch."""
+        from gateway.config import ChannelOverride, PlatformConfig
+
+        config_for_source = getattr(self, "_config_for_source", None)
+        config = config_for_source(source) if callable(config_for_source) else getattr(self, "config", None)
+        platforms = getattr(config, "platforms", None)
+        if not isinstance(platforms, dict):
+            return
+        platform_key = getattr(source.platform, "value", source.platform)
+        platform_config = platforms.get(source.platform) or platforms.get(platform_key)
+        if platform_config is None:
+            platform_config = PlatformConfig()
+            platforms[source.platform] = platform_config
+        overrides = getattr(platform_config, "channel_overrides", None)
+        if not isinstance(overrides, dict):
+            overrides = {}
+            platform_config.channel_overrides = overrides
+        channel_key = str(source.chat_id)
+        existing = overrides.get(channel_key)
+        if isinstance(existing, ChannelOverride):
+            existing.model = result.new_model
+            existing.provider = result.target_provider
+            existing.enforce = True
+        else:
+            existing_dict = dict(existing) if isinstance(existing, dict) else {}
+            existing_dict.update({
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "enforce": True,
+            })
+            overrides[channel_key] = ChannelOverride.from_dict(existing_dict)
+
     async def _record_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
     ) -> None:
@@ -218,19 +280,27 @@ class GatewayModelCommandsMixin:
         # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
+        scope_note = (
+            "This override applies to this Telegram group. "
+            if ctx.persist_channel and not one_turn
+            else "This override applies to the next turn only. "
+            if one_turn else ""
+        )
         self._pending_model_notes[ctx.session_key] = (
             f"[Note: model was just switched from {format_model_for_display(ctx.current_model)} to "
             f"{format_model_for_display(result.new_model)} "
             f"via {result.provider_label or result.target_provider}. "
-            f"{'This override applies to the next turn only. ' if one_turn else ''}"
+            f"{scope_note}"
             f"Adjust your self-identification accordingly.]"
         )
-        self._session_model_overrides[ctx.session_key] = {
+        session_override = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
+        if not ctx.persist_channel:
+            self._session_model_overrides[ctx.session_key] = session_override
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
@@ -246,10 +316,10 @@ class GatewayModelCommandsMixin:
         # pre-once state (the prior session override, or nothing), which is exactly what the finally-restore
         # reverts the in-memory dict to. (#29923 review defect: the original implementation wrote through,
         # so a crash before the restore rehydrated the once-model permanently.)
-        if not one_turn:
+        if not one_turn and not ctx.persist_channel:
             try:
                 await self.async_session_store.set_model_override(
-                    ctx.session_key, self._session_model_overrides[ctx.session_key]
+                    ctx.session_key, session_override
                 )
             except Exception:
                 logger.debug("Failed to persist session model override", exc_info=True)
@@ -259,6 +329,15 @@ class GatewayModelCommandsMixin:
                 await _persist_model_switch_to_config(result, ctx.config_path)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
+        elif ctx.persist_channel:
+            # The config write is durable; the in-memory update makes the new route effective without
+            # waiting for a gateway restart. The channel policy is marked enforced so old sender-specific
+            # overrides cannot silently take precedence over the room setting.
+            self._apply_channel_model_override(source, result)
+            try:
+                await _persist_model_switch_to_channel(result, ctx.config_path, source)
+            except Exception as e:
+                logger.warning("Failed to persist channel model switch: %s", e)
 
     async def _model_switch_confirmation(
         self, result, ctx: _ModelSwitchContext, *, one_turn: bool, picker: bool
@@ -307,6 +386,8 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:
             lines.append("    (next turn only — restores after one response)")
+        elif ctx.persist_channel:
+            lines.append("    (saved for this Telegram group; it applies to all senders here)")
         else:
             lines.append(t("gateway.model.session_only_hint"))
         return "\n".join(lines)
@@ -456,6 +537,15 @@ class GatewayModelCommandsMixin:
         # Check for session override. See #30479.
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
+        scope = model_scope_for_source(source, request)
+        persist_global = (
+            resolve_persist_behavior(
+                request.is_global, request.is_session, is_once=request.is_once,
+                explicit_provider=request.explicit_provider,
+            )
+            if scope == "default" else scope == "global"
+        )
+        persist_channel = scope == "channel"
         ctx = _ModelSwitchContext(
             # Gateway routing columns — forward ALL of them at CREATE time, same fix as the
             # compression-rotation bug in agent/conversation_compression.py. Without these, the branched
@@ -472,16 +562,27 @@ class GatewayModelCommandsMixin:
             session_key=session_key,
             source=source,
             config_path=(profile_home or _hermes_home) / "config.yaml",
-            persist_global=resolve_persist_behavior(
-                request.is_global, request.is_session, is_once=request.is_once,
-                explicit_provider=request.explicit_provider,
-            ),
+            persist_global=persist_global,
+            persist_channel=persist_channel,
             one_turn=request.is_once,
             reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
-        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        if persist_channel:
+            from gateway.run import _get_channel_override
+            config_for_source = getattr(self, "_config_for_source", None)
+            channel_config = (
+                config_for_source(source) if callable(config_for_source) else getattr(self, "config", None)
+            )
+            channel_override = _get_channel_override(
+                channel_config, source.platform, str(source.chat_id),
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            ctx.apply_override(channel_override.to_dict() if channel_override else {})
+        else:
+            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)

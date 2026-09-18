@@ -16,6 +16,7 @@ bot token afterwards, and without this an adapter-less profile would stay adapte
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -61,6 +62,28 @@ class GatewayProfileReconcileMixin:
         homes = self._served_profile_homes or {}
         active = getattr(self, "_primary_profile_name", None) or "default"
         return ([active] if active in homes or not homes else []) + sorted(n for n in homes if n != active)
+
+    def _config_for_source(self, source):
+        """Return the live config object for the profile that owns *source*.
+
+        The multiplexer keeps the default profile in ``self.config`` and secondary profile configs in
+        ``self._profile_configs``. Scoped channel mutations must use the routed object; mutating the
+        launch profile's config would leak a room policy across profiles that share a chat ID.
+        """
+        config = getattr(self, "config", None)
+        if config is None or not getattr(config, "multiplex_profiles", False) or source is None:
+            return config
+        profile_name = str(getattr(source, "profile", None) or "").strip()
+        if not profile_name:
+            resolver = getattr(self, "_profile_name_for_source", None)
+            if callable(resolver):
+                with contextlib.suppress(Exception):
+                    profile_name = resolver(source) or ""
+        if not profile_name or profile_name in {
+            "default", str(getattr(self, "_primary_profile_name", "") or "")
+        }:
+            return config
+        return (getattr(self, "_profile_configs", None) or {}).get(profile_name, config)
 
     def _note_served_profiles(self, profile_homes) -> None:
         """Called by ``_record_served_profiles``: remember the served set and each home's signature."""
@@ -202,6 +225,9 @@ class GatewayProfileReconcileMixin:
             self._served_profile_homes.pop(name, None)
         if isinstance(self._served_profile_signatures, dict):
             self._served_profile_signatures.pop(name, None)
+        profile_configs = getattr(self, "_profile_configs", None)
+        if isinstance(profile_configs, dict):
+            profile_configs.pop(name, None)
         from gateway.session import _session_key_namespace
         prefix = _session_key_namespace(name) + ":"
         cache = getattr(self, "_agent_cache", None)

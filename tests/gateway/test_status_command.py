@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
+from gateway.slash_commands_status import _status_model_route
 from gateway.session import (
     AsyncSessionStore,
     SessionEntry,
@@ -80,6 +81,34 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     return runner
 
 
+def test_status_enforced_channel_route_resolves_provider_endpoint():
+    channel_override = ChannelOverride(
+        model="channel/model",
+        provider="channel-provider",
+        enforce=True,
+    )
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "provider": "channel-provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "runtime-secret",
+        },
+    ):
+        result = _status_model_route(
+            None,
+            {},
+            {},
+            {},
+            SimpleNamespace(last_prompt_tokens=0),
+            channel_override=channel_override,
+        )
+
+    assert result[0:2] == ("channel/model", "channel-provider")
+    assert result[-1]["base_url"] == "https://provider.example/v1"
+
+
 @pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
@@ -145,6 +174,43 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_reports_enforced_channel_route_over_sender_override():
+    """A room policy must be visible in /status even when this sender has a stale override."""
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-a",
+        chat_id="-1000000000001",
+        user_name="Group User",
+        chat_type="group",
+    )
+    session_entry = SessionEntry(
+        session_key=build_session_key(source),
+        session_id="sess-group",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner = _make_runner(session_entry)
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
+        "-1000000000001": ChannelOverride(
+            model="channel/model", provider="openrouter", enforce=True
+        )
+    }
+    runner._session_state(session_entry.session_key).conversation.model_override = {
+        "model": "sender/model",
+        "provider": "openrouter",
+    }
+
+    result = await runner._handle_message(
+        MessageEvent(text="/status", source=source, message_id="m1")
+    )
+
+    assert "**Model:** `channel/model` (openrouter)" in result
+    assert "**Model:** `sender/model` (openrouter)" not in result
 
 
 @pytest.mark.asyncio
@@ -229,6 +295,7 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
             session_key=session_entry.session_key,
             current_model="model-a",
             persist_global=False,
+            persist_channel=False,
             restore_snapshot=None,
         )
         await runner._record_model_switch(

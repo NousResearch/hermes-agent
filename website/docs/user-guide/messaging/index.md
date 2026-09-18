@@ -311,8 +311,10 @@ Details:
 
 - All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
-- Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
-- The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- Resolution priority for the model is: session `/model` override → ordinary `channel_overrides` → global config. An override written with `enforce: true` is authoritative for the channel and wins over sender-specific `/model` state; `/status` reports that same enforced route.
+- In Telegram groups, forums, channels, and threads, a plain `/model <target>` selects the channel scope so all senders share the route. Use `--session` for one sender/session, `--once` for the next turn only, or `--global` for the profile default.
+- The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history), and runtime model switches preserve an existing channel prompt.
+
 
 ## Security
 

@@ -1622,6 +1622,73 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         pass
 
 
+def persist_channel_model_selection(
+    result: ModelSwitchResult,
+    config_path: Any = None,
+    *,
+    platform: str,
+    channel_id: str,
+) -> None:
+    """Persist a resolved /model route for one messaging channel.
+
+    Channel routes intentionally persist only the non-secret model/provider pair. Runtime
+    credentials and provider details are re-resolved by the gateway from the provider name.
+    """
+    from pathlib import Path
+    from hermes_cli.config import get_config_path, read_user_config_raw
+    from utils import atomic_roundtrip_yaml_update
+
+    path = Path(config_path) if config_path else get_config_path()
+    platform_key = getattr(platform, "value", platform)
+    platform_key = str(platform_key)
+    channel_key = str(channel_id)
+    raw = read_user_config_raw(path)
+    top_platform = raw.get(platform_key)
+    platforms = raw.get("platforms") if isinstance(raw, dict) else None
+    configured_platform = platforms.get(platform_key) if isinstance(platforms, dict) else None
+    gateway = raw.get("gateway") if isinstance(raw, dict) else None
+    gateway_platforms = gateway.get("platforms") if isinstance(gateway, dict) else None
+    nested_platform = gateway_platforms.get(platform_key) if isinstance(gateway_platforms, dict) else None
+
+    if isinstance(top_platform, dict):
+        key_path = f"{platform_key}.channel_overrides"
+    elif isinstance(nested_platform, dict):
+        key_path = f"gateway.platforms.{platform_key}.channel_overrides"
+    elif isinstance(configured_platform, dict):
+        key_path = f"platforms.{platform_key}.channel_overrides"
+    else:
+        key_path = f"{platform_key}.channel_overrides"
+
+    # Preserve every existing channel route across the loader's supported platform layouts. The
+    # gateway resolves top-level platform blocks first, then gateway.platforms, then platforms;
+    # merge in the reverse order so a higher-precedence block wins only on duplicate channel IDs.
+    existing = {}
+    for platform_block in (configured_platform, nested_platform, top_platform):
+        if isinstance(platform_block, dict) and isinstance(platform_block.get("channel_overrides"), dict):
+            existing.update(platform_block["channel_overrides"])
+
+    overrides = dict(existing)
+    existing_entry = overrides.get(channel_key)
+    persisted_keys = {"model", "provider", "system_prompt", "enforce"}
+    entry = (
+        {key: value for key, value in existing_entry.items() if key in persisted_keys}
+        if isinstance(existing_entry, dict)
+        else {}
+    )
+    entry.update({
+        "model": result.new_model,
+        "provider": result.target_provider,
+        "enforce": True,
+    })
+    overrides[channel_key] = entry
+    atomic_roundtrip_yaml_update(path, key_path, overrides)
+    try:  # owner-only: config files may contain API keys in unrelated sections
+        import os
+        os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}

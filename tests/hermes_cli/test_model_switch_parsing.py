@@ -41,6 +41,27 @@ def test_provider_flag_and_scopes():
     assert parse_model_switch_args("--refresh").force_refresh is True
 
 
+def test_plain_model_switch_in_a_telegram_group_is_channel_scoped():
+    from gateway.slash_commands_model import model_scope_for_source
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    request = parse_model_switch_args("channel/model")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1000000000001",
+        chat_type="group",
+        user_id="u1",
+    )
+
+    assert model_scope_for_source(source, request) == "channel"
+    assert model_scope_for_source(source, parse_model_switch_args("channel/model --session")) == "session"
+    assert model_scope_for_source(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="u1", chat_type="dm", user_id="u1"),
+        request,
+    ) == "default"
+
+
 def test_once_with_global_conflict():
     req = parse_model_switch_args("sonnet --once --global")
     assert MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL in req.errors

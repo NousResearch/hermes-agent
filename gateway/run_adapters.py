@@ -1007,6 +1007,11 @@ class GatewayAdapterLifecycleMixin:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        profile_configs = getattr(self, "_profile_configs", None)
+        if not isinstance(profile_configs, dict):
+            profile_configs = {}
+            setattr(self, "_profile_configs", profile_configs)
+        profile_configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0

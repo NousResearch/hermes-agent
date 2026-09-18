@@ -142,9 +142,12 @@ def flood_not_before(updated_at: Any, last_error: Any) -> float:
 
 
 def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optional[float]:
-    """Earliest moment a failed row may be resent, or ``None`` for a row that must never be: a flood
-    refusal keeps the platform's own wait, an allowlisted reconnect error is due at once, a whole-chat
-    death is final, and any other rejection backs off by the attempts already spent."""
+    """Earliest moment a failed row may be resent, or ``None`` for a row the runtime must leave alone:
+    a flood refusal keeps the platform's own wait, an allowlisted reconnect error is due at once, a
+    whole-chat death is final, and any other rejection backs off by the attempts already spent — but
+    never spends the LAST budgeted attempt. An unclassified outage can outlast any timer, and a row
+    the timer abandoned would be lost for good; leaving one attempt keeps it recoverable by the boot
+    sweep after a restart, which is a real recovery signal."""
     if is_flood_error(last_error):
         return flood_not_before(updated_at, last_error)
     text = str(last_error or "").strip().lower()
@@ -152,8 +155,10 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
         return _failed_stamp(updated_at)
     if classify_dead_error(text):
         return None
-    backoff = _RETRY_BACKOFF_SECONDS[min(int(attempts or 0), len(_RETRY_BACKOFF_SECONDS) - 1)]
-    return _failed_stamp(updated_at) + backoff
+    spent = int(attempts or 0)
+    if spent >= MAX_ATTEMPTS - 1:
+        return None
+    return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[min(spent, len(_RETRY_BACKOFF_SECONDS) - 1)]
 
 
 def _db_path():

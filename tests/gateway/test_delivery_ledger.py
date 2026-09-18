@@ -197,15 +197,19 @@ class TestRuntimeFailedSweep:
         assert claimed[0]["needs_marker"] is True
         assert _row("ob-1")["state"] == "attempting"
 
-    def test_other_rejection_at_attempt_cap_is_abandoned_not_claimed(self):
+    def test_other_rejection_keeps_the_last_attempt_for_a_restart(self):
+        """The in-process timer never spends the final budgeted attempt: an outage can outlast any
+        backoff, and a row the timer abandoned would be lost for good (review on #91655)."""
         _record(platform="telegram")
         dl.mark_failed("ob-1", "503 Service Unavailable")
         with dl._connect() as conn:
             conn.execute("UPDATE delivery_obligations SET attempts=?, updated_at=1000.0 WHERE obligation_id='ob-1'",
-                         (dl.MAX_ATTEMPTS,))
+                         (dl.MAX_ATTEMPTS - 1,))
 
         assert dl.sweep_failed_for_runtime("telegram", now=1000.0 + 10_000) == []
-        assert _row("ob-1")["state"] == "abandoned"
+        assert dl.pending_retries(now=1000.0 + 10_000) == []
+        assert _row("ob-1")["state"] == "failed"
+        assert _row("ob-1")["attempts"] == dl.MAX_ATTEMPTS - 1
 
     def test_claim_is_platform_scoped_and_not_reclaimed_while_attempting(self):
         _record(platform="telegram")

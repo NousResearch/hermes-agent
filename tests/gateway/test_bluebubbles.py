@@ -404,6 +404,76 @@ class TestBlueBubblesWebhookRegistration:
 
     # -- _register_webhook --
 
+    def test_loopback_aliases_and_old_password_are_reconciled(self, monkeypatch):
+        """Equivalent local endpoints collapse to one current registration."""
+        adapter = _make_adapter(monkeypatch)
+        deleted_ids = []
+        posted = []
+
+        async def fake_list():
+            return [
+                {
+                    "id": 31,
+                    "url": (
+                        f"http://127.0.0.1:{adapter.webhook_port}"
+                        "/bluebubbles-webhook?password=old"
+                    ),
+                    "events": ["new-message", "updated-message", "message-send-error"],
+                },
+                {
+                    "id": 32,
+                    "url": adapter._webhook_register_url,
+                    "events": ["new-message", "updated-message"],
+                },
+                {"id": 99, "url": "http://localhost:9000/unrelated", "events": ["message"]},
+            ]
+
+        async def fake_delete(url, **kwargs):
+            deleted_ids.append(int(url.split("?", 1)[0].rsplit("/", 1)[-1]))
+            return type("R", (), {"raise_for_status": lambda self: None})()
+
+        async def fake_post(path, payload):
+            posted.append((path, payload))
+            return {"status": 200, "data": {"id": 33}}
+
+        adapter.client = self._mock_client()
+        adapter.client.delete = fake_delete
+        monkeypatch.setattr(adapter, "_list_registered_webhooks", fake_list)
+        monkeypatch.setattr(adapter, "_api_post", fake_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert deleted_ids == [31, 32]
+        assert posted == [("/api/v1/webhook", {
+            "url": adapter._webhook_register_url,
+            "events": ["new-message", "updated-message"],
+        })]
+
+    def test_single_current_registration_is_reused(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+
+        async def fake_list():
+            return [{
+                "id": 7,
+                "url": adapter._webhook_register_url,
+                "events": ["new-message", "updated-message"],
+            }]
+
+        async def fake_post(path, payload):
+            posted.append((path, payload))
+            return {"status": 200}
+
+        adapter.client = self._mock_client()
+        monkeypatch.setattr(adapter, "_list_registered_webhooks", fake_list)
+        monkeypatch.setattr(adapter, "_api_post", fake_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert posted == []
+
     def test_register_fresh(self, monkeypatch):
         """No existing webhook → POST creates one."""
         import asyncio
@@ -565,5 +635,3 @@ class TestBlueBubblesTimeoutErrorNormalization:
 
         assert not result.success
         assert "500 Internal Server Error" in (result.error or "")
-
-

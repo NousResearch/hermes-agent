@@ -57,6 +57,7 @@ def adapter(home, monkeypatch):
     a._model_name = "test-model"
     a._api_key = ""            # no key configured -> the auth check passes through
     a._pending_agent_requests = 0
+    a._max_concurrent_runs = 0   # cap disabled: /api/sessions/chat now checks it (#7483)
     a._prepare_session_chat = _prepared
     a._run_idempotency_scope = lambda request: "peer-scope"
     # The live-Bot-Chat handoff resolves the profile home off the SessionDB (upstream's

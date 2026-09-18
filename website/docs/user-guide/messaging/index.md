@@ -297,8 +297,9 @@ Semantics are honest at-least-once:
   and thread. A rate-limit recovery prefix warns that earlier chunks may already
   have arrived; the ledger cannot infer partial delivery from message length.
 - Any other rejected final send (a platform 5xx, an unclassified error) is retried the same
-  way after a growing backoff (30 s, 2 min, 10 min); a permanently unreachable chat (blocked
-  bot, deleted group) is not retried.
+  way after a growing backoff (30 s, then 2 min); the last budgeted attempt is left for the
+  next gateway start, so an outage that outlasts the timer never strands the reply. A
+  permanently unreachable chat (blocked bot, deleted group) is not retried.
 - Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
   abandoned. Delivered rows are pruned after 7 days.
 

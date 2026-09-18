@@ -211,6 +211,15 @@ class TestRuntimeFailedSweep:
         assert _row("ob-1")["state"] == "failed"
         assert _row("ob-1")["attempts"] == dl.MAX_ATTEMPTS - 1
 
+    def test_reconnect_only_row_is_never_timer_driven(self):
+        """A claim released because the adapter was gone comes back as `send_path_degraded` with a
+        fresh stamp; only the reconnect sweep may re-claim it, or a timer would loop every tick."""
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "send_path_degraded")
+
+        assert dl.pending_retries(now=time.time() + 10_000) == []
+        assert [r["obligation_id"] for r in dl.sweep_failed_for_runtime("telegram")] == ["ob-1"]
+
     def test_claim_is_platform_scoped_and_not_reclaimed_while_attempting(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")

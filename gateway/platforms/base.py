@@ -4008,6 +4008,7 @@ class BasePlatformAdapter(ABC):
         the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
         backoff has passed instead of waiting for the next restart (#91653)."""
         try:
+            from gateway.dead_targets import classify_dead_error
             from gateway.delivery_ledger import mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
@@ -4021,7 +4022,7 @@ class BasePlatformAdapter(ABC):
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
-            else:
+            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,

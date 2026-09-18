@@ -576,6 +576,31 @@ class TestSweepOrphanedSessions:
         remaining = [r["id"] for r in db._conn.execute("SELECT id FROM sessions")]
         assert remaining == ["telegram-3"]
 
+    def test_auto_prune_closes_and_later_deletes_recovered_placeholders(self, db):
+        """#114730: ``sessions recover`` synthesizes ``source='recovered'`` placeholder
+        rows with no ``ended_at``. Without ``'recovered'`` in
+        ``_AUTO_PRUNE_STALE_OPEN_SOURCES`` these rows are immortal — never closed by
+        the sweep above, and therefore never reached by ``prune_sessions`` either."""
+        stale = time.time() - 200 * 86400
+        _make_session(db, "recovered-0", source="recovered", started_at=stale, message_at=stale)
+        _set_last_activity(db, "recovered-0", stale)
+
+        first = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=0, vacuum=False
+        )
+        assert first["closed"] == 1
+        assert db.get_session("recovered-0")["end_reason"] == "startup_orphan_reap"
+
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ended_at - 91 * 86400 WHERE id = 'recovered-0'"
+        )
+        db._conn.commit()
+        second = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=0, vacuum=False
+        )
+        assert second["pruned"] == 1
+        assert db.get_session("recovered-0") is None
+
     def test_zero_ttl_is_noop(self, db):
         stale = time.time() - 8 * 3600
         _make_session(db, "stale-tui", source="tui", started_at=stale, message_at=stale)

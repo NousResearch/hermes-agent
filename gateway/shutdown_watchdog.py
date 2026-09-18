@@ -343,7 +343,7 @@ async def loop_heartbeat_forever(
             tick_socket_path = get_loop_tick_socket_path(home)
             tick_socket_path.parent.mkdir(parents=True, exist_ok=True)
             _sweep_stale_tick_sockets(tick_socket_path)
-            tick_server = await asyncio.start_unix_server(_tick_socket_handler,
+            tick_server = await asyncio.start_unix_server(_tick_socket_handler,  # windows-footgun: ok — gated by the os.name == "posix" check above
                                                           path=str(tick_socket_path))
         else:
             tick_server = await asyncio.start_server(_tick_socket_handler, host="127.0.0.1", port=0)

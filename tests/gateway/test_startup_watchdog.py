@@ -139,7 +139,7 @@ class TestContracts:
         for rel, reason in arm_sites.items():
             path = repo_root / rel
             assert path.exists(), f"arm site file missing: {rel} ({reason})"
-            source = path.read_text()
+            source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
             # Collect both direct calls and aliased imports (main.py uses
             # `from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw`

@@ -402,14 +402,11 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
 
 
 def load_provider_submodule(name: str, submodule: str):
-    """Import ``<provider>/<submodule>.py`` from wherever provider *name* resolves, or None.
+    """Import ``<provider>/<submodule>.py`` (``cli.py``, ``oauth_flow.py``) by PATH, or None.
 
-    The sibling modules a provider ships for core to consume (``cli.py``, ``oauth_flow.py``) are
-    loaded by PATH, never by package name: only a bundled provider is importable as
-    ``plugins.memory.<name>.<submodule>``. One installed into ``$HERMES_HOME/plugins/`` — which is
-    where every provider that leaves core lands — lives under the synthetic namespace instead, so
-    importing the bundled path reports "this provider has no such module" the moment it moves.
-    Returns None when the provider or the file is absent; import failures propagate."""
+    Never by package name: ``plugins.memory.<name>.<submodule>`` only ever resolves a BUNDLED
+    provider, so an ``import_module`` on it reports "no such module" for anything installed
+    under ``$HERMES_HOME/plugins/``. None when the provider or file is absent; imports raise."""
     plugin_dir = find_provider_dir(name)
     if plugin_dir is None or not (plugin_dir / f"{submodule}.py").exists():
         return None
@@ -420,10 +417,8 @@ def load_provider_submodule(name: str, submodule: str):
     if cached is not None:
         return cached
     if not _is_bundled(plugin_dir):
-        # The submodule imports as _hermes_user_memory.<name>.<submodule>, usually before the
-        # provider is loaded: register parent packages so its relative imports resolve without
-        # executing the plugin's __init__.py (the shell has no __file__, so
-        # _load_provider_from_dir() still loads the real module).
+        # Parent shells so the submodule's relative imports resolve without executing the
+        # plugin's __init__.py (shells have no __file__, so the real module still loads later).
         _register_synthetic_package(_USER_NAMESPACE, [])
         _register_synthetic_package(package, [str(plugin_dir)])
     spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / f"{submodule}.py"))
@@ -434,8 +429,8 @@ def load_provider_submodule(name: str, submodule: str):
     try:
         spec.loader.exec_module(mod)
     except BaseException:
-        # Callers poll (the Desktop OAuth panel every 1.5s); a half-executed module left cached
-        # would answer every later call with a stale, misleading failure.
+        # Callers poll (the Desktop OAuth panel, every 1.5s): a half-executed module left
+        # cached would answer every later call with a stale failure.
         sys.modules.pop(module_name, None)
         raise
     return mod

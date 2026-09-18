@@ -13,12 +13,9 @@ router = APIRouter(prefix="/api/memory/providers")
 def _resolve_flow(provider: str):
     """Return a provider's OAuth flow module by convention, or raise 404.
 
-    Resolution goes through the memory-provider loader rather than importing
-    ``plugins.memory.<provider>.oauth_flow``: that package path only ever names a BUNDLED
-    provider, so a provider installed from the catalog into ``$HERMES_HOME/plugins/`` failed
-    the import and reported "does not support OAuth connect" while shipping a working flow.
-    The Desktop panel reads that 404 as "no OAuth capability" and hides Connect entirely, so
-    the failure was silent (#114569 moves every memory provider out of core)."""
+    Resolved by the memory-provider loader, not ``import plugins.memory.<provider>.oauth_flow``:
+    that path finds only BUNDLED providers, so a catalog install under ``$HERMES_HOME/plugins/``
+    404'd with a working flow — and Connect, capability-probed on this route, silently vanished."""
     if not provider.isidentifier():
         raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
     from plugins.memory import load_provider_submodule
@@ -26,8 +23,8 @@ def _resolve_flow(provider: str):
     try:
         flow = load_provider_submodule(provider, "oauth_flow")
     except Exception as exc:
-        # Present, but unloadable (missing client library, syntax error): distinguishable from
-        # "no flow shipped", or the operator chases a capability the provider does advertise.
+        # Present but unloadable, kept distinct from "no flow shipped": same 404 and the
+        # operator chases a capability the provider really does advertise.
         raise HTTPException(status_code=500, detail=f"{provider} OAuth flow failed to load: {exc}")
     if flow is None:
         raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")

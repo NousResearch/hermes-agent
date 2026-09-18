@@ -263,13 +263,10 @@ def get_flow_status():
 
 
 def test_oauth_flow_resolves_for_a_provider_installed_outside_core(tmp_path, monkeypatch):
-    """The Desktop Connect button is capability-probed: ``/oauth/status`` 404ing means "this
-    provider has no OAuth", and the panel renders nothing at all. Resolving the flow as
-    ``plugins.memory.<name>.oauth_flow`` only ever found a BUNDLED provider, so every provider
-    that moves to the catalog lost one-click sign-in silently rather than loudly.
-
-    The relative import is the point: the flow loads under the synthetic namespace, so its
-    parent package shell has to exist before ``from .endpoints import ...`` can resolve."""
+    """Connect is capability-probed — a 404 from ``/oauth/status`` means "no OAuth" and the
+    panel renders nothing — so resolving the flow as ``plugins.memory.<name>.oauth_flow``,
+    which finds only bundled providers, cost every catalog provider one-click sign-in
+    silently. The relative import is deliberate: it only resolves if the parent shell exists."""
     provider = _write_provider_dir(tmp_path / "plugins", "flowmem")
     (provider / "endpoints.py").write_text("TOKEN_URL = 'https://example.test/token'\n", encoding="utf-8")
     (provider / "oauth_flow.py").write_text(OAUTH_FLOW_SOURCE, encoding="utf-8")
@@ -284,7 +281,7 @@ def test_oauth_flow_resolves_for_a_provider_installed_outside_core(tmp_path, mon
 
 def test_provider_without_an_oauth_flow_still_reports_no_capability(tmp_path, monkeypatch):
     """404 has to keep meaning "no flow shipped" — it is how the panel decides not to offer
-    Connect. Only providers that actually ship the module may answer the route."""
+    Connect at all."""
     from fastapi import HTTPException
 
     _write_provider_dir(tmp_path / "plugins", "plainmem")

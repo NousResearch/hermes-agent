@@ -668,7 +668,11 @@ def _ensure_default_soul_md(home: Path) -> None:
                         handle.write(DEFAULT_SOUL_MD)
                     os.replace(tmp_name, soul_path)
                 except OSError:
-                    with suppress(FileNotFoundError):
+                    # Cleanup is best-effort: the cyclic link stays as-is when the
+                    # replace fails. A PermissionError from the tmp-file removal
+                    # must not escape this recovery branch and turn initialization
+                    # into HomeInitializationError (the exit-75 loop, #114592).
+                    with suppress(OSError):
                         os.unlink(tmp_name)
                     return
                 _secure_file(soul_path)

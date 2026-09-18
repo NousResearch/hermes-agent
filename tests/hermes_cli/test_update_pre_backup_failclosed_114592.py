@@ -293,3 +293,83 @@ def test_ensure_default_soul_md_preserves_user_content(tmp_path):
     cfg._ensure_default_soul_md(tmp_path)
     assert soul_path.read_text(encoding="utf-8") == user_content
     assert not soul_path.is_symlink()
+
+
+# ---------------------------------------------------------------------------
+# D. ehz0ah review on #114601: non-exception fail-open + partial coverage +
+#    cleanup escape (three blocking findings)
+# ---------------------------------------------------------------------------
+
+
+def test_run_quick_snapshots_fails_closed_on_missing_sibling(monkeypatch, tmp_path):
+    """A sibling profile whose snapshot fails is silently omitted by the
+    all-profiles helper; the swap + fleet restart would restart that profile
+    with no recovery point (ehz0ah on #114601). The snapshot step must fail
+    closed instead of proceeding with partial coverage."""
+    import hermes_cli.backup as backup_mod
+    import hermes_cli.update_cmd_maint as ucm
+
+    work_home = tmp_path / "work-home"
+    work_home.mkdir()
+    (work_home / "state.db").write_bytes(b"sqlite")  # the profile HAS candidates
+    monkeypatch.setattr(
+        backup_mod, "_sibling_profile_homes",
+        lambda _home: [("work", work_home)],
+    )
+    monkeypatch.setattr(backup_mod, "create_quick_snapshot", lambda **_kw: "snap-root")
+    monkeypatch.setattr(
+        backup_mod, "create_pre_update_snapshots_all_profiles",
+        lambda **_kw: {},  # helper silently omitted the "work" profile
+    )
+
+    with pytest.raises(RuntimeError, match="work"):
+        ucm._run_quick_snapshots()
+
+
+def test_run_quick_snapshots_records_full_sibling_coverage(monkeypatch, tmp_path):
+    """Happy path: when every sibling snapshots, coverage is recorded and the
+    sibling snapshots are published to the config-module global (no regression
+    from the fail-closed conversion)."""
+    import hermes_cli.backup as backup_mod
+    import hermes_cli.update_cmd_maint as ucm
+
+    recorded = []
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._record_update_step",
+        lambda *a, **k: recorded.append(a),
+    )
+    monkeypatch.setattr(
+        backup_mod, "_sibling_profile_homes",
+        lambda _home: [("work", tmp_path / "work-home")],
+    )
+    monkeypatch.setattr(backup_mod, "create_quick_snapshot", lambda **_kw: "snap-root")
+    monkeypatch.setattr(
+        backup_mod, "create_pre_update_snapshots_all_profiles",
+        lambda **_kw: {"work": "snap-work"},
+    )
+
+    assert ucm._run_quick_snapshots() == "snap-root"
+    assert any(a[0] == "sibling_profile_snapshots" for a in recorded)
+
+
+def test_ensure_default_soul_md_cleanup_failure_does_not_escape(tmp_path, monkeypatch):
+    """ehz0ah on #114601 (blocking): the cyclic branch's tmp cleanup caught only
+    ``FileNotFoundError`` — a ``PermissionError`` from the cleanup ``unlink``
+    escaped as ``HomeInitializationError``, keeping the exit-75 restart loop
+    alive. Cleanup is best-effort: it must never raise."""
+    import hermes_cli.config as cfg
+
+    soul_path = tmp_path / "SOUL.md"
+    os.symlink(str(soul_path), str(soul_path))  # cyclic
+
+    def raise_perm(*_a, **_kw):
+        raise PermissionError("simulated")
+
+    monkeypatch.setattr(cfg.os, "replace", raise_perm)
+    monkeypatch.setattr(cfg.os, "unlink", raise_perm)
+
+    # Must not raise: cleanup failure stays inside the best-effort recovery branch.
+    cfg._ensure_default_soul_md(tmp_path)
+
+    # The cyclic link survives untouched — main behaviour when the seed fails.
+    assert soul_path.is_symlink()

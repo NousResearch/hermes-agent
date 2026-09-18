@@ -678,9 +678,24 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
 
 
 def _run_quick_snapshots() -> Optional[str]:
-    """Quick snapshot of the root home plus every sibling profile; returns the root snapshot id."""
+    """Quick snapshot of the root home plus every sibling profile; returns the root
+    snapshot id, or None when no profile had anything to snapshot.
+
+    Fail-closed (ehz0ah on #114601): a profile that HAS snapshot candidates but
+    produced no snapshot aborts the update — proceeding would restart that
+    profile with no recovery point. A genuinely empty profile skips silently
+    (nothing to protect)."""
     from hermes_cli.update_cmd import _record_update_step
-    from hermes_cli.backup import create_quick_snapshot
+    from hermes_cli.backup import (
+        create_quick_snapshot, create_pre_update_snapshots_all_profiles,
+        _sibling_profile_homes, _quick_snapshot_candidates,
+    )
+    from hermes_constants import get_hermes_home
+
+    def _has_snapshot_candidates(profile_home) -> bool:
+        return any(True for _ in _quick_snapshot_candidates(profile_home))
+
+    root_home = get_hermes_home()
     snapshot_id = create_quick_snapshot(
         label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
@@ -688,23 +703,45 @@ def _run_quick_snapshots() -> Optional[str]:
         _verify_state_db_after_snapshot(snapshot_id)
         print(f"◆ Pre-update snapshot: {snapshot_id}")
 
-    # The code swap + fleet restart touch EVERY profile, so each gets the same snapshot
-    # under its own state-snapshots/. Best-effort per profile.
-    with _best_effort('Sibling profile snapshots failed: %s'):
-        from hermes_cli.backup import create_pre_update_snapshots_all_profiles
-        _sibling_snaps = create_pre_update_snapshots_all_profiles(
-            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    if _has_snapshot_candidates(root_home) and not snapshot_id:
+        # Candidates existed but the snapshot produced nothing — the copy failed
+        # (ehz0ah on #114601: recording that as "disabled (off mode)" and
+        # proceeding leaves the gateway without a recovery point). Only the
+        # explicit ``off`` opt-out — or a genuinely empty home — may skip.
+        raise RuntimeError(
+            "pre-update snapshot: the home has snapshot candidates but no snapshot "
+            "was produced; refusing to continue the update without a recovery "
+            "point (see #114592)."
         )
-        if _sibling_snaps:
-            print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
-            _record_update_step(
-                "sibling_profile_snapshots",
-                True,
-                ", ".join(f"{k}={v}" for k, v in sorted(_sibling_snaps.items())),
-            )
-            import hermes_cli.update_cmd_config as _cfg
-            # The reader lives in update_cmd_config; write ITS module global, not ours.
-            _cfg._LAST_SIBLING_SNAPSHOTS = _sibling_snaps
+
+    # The code swap + fleet restart touch EVERY profile, so each must get the same
+    # snapshot set (hermes_cli/AGENTS.md: forbids partial coverage). The helper
+    # silently omits a sibling whose snapshot fails — proceeding would restart that
+    # profile with no recovery point. A sibling with no candidates (fresh profile)
+    # skips silently instead.
+    _sibling_snaps = create_pre_update_snapshots_all_profiles(
+        keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    )
+    _uncovered_siblings = sorted(
+        name for name, profile_home in _sibling_profile_homes(root_home)
+        if name not in _sibling_snaps and _has_snapshot_candidates(profile_home)
+    )
+    if _uncovered_siblings:
+        raise RuntimeError(
+            "pre-update snapshot missing for sibling profile(s): "
+            + ", ".join(_uncovered_siblings)
+            + " — refusing a partial-coverage update (see #114592)."
+        )
+    if _sibling_snaps:
+        print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
+        _record_update_step(
+            "sibling_profile_snapshots",
+            True,
+            ", ".join(f"{k}={v}" for k, v in sorted(_sibling_snaps.items())),
+        )
+        import hermes_cli.update_cmd_config as _cfg
+        # The reader lives in update_cmd_config; write ITS module global, not ours.
+        _cfg._LAST_SIBLING_SNAPSHOTS = _sibling_snaps
     return snapshot_id
 
 

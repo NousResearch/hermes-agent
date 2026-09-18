@@ -49,6 +49,7 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  reactPayloadForMessage,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -1066,6 +1067,35 @@ app.post('/read', async (req, res) => {
   } catch (err) {
     console.warn('[bridge] failed to send read receipt:', err.message);
     return res.status(500).json({ error: 'Failed to send read receipt' });
+  }
+});
+
+// Native emoji reaction on a message (👍 receipt ack / ✅❌ completion marks).
+// An empty emoji retracts a previous reaction. The message store resolves the
+// stored key when it is still warm; otherwise the payload helper synthesizes one.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, emoji } = req.body || {};
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    const stored = messageStore.get(messageId);
+    const payload = reactPayloadForMessage({
+      emoji,
+      key: stored?.key,
+      fallbackChatId: chatId,
+      fallbackMessageId: messageId,
+    });
+    await sendWithTimeout(chatId, payload);
+    res.json({ success: true });
+  } catch (err) {
+    console.warn('[bridge] react failed:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

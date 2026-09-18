@@ -600,6 +600,21 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
+export function reactPayloadForMessage({ emoji, key, fallbackChatId, fallbackMessageId }) {
+  // Baileys reaction payload. Empty text retracts a previous reaction.
+  // The resolved key needs remoteJid (participant for group messages) AND
+  // the target message `id` — Baileys cannot resolve a react without it.
+  // When the stored message has aged out of the store, synthesize a
+  // non-self inbound key from the request's chatId + messageId; that is
+  // correct for the ack flow because the reacted-to message is always an
+  // inbound one there.
+  const resolved = { ...(key || {}) };
+  if (!resolved.remoteJid) resolved.remoteJid = fallbackChatId || '';
+  if (resolved.fromMe === undefined) resolved.fromMe = false;
+  if (!resolved.id) resolved.id = fallbackMessageId || '';
+  return { react: { text: String(emoji ?? ''), key: resolved } };
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

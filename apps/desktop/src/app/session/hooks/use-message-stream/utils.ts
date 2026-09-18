@@ -227,7 +227,11 @@ export function delegateTaskPayloads(
       status,
       summary: summary || null,
       duration_seconds: payload.duration_s ?? null,
-      tool_preview: starting ? progressText || null : null
+      tool_preview: starting ? progressText || null : null,
+      // Per-child spend and the classified verdict ride the delegate_task result when the
+      // backend reported them; the row still renders without either.
+      cost_usd: typeof result.cost_usd === 'number' ? result.cost_usd : null,
+      failure_reason: firstString(result.failure_reason) || null
     }
   })
 }

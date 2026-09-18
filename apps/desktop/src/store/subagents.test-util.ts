@@ -29,6 +29,8 @@ export const subagentEvent = (over: Partial<SubagentPayload> = {}): SubagentPayl
   summary: null,
   duration_seconds: null,
   tool_preview: null,
+  cost_usd: null,
+  failure_reason: null,
   ...over
 })
 

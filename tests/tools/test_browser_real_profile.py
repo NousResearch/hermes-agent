@@ -427,12 +427,26 @@ class TestAgentBrowserCliCapture:
         # Pipe capture would stall here for the full 15s timeout on POSIX and
         # hang past the outer tool deadline on Windows.
         assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
-        # The capture temp files are cleaned up after the call. POSIX unlinks
-        # files a live grandchild still holds open; on Windows the daemon's
-        # inherited handles keep them until it exits, and the unlink is
-        # best-effort by design (_unlink_command_output_files swallows OSError).
-        if sys.platform != "win32":
-            assert not list(tmp_path.glob("_std*_rp-*"))
+
+    @pytest.mark.linux_only
+    def test_get_cdp_cleans_capture_files_despite_grandchild(self, tmp_path):
+        """POSIX: the capture files are unlinked even while the daemon
+        grandchild still holds them open. On Windows the inherited handles
+        keep the files until the daemon exits and the unlink is best-effort
+        by design (_unlink_command_output_files swallows OSError), so this
+        assertion is a linux_only test rather than a bare sys.platform check
+        — the contract stays visible in both CI lanes."""
+        import sys
+
+        stub = tmp_path / "agent_browser_daemon_stub.py"
+        stub.write_text(self.STUB_GRANDCHILD)
+        with patch.object(bt_install, "_find_agent_browser", return_value=str(stub)), \
+             patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
+             patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+
+        assert cdp == "http://127.0.0.1:41022"
+        assert not list(tmp_path.glob("_std*_rp-*"))
 
     def test_capture_cli_surfaces_stdout_stderr_and_exit_code(self, tmp_path):
         import sys
@@ -452,7 +466,7 @@ class TestAgentBrowserCliCapture:
         assert proc.stdout == "out-42"
         assert proc.stderr == "err-7"
 
-    def test_capture_cli_timeout_kills_cli_and_cleans_files(self, tmp_path):
+    def test_capture_cli_timeout_kills_cli_without_stall(self, tmp_path):
         import subprocess
         import sys
         import time
@@ -470,6 +484,26 @@ class TestAgentBrowserCliCapture:
         # The CLI itself is killed at the deadline instead of draining pipes
         # behind a daemon grandchild forever.
         assert elapsed < 10, f"timeout path stalled {elapsed:.1f}s"
+
+    @pytest.mark.linux_only
+    def test_capture_cli_timeout_cleans_capture_files(self, tmp_path):
+        """POSIX: the capture files are unlinked after the timeout kill. On
+        Windows the killed CLI's handles can outlive the kill() return, so
+        the best-effort unlink may hit a still-open file and leave the
+        fixed-name pair behind (bounded: reused and truncated by the next
+        call with the same tag) — hence linux_only, not an inline
+        sys.platform guard."""
+        import subprocess
+        import sys
+
+        stub = tmp_path / "agent_browser_sleep_stub.py"
+        stub.write_text("import time; time.sleep(30)\n")
+        with patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            with pytest.raises(subprocess.TimeoutExpired):
+                bt_real_profile._capture_agent_browser_cli(
+                    [sys.executable, str(stub)], timeout=2, tag="rp-timeout",
+                )
+
         assert not (tmp_path / "_stdout_rp-timeout").exists()
         assert not (tmp_path / "_stderr_rp-timeout").exists()
 

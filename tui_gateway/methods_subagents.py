@@ -17,8 +17,16 @@ _SUBAGENT_TAIL_BYTES = 16384
 
 
 def _owned_subagent_records(session_id, transport, owner):
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
+    from tools.delegate_tool_registry import (
+        _active_subagents,
+        _active_subagents_lock,
+        _subagent_transport_matches,
+        reclaim_subagent_owners_for_session,
+    )
 
+    # Reclaim first so a reminted UI sid still sees (and can steer/stop) children
+    # that were spawned under the previous sid for this durable conversation.
+    reclaim_subagent_owners_for_session(session_id, owner)
     with _active_subagents_lock:
         return [dict(r) for r in _active_subagents.values()
                 if r.get("owner_session_id") == session_id

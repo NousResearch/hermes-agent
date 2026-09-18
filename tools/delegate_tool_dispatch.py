@@ -44,6 +44,7 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     origin_session_history_delivery: bool
+    origin_session_key: str
     overall_start: float
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
@@ -54,6 +55,8 @@ class _Batch:
         return {
             "owner_session_id": self.origin_ui_session_id or None, "owner_transport": self.origin_owner_transport,
             "owner_session_record": self.origin_owner_session_record,
+            # Durable key captured with the UI sid so panel reclaim survives sid rotation (#114909).
+            "owner_session_key": self.origin_session_key or None,
         }
 
     def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
@@ -67,22 +70,31 @@ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) ->
         _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
-def _capture_origin() -> tuple[str, str, Any, Any, bool]:
-    """``(wake_sid, ui_session_id, owner_transport, owner_session_record, session_history_delivery)`` of the
-    ORIGINATING session, captured BEFORE building any child: AIAgent construction
+def _capture_origin() -> tuple[str, str, Any, Any, bool, str]:
+    """``(wake_sid, ui_session_id, owner_transport, owner_session_record, session_history_delivery, session_key)``
+    of the ORIGINATING session, captured BEFORE building any child: AIAgent construction
     clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id.  The wake-
     capability flag rides the same request-scoped binding and is captured here for the same
     reason — and fails closed: a binding that never declared it (or a read error) leaves the
-    session treated as non-wake-capable (#98619)."""
+    session treated as non-wake-capable (#98619). ``session_key`` is the durable conversation
+    identity used to reclaim panel visibility after a UI-sid rotation (#114909)."""
     from tools.async_delegation import _current_origin_session_id
     _origin_wake_sid = _current_origin_session_id()
     _origin_ui_session_id = ""
+    _origin_session_key = ""
     _origin_session_history_delivery = False
     with _quiet(None):
         from gateway.session_context import get_session_env, session_history_delivery_supported
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+        _origin_session_key = get_session_env("HERMES_SESSION_KEY", "")
         _origin_session_history_delivery = session_history_delivery_supported()
-    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id), _origin_session_history_delivery)
+    return (
+        _origin_wake_sid,
+        _origin_ui_session_id,
+        *_capture_gateway_steer_authority(_origin_ui_session_id),
+        _origin_session_history_delivery,
+        _origin_session_key,
+    )
 
 def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tasks, remaining) -> None:
     """Print one completion line for a finished child and refresh the spinner text. Failed/errored/timed-out children

@@ -38,12 +38,13 @@ vi.mock('@/store/session', async importActual => ({
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
+const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
 
 const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
   await import('@/store/session')
 
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
-const { $sessionTiles } = await import('@/store/session-states')
+const { $sessionTiles, recordSessionEventScope } = await import('@/store/session-states')
 const { makeSessionInfo } = await import('@/test/session-info')
 
 function dispatcher(
@@ -75,6 +76,8 @@ afterEach(() => {
   setMessagingSessions([])
   $sessionTiles.set([])
   $profiles.set([])
+  $removedSessionIds.set(new Set())
+  $sessionMutationsInFlight.set(new Set())
   _resetSessionOwnerHintsForTests({ storage: true })
   sessionMocks.requestSessionResume.mockReset()
   vi.clearAllMocks()
@@ -205,6 +208,41 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
   })
 })
 
+describe('createSessionRpcDispatcher: routes by the session OWNING connection when two connections share a profile name', () => {
+  // Two registered connections, both exposing `default` (the default install:
+  // this device + a remote gateway), and the window's primary is the OTHER
+  // connection. A bare profile name carries no connection identity, and the
+  // profile door (requestGatewayForProfile -> gatewayForProfile) resolves a
+  // bare name equal to the primary profile against the PRIMARY socket — a
+  // different machine than the one holding the session. The inbound event
+  // already proved which socket owns the runtime, so that exact owner has to
+  // outrank the connection-blind row profile: otherwise the 2nd prompt of a
+  // `This device` chat is answered by the remote backend with
+  // `4001 session not found`.
+  function twoConnections(): void {
+    $connectionsRegistry.set({ connections: [{ id: 'local' }, { id: 'homelab' }] } as never)
+  }
+
+  it('routes a session that lives on the LOCAL connection back to that connection', async () => {
+    gatewayMocks.activeConnectionId = 'homelab'
+    twoConnections()
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([makeSessionInfo({ id: 'rt-local', profile: 'default' })])
+    const { ambientRequest, request } = dispatcher()
+
+    await expect(request('prompt.submit', { session_id: 'rt-local', text: 'again' })).resolves.toEqual({
+      routed: true
+    })
+
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'prompt.submit', {
+      session_id: 'rt-local',
+      text: 'again'
+    })
+    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+})
+
 describe('createSessionRpcDispatcher: stale runtime recovery', () => {
   it('requests a durable rebind for the visible session after a structured 4001', async () => {
     setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
@@ -231,6 +269,23 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
 
     expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['tombstoned', $removedSessionIds],
+    ['being deleted', $sessionMutationsInFlight]
+  ])('still reports the 4001 for a selected session that is %s', async (_state, sessions) => {
+    // The rebind decision moved to requestSessionResume (store/session-removal),
+    // which drops resume requests for a removal-pending id — this seam only has
+    // to keep surfacing the error to its caller.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    sessions.set(new Set(['stored-omar']))
+    gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(
+      Object.assign(new Error('session not found'), { code: 4001 })
+    )
+    const { request } = dispatcher(undefined, 'stored-omar')
+
+    await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
   })
 
   it('does not interpret an unrelated coded RPC failure as a stale runtime', async () => {

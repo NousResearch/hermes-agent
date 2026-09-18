@@ -81,10 +81,29 @@ def test_non_notify_background_processes_are_not_waited_on(registry):
 
 def test_already_exited_session_not_waited_on(registry):
     s = _make_session(exited=True)
+    s._completion_event.set()
     with registry._lock:
         registry._running[s.id] = s
     result = registry.wait_for_pending_completions(timeout=30)
     assert result["waited"] == []
+
+
+def test_session_mid_finish_is_still_waited_on(registry):
+    """``_move_to_finished`` moves a session out of ``_running`` BEFORE it enqueues the completion and
+    sets the event. A parent whose turn ends inside that window must still linger for the event, or
+    it drains nothing and exits without the follow-up turn (the CI-flaky quiet-notify resume)."""
+    s = _make_session(exited=True)  # exited, moved, but completion not yet published
+    with registry._lock:
+        registry._finished[s.id] = s
+
+    def _publish():
+        time.sleep(0.3)
+        s._completion_event.set()
+
+    threading.Thread(target=_publish, daemon=True).start()
+    result = registry.wait_for_pending_completions(timeout=30, poll_interval=0.1)
+    assert result["waited"] == [s.id]
+    assert result["completed"] == [s.id]
 
 
 def test_wait_returns_when_process_completes(registry):

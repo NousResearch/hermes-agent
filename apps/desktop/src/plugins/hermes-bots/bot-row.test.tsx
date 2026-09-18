@@ -16,12 +16,18 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
-import { translateBots } from './i18n-test-helper'
-import type { RosterRow } from './types'
+import { BotRow, GroupRow } from './bot-row'
+import { $groupChats } from './group-chat'
+import { translateBotsIn } from './i18n-test-helper'
+import type { GroupMember, RosterRow } from './types'
+
+// Which shipped bundle the rendered rows resolve their strings against. `en`
+// matches the literals this file once carried, so a case that has to prove a
+// string comes from the catalog reads the same row under `ja`.
+const locale = vi.hoisted(() => ({ current: 'en' as 'en' | 'ja' | 'zh' }))
 
 const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
   vi.hoisted(() => ({
@@ -42,7 +48,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
     // The plugin bundle normally lands via `ctx.i18n.register` at load, so
     // without this every localized label in the row renders empty.
-    usePluginI18n: () => translateBots
+    usePluginI18n: () => translateBotsIn(locale.current)
   }
 })
 
@@ -59,7 +65,7 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} />)
+  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }
@@ -69,6 +75,29 @@ beforeEach(() => {
   ensureBotMetadata.mockResolvedValue({ pinned: true })
   openRosterBot.mockResolvedValue(true)
   requestProfile.mockResolvedValue({})
+})
+
+describe('group-turn presence', () => {
+  it('updates only the exact member face and clears it when the room stops', () => {
+    const local: RosterRow = { name: 'default', connectionId: 'local' }
+    const remote: RosterRow = { name: 'default', connectionId: 'remote', remoteSource: true }
+
+    const { container } = render(
+      <>
+        {[local, remote].map(bot => (
+          <BotRow bot={bot} key={bot.connectionId} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+        ))}
+      </>
+    )
+
+    const moods = () => [...container.querySelectorAll('[data-hb-mood]')].map(el => el.getAttribute('data-hb-mood'))
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: remote } }))
+    expect(moods()).toEqual(['idle', 'think'])
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: local } }))
+    expect(moods()).toEqual(['think', 'idle'])
+    act(() => $groupChats.set({}))
+    expect(moods()).toEqual(['idle', 'idle'])
+  })
 })
 
 describe('pre-warm is hover-scoped, never roster-wide', () => {
@@ -132,14 +161,14 @@ describe('the row delegates the open and claims no activation authority', () => 
   })
 })
 
-describe('the menu carries the explicit ask for the forever-chat', () => {
-  it('opens the canonical chat, which a plain row click deliberately does not', async () => {
+describe('the menu opens the same forever-chat a row click does', () => {
+  it('opens the canonical chat', async () => {
     const bot = { name: 'alpha' } as RosterRow
 
     fireEvent.contextMenu(renderRow(bot))
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
-    expect(openRosterBot.mock.calls).toEqual([[bot, { canonical: true }]])
+    expect(openRosterBot.mock.calls).toEqual([[bot]])
   })
 })
 
@@ -173,5 +202,66 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('the bot row context menu speaks the active language', () => {
+  afterEach(() => {
+    locale.current = 'en'
+  })
+
+  it('renders the pin/hide toggles and the groups entry from the catalog, not English literals', async () => {
+    // Regression guard for the roster menu items that stayed hardcoded after
+    // the bundle landed: under `zh` no English label may survive.
+    locale.current = 'zh'
+    fireEvent.contextMenu(renderRow({ name: 'worker', connectionId: 'local' }))
+
+    const menu = await screen.findByRole('menu')
+
+    expect(within(menu).getByText('置顶')).toBeTruthy()
+    expect(within(menu).getByText('隐藏')).toBeTruthy()
+    expect(within(menu).getByText('管理群聊…')).toBeTruthy()
+    expect(within(menu).queryByText('Pin to top')).toBeNull()
+    expect(within(menu).queryByText('Hide')).toBeNull()
+    expect(within(menu).queryByText('Manage groups…')).toBeNull()
+  })
+})
+
+describe('a group row', () => {
+  const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
+  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onNewSection={noop} onOpen={noop} />
+
+  beforeEach(() => {
+    locale.current = 'en'
+  })
+
+  it('previews an empty room and describes it to assistive tech in the active language', () => {
+    const english = render(row)
+
+    expect(english.getByText('3 bots')).toBeTruthy()
+    expect(english.getByRole('button', { name: 'crew, 3 bots, 3 of 3 available' })).toBeTruthy()
+    english.unmount()
+
+    locale.current = 'ja'
+    const japanese = render(row)
+
+    expect(japanese.getByText('ボット3体')).toBeTruthy()
+    expect(japanese.getByRole('button', { name: 'crew, ボット3体, 3体中3体が利用可能' })).toBeTruthy()
+  })
+
+  it('names the reader in the active language when their line is the latest, without touching the log marker', () => {
+    // 'You' is the persisted author sentinel on the log entry; only its rendering localizes.
+    act(() =>
+      $groupChats.set({ crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} } })
+    )
+    locale.current = 'zh'
+
+    const chinese = render(row)
+
+    expect(chinese.getByText('你: ship it')).toBeTruthy()
+    expect(chinese.queryByText(/^You:/)).toBeNull()
+    expect($groupChats.get().crew.log[0].from.name).toBe('You')
+
+    act(() => $groupChats.set({}))
   })
 })

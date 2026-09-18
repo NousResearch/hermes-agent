@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -108,7 +108,8 @@ class TestRunBackgroundTask:
         # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "couldn't start" in content and "/login" in content
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -193,7 +194,7 @@ class TestBackgroundInCLICommands:
     def test_bg_autocompletes(self):
         """The /bg and /btw commands appear in autocomplete results."""
         pytest.importorskip("prompt_toolkit")
-        from hermes_cli.commands import SlashCommandCompleter
+        from hermes_cli.commands_completion import SlashCommandCompleter
         from prompt_toolkit.document import Document
 
         completer = SlashCommandCompleter()

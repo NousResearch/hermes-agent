@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 def _make_legacy_db(path: Path) -> None:
@@ -79,7 +81,7 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path) as conn:
+    with kbc.connect(db_path) as conn:
         for table in ("task_events", "task_comments", "task_runs"):
             id_col = {r["name"]: r for r in conn.execute(f"PRAGMA table_info({table})")}["id"]
             assert id_col["type"].upper() == "INTEGER" and id_col["pk"] == 1
@@ -114,10 +116,10 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path):
+    with kbc.connect(db_path):
         pass
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    with kb.connect(db_path) as conn:
+    with kbc.connect(db_path) as conn:
         id_col = {r["name"]: r for r in conn.execute("PRAGMA table_info(task_events)")}["id"]
         assert id_col["type"].upper() == "INTEGER"
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
@@ -129,8 +131,8 @@ def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path) as conn:
-        cursor, events = kb.unseen_events_for_sub(
+    with kbc.connect(db_path) as conn:
+        cursor, events = kbn.unseen_events_for_sub(
             conn, task_id="task-1", platform="telegram", chat_id="123"
         )
         assert isinstance(cursor, int)
@@ -169,7 +171,7 @@ def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatc
     """
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute(
             "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-1', 'T', 'ready', 1000)"
         )
@@ -181,7 +183,7 @@ def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatc
     for suffix in ("", "-wal", "-shm"):
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert "tasks" in _tables(db_path)
 
@@ -191,7 +193,7 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
     header and the integrity probes, but carries no schema at all."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
 
     for suffix in ("", "-wal", "-shm"):
@@ -199,7 +201,7 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
     sqlite3.connect(str(db_path)).close()
     assert "tasks" not in _tables(db_path)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute(
             "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-2', 'T', 'ready', 1000)"
         )
@@ -213,11 +215,11 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
     the schema is actually gone."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
 
     locks: list[Path] = []
-    real_lock = kb._cross_process_init_lock
+    real_lock = kbc._cross_process_init_lock
 
     @contextlib.contextmanager
     def recording_lock(path):
@@ -225,13 +227,13 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
         with real_lock(path):
             yield
 
-    monkeypatch.setattr(kb, "_cross_process_init_lock", recording_lock)
+    monkeypatch.setattr(kbc, "_cross_process_init_lock", recording_lock)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
     assert locks == []
 
     db_path.unlink()
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
     assert len(locks) == 1

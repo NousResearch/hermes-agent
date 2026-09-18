@@ -513,15 +513,38 @@ function Discard-LockfileChurn {
         )
         foreach ($path in $diff) {
             if ($path -like "*package.json") {
-                $null = $dirtyPackageDirs.Add((Split-Path $path -Parent))
+                $null = $dirtyPackageDirs.Add(((Split-Path $path -Parent) -replace '\\', '/'))
+            }
+        }
+
+        # The single root lockfile records every workspace's specs (root package.json
+        # "workspaces" globs), so a dirty workspace manifest such as
+        # apps/desktop/package.json protects it; reverting it there desyncs spec and
+        # lock and every later npm ci fails (#112378). A manifest outside the graph
+        # (website/) has its own lockfile and does not protect the root one.
+        $rootLockProtected = $dirtyPackageDirs.Contains("")
+        if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
+            $workspaceGlobs = @()
+            try {
+                $rootPkg = Get-Content (Join-Path $Repo "package.json") -Raw | ConvertFrom-Json
+                $ws = $rootPkg.workspaces
+                if ($ws -and $ws.PSObject.Properties["packages"]) { $ws = $ws.packages }
+                $workspaceGlobs = @($ws | Where-Object { $_ })
+            } catch { }
+            foreach ($dir in $dirtyPackageDirs) {
+                foreach ($glob in $workspaceGlobs) {
+                    if ($dir -like ([string]$glob)) { $rootLockProtected = $true }
+                }
             }
         }
 
         $dirtyLocks = [System.Collections.Generic.List[string]]::new()
         foreach ($path in $diff) {
             if ($path -notlike "*package-lock.json") { continue }
-            $lockDir = Split-Path $path -Parent
-            if ($dirtyPackageDirs.Contains($lockDir)) { continue }
+            $lockDir = (Split-Path $path -Parent) -replace '\\', '/'
+            if ($lockDir -eq "") {
+                if ($rootLockProtected) { continue }
+            } elseif ($dirtyPackageDirs.Contains($lockDir)) { continue }
             $dirtyLocks.Add($path)
         }
 
@@ -4108,11 +4131,15 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+        & $npmExe ci --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            & $npmExe install --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            $code = $LASTEXITCODE
+        }
+        if ($code -eq 0) {
+            & node apps/desktop/scripts/ensure-rolldown-binding.mjs
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
@@ -4221,7 +4248,7 @@ function Install-Desktop {
                 $code = $LASTEXITCODE
             }
         }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-ElectronDist -InstallDir $InstallDir)) {
             $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
@@ -4733,11 +4760,15 @@ function Write-Completion {
 # or arrange to provide answers another way."
 $InstallStages = @(
     @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
-    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
     @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    # Managed Python lives under $InstallDir\.hermes-runtime, so the checkout
+    # must exist before this stage creates that directory. Otherwise the later
+    # repository stage treats the runtime-only directory as a broken checkout,
+    # parks it, and leaves Stage-Venv with no managed interpreter.
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }

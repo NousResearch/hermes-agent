@@ -11,10 +11,11 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
-from tools.send_message_tool import _parse_target_ref, _send_to_platform
+from tools.send_message_tool import _send_to_platform
+from tools.send_message_targets import _parse_target_ref
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -167,6 +168,57 @@ class TestWeixinStatePersistence:
 
         assert json.loads(account_path.read_text(encoding="utf-8")) == original
 
+    @pytest.mark.asyncio
+    async def test_context_token_persist_runs_off_event_loop_thread(self, tmp_path):
+        """atomic_json_write() calls os.fsync(), which blocks until the write
+        reaches stable storage. ContextTokenStore.set() runs on the event
+        loop for every inbound message carrying a context_token
+        (_process_message), so the persist step must be offloaded to a
+        thread — mirrors test_directory_write_runs_off_event_loop_thread in
+        test_channel_directory.py for the same #83906 bug class."""
+        import threading
+
+        store = ContextTokenStore(str(tmp_path))
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("gateway.platforms.weixin.atomic_json_write", side_effect=fake_write):
+            await store.set("acct-1", "user-1", "ctx-token-abc")
+
+        assert store.get("acct-1", "user-1") == "ctx-token-abc"
+        assert write_threads
+        assert all(tid != loop_thread for tid in write_threads)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_context_token_persists_land_in_order(self, tmp_path):
+        """Two in-flight set() calls (two concurrent inbound messages) must not
+        let an older snapshot overwrite a newer one on disk. Without
+        serialization the first (slow) flush lands last and drops user-2."""
+        import asyncio as _asyncio
+        import time
+
+        store = ContextTokenStore(str(tmp_path))
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(dict(data))
+
+        with patch("gateway.platforms.weixin.atomic_json_write", side_effect=slow_first_write):
+            first = _asyncio.create_task(store.set("acct-1", "user-1", "t1"))
+            await _asyncio.sleep(0.005)
+            second = _asyncio.create_task(store.set("acct-1", "user-2", "t2"))
+            await _asyncio.gather(first, second)
+
+        assert writes[-1] == {"user-1": "t1", "user-2": "t2"}
+
 
 class TestWeixinQrLogin:
     @pytest.mark.asyncio
@@ -269,6 +321,51 @@ class TestWeixinChunkDelivery:
         # rest of the current chunk and follow-up sends fail fast.
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
+
+    @pytest.mark.parametrize("error_field", ["ret", "errcode"])
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_prepare_failed_retries_without_context_token(self, send_message_mock, error_field):
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._token_store._cache[adapter._token_store._key(adapter._account_id, "wxid_test123")] = "ctx-token"
+        prepare_failed = {error_field: weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}
+        send_message_mock.side_effect = [prepare_failed, {"ret": 0}]
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is True
+        assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == ["ctx-token", None]
+        assert adapter._rate_limit_circuit_until == 0.0
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_tokenless_resend_does_not_consume_retry_budget(self, send_message_mock):
+        """With ``send_chunk_retries=0`` the stale-session re-send must still happen: it is a different payload,
+        not a failed attempt, so it must not eat the (only) retry slot and fall out of the loop (#112709)."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 0
+        send_message_mock.side_effect = [{"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session expired"}, {"ret": 0}]
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is True
+        assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == ["ctx-token", None]
+
+    @patch.object(weixin, "_send_items", new_callable=AsyncMock)
+    @patch.object(weixin, "_upload_ciphertext", new=AsyncMock(return_value="enc-q"))
+    @patch.object(weixin, "_get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://cdn.example.com/upload"}))
+    def test_media_send_reads_ret_and_resends_without_token_on_stale_session(self, send_items_mock, tmp_path):
+        """The media leg (cron media_files / send_document) must honour iLink ret like _send_text_chunk: a stale-token
+        ``ret=-2 prepare failed`` gets one tokenless re-send, and a persistent error is a failure, not success (#112709)."""
+        adapter = self._connected_adapter()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        send_items_mock.return_value = {"ret": -2, "errmsg": "prepare failed"}
+
+        result = asyncio.run(adapter.send_document("wxid_test123", str(doc)))
+
+        assert result.success is False
+        assert "prepare failed" in (result.error or "")
+        assert [call.kwargs["context_token"] for call in send_items_mock.await_args_list] == ["ctx-token", None]
 
 
 class TestWeixinOutboundMedia:
@@ -652,7 +749,7 @@ class TestWeixinVoiceAlwaysDownloaded:
     the raw audio and route it through Hermes' own STT pipeline.
 
     Non-Chinese users currently see garbled transcriptions because the
-    existing code short-circuits in two places: ``_download_voice``
+    existing code short-circuits in two places: the voice download
     returns ``None`` whenever Tencent provided *any* text (even
     incorrect), and ``_extract_text`` returns that text as the message
     body. The fix is to always download and never return Tencent's
@@ -676,7 +773,7 @@ class TestWeixinVoiceAlwaysDownloaded:
 
     @pytest.mark.asyncio
     async def test_download_voice_returns_path_when_tencent_text_set(self, tmp_path, monkeypatch):
-        """#27300 PRIMARY: ``_download_voice`` must not short-circuit on
+        """#27300 PRIMARY: voice ``_download_media`` must not short-circuit on
         ``voice_item.text``. The audio is needed so Hermes' own STT can
         re-transcribe when Tencent's text is in the wrong language.
         """
@@ -685,8 +782,8 @@ class TestWeixinVoiceAlwaysDownloaded:
         adapter._poll_session = Mock()
 
         fake_audio_bytes = b"\\x00\\x01\\x02FAKE_SILK"
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
 
         async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
                                  aes_key_b64, full_url, timeout_seconds):
@@ -695,13 +792,13 @@ class TestWeixinVoiceAlwaysDownloaded:
         monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
 
         item = self._make_voice_item(text="garbled-tencent-transcript")
-        result = await adapter._download_voice(item)
+        result, _mime = await adapter._download_media(item, weixin._INBOUND_MEDIA[weixin.ITEM_VOICE])
 
         # Currently broken: returns None when voice_item.text is set.
         # After fix: returns a local path so the central STT pipeline
         # can pick it up and re-transcribe.
         assert result is not None, (
-            "_download_voice returned None even though raw audio is "
+            "_download_media returned None even though raw audio is "
             "available — Hermes' STT pipeline needs the audio to handle "
             "non-Chinese voice messages (#27300)."
         )
@@ -731,7 +828,7 @@ class TestWeixinVoiceAlwaysDownloaded:
         """#27300 INTEGRATION: ``_collect_media`` should add a ``.silk``
         path to ``media_paths`` even when Tencent returned text, so the
         central STT pipeline can re-transcribe. Currently the
-        short-circuit in ``_download_voice`` means the audio is never
+        short-circuit in the voice download means the audio is never
         downloaded, and the message body is whatever Tencent wrote
         (garbled for non-Chinese audio).
         """
@@ -739,8 +836,8 @@ class TestWeixinVoiceAlwaysDownloaded:
         adapter._cdn_base_url = "https://example.invalid"
         adapter._poll_session = Mock()
 
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
 
         async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
                                  aes_key_b64, full_url, timeout_seconds):
@@ -803,8 +900,8 @@ class TestWeixinVoiceGatewayHandoff:
         adapter._token = None
         adapter._cdn_base_url = "https://example.invalid"
 
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
         async def _fake_download(*a, **k):
             return b"\x00\x01FAKE_SILK"
         monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
@@ -827,4 +924,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

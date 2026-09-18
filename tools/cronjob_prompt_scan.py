@@ -7,6 +7,7 @@ import re
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
+from tools.threat_patterns import is_zwj_in_emoji_sequence
 
 # Logger parity with the origin module (these functions used to log there).
 logger = logging.getLogger("tools.cronjob_tools")
@@ -50,27 +51,6 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
-# U+200D (ZWJ) is a required part of many emoji sequences (👨‍👩‍👧, 🏳️‍🌈): block it
-# between plain text, allow it inside an emoji grapheme cluster.
-_EMOJI_NEIGHBOUR_CP_RANGES = ((0x1F000, 0x1FFFF), (0x2600, 0x27BF), (0x2300, 0x23FF), (0x1F1E6, 0x1F1FF), (0x20E3, 0x20E3))
-_VARIATION_SELECTOR_CP = 0xFE0F
-
-
-def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
-    """True when the ZWJ at text[idx] sits between emoji codepoints (skipping VS16)."""
-    left = idx - 1
-    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
-        left -= 1
-    right = idx + 1
-    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
-        right += 1
-    if left < 0 or right >= len(text):
-        return False
-    return all(
-        any(lo <= ord(text[pos]) <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES) for pos in (left, right)
-    )
-
-
 def _strip_cron_safe_constructs(prompt: str) -> str:
     """Scrub the bundled GitHub skill's `Authorization: token $GITHUB_TOKEN` + api.github.com
     curl so it doesn't trip the auth-header exfil rule.
@@ -89,6 +69,9 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
     )
 
 
+# U+200D (ZWJ) is a required part of many emoji sequences (family, rainbow flag): strip it
+# between plain text, keep it inside an emoji grapheme cluster. The predicate is shared with
+# the install-time scanner and the threat scanner, so the emoji definition cannot drift.
 def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     """Strip invisible-unicode chars, keeping ZWJ inside legitimate emoji.
 
@@ -100,7 +83,7 @@ def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     removed: set[str] = set()
     cleaned: list[str] = []
     for idx, ch in enumerate(prompt):
-        if ch in _CRON_INVISIBLE_CHARS and not (ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx)):
+        if ch in _CRON_INVISIBLE_CHARS and not (ch == '\u200d' and is_zwj_in_emoji_sequence(prompt, idx)):
             removed.add(f"U+{ord(ch):04X}")
             continue
         cleaned.append(ch)

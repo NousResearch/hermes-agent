@@ -85,12 +85,6 @@ function matchingWorkArea(bounds, displays) {
   return best
 }
 
-// True when `bounds` overlaps some display's work area by ≥ MIN_VISIBLE on both
-// axes.
-function onScreen(bounds, displays) {
-  return matchingWorkArea(bounds, displays) !== null
-}
-
 interface WindowOptions {
   width: number
   height: number
@@ -188,9 +182,9 @@ export {
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
   GEOMETRY_EVENTS,
+  matchingWorkArea,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,
-  onScreen,
   sanitizeWindowState
 }

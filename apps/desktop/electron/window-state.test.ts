@@ -15,9 +15,9 @@ import {
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
+  matchingWorkArea,
   MIN_HEIGHT,
   MIN_WIDTH,
-  onScreen,
   sanitizeWindowState
 } from './window-state'
 
@@ -71,20 +71,20 @@ test('sanitizeWindowState treats isMaximized strictly', () => {
   assert.equal(sanitizeWindowState({ width: 1400, height: 900, isMaximized: 'yes' }).isMaximized, false)
 })
 
-// ─── onScreen ──────────────────────────────────────────────────────────────
+// ─── matchingWorkArea ──────────────────────────────────────────────────────────────
 
-test('onScreen accepts a window on the primary or a secondary display', () => {
+test('matchingWorkArea accepts a window on the primary or a secondary display', () => {
   const dual = [...PRIMARY, { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } }]
-  assert.equal(onScreen({ x: 100, y: 100, width: 1220, height: 800 }, PRIMARY), true)
-  assert.equal(onScreen({ x: 2200, y: 200, width: 1220, height: 800 }, dual), true)
+  assert.notEqual(matchingWorkArea({ x: 100, y: 100, width: 1220, height: 800 }, PRIMARY), null)
+  assert.notEqual(matchingWorkArea({ x: 2200, y: 200, width: 1220, height: 800 }, dual), null)
 })
 
-test('onScreen rejects off-screen, slivers, and bad input', () => {
-  assert.equal(onScreen({ x: 3000, y: 100, width: 1220, height: 800 }, PRIMARY), false) // past right edge
-  assert.equal(onScreen({ x: 100, y: -900, width: 1220, height: 800 }, PRIMARY), false) // above top
-  assert.equal(onScreen({ x: 1910, y: 100, width: 1220, height: 800 }, PRIMARY), false) // ~10px sliver
-  assert.equal(onScreen({ x: 0, y: 0, width: 1220, height: 800 }, []), false)
-  assert.equal(onScreen({ x: 0, y: 0, width: 1220, height: 800 }, null), false)
+test('matchingWorkArea rejects off-screen, slivers, and bad input', () => {
+  assert.equal(matchingWorkArea({ x: 3000, y: 100, width: 1220, height: 800 }, PRIMARY), null) // past right edge
+  assert.equal(matchingWorkArea({ x: 100, y: -900, width: 1220, height: 800 }, PRIMARY), null) // above top
+  assert.equal(matchingWorkArea({ x: 1910, y: 100, width: 1220, height: 800 }, PRIMARY), null) // ~10px sliver
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, []), null)
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, null), null)
 })
 
 // ─── computeWindowOptions ──────────────────────────────────────────────────

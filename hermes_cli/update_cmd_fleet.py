@@ -53,6 +53,11 @@ def _fleet_restart_pending_marker_path() -> Path:
 
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
     """Drop the pull→restart obligation breadcrumb. Never raises."""
+    if runtimes == []:
+        # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
+        # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
+        # a no-gateway host would then fail every later ``hermes update`` (#115311).
+        return
     from hermes_cli.update_cmd import _m
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
@@ -215,8 +220,14 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
-    An inventory-less marker records no obligation (#115638), so it discharges when the live fleet provably serves the marker's expected SHA.
+    Historical receipts cannot narrow this obligation. Malformed or unsupported inventories stay
+    fail-closed; empty discovery never proves a stopped gateway recovered. Two shapes record no
+    obligation and settle without one: an explicit empty inventory (a pull that found no gateway,
+    #115311) clears outright, and an inventory-less marker (the pre-inventory writer, or a tail
+    that died before its inventory was recorded, #115638) clears once every live gateway is
+    current on the checkout — there is no recorded owed set, so the fleet running the code on disk
+    is the whole of the evidence the marker's warning can be about, even after HEAD moved past
+    ``expected_sha`` by an out-of-band pull.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -230,13 +241,11 @@ def _marker_only_restart_obsolete() -> bool:
         expected_sha = fields.get("expected_sha", "").strip()
         inventory = json.loads(fields.get("inventory", "null"))
         owed: set[tuple[str, str]] | None = None
-        if inventory is None:
-            pass  # inventory-less marker: no recorded obligation; live-fleet evidence alone settles it
-        else:
+        if inventory is not None:
             if not isinstance(inventory, dict) or inventory.get("version") != 1:
                 return False
             runtimes = inventory.get("runtimes")
-            if not isinstance(runtimes, list) or not runtimes:
+            if not isinstance(runtimes, list):
                 return False
             owed = set()
             for runtime in runtimes:
@@ -252,11 +261,20 @@ def _marker_only_restart_obsolete() -> bool:
                 owed.add(("gateway", profile))
     except (OSError, UnicodeError, ValueError):
         return False
+    if owed is not None and not owed:
+        # A pull that recorded no gateway runtime owes no restart; clearing avoids the
+        # stuck "Fleet restart incomplete" loop on Desktop-hosted (no-service) installs.
+        _clear_fleet_restart_pending_marker()
+        logger.debug("Fleet-restart-pending marker discharged: no gateway obligation recorded")
+        return True
     if not expected_sha:
         return False
     checkout_sha = _current_checkout_sha()
-    if checkout_sha != expected_sha:
+    if owed is not None and checkout_sha != expected_sha:
         return False  # a newer pull moved HEAD; it owns a fresh obligation
+    target_sha = expected_sha if owed is not None else checkout_sha
+    if not target_sha:
+        return False
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
         fleet = collect_fleet_versions()
@@ -269,14 +287,14 @@ def _marker_only_restart_obsolete() -> bool:
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it
     for row in fleet:
-        if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
+        if row.get("state") != "current" or str(row.get("code_sha")) != target_sha:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
-        len(fleet), expected_sha[:10],
+        len(fleet), target_sha[:10],
     )
     return True
 

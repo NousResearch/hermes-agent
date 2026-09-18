@@ -349,6 +349,12 @@ declare global {
         viewport?: { height: number; width: number }
         webContentsId: number
       }) => Promise<string>
+      /** Photograph the whole in-app browser guest to a PNG on disk. */
+      capturePreviewToFile?: (payload: { webContentsId: number }) => Promise<{
+        height: number
+        path: string
+        width: number
+      }>
       savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string

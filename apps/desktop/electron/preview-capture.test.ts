@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { capturePreviewContents, mapViewportRectToImage, normalizeCaptureRect } from './preview-capture'
+import {
+  capturePreviewContents,
+  capturePreviewToFile,
+  mapViewportRectToImage,
+  normalizeCaptureRect
+} from './preview-capture'
 
 test('normalizeCaptureRect floors origin and ceils size, never zero', () => {
   assert.deepEqual(normalizeCaptureRect({ height: 10.2, width: 0.4, x: -3.2, y: 1.8 }), {
@@ -94,4 +99,121 @@ test('capturePreviewContents fails closed on a destroyed guest', async () => {
     }),
     /gone/
   )
+})
+
+test('capturePreviewToFile writes the whole viewport and reports its size', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+  const written: Buffer[] = []
+
+  const shot = await capturePreviewToFile(
+    {
+      capturePage: async rect => {
+        assert.equal(rect, undefined)
+
+        return { getSize: () => ({ height: 800, width: 1200 }), isEmpty: () => false, toPNG: () => png }
+      },
+      isDestroyed: () => false
+    },
+    buffer => {
+      written.push(buffer)
+
+      return '/tmp/composer-images/preview_1.png'
+    }
+  )
+
+  assert.deepEqual(shot, { height: 800, path: '/tmp/composer-images/preview_1.png', width: 1200 })
+  assert.deepEqual(written, [png])
+})
+
+test('capturePreviewToFile fails closed on a destroyed guest, writing nothing', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => {
+          throw new Error('should not run')
+        },
+        isDestroyed: () => true
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /gone/
+  )
+  assert.equal(writes, 0)
+})
+
+test('capturePreviewToFile fails closed on an empty image, writing nothing', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => ({
+          isEmpty: () => true,
+          toPNG: () => Buffer.alloc(0)
+        }),
+        isDestroyed: () => false
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /empty/
+  )
+  assert.equal(writes, 0)
+})
+
+test('capturePreviewToFile refuses a webContents that is not a webview guest', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => {
+          throw new Error('should not run')
+        },
+        getType: () => 'window',
+        isDestroyed: () => false
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /not a webview/
+  )
+  assert.equal(writes, 0)
+})
+
+test('capturePreviewToFile never writes a 0-byte PNG', async () => {
+  let writes = 0
+
+  await assert.rejects(
+    capturePreviewToFile(
+      {
+        capturePage: async () => ({
+          getSize: () => ({ height: 800, width: 1200 }),
+          isEmpty: () => false,
+          toPNG: () => Buffer.alloc(0)
+        }),
+        getType: () => 'webview',
+        isDestroyed: () => false
+      },
+      () => {
+        writes += 1
+
+        return '/tmp/never.png'
+      }
+    ),
+    /empty/
+  )
+  assert.equal(writes, 0)
 })

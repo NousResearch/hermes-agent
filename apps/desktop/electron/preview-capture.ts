@@ -23,6 +23,7 @@ export interface CaptureViewport {
 
 export interface CaptureGuest {
   capturePage: (rect?: CaptureRect) => Promise<CaptureImage>
+  getType?: () => string
   isDestroyed: () => boolean
 }
 
@@ -80,6 +81,48 @@ function toDataUrl(image: CaptureImage): string {
   }
 
   return `data:image/png;base64,${image.toPNG().toString('base64')}`
+}
+
+export interface CaptureFile {
+  height: number
+  path: string
+  width: number
+}
+
+/**
+ * Photograph the whole visible guest viewport to a PNG on disk (`desktop_preview`
+ * action=screenshot). `write` runs only once an image exists, so a failed capture
+ * leaves no file behind.
+ */
+export async function capturePreviewToFile(
+  guest: CaptureGuest | null | undefined,
+  write: (png: Buffer) => Promise<string> | string
+): Promise<CaptureFile> {
+  if (!guest || guest.isDestroyed()) {
+    throw new Error('preview guest is gone')
+  }
+
+  // The id arrives from the renderer: only a <webview> guest is a preview, so
+  // the app window's own webContents can never be photographed through here.
+  if (guest.getType && guest.getType() !== 'webview') {
+    throw new Error('preview guest is not a webview')
+  }
+
+  const image = await guest.capturePage()
+
+  if (!image || image.isEmpty()) {
+    throw new Error('preview capture was empty')
+  }
+
+  const png = image.toPNG()
+
+  if (!png.length) {
+    throw new Error('preview capture was empty')
+  }
+
+  const size = image.getSize?.() ?? { height: 0, width: 0 }
+
+  return { height: size.height, path: await write(png), width: size.width }
 }
 
 export async function capturePreviewContents(

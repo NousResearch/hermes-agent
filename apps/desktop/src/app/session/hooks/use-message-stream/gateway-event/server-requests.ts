@@ -1,4 +1,5 @@
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import { screenshotActivePreview } from '@/app/chat/right-rail/preview-shot'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
@@ -282,6 +283,29 @@ const previewRead: Handler = ({ request }) => {
   )
 }
 
+const previewScreenshot: Handler = ({ isActiveSession, request, sessionId }) => {
+  // desktop_preview action=screenshot: a PNG of the guest page. Active session
+  // only, same window-ownership rule as preview.act — a background turn must not
+  // photograph the page the user is looking at.
+  if (sessionId && !isActiveSession) {
+    return
+  }
+
+  if (!isActiveSession) {
+    answerValue(request, {
+      error: 'The in-app browser is only photographed in the session the user is looking at.',
+      success: false
+    })
+
+    return
+  }
+
+  void screenshotActivePreview().then(
+    result => answerValue(request, result),
+    error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+  )
+}
+
 const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
   // session only: a background turn must never reach into the page the user is
@@ -385,6 +409,7 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   clarify,
   'preview.act': previewAct,
   'preview.read': previewRead,
+  'preview.screenshot': previewScreenshot,
   secret,
   sudo,
   'terminal.read': terminalRead,

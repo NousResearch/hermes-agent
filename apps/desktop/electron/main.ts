@@ -325,7 +325,7 @@ import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
-import { capturePreviewContents } from './preview-capture'
+import { capturePreviewContents, capturePreviewToFile } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -16986,6 +16986,12 @@ ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
   const guest = electronWebContents.fromId(Number(payload?.webContentsId))
 
   return capturePreviewContents(guest, payload?.rect, payload?.viewport)
+})
+
+ipcMain.handle('hermes:capturePreviewToFile', async (_event, payload) => {
+  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
+
+  return capturePreviewToFile(guest, png => writeComposerImage(png, '.png', `preview_${Date.now()}`))
 })
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {

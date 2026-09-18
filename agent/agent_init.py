@@ -2201,9 +2201,9 @@ _GATEWAY_IDENTITY_PARAMS = (
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
-    "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "connection_callback", "tour_callback",
-    "step_callback", "stream_delta_callback", "interim_assistant_callback",
+    "read_terminal_callback", "read_preview_callback", "screenshot_preview_callback",
+    "drive_preview_callback", "read_window_below_callback", "connection_callback",
+    "tour_callback", "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
 )
@@ -2224,7 +2224,8 @@ def init_agent(
     tool_start_callback: callable = None, tool_complete_callback: callable = None,
     thinking_callback: callable = None, reasoning_callback: callable = None,
     clarify_callback: callable = None, read_terminal_callback: callable = None,
-    read_preview_callback: callable = None, drive_preview_callback: callable = None,
+    read_preview_callback: callable = None, screenshot_preview_callback: callable = None,
+    drive_preview_callback: callable = None,
     read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,

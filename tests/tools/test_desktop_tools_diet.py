@@ -1,9 +1,9 @@
 """Desktop tool consolidation + diet (#95681, maintainer-directed).
 
-preview = open/close/read as one action tool (576 -> ~235); project =
+preview = open/close/read/screenshot as one action tool (576 -> ~235); project =
 create/switch/list as one (244 -> ~155). Old names are GONE from the
 toolsets (desktop-only tools; no long-transcript compat needed). The
-preview read action still routes through the agent-level GUI callback.
+preview read/screenshot actions still route through the agent-level GUI callback.
 """
 import json
 import os
@@ -72,11 +72,18 @@ class TestPreviewHandler(unittest.TestCase):
         r = json.loads(preview_tool._handle_preview({"action": "read"}))
         self.assertFalse(r.get("success", False))
 
+    def test_screenshot_outside_desktop_session_teaches(self):
+        from tools import preview_tool
+
+        r = json.loads(preview_tool._handle_preview({"action": "screenshot"}))
+        self.assertFalse(r.get("success", False))
+        self.assertIn("desktop session", r.get("error", ""))
+
     def test_unknown_action_teaches(self):
         from tools import preview_tool
 
         r = json.loads(preview_tool._handle_preview({"action": "zap"}))
-        self.assertIn("open, close, read", r.get("error", ""))
+        self.assertIn("open, close, read, screenshot", r.get("error", ""))
 
 
 class TestProjectHandler(unittest.TestCase):

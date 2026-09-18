@@ -434,6 +434,42 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it.each([
+    [{ registry: true }, 'This Mac'],
+    [{ registry: false }, 'a']
+  ])('names the machine by its registry label (%o -> %s)', async ({ registry }, expected) => {
+    // tools/bot_mode_probe.py injects "@handle on <connection_label or connection_id>" into every
+    // bot's roster, and tools/bot_relay.py names the machine the same way when it refuses a target
+    // as offline. The route carries identity only, so the label has to come from the registry —
+    // without it every peer bot addresses its teammates by raw connection id. A Desktop build with
+    // no registry rejects the call, and the id stays.
+    if (registry) {
+      hostMock.connections = vi.fn(async () => [
+        { id: 'a', label: 'This Mac' },
+        { id: 'b', label: 'Noir (cto)' }
+      ])
+    } else {
+      delete hostMock.connections
+    }
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToB = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'b')
+
+    expect(pushedToB?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'a', connection_label: expected, profile: 'a' })
+    ])
+
+    stopBotRelay()
+  })
+
   it('drops the cached rows of a connection that genuinely disconnected', async () => {
     const calls = respondWith(call =>
       call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}

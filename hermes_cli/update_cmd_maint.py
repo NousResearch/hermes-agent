@@ -709,13 +709,22 @@ def _run_quick_snapshots() -> Optional[str]:
 
 
 def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
+    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``).
+
+    Propagates failure so ``_run_pre_update_backup`` can abort the apply.
+    A backup step that exists but silently no-ops is exactly the failure
+    class #114592 reports: the helper printed ``Continuing with update.``
+    on three failure paths, the quick snapshot landed on the ``disabled
+    or failed`` receipt line, the swap proceeded, and a downstream
+    SOUL.md corruption bricked the gateway on next boot. The previous
+    "never raises" docstring was a contract leak that hid that bug.
+    """
     try:
         from hermes_cli.backup import create_pre_update_backup
     except Exception as exc:
-        print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
-        print()
-        return
+        raise RuntimeError(
+            f"pre-update backup helper unavailable: {exc}"
+        ) from exc
 
     try:
         _keep = _load_updates_cfg().get("backup_keep", 5)
@@ -724,19 +733,21 @@ def _run_full_backup() -> None:
 
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
-    try:
-        out_path = create_pre_update_backup(keep=int(_keep))
-    except Exception as exc:  # defensive — helper already swallows, but just in case
-        print(f"  ⚠ Backup failed: {exc}")
-        print("  Continuing with update.")
-        print()
-        return
+    out_path = create_pre_update_backup(keep=int(_keep))
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
-        print()
-        return
+        # Helper returned None rather than raising — the per-file write
+        # failed or nothing was found to back up. ``hermes update`` was
+        # invoked with ``pre_update_backup: full`` so the user EXPECTED a
+        # restorable archive; one that does not exist is a hard refusal,
+        # not a silent continue.
+        raise RuntimeError(
+            "pre-update backup produced no archive "
+            "(write failed or no files found). Aborting update before "
+            "any code swap. See https://github.com/NousResearch/"
+            "hermes-agent/issues/114592."
+        )
 
     try:
         size_bytes = out_path.stat().st_size
@@ -758,11 +769,16 @@ def _run_full_backup() -> None:
 
 
 def _run_pre_update_backup(args) -> Optional[str]:
-    """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
+    """Run the pre-update backup; return the quick-snapshot id (None when off).
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
     ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
+
+    Failures propagate so ``_cmd_update_impl`` can abort BEFORE any code swap. The
+    backup step guards the post-update recovery path — a silent failure here is
+    how #114592's launchd restart storm started (SOUL.md corrupted, update
+    continued, gateway boot ELOOPed, supervisor relaunched forever).
 
     Explicit user opt-out is honored fully. See #34600.
     """
@@ -775,9 +791,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         # Config-level off is silent: the user opted out.
         return None
 
-    snapshot_id = None
-    with _best_effort('Pre-update snapshot failed: %s'):
-        snapshot_id = _run_quick_snapshots()
+    snapshot_id = _run_quick_snapshots()
 
     if mode != "full":
         if snapshot_id:

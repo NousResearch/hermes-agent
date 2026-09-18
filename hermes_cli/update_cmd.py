@@ -1507,12 +1507,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
-    # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
-    pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+    # Backup before any git/file mutation; the snapshot id (None only on the explicit
+    # ``pre_update_backup: off`` opt-out, per #34600) feeds the post-update cron-jobs
+    # safety net. Failures propagate (#114592) so the apply path is NEVER entered
+    # without a verifiable recovery point: a silent ``None`` here is what let the
+    # 0.21.3 → 65b5ac6e no-op version update brick the gateway on next boot when
+    # the SOUL.md symlink loop it left behind ELOOPed in ``_ensure_default_soul_md``.
+    try:
+        pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+    except Exception as exc:
+        _record_update_step("pre_update_backup", False, f"failed: {exc}")
+        raise
     _record_update_step(
         "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled (off mode)")
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

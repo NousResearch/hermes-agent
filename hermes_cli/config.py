@@ -632,8 +632,21 @@ def _secure_file(path):
 
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
-    A SOUL.md the user actually customized is never touched."""
+    A SOUL.md the user actually customized is never touched.
+
+    A symlink (loop or otherwise) is replaced with a regular file before any
+    content read: ``read_text`` on ``SOUL.md -> SOUL.md`` raises ``ELOOP`` and
+    ``write_text`` to the same path raises ``ELOOP`` too. The pre-existing code
+    caught both as ``OSError`` and silently returned — which left a broken
+    symlink in place and bricked every gateway spawn on next boot (#114592:
+    launchd relaunch storm, exit 75, ~350MB of gateway.error.log).
+    """
     soul_path = home / "SOUL.md"
+    if soul_path.is_symlink():
+        # A symlink at this path is never the user's customization (a regular
+        # file is the only form ``_secure_file`` produces). Unlink the link
+        # so the subsequent write_text lands on a regular inode.
+        soul_path.unlink()
     if soul_path.exists():
         try:
             existing = soul_path.read_text(encoding="utf-8")

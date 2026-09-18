@@ -1,6 +1,67 @@
 # Workstation roadmap
 
 
+## Upstream Reliability Hardening Intake (2026-09-18) — ACTIVE P0 HARDENING LANE
+
+Canonical implementation plan:
+[context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md).
+
+The 2026-09-18 upstream sweep found several failure modes that map directly onto
+the Workstation reliability boundary. This is **not** a feature-expansion gate and
+does not replace the active Adaptive Execution correction. It is a focused
+hardening lane: transplant invariants/regression tests and only the smallest code
+patch that fits the canonical Work owners.
+
+Immediate order:
+
+1. **P0.0 — native Browser truth test (#114964-derived):**
+   prove on a real Electron `WebContentsView` that `hide/park != destroy`, the
+   same BrowserTask/page survives route/surface changes, state/timers/scroll and
+   the automation target remain live, and no external-browser fallback occurs.
+   Current BrowserTask unit tests already prove the lifecycle abstraction; this
+   step closes the real composition/E2E gap before architecture is changed.
+2. **P0.1 — recovery/resync correctness (#115068 + #115085):**
+   port the live-tail journal fix and preserve unacknowledged optimistic user
+   messages during background resync.
+3. **P0.2 — one canonical session writer (#111493):**
+   extend active-session ownership to reject a second live writer for the same
+   session, make foreign resume an observer/read-only path, fence lease transfer,
+   and fail closed when ownership cannot be proven.
+4. **P0.3 — Kanban truth/provenance (#114785 + #114793 + #114904):**
+   validate session provenance against `state.db` and request-scoped context;
+   make heartbeat success mean persisted claim+worker writes; fence delegated
+   children; add durable worker-exit evidence so classification does not depend
+   on which dispatcher process reaped the PID.
+5. **P0.4 — bounded browser fallback recovery (#114897):**
+   cap post-attach CDP reconnect failures in `tools/browser_supervisor.py`,
+   evict the exhausted supervisor from the registry, and allow a later request
+   to create a fresh one.
+6. **P1 after P0 is green:** design one Durable Delivery Rail from the common
+   invariants in #115009/#115010/#114780 and delegation-completion work; then
+   benchmark snapshot quality using #115056. Do not create parallel queues or a
+   second browser snapshot authority.
+
+Explicit dispositions:
+
+- **#114964:** production invariant is already implemented in BrowserTask; import
+  the real regression scenario, not the upstream pane implementation.
+- **#114986 phantom turn lease:** no direct port now because this downstream
+  `gateway.ts` does not contain the upstream `turnLeases` mechanism. Keep the
+  invariant on the rebase watchlist.
+- **#115056:** native Work inventory is already one principal
+  `webContents.executeJavaScript(...)` observation; P1 should import
+  hit-test/freshness/benchmark ideas only.
+- **computer-use provider seam / desktop bridge:** defer until native OS-control
+  is an active milestone.
+- **browser vault / Bot Screen / workflow-record:** P2; security, platform and
+  RecipeStore boundaries take precedence.
+
+This lane may run alongside the Adaptive Execution correction because it removes
+false state, lost intent, phantom ownership and unbounded recovery. It must not
+weaken the Canonical Execution Reliability Gate or add a second SessionDB, Kanban,
+BrowserTask, delivery ledger, ArtifactStore or Memory owner.
+
+
 ## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — ACTIVE
 
 Real native-browser dogfood exposed an architectural overreach in the durable

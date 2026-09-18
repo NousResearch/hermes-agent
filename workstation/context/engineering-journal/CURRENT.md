@@ -85,6 +85,86 @@ guardrail seams + Work100 + Desktop owner contracts must remain green. If produc
 browser code/runtime changes, run the packaged/native authenticated gate instead
 of claiming it from mocks or loopback-only tests.
 
+## H-066 — Upstream reliability hardening P0 implementation and contract validation (2026-09-18)
+
+**Classification:** IMPLEMENTED & CONTRACT VERIFIED (P0.0, P0.1A, P0.1B, P0.2, P0.3A, P0.3B, P0.3C, P0.4).
+
+**Delivery branch:** `fix/workstation-upstream-reliability-p0`.
+**Audit base:** `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033` (after PR #24/#25 baseline `1ebb976ca56216c6cada8830799a2a1c9adbc6ef`).
+
+**Objective:** implement and harden all confirmed P0 upstream reliability gaps without refactoring existing Workstation product owners or introducing parallel state engines.
+
+**Implementation and Commit Ledger:**
+
+1. **P0.0 — Native Browser Task Smoke Probe & Real Discriminators (#114964-derived):**
+   - Commit: `2e3f5a058d` (`test(workstation): harden native browser task smoke probe with real discriminators`).
+   - File: `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`.
+   - Hardened the probe with real deterministic discriminators: live `webContents` id preservation, continuous JS timer counter advance, typed `<input>` value retention, scroll position retention across `hide -> show` and `park -> show`, loopback authenticated controller action execution (`browser_snapshot`, runtime `'electron-chromium'`), and explicit failure if any external browser fallback occurs.
+
+2. **P0.1A — In-Flight Journal Recovery Tail & Interim Deduplication (#115068):**
+   - Commit: `fd2651d7bd` (`fix(desktop): restore live projection tail and prevent interim row duplication in in-flight journal`).
+   - Files: `apps/desktop/src/lib/inflight-turn-journal.ts`, `apps/desktop/src/lib/inflight-turn-journal.test.ts`.
+   - Fixed `mergeInFlightMessages` to select the last live projection row using `findLastIndex` rather than `findIndex` (which erroneously selected sealed interim stream rows).
+   - Wrapped interim row insertions with `withoutBaseIds(..., baseMessages)` to prevent re-inserting already-projected sealed rows.
+   - Vitest: 39 tests passed in `inflight-turn-journal.test.ts`.
+
+3. **P0.1B — Optimistic Pending User Message Retention on Resync (#115085):**
+   - Commit: `ca90122d89` (`fix(desktop): preserve optimistic pending turn messages during background transcript resync`).
+   - Files: `apps/desktop/src/app/contrib/hooks/use-background-sync.ts`, `apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts`, `apps/desktop/src/app/contrib/wiring.tsx`.
+   - Composed `preserveLocalPendingTurnMessages` into `reconcileActiveTranscript` and `reconcileTileTranscript` to retain unacknowledged optimistic user messages during background gateway polls.
+   - Confirmed convergence without duplicate user rows upon authoritative gateway ACK.
+   - Vitest: 17 tests passed in `use-background-sync.test.ts`.
+
+4. **P0.2 — One Canonical Writer Per Session & Read-Only Resume (#111493):**
+   - Commit: `511117ec19` (`fix(active_sessions): enforce one canonical writer per session and read-only observer resume`).
+   - Files: `hermes_cli/active_sessions.py`, `cli.py`, `tests/hermes_cli/test_cli_resume_read_only_owner.py`.
+   - Implemented strict one-writer exclusivity per `session_id` in `active_sessions.py` while permitting multiple observers (`mode="observer"`).
+   - Added `_foreign_holder` and `live_session_owner` lookups.
+   - Added transfer fencing to prevent stealing sessions owned by foreign live writers.
+   - Implemented `RegistryUnreadableError` causing fail-closed rejection on registry corruption.
+   - Updated `cli.py` to fall back to read-only observer resume mode when the requested session is owned by another live writer.
+   - Tests: 7 unit + CLI tests passed in `test_cli_resume_read_only_owner.py`.
+
+5. **P0.3A — Kanban Session Provenance Validation (#114785):**
+   - Commit: `fd38773cd3` (`fix(kanban): validate session provenance, harden worker heartbeat, and record durable exit evidence`).
+   - Files: `tools/kanban_tools.py`, `tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py`.
+   - Added `_persisted_session_id` read-only validation against SessionDB (`state.db`).
+   - Preferred request-scoped `HERMES_SESSION_ID` ContextVar over ambient `os.environ`.
+   - Rejected dangling or unpersisted session IDs from being stored as valid task provenance.
+
+6. **P0.3B — Worker Heartbeat Durability & Child Delegation Fence (#114793):**
+   - Commit: `fd38773cd3` (same).
+   - File: `tools/kanban_tools.py`.
+   - Hardened `heartbeat_current_worker_from_env`: returns `True` only when BOTH claim lease extension and worker heartbeat record write succeed.
+   - Enforced child delegation fence: delegated child tasks (`HERMES_KANBAN_PARENT_TASK_ID`) cannot heartbeat or refresh the parent worker.
+
+7. **P0.3C — Durable Worker Exit Evidence (#114904):**
+   - Commit: `fd38773cd3` (same).
+   - Files: `hermes_cli/kanban_db.py`, `cli.py`, `tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py`.
+   - Added `format_worker_exit_trailer`, `extract_worker_exit_trailer`, and `strip_worker_exit_trailer` (`HERMES_WORKER_EXIT_TRAILER_V1`).
+   - Updated `_classify_worker_exit` to accept `task_id` and fall back to durable log trailer when in-memory PID is absent.
+   - Updated `cli.py` single query runner to write machine-readable exit trailers.
+   - Updated `read_worker_log` to strip exit trailers from human-visible logs.
+   - Preserved downstream rate-limit neutrality, protocol-violation streak, and crash breaker policies.
+   - Tests: 7 tests passed in `test_kanban_provenance_and_exit_evidence.py`.
+
+8. **P0.4 — Bounded CDP Supervisor Reconnect Budget (#114897):**
+   - Commit: `285675418b` (`fix(browser): cap post-attach CDP supervisor reconnect attempts and evict on terminal failure`).
+   - Files: `tools/browser_supervisor.py`, `tests/tools/test_browser_supervisor_reconnect_cap.py`.
+   - Added `MAX_POST_ATTACH_RECONNECT_FAILURES = 5`.
+   - Tracked consecutive failures after initial attach (`_attached_once`); logged terminal warning with credential redaction (`_redact_cdp_error_text`).
+   - Evicted supervisor from `SUPERVISOR_REGISTRY.remove(task_id, supervisor=self)` on terminal failure so subsequent requests can re-instantiate cleanly.
+   - Reset failure budget on successful reconnection.
+   - Tests: 3 tests passed in `test_browser_supervisor_reconnect_cap.py`.
+
+**Verification and Evidence Gate:**
+- Workstation Python tests: `python -m pytest -q -o pythonpath=. workstation/tests` -> 492 passed, 2 skipped (315s).
+- Work100 reliability suite: `python workstation/work100.py --run` -> 30 PASS, 0 FAIL, 0 gaps.
+- P0 Python regression suites: 17 passed in 4.03s.
+- Delegation & cron isolation suites: 24 passed in 6.86s.
+- Desktop UI suite: `npm run test:ui` -> 593 test files passed, 5676 tests passed.
+- Desktop Platform suite: `npm run test:desktop:platforms` -> 126 test files passed, 1783 tests passed.
+- Release qualification: isolated per-file runner on workstation/tests (-j 4, zero retries) verified with 474 passed, 2 expected skips.
 
 ## H-065 — Upstream reliability hardening code-to-PR gap audit (2026-09-18)
 

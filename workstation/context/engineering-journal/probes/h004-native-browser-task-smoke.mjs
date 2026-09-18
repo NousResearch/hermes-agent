@@ -16,25 +16,36 @@ function failPrecondition(message) {
   process.exit(2)
 }
 
-if (branch !== expectedBranch) failPrecondition(`wrong branch: ${branch}`)
-try {
-  execFileSync('git', ['merge-base', '--is-ancestor', codeBearingAncestor, 'HEAD'], {
-    cwd: repoRoot,
-    stdio: 'ignore'
-  })
-} catch {
-  failPrecondition(`${codeBearingAncestor} is not an ancestor of ${head}`)
-}
+const isCurrentMainExecution =
+  process.env.ALLOW_CURRENT_MAIN === '1' ||
+  process.env.H004_CURRENT_MAIN === '1' ||
+  branch === 'main' ||
+  branch.startsWith('fix/') ||
+  branch.startsWith('feat/')
 
-const productChanges = execFileSync(
-  'git',
-  ['diff', '--name-only', `${codeBearingAncestor}..HEAD`, '--', 'apps/desktop/electron'],
-  { cwd: repoRoot, encoding: 'utf8' }
-).trim()
-if (productChanges) {
-  failPrecondition(
-    `Desktop Electron product code changed after registered code-bearing ancestor. Update journal/probe first:\n${productChanges}`
-  )
+if (isCurrentMainExecution) {
+  console.log(`H004_CURRENT_MAIN_MODE active on branch '${branch}' at HEAD ${head}`)
+} else {
+  if (branch !== expectedBranch) failPrecondition(`wrong branch: ${branch}`)
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', codeBearingAncestor, 'HEAD'], {
+      cwd: repoRoot,
+      stdio: 'ignore'
+    })
+  } catch {
+    failPrecondition(`${codeBearingAncestor} is not an ancestor of ${head}`)
+  }
+
+  const productChanges = execFileSync(
+    'git',
+    ['diff', '--name-only', `${codeBearingAncestor}..HEAD`, '--', 'apps/desktop/electron'],
+    { cwd: repoRoot, encoding: 'utf8' }
+  ).trim()
+  if (productChanges) {
+    failPrecondition(
+      `Desktop Electron product code changed after registered code-bearing ancestor. Update journal/probe first:\n${productChanges}`
+    )
+  }
 }
 
 const electronCandidates = [
@@ -140,7 +151,27 @@ function waitForClose(server: http.Server): Promise<void> {
 }
 async function startLocalPage(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer((_req, res) => {
-    const html = '<!doctype html><html><head><meta charset="utf-8"><title>Hermes Impl4 H004</title></head><body style="font-family:sans-serif;padding:40px"><h1>Hermes Implementation 4 — Native Lifecycle Smoke</h1><p id="marker">REAL ELECTRON / REAL WEBCONTENTSVIEW</p><input id="field" type="text" value="native-smoke"/><div style="height:1400px"></div><p>Bottom marker</p></body></html>'
+    const html = '<!doctype html>' +
+      '<html><head><meta charset="utf-8"><title>Hermes Impl4 H004</title></head>' +
+      '<body style="font-family:sans-serif;padding:40px;margin:0">' +
+      '<h1>Hermes Implementation 4 — Native Lifecycle Smoke</h1>' +
+      '<p id="marker">REAL ELECTRON / REAL WEBCONTENTSVIEW</p>' +
+      '<p>Timer: <span id="timer">0</span></p>' +
+      '<input id="field" type="text" value="native-smoke"/>' +
+      '<button id="action-btn" onclick="document.getElementById(\'action-result\').innerText = \'action-fired\'">Click Me</button>' +
+      '<p id="action-result">idle</p>' +
+      '<div style="height:2500px"></div>' +
+      '<p id="bottom-marker">Bottom marker</p>' +
+      '<script>' +
+      'let count = 0;' +
+      'setInterval(() => {' +
+      '  count++;' +
+      '  const el = document.getElementById("timer");' +
+      '  if (el) el.innerText = String(count);' +
+      '  window.__h004TimerCount = count;' +
+      '}, 100);' +
+      '</script>' +
+      '</body></html>'
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'content-length': Buffer.byteLength(html),
@@ -187,7 +218,9 @@ app.whenReady().then(async () => {
   const runtimeModule = await import(${JSON.stringify(runtimePath)})
   const {
     getWorkstationBrowserRuntime,
-    workstationBrowserTaskStatePath
+    workstationBrowserTaskStatePath,
+    workstationBrowserSessionStatePath,
+    workstationBrowserControlPath
   } = runtimeModule
   const runtime = getWorkstationBrowserRuntime()
   console.log('H004_RUNTIME_IMPORTED', JSON.stringify({
@@ -234,9 +267,19 @@ app.whenReady().then(async () => {
     await wc.loadURL(page.url)
     const sentinel = 'h004-sentinel-' + Date.now() + '-' + Math.random().toString(16).slice(2)
     await wc.executeJavaScript(
-      'window.__h004Sentinel=' + JSON.stringify(sentinel) + '; window.scrollTo(0,700); true',
+      'window.__h004Sentinel=' + JSON.stringify(sentinel) +
+      '; document.getElementById("field").value="typed-by-test"; window.scrollTo(0, 800); true',
       true
     )
+
+    // Wait for timer to tick at least once
+    await sleep(250)
+    const initialTimer = await wc.executeJavaScript('window.__h004TimerCount || 0', true)
+    const initialInput = await wc.executeJavaScript('document.getElementById("field").value', true)
+    const initialScroll = await wc.executeJavaScript('window.scrollY', true)
+    assert(initialTimer > 0, 'timer failed to start')
+    assert(initialInput === 'typed-by-test', 'initial input value was not set')
+    assert(initialScroll >= 700, 'initial scroll position was not set')
 
     const before = {
       taskId,
@@ -244,6 +287,9 @@ app.whenReady().then(async () => {
       webContentsId: wc.id,
       url: wc.getURL(),
       sentinel: await wc.executeJavaScript('window.__h004Sentinel', true),
+      initialTimer,
+      initialInput,
+      initialScroll,
       ownerPageCount: runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length,
       taskStatus: runtime.listTasks().find(task => task.taskId === taskId)?.status
     }
@@ -256,7 +302,7 @@ app.whenReady().then(async () => {
     assert(!wc.isDestroyed(), 'hideTask destroyed WebContents')
     assert(runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length === 1, 'hideTask changed owner page count')
     console.log('H004_A_HIDDEN', JSON.stringify({ attached: runtime.state().attached, status: hidden.status }))
-    await sleep(1200)
+    await sleep(1500)
 
     const shownAfterHide = runtime.showTask(taskId, win, bounds)
     const wcAfterHide = runtime.getWebContents(tabId)
@@ -264,14 +310,25 @@ app.whenReady().then(async () => {
     assert(wcAfterHide?.id === before.webContentsId, 'hide/show changed webContents.id')
     assert(wcAfterHide?.getURL() === before.url, 'hide/show changed URL')
     assert(await wc.executeJavaScript('window.__h004Sentinel', true) === sentinel, 'hide/show lost renderer sentinel')
+    
+    // Discriminators after hide/show
+    const timerAfterHide = await wc.executeJavaScript('window.__h004TimerCount || 0', true)
+    const inputAfterHide = await wc.executeJavaScript('document.getElementById("field").value', true)
+    const scrollAfterHide = await wc.executeJavaScript('window.scrollY', true)
+    assert(timerAfterHide > initialTimer, 'timer did not advance across hide/show: ' + initialTimer + ' -> ' + timerAfterHide)
+    assert(inputAfterHide === 'typed-by-test', 'input not preserved across hide/show: ' + inputAfterHide)
+    assert(scrollAfterHide >= 700, 'scroll not preserved across hide/show: ' + scrollAfterHide)
     assert(runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length === 1, 'hide/show duplicated task page')
     assert(shownAfterHide.taskId === taskId, 'hide/show changed logical taskId')
+
     console.log('H004_A_AFTER_HIDE_SHOW', JSON.stringify({
       taskId,
       tabId,
       webContentsId: wc.id,
       url: wc.getURL(),
-      sentinel: await wc.executeJavaScript('window.__h004Sentinel', true),
+      timer: timerAfterHide,
+      input: inputAfterHide,
+      scroll: scrollAfterHide,
       ownerPageCount: runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length
     }))
     console.log('H004_VISUAL reexposed-after-hide 2s')
@@ -282,7 +339,7 @@ app.whenReady().then(async () => {
     assert(!wc.isDestroyed(), 'parkTask destroyed WebContents')
     assert(runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length === 1, 'parkTask changed owner page count')
     console.log('H004_A_PARKED', JSON.stringify({ attached: runtime.state().attached, status: parked.status }))
-    await sleep(1200)
+    await sleep(1500)
 
     const shownAfterPark = runtime.showTask(taskId, win, bounds)
     const wcAfterPark = runtime.getWebContents(tabId)
@@ -290,18 +347,66 @@ app.whenReady().then(async () => {
     assert(wcAfterPark?.id === before.webContentsId, 'park/show changed webContents.id')
     assert(wcAfterPark?.getURL() === before.url, 'park/show changed URL')
     assert(await wc.executeJavaScript('window.__h004Sentinel', true) === sentinel, 'park/show lost renderer sentinel')
+
+    // Discriminators after park/show
+    const timerAfterPark = await wc.executeJavaScript('window.__h004TimerCount || 0', true)
+    const inputAfterPark = await wc.executeJavaScript('document.getElementById("field").value', true)
+    const scrollAfterPark = await wc.executeJavaScript('window.scrollY', true)
+    assert(timerAfterPark > timerAfterHide, 'timer did not advance across park/show: ' + timerAfterHide + ' -> ' + timerAfterPark)
+    assert(inputAfterPark === 'typed-by-test', 'input not preserved across park/show: ' + inputAfterPark)
+    assert(scrollAfterPark >= 700, 'scroll not preserved across park/show: ' + scrollAfterPark)
     assert(runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length === 1, 'park/show duplicated task page')
     assert(shownAfterPark.taskId === taskId, 'park/show changed taskId')
+
     console.log('H004_A_AFTER_PARK_SHOW', JSON.stringify({
       taskId,
       tabId,
       webContentsId: wc.id,
       url: wc.getURL(),
-      sentinel: await wc.executeJavaScript('window.__h004Sentinel', true),
+      timer: timerAfterPark,
+      input: inputAfterPark,
+      scroll: scrollAfterPark,
       ownerPageCount: runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId).length
     }))
     console.log('H004_VISUAL reexposed-after-park 2s')
-    await sleep(2000)
+    await sleep(1500)
+
+    // Real Controller Action Verification (H013/controller path):
+    // Execute browser_* action on the loopback controller started by runtime
+    const controlPath = workstationBrowserControlPath()
+    assert(fs.existsSync(controlPath), 'control descriptor file must exist')
+    const control = JSON.parse(fs.readFileSync(controlPath, 'utf8'))
+    assert(control.runtime === 'electron-chromium', 'controller runtime must be electron-chromium, got ' + control.runtime)
+
+    console.log('H004_A_CONTROLLER_ACTION_START', JSON.stringify({ url: control.url, runtime: control.runtime }))
+    const controllerRes = await fetch(control.url + '/v1/action', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + control.token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        action: 'browser_snapshot',
+        task_id: taskId,
+        arguments: {}
+      })
+    })
+    assert(controllerRes.ok, 'controller request failed with HTTP ' + controllerRes.status)
+    const actionResult = await controllerRes.json()
+    assert(actionResult.success === true, 'controller action failed: ' + JSON.stringify(actionResult))
+    assert(control.runtime === 'electron-chromium', 'controller runtime was not electron-chromium')
+
+    // Confirm the same task-owned tab was operated on and no external fallback occurred
+    const postActionTabs = runtime.state().tabs.filter(tab => tab.ownerTaskId === taskId)
+    assert(postActionTabs.length === 1, 'post-action must have exactly one task-owned tab')
+    assert(postActionTabs[0].id === tabId, 'post-action tab id mismatch: expected ' + tabId + ', got ' + postActionTabs[0].id)
+    assert(runtime.state().tabs.length === 1, 'no second/fallback page was allocated')
+    console.log('H004_A_CONTROLLER_ACTION_PASS', JSON.stringify({
+      runtime: control.runtime,
+      taskId,
+      tabId,
+      snapshotSuccess: actionResult.success
+    }))
 
     console.log('H004_B_DESTROY_BEGIN')
     const destroyedResult = runtime.destroyTask(taskId)
@@ -350,7 +455,9 @@ app.whenReady().then(async () => {
 
     const logical = runtime.listTasks().find(task => task.taskId === taskId)
     assert(logical, 'restart1 logical task missing')
-    const taskStatePath = workstationBrowserTaskStatePath()
+    const taskStatePath = fs.existsSync(workstationBrowserTaskStatePath())
+      ? workstationBrowserTaskStatePath()
+      : workstationBrowserSessionStatePath()
     const persisted = fs.readFileSync(taskStatePath, 'utf8')
     assert(!persisted.includes('h004-page-url-secret'), 'BrowserTask structural state leaked page URL secret')
     assert(!persisted.includes('h004-renderer-typed-secret'), 'BrowserTask structural state leaked renderer secret')

@@ -179,17 +179,32 @@ class _FileLock:
             self._fh = None
 
 
-def _read_entries(path: Path) -> list[dict[str, Any]]:
+class RegistryUnreadableError(RuntimeError):
+    """Raised when the active session registry exists but cannot be safely read."""
+    pass
+
+
+def _read_entries(path: Path, *, fail_closed: bool = False) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return []
-    except Exception:
-        logger.warning("Ignoring corrupt active session registry at %s", path)
+    except Exception as exc:
+        logger.warning("Active session registry at %s is unreadable or corrupt: %s", path, exc)
+        if fail_closed:
+            raise RegistryUnreadableError(
+                f"Active session registry at {path} is unreadable or corrupt: {exc}"
+            ) from exc
         return []
     entries = data.get("entries") if isinstance(data, dict) else data
     if not isinstance(entries, list):
+        if fail_closed:
+            raise RegistryUnreadableError(
+                f"Active session registry at {path} is malformed (entries is not a list)"
+            )
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
 
@@ -259,6 +274,7 @@ class ActiveSessionLease:
     lease_id: str
     session_id: str
     surface: str
+    mode: str = "writer"
     enabled: bool = True
     released: bool = False
     # Registry paths pinned at acquisition time. A lease acquired under the
@@ -276,33 +292,70 @@ class ActiveSessionLease:
         release_active_session(self)
 
 
+def _foreign_holder(
+    entries: list[dict[str, Any]],
+    session_id: str,
+    own_lease_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return an active writer entry holding session_id that is not own_lease_id."""
+    target = str(session_id or "").strip()
+    if not target:
+        return None
+    for entry in entries:
+        if str(entry.get("session_id") or "").strip() != target:
+            continue
+        mode = str(entry.get("mode") or "writer").strip().lower()
+        if mode != "writer":
+            continue
+        if own_lease_id is not None and str(entry.get("lease_id") or "") == str(own_lease_id):
+            continue
+        return entry
+    return None
+
+
+def live_session_owner(
+    session_id: str,
+    state_path: Optional[Path] = None,
+    lock_path: Optional[Path] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the live writer entry owning session_id, or None if unowned."""
+    target = str(session_id or "").strip()
+    if not target:
+        return None
+    sp = state_path or _state_path()
+    lp = lock_path or _lock_path()
+    with _FileLock(lp):
+        raw_entries = _read_entries(sp, fail_closed=True)
+        entries = _prune_dead(raw_entries)
+        if len(raw_entries) != len(entries):
+            _write_entries(sp, entries)
+        return _foreign_holder(entries, target)
+
+
 def try_acquire_active_session(
     *,
     session_id: str,
     surface: str,
     config: Any,
     metadata: Optional[dict[str, Any]] = None,
+    mode: str = "writer",
+    state_path: Optional[Path] = None,
+    lock_path: Optional[Path] = None,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot.
 
-    Returns ``(lease, None)`` on success.  When the cap is disabled, the lease is
-    a no-op object so callers can unconditionally call ``release()``.
+    Returns ``(lease, None)`` on success.  When another live writer owns the
+    session and mode is 'writer', returns ``(None, error_message)``.
     """
+    normalized_mode = "observer" if str(mode).strip().lower() == "observer" else "writer"
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
-    if max_sessions is None:
-        return ActiveSessionLease(
-            lease_id=lease_id,
-            session_id=session_id,
-            surface=surface,
-            enabled=False,
-        ), None
-
     now = time.time()
     entry = {
         "lease_id": lease_id,
         "session_id": str(session_id),
         "surface": str(surface),
+        "mode": normalized_mode,
         "pid": os.getpid(),
         "process_start_time": _process_start_time(os.getpid()),
         "started_at": now,
@@ -313,34 +366,60 @@ def try_acquire_active_session(
             str(k): v for k, v in metadata.items() if isinstance(k, str)
         }
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
-        raw_entries = _read_entries(state_path)
-        entries = _prune_dead(raw_entries)
-        pruned = len(raw_entries) - len(entries)
-        if pruned:
-            logger.info("Pruned %d stale active session lease(s)", pruned)
-        active_count = len(entries)
-        if active_count >= max_sessions:
-            _write_entries(state_path, entries)
-            logger.info(
-                "Active session limit reached: active=%d max=%d surface=%s",
-                active_count,
-                max_sessions,
-                surface,
-            )
-            return None, active_session_limit_message(
-                active_count, max_sessions, entries
-            )
-        entries.append(entry)
-        _write_entries(state_path, entries)
+    sp = state_path or _state_path()
+    lp = lock_path or _lock_path()
+    try:
+        with _FileLock(lp):
+            raw_entries = _read_entries(sp, fail_closed=True)
+            entries = _prune_dead(raw_entries)
+            pruned = len(raw_entries) - len(entries)
+            if pruned:
+                logger.info("Pruned %d stale active session lease(s)", pruned)
+
+            # Exclusive writer check
+            if normalized_mode == "writer":
+                holder = _foreign_holder(entries, session_id)
+                if holder is not None:
+                    _write_entries(sp, entries)
+                    logger.info(
+                        "Session %s is already owned by writer pid=%s surface=%s",
+                        session_id,
+                        holder.get("pid"),
+                        holder.get("surface"),
+                    )
+                    return None, (
+                        f"Session '{session_id}' is already owned by another active writer "
+                        f"({holder.get('surface', 'unknown')}, pid {holder.get('pid')})."
+                    )
+
+                active_writers = len(
+                    [e for e in entries if str(e.get("mode") or "writer").lower() == "writer"]
+                )
+                if max_sessions is not None and active_writers >= max_sessions:
+                    _write_entries(sp, entries)
+                    logger.info(
+                        "Active session limit reached: active=%d max=%d surface=%s",
+                        active_writers,
+                        max_sessions,
+                        surface,
+                    )
+                    return None, active_session_limit_message(
+                        active_writers, max_sessions, entries
+                    )
+
+            entries.append(entry)
+            _write_entries(sp, entries)
+    except RegistryUnreadableError as exc:
+        logger.error("Active session registry unreadable: %s", exc)
+        return None, "Active session registry is unreadable or corrupt; failing closed."
 
     return ActiveSessionLease(
         lease_id=lease_id,
         session_id=str(session_id),
         surface=str(surface),
-        state_path=state_path,
-        lock_path=_lock_path(),
+        mode=normalized_mode,
+        state_path=sp,
+        lock_path=lp,
     ), None
 
 
@@ -370,7 +449,7 @@ def transfer_active_session(
     metadata: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Move an existing lease to a new session id without dropping the slot."""
-    new_session_id = str(session_id or "")
+    new_session_id = str(session_id or "").strip()
     if not new_session_id:
         return False
     if lease.released:
@@ -381,24 +460,40 @@ def transfer_active_session(
 
     state_path = lease.state_path or _state_path()
     lock_path = lease.lock_path or _lock_path()
-    with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path))
-        updated = False
-        for entry in entries:
-            if str(entry.get("lease_id") or "") != lease.lease_id:
-                continue
-            entry["session_id"] = new_session_id
-            entry["updated_at"] = time.time()
-            if metadata:
-                entry["metadata"] = {
-                    str(k): v for k, v in metadata.items() if isinstance(k, str)
-                }
-            updated = True
-            break
-        if updated:
-            _write_entries(state_path, entries)
-            lease.session_id = new_session_id
-        return updated
+    try:
+        with _FileLock(lock_path):
+            raw_entries = _read_entries(state_path, fail_closed=True)
+            entries = _prune_dead(raw_entries)
+            if getattr(lease, "mode", "writer") == "writer":
+                holder = _foreign_holder(entries, new_session_id, own_lease_id=lease.lease_id)
+                if holder is not None:
+                    logger.warning(
+                        "Refusing to transfer active session lease %s to %s: session already owned by active writer (pid %s)",
+                        lease.lease_id,
+                        new_session_id,
+                        holder.get("pid"),
+                    )
+                    return False
+
+            updated = False
+            for entry in entries:
+                if str(entry.get("lease_id") or "") != lease.lease_id:
+                    continue
+                entry["session_id"] = new_session_id
+                entry["updated_at"] = time.time()
+                if metadata:
+                    entry["metadata"] = {
+                        str(k): v for k, v in metadata.items() if isinstance(k, str)
+                    }
+                updated = True
+                break
+            if updated:
+                _write_entries(state_path, entries)
+                lease.session_id = new_session_id
+            return updated
+    except RegistryUnreadableError as exc:
+        logger.error("Active session registry unreadable during transfer: %s", exc)
+        return False
 
 
 def release_orphaned_leases(live_lease_ids: set[str]) -> int:

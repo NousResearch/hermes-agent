@@ -57,42 +57,54 @@ changed. Native Electron executable and built main bundle were absent, so no
 authenticated native/packaged browser smoke or paid-provider savings is claimed.
 See TESTING.md and the current engineering journal for commands and failure history.
 
-## 2026-09-18 upstream reliability hardening — confirmed parallel P0 lane
+## 2026-09-18 upstream reliability hardening — IMPLEMENTED AND CONTRACT VERIFIED (P0 LANE)
 
 A direct PR-to-current-code comparison on `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033`
-confirmed a second, compatible reliability lane. It does not supersede the
-Adaptive Execution correction and does not represent implemented behavior yet.
+confirmed a second, compatible reliability lane. All confirmed P0 gaps have now been
+implemented, tested with strict RED/GREEN regression suites, and verified on branch
+`fix/workstation-upstream-reliability-p0`.
 
-**Confirmed open downstream gaps:**
+**Implemented and verified P0 resolutions:**
 
-- #114897: `tools/browser_supervisor.py` has unbounded post-attach reconnect;
-- #111493: active-session capacity exists, but same-`session_id` writer
-  exclusivity and transfer fencing do not;
-- #115068: in-flight recovery still selects the first live-looking projection
-  row instead of the last true live tail;
-- #115085: background resync does not preserve the local unacknowledged user row;
-- #114785: Kanban provenance is not uniformly validated against persisted
-  SessionDB/request-scoped ownership before persistence;
-- #114793: automatic heartbeat reports attempted work rather than requiring both
-  durable writes and lacks delegated-child liveness fencing;
-- #114904: downstream worker failure policy is already richer, but exit-code
-  evidence remains process-local when a different dispatcher observes death.
+- **#114964 / P0.0 (Native Browser Keepalive Truth):** Hardened
+  `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`
+  with deterministic discriminators: live `webContents` id preservation, continuous
+  JS timer advance, input value retention, scroll position survival across `hide -> show`
+  and `park -> show`, and loopback controller snapshot action execution.
+- **#115068 / P0.1A (In-Flight Turn Journal Tail):** Fixed `apps/desktop/src/lib/inflight-turn-journal.ts`
+  to select the true live projection tail using `findLastIndex` and deduplicate sealed
+  interim stream rows with `withoutBaseIds`. Verified with 39 vitest tests.
+- **#115085 / P0.1B (Optimistic Message Resync):** Composed `preserveLocalPendingTurnMessages`
+  into `use-background-sync.ts` (`reconcileActiveTranscript` and `reconcileTileTranscript`)
+  and `wiring.tsx` to preserve unacknowledged user turns across background resyncs until
+  authoritative gateway ACK. Verified with 17 vitest tests.
+- **#111493 / P0.2 (One Canonical Session Writer):** Hardened `hermes_cli/active_sessions.py`
+  and `cli.py` to enforce single live writer exclusivity per `session_id`, support
+  read-only observer resume (`mode="observer"`), fence lease transfer against foreign
+  live writers, and fail-closed (`RegistryUnreadableError`) on unreadable registries.
+  Verified with 7 tests in `tests/hermes_cli/test_cli_resume_read_only_owner.py`.
+- **#114785 / P0.3A (Kanban Session Provenance):** Validated session provenance against
+  persisted SessionDB (`state.db`), prioritized request-scoped `HERMES_SESSION_ID`
+  ContextVar over ambient environment, and rejected dangling session IDs from persistence.
+- **#114793 / P0.3B (Worker Heartbeat Fence):** Hardened `tools/kanban_tools.py` so
+  `heartbeat_current_worker_from_env` requires both claim extension and worker heartbeat
+  writes to persist, and fenced delegated children from heartbeating parent workers.
+- **#114904 / P0.3C (Durable Worker Exit Evidence):** Added `HERMES_WORKER_EXIT_TRAILER_V1`
+  formatting and parsing in `hermes_cli/kanban_db.py`, emitted trailers in `cli.py`,
+  and enabled topology-independent fallback classification in `_classify_worker_exit`.
+  Verified with 7 tests in `tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py`.
+- **#114897 / P0.4 (Bounded CDP Reconnect):** Capped post-attach reconnect attempts in
+  `tools/browser_supervisor.py` at `MAX_POST_ATTACH_RECONNECT_FAILURES = 5`, evicted
+  exhausted supervisors from `SUPERVISOR_REGISTRY`, and redacted credentials in logs.
+  Verified with 3 tests in `tests/tools/test_browser_supervisor_reconnect_cap.py`.
 
-**Refined non-gap / watchlist evidence:**
-
-- #114964 is not evidence that BrowserTask keepalive is missing. H004 already
-  proved real Electron `BrowserWindow`/`WebContentsView` identity across
-  hide/show and park/show; H013 covers the integrated Desktop/Browser path.
-  P0.0 therefore reuses/extends those probes on current main with timer/input/
-  scroll, controller action and explicit no-fallback assertions.
-- #114986 is watchlist-only because the affected upstream `turnLeases`
-  mechanism is absent from the downstream Desktop gateway.
-- #115056 is P1 quality/benchmark work because native `snapshotForEntry()`
-  already obtains its principal inventory in one `executeJavaScript` call.
+**Remaining lane status:**
+- P1 lane (Durable Delivery Rail and snapshot quality/freshness benchmark) remains
+  planned following P0 review.
 
 Canonical plan:
 [UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md).
-Engineering evidence: H-065 in
+Engineering evidence: H-065 and H-066 in
 [engineering-journal/CURRENT.md](engineering-journal/CURRENT.md).
 
 ## 2026-09-17 forensic reliability audit — current boundary

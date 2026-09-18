@@ -134,6 +134,29 @@ after the configured consecutive-failure budget, evict its registry entry and
 allow a later fresh supervisor. A successful reconnect resets the budget and CDP
 credentials remain redacted.
 
+### Implemented and verified P0 evidence (2026-09-18)
+
+All P0 slices have landed on branch `fix/workstation-upstream-reliability-p0` and passed their dedicated regression suites:
+
+- **P0.0 (Native Browser Smoke Probe):** `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`
+  Deterministic discriminators added: `webContents` identity retention, JS timer increment across hide/park, input preservation, scroll preservation, and loopback controller snapshot action execution.
+- **P0.1A & P0.1B (Desktop In-Flight Journal & Optimistic Resync):**
+  - `npm run test:ui` in `apps/desktop`: 593 test files passed, 5676 tests passed.
+  - `npm run test:desktop:platforms` in `apps/desktop`: 126 test files passed, 1783 tests passed.
+  - Focused suites: `apps/desktop/src/lib/inflight-turn-journal.test.ts` (39 passed), `apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts` (17 passed).
+- **P0.2, P0.3, P0.4 (Active Sessions, Kanban Provenance/Exit Evidence, CDP Reconnect Cap):**
+  - Command: `python -m pytest -v tests/hermes_cli/test_cli_resume_read_only_owner.py tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py tests/tools/test_browser_supervisor_reconnect_cap.py`
+  - Result: 17 passed in 4.03s.
+- **Workstation Isolation Regression:**
+  - Command: `python -m pytest -v tests/cron/test_cron_kanban_env_isolation.py tests/tools/test_delegate_kanban_isolation.py`
+  - Result: 24 passed in 6.86s.
+- **Workstation Python Full Suite:**
+  - Command: `python -m pytest -q -o pythonpath=. workstation/tests`
+  - Result: 492 passed, 2 skipped in 315.16s.
+- **Work100 Execution Reliability Harness:**
+  - Command: `python workstation/work100.py --run`
+  - Result: 30 PASS / 0 FAIL / 0 gaps.
+
 ### Broad gate after focused green
 
 After the affected focused tests pass, run the relevant Workstation Python suite,

@@ -1469,6 +1469,10 @@ def _wait_for_oneshot_background_completions(cli) -> None:
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
+        try:
+            _emit_kanban_worker_exit_trailer(1)
+        except Exception:
+            pass
         # Linger (bounded) for background processes the turn spawned with
         # notify_on_complete=true BEFORE any teardown. The one-shot parent
         # owns those children's stdout pipes; exiting now kills the delivery
@@ -5634,7 +5638,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-    def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
+    def _claim_active_session(
+        self,
+        surface: str = "cli",
+        *,
+        stderr: bool = False,
+        allow_observer: bool = True,
+    ) -> bool:
         """Claim a global active-session slot for this CLI process."""
         if self._active_session_lease is not None:
             return True
@@ -5645,7 +5655,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 session_id=self.session_id,
                 surface=surface,
                 config=self.config,
+                mode="writer",
             )
+            # If session is actively owned by another writer, fall back to observer mode
+            # for interactive resumed sessions (not single-query runs).
+            if (
+                lease is None
+                and message
+                and "already owned by another active writer" in message
+                and allow_observer
+                and getattr(self, "_resumed", False)
+                and not getattr(self, "_single_query_mode", False)
+            ):
+                obs_lease, obs_message = try_acquire_active_session(
+                    session_id=self.session_id,
+                    surface=surface,
+                    config=self.config,
+                    mode="observer",
+                )
+                if obs_lease is not None:
+                    self._active_session_lease = obs_lease
+                    self.is_read_only = True
+                    self._read_only = True
+                    # Re-bind session_db in read_only mode if active
+                    if getattr(self, "_session_db", None) is not None:
+                        try:
+                            self._session_db.close()
+                        except Exception:
+                            pass
+                        from hermes_state import SessionDB
+
+                        self._session_db = SessionDB(read_only=True)
+                    notice = (
+                        f"[bold yellow]Session '{self.session_id}' is active in another process. "
+                        f"Opened in read-only observer mode.[/]"
+                    )
+                    self._console_print(notice)
+                    try:
+                        atexit.register(self._release_active_session)
+                    except Exception:
+                        pass
+                    return True
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
@@ -16302,6 +16352,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
 
+        if getattr(self, "is_read_only", False) or getattr(self, "_read_only", False):
+            self._console_print("[bold red]Session is in read-only observer mode; cannot send messages.[/]")
+            return None
+
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip
         # this to True. Early returns (credential refresh failure, etc.)
@@ -20956,6 +21010,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 # Main Entry Point
 # ============================================================================
 
+_kanban_worker_trailer_emitted: bool = False
+
+
+def _emit_kanban_worker_exit_trailer(exit_code: int = 0) -> None:
+    """Emit a durable, machine-readable worker exit trailer to stdout/worker log."""
+    global _kanban_worker_trailer_emitted
+    if _kanban_worker_trailer_emitted:
+        return
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return
+    try:
+        from hermes_cli.kanban_db import format_worker_exit_trailer
+        raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+        worker_run_id = int(raw_run_id) if raw_run_id.isdigit() else None
+        trailer = format_worker_exit_trailer(task_id, exit_code, run_id=worker_run_id)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        print(f"\n{trailer}", file=sys.stdout, flush=True)
+        _kanban_worker_trailer_emitted = True
+    except Exception as exc:
+        logger.debug("Failed emitting kanban worker exit trailer: %s", exc)
+
+
 def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
@@ -21640,9 +21720,11 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                        _emit_kanban_worker_exit_trailer(_exit_code)
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails
+                _emit_kanban_worker_exit_trailer(1)
                 sys.exit(1)
             else:
                 # Single-query mode (`hermes chat -q "…"`): skip the welcome
@@ -21666,6 +21748,7 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+                _emit_kanban_worker_exit_trailer(0)
         finally:
             _finalize_single_query(cli)
         return

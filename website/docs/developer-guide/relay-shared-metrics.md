@@ -39,7 +39,19 @@ than downloading a different implementation.
 
 Operator-supplied typed native plugins must be rebuilt for Relay 0.9. `grpc-v1`
 workers must be regenerated and rebuilt when they use tool callbacks, tool
-execution intercepts, or manual tool-end APIs.
+execution intercepts, or manual tool-end APIs. Tool execution intercepts now
+receive a `ToolExecutionContext` instead of separate name and argument values.
+
+Hermes passes the selected file to Relay as the explicit plugin configuration.
+Relay reads it in place of the ambient user `plugins.toml`, but the
+operator-managed system file (`/etc/nemo-relay/plugins.toml`, or the
+`%ProgramData%` equivalent) still layers beneath it, so a system-wide exporter
+or policy applies to Hermes too.
+
+Relay 0.9 has no query for whether another process already owns the plugin
+host. Hermes learns that only when its own initialization is refused, so a
+foreign activation is reported as such only when Hermes has a plugin
+configuration selected; without one, Hermes stays disabled and does not probe.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can

@@ -385,7 +385,16 @@ def resolve_startup_model_route(
         return StartupModelRoute(
             model=direct.model, provider=alias_provider, base_url=direct.base_url, api_key=alias_key or "")
 
-    if explicit_provider or "/" not in raw:
+    if explicit_provider:
+        return None
+    # ``custom:<name>:<model>`` / ``<provider>:<model>`` — the same qualified form ``/model``
+    # accepts. Left undecoded, the configured default provider receives the unsplit string as
+    # the model name and the whole prompt goes to its endpoint before it 404s (#73943).
+    from hermes_cli.models import parse_model_input
+    qualified_provider, qualified_model = parse_model_input(raw, "")
+    if qualified_provider and qualified_model != raw:
+        return StartupModelRoute(model=qualified_model, provider=qualified_provider)
+    if "/" not in raw:
         return None
     prefix, model = (part.strip() for part in raw.split("/", 1))
     if not prefix or not model:

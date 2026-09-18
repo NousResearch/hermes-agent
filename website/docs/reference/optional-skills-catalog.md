@@ -263,6 +263,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**generate-event-post**](/docs/user-guide/skills/optional/social-media/social-media-generate-event-post) | Generate verified idol-event announcements for X. |
 | [**reddit-reading**](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) | Read Reddit: subreddits, search, threads, users. No browser. |
 
 ## software-development

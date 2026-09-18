@@ -609,6 +609,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-social-media',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/social-media/social-media-generate-event-post',
                     'user-guide/skills/optional/social-media/social-media-reddit-reading',
                   ],
                 },

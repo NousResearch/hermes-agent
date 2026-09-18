@@ -84,6 +84,9 @@ def test_blocked_config_notice_says_it_did_not_run_and_will_self_heal():
     assert "did not run" in text
     assert "provider credential missing: no key" in text
     assert "Nothing was charged" in text
+    # Some blocks (MCP server temporarily down) clear on their own, so the retry
+    # line must not condition the retry on the user fixing something.
+    assert "once this is fixed" not in text
     assert "`hermes cron doctor`" in text
     for jargon in ("configuration validation", "LLM call", "pre-dispatch"):
         assert jargon not in text

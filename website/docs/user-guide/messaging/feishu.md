@@ -238,6 +238,8 @@ FEISHU_GROUP_POLICY=allowlist   # default
 
 In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages always bypass this gate.
 
+With the default `allowlist` policy and an empty `FEISHU_ALLOWED_USERS`, every human group message is rejected while DMs keep working. The first such drop is logged once at `WARNING` with the keys to set; later drops are `DEBUG`. Under a [multiplexed gateway](../multi-profile-gateways.md), each profile reads only its **own** `.env` — a `FEISHU_GROUP_POLICY=open` in the default profile's `.env` does not apply to a secondary profile's bot. Put `FEISHU_GROUP_POLICY` / `FEISHU_ALLOWED_USERS` in `profiles/<name>/.env`, or use `group_rules` in that profile's `config.yaml`.
+
 Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without requiring an @mention:
 
 ```bash

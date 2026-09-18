@@ -387,6 +387,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -2841,8 +2842,55 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
-        text = f"{caption}\n{text}" if caption else text
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata,
+                                             shown_metadata=metadata)
+
+    async def emit_warning(
+        self, chat_id: str, content: str, *, reply_to=None, metadata=None, logical_platform=None,
+    ) -> Optional[SendResult]:
+        """Present a classified channel diagnostic in the caller's owning scope.
+
+        None means suppressed, NOT successfully sent. Transport receipts/exceptions
+        pass through unchanged; logs and producer state belong outside this boundary.
+        Existing routing/stream metadata is preserved, never inferred from text.
+        """
+        if not self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return None
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def emit_media_warning(
+        self, chat_id: str, notice: str, *, caption=None, reply_to=None, metadata=None,
+        shown_metadata=None,
+    ) -> SendResult:
+        """Present an optional media diagnostic without losing the requested caption.
+
+        Preserve the legacy fallback-text receipt when shown (``shown_metadata`` is the exact
+        metadata the legacy shown path passed; default None keeps callers that sent none
+        byte-identical). When hidden, preserve the media failure even if the independent
+        caption itself was delivered.
+        """
+        result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
+                                         reply_to=reply_to, metadata=shown_metadata)
+        if result is not None:
+            return result
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        return SendResult(success=False, error=notice)
+
+    def warning_text(self, visible: str, hidden: Optional[str] = "", *, logical_platform=None, chat_id=None, metadata=None) -> Optional[str]:
+        """Project mixed content: the diagnostic variant when visible, else the requested remainder.
+
+        For payloads that combine a requested result (caption, answer) with an automatic
+        diagnostic. The requested part must be present in BOTH variants; never hide it.
+        """
+        if self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return visible
+        return hidden
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        """Presentation policy under the caller's owning profile; old plugins inherit it."""
+        from gateway.warning_notifications import warning_notifications_enabled
+        return warning_notifications_enabled(logical_platform or self.platform)
 
     def prepare_tts_text(self, text: str) -> str:
         """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,
@@ -2933,8 +2981,8 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
-            problem = None if notice.success else notice.error
+            notice = await self.emit_warning(chat_id, text, metadata=metadata)
+            problem = None if notice is None or notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
         if problem is not None:
@@ -3310,8 +3358,8 @@ class BasePlatformAdapter(ABC):
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
-        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
-        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        """Routed home + terminal policy for post-handler text, media and error delivery;
+        a no-op without a runner or outside multiplexing."""
         resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
         if not callable(resolve) or source is None:
             return contextlib.nullcontext()
@@ -3424,6 +3472,7 @@ class BasePlatformAdapter(ABC):
                     )
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                # Not a diagnostic: the requested result itself was lost and this is its only signal.
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent.")
@@ -3451,7 +3500,9 @@ class BasePlatformAdapter(ABC):
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
-            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            chat_id=chat_id, content=self.warning_text(
+                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
     @staticmethod
@@ -4031,12 +4082,19 @@ class BasePlatformAdapter(ABC):
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
         try:
-            error_detail = str(e)[:300] if str(e) else "no details available"
             _thread_metadata = _thread_metadata_for_event(event)
-            await self.send(
-                chat_id=event.source.chat_id,
-                content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
+            error_detail = str(e)[:300] if str(e) else "no details available"
+            # Only the policy reads bind the routed profile; the send stays in the launch scope
+            # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
+            with self._media_delivery_scope(event.source):
+                content = None if diagnostic_wake_muted(event) else self.warning_text(
+                    f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                    "Try again or use /reset to start a fresh session.",
+                    "Sorry, I encountered an error.",
+                    logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
+            if content is None:
+                return _thread_metadata
+            await self.send(chat_id=event.source.chat_id, content=content, metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -4067,7 +4125,8 @@ class BasePlatformAdapter(ABC):
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        if not getattr(self.config, "typing_indicator", True):
+        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
+        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
             return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
@@ -4177,6 +4236,11 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            # A muted diagnostic wake ran for the session; its reply is not presented. The
+            # policy read binds the routed profile; delivery itself stays in the launch scope.
+            with self._media_delivery_scope(event.source):
+                if diagnostic_wake_muted(event):
+                    response = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)

@@ -72,7 +72,7 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -97,7 +97,7 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -129,7 +129,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, **_kwargs):
                 return entry
 
         return _Pool()
@@ -443,7 +443,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -473,7 +473,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -758,6 +758,62 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
+    """#111741: a bare ``custom`` placeholder that falls through to the OpenRouter default with no
+    key must raise a typed AuthError naming the request at resolve time, instead of returning a
+    dead runtime that dies later as "No LLM provider configured". A local alias (``ollama``) in the
+    same state keeps resolving tolerantly: ``/model`` direct-alias switching supplies its endpoint
+    after this call. With an OpenRouter key present the bare request resolves exactly as before."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "volcano": {
+                    "api": "https://ark.example.com/v1",
+                    "key_env": "ARK_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "volcano"})
+
+    with pytest.raises(rp.AuthError, match="provider 'custom'.*credentials.*real name") as error:
+        rp.resolve_runtime_provider(requested="custom")
+    assert error.value.provider == "custom"
+    assert error.value.code == "missing_api_key"
+
+    alias = rp.resolve_runtime_provider(requested="ollama")
+    assert alias["provider"] == "custom" and not alias["api_key"]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-or-v1-usable-key"
+
+
+def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
+    """Control: a configured no-auth local endpoint still resolves with the placeholder key."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "http://localhost:11434/v1",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
@@ -932,7 +988,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -1024,6 +1080,31 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
+    """End-to-end for #112600: a ``model.base_url`` pinned to the Zen relay must follow the
+    resolved provider family. The CLI inherits that pinned override across a switch, and the Zen
+    relay does not serve Go-subscription models, so the client was built against
+    ``https://opencode.ai/zen/v1`` and every request 401'd ("Model mimo-v2.5 is not supported").
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "mimo-v2.5",
+            "base_url": "https://opencode.ai/zen/v1",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 # ------------------------------------------------------------------
@@ -1289,7 +1370,7 @@ class TestAzureAnthropicEnvVarHint:
         })
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
         called = {"resolve_anthropic_token": False}
-        def _fake_resolve():
+        def _fake_resolve(**_kwargs):
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
@@ -1408,7 +1489,7 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
@@ -1770,7 +1851,7 @@ def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(m
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return None
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import threading
 from dataclasses import replace
 from datetime import datetime
@@ -162,21 +163,70 @@ class SessionRecoveryMixin:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
-        db = self._db_for_key(session_key)
+        return self._peer_row(
+            self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
+            user_id=source.user_id,
+            chat_id=source.chat_id if allow_peer_fallback else None,
+            chat_type=source.chat_type if allow_peer_fallback else None,
+            thread_id=source.thread_id, raise_on_lookup_error=raise_on_lookup_error)
+
+    @staticmethod
+    def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
+                  **peer: Any) -> Optional[Dict[str, Any]]:
+        """``db.find_latest_gateway_session_for_peer`` guarded for a missing store, a SessionDB
+        without the finder, and a failing lookup (debug-logged -> None unless *raise_on_lookup_error*).
+        Extra keyword arguments (user_id/chat_id/chat_type/thread_id) pass through to the finder."""
         finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
         if not callable(finder):
             return None
         try:
-            return finder(
-                source=source.platform.value, user_id=source.user_id, session_key=session_key,
-                chat_id=source.chat_id if allow_peer_fallback else None,
-                chat_type=source.chat_type if allow_peer_fallback else None,
-                thread_id=source.thread_id)
+            return finder(source=source, session_key=session_key, **peer)
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             if raise_on_lookup_error:
                 raise
             return None
+
+    def resolve_session_id_for_key(
+        self, session_key: str, *, not_after: Optional[float] = None,
+    ) -> Optional[tuple[str, Any]]:
+        """Resolve a gateway session key to ``(session_id, db)`` for shutdown-flush recovery.
+
+        The routing map (``peek_session_id``) is authoritative: it names the session the message
+        was actually routed to at shutdown. When ``sessions.json`` was pruned, fall back to the
+        durable row under the exact key (the peer finder keeps the reset fence: rows ended only by
+        recoverable reasons match; explicit boundaries do not). A row started after the flush
+        (``started_at > not_after``) cannot be the origin and is never adopted. Never mints a
+        session; None means the caller must preserve the flush file. ``db`` is the store owning
+        the key, so the append lands in the right profile partition. When that store cannot be
+        resolved (``_db_for_key`` fails closed for a profile without a reachable home) the answer
+        is None even if the routing map knows the id: appending to the ambient root store would
+        split one session identity across two physical stores (#66887/#102157).
+        """
+        if not session_key:
+            return None
+        db = self._db_for_key(session_key)
+        if db is None:
+            return None
+        session_id = self.peek_session_id(session_key)
+        if session_id:
+            return session_id, db
+        parts = str(session_key).split(":")
+        platform = parts[2] if len(parts) >= 3 and parts[0] == "agent" else None
+        if not platform:
+            return None
+        # No scope/profile fences here, unlike _query_recoverable_row: with no chat tuple the finder
+        # runs only the `s.session_key = ?` branch in the store _db_for_key picked for this key, so a
+        # hit carries this very key — same profile namespace and (for scoped Slack) same scope_id slot.
+        row = self._peer_row(db, source=platform, session_key=session_key)
+        if not isinstance(row, dict) or not row.get("id"):
+            return None
+        started_at = row.get("started_at")
+        # ``ts`` is ``int(time.time())`` while ``started_at`` is a REAL, so compare whole seconds:
+        # a row minted in the same second as the flush is still a valid origin.
+        if not_after is not None and started_at is not None and math.floor(float(started_at)) > int(not_after):
+            return None
+        return str(row["id"]), db
 
     def _recover_session_from_db(
         self, *, session_key: str, source: SessionSource, now: datetime,

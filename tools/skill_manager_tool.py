@@ -8,8 +8,9 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import hashlib
 import json
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
@@ -31,7 +32,8 @@ from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
-from tools.skill_manager_batch import _skill_manage_batch
+from tools.skill_manager_batch import (
+    _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,30 @@ def _skills_dir() -> Path:
     """
     configured = Path(SKILLS_DIR)
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
+
+
+def _skill_lock_path(name: str) -> Path:
+    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
+    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
+    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
+    lock and no name can hit a filesystem limit (callers validate the basename first)."""
+    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    return _skills_dir() / ".locks" / f"{digest}.lock"
+
+
+def _skill_mutation_lock(name: str):
+    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skill_lock_path(name))
+
+
+def _skill_mutation_locks(names):
+    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
+    from tools.skill_usage import skill_file_lock
+    stack = ExitStack()
+    for lock_path in sorted({_skill_lock_path(n) for n in names}):
+        stack.enter_context(skill_file_lock(lock_path))
+    return stack
 
 
 MAX_NAME_LENGTH = 64
@@ -339,7 +365,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
@@ -396,7 +423,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
@@ -433,15 +461,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
                  replace_all: bool = False) -> Dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
-        # A bare "required" error is a dead end: the model retries blindly and often
-        # escapes to action='write_file', clobbering the whole file.
-        return _err(
-            "old_string is required for 'patch' and must be the EXACT text currently in the file. "
-            "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
-            "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
-            "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+        return _err(_PATCH_NEEDS_OLD_STRING)
     if new_string is None:
-        return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
+        return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
     skill_dir, guard = _locate_for_write(name, "patch")
@@ -670,8 +692,7 @@ def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
-        return tool_error("Pass EITHER content (full SKILL.md rewrite) OR "
-                          "old_string/new_string (targeted replacement), not both.", success=False)
+        return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -686,17 +707,6 @@ _ACTION_HANDLERS = {
     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
     "write_file": lambda a: _write_file(a["name"], a["file_path"], a["file_content"]),
     "remove_file": lambda a: _remove_file(a["name"], a["file_path"])}
-# action -> (arg, is_missing, error) argument-shape checks run before the handler.
-_MISSING, _IS_NONE = (lambda v: not v), (lambda v: v is None)
-_REQUIRED_ARGS = {
-    "create": [("content", _MISSING,
-                "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).")],
-    "edit": [("content", _MISSING,
-              "content is required for a full rewrite. Provide the full updated SKILL.md text.")],
-    "write_file": [
-        ("file_path", _MISSING, "file_path is required for 'write_file'. Example: 'references/api-guide.md'"),
-        ("file_content", _IS_NONE, "file_content is required for 'write_file'.")],
-    "remove_file": [("file_path", _MISSING, "file_path is required for 'remove_file'.")]}
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
@@ -758,29 +768,36 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
-    # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-    # destroys the whole package (consolidation may have re-homed support files first), so
-    # complete it from the newest curator backup or a restore is hollow.
-    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-    # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-    _ledger_before = None
-    with suppress(Exception):
-        from tools import skill_ledger as _ledger
-        _pre = _find_skill(name)
-        _ledger_before = _ledger.capture_before(
-            _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
-    for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
-        if missing(args[arg]):
-            return tool_error(message, success=False)
-    handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **args})
-    if isinstance(result, str):
-        return result  # tool_error JSON for argument-shape problems (patch)
-    if result.get("success"):
-        _record_success(
-            action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-            task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+    if (shape_err := _op_shape_error(action, args)) is not None:
+        return tool_error(shape_err, success=False)
+    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
+    # (create takes a bare name; the other actions also accept ``category/name``).
+    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+        return json.dumps(_err(name_err), ensure_ascii=False)
+    # A mutation is read-modify-write even when its action eventually delegates
+    # to a helper: guards, ledger capture, patch matching, validation, rollback,
+    # and the atomic replacement all belong to the same ownership window.
+    with _skill_mutation_lock(name):
+        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+        # destroys the whole package (consolidation may have re-homed support files first), so
+        # complete it from the newest curator backup or a restore is hollow.
+        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
+        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
+        _ledger_before = None
+        with suppress(Exception):
+            from tools import skill_ledger as _ledger
+            _pre = _find_skill(name)
+            _ledger_before = _ledger.capture_before(
+                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+        handler = _ACTION_HANDLERS.get(action, lambda a: _err(
+            f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
+        result = handler({"name": name, **args})
+        if isinstance(result, str):
+            return result  # tool_error JSON for argument-shape problems (patch)
+        if result.get("success"):
+            _record_success(
+                action, name, result, file_path=file_path, absorbed_into=absorbed_into,
+                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -812,6 +829,27 @@ def _skill_manage_schema_overrides() -> dict:
     return {"description": _skill_manage_description(_display_create_dir())}
 
 
+_NAME = {"type": "string"}
+_OLD_STRING = {"type": "string",
+               "description": "Text to find (same matching semantics as the patch tool)."}
+_NEW_STRING = {"type": "string", "description": "Replacement; empty string deletes the match."}
+_FILE_PATH = {
+    "type": "string",
+    "description": (
+        "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading "
+        "slash, never absolute; first segment references/, templates/, scripts/, or assets/."
+    ),
+}  # stated once (write_file); patch/remove_file point at it
+
+
+def _op_schema(action: str, props: dict, required: tuple) -> dict:
+    """One self-contained per-action op shape. ``additionalProperties: false`` is what lets a
+    grammar-constrained backend refuse another action's text slot outright."""
+    return {"type": "object", "additionalProperties": False,
+            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props},
+            "required": ["name", "action", *required]}
+
+
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     # ONE advertised call shape (memory-tool pattern): the call IS an operations
@@ -823,70 +861,49 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "operations": {
                 "type": "array",
-                "description": "Ordered ops; each names its target skill.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Skill name (lowercase, hyphens/underscores, "
-                                "max 64 chars); an existing skill's name "
-                                "unless creating."
-                            )
-                        },
-                        "action": {
-                            "type": "string",
-                            "enum": ["create", "patch", "delete", "write_file", "remove_file"]
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": (
-                                "Full SKILL.md text (YAML frontmatter + "
-                                "markdown body) for create, or a full "
-                                "rewrite on patch."
-                            )
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": "Optional category subdir for create (e.g. 'devops')."
-                        },
-                        # patch args: same fuzzy-matching semantics as the
-                        # `patch` tool — teach only skill-specific facts here.
-                        "old_string": {
-                            "type": "string",
-                            "description": "Text to find (patch; same matching semantics as the patch tool)."
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "Replacement (patch); empty string deletes the match."
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "patch: replace all occurrences (default false)."
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": (
-                                "Path RELATIVE to the skill's own directory, "
-                                "e.g. 'references/api.md' — no leading slash, "
-                                "never absolute. write_file/remove_file: "
-                                "required; first segment references/, "
-                                "templates/, scripts/, or assets/. patch: "
-                                "optional (default SKILL.md)."
-                            )
-                        },
-                        "file_content": {
-                            "type": "string",
-                            "description": "Content for write_file."
-                        }
-                    },
-                    "required": ["name", "action"]
-                }
+                "description": (
+                    "Ordered ops; each names its target skill (lowercase, hyphens/underscores, "
+                    "max 64 chars). Each action is its own shape; another action's text slot is invalid."
+                ),
+                # Per-action branches, not one flat union: with one object holding content /
+                # new_string / file_content side by side, a 27B model that just used write_file
+                # kept emitting file_content on create and the whole batch rolled back (#112677).
+                "items": {"anyOf": [
+                    _op_schema("create", {
+                        "content": {"type": "string",
+                                    "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
+                        "category": {"type": "string",
+                                     "description": "Optional category subdir (e.g. 'devops')."},
+                    }, ("content",)),
+                    _op_schema("patch", {
+                        "old_string": _OLD_STRING, "new_string": _NEW_STRING,
+                        "replace_all": {"type": "boolean",
+                                        "description": "Replace all occurrences (default false)."},
+                        "file_path": {"type": "string",
+                                      "description": "Optional supporting file (write_file's shape); default SKILL.md."},
+                    }, ("old_string", "new_string")),
+                    _op_schema("patch", {
+                        "content": {"type": "string",
+                                    "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort)."},
+                    }, ("content",)),
+                    _op_schema("write_file", {
+                        "file_path": _FILE_PATH,
+                        "file_content": {"type": "string", "description": "Full text of the supporting file."},
+                    }, ("file_path", "file_content")),
+                    _op_schema("remove_file", {
+                        "file_path": {"type": "string", "description": "Supporting file (write_file's shape)."},
+                    }, ("file_path",)),
+                    # `absorbed_into` stays in the delete shape: with additionalProperties:false a
+                    # grammar-constrained backend would otherwise strip it and the curator's
+                    # consolidation delete guard would fail-close every consolidation.
+                    _op_schema("delete", {
+                        "absorbed_into": {"type": "string",
+                                          "description": "Curator consolidation only: umbrella skill "
+                                                         "that absorbed this one (must exist)."},
+                    }, ()),
+                ]},
             },
-            # Also accepted, never advertised: the legacy flat single-op fields, and
-            # `absorbed_into` on delete ops (curator-only vocabulary; the curator's
-            # prompt documents it and the delete guard's error re-teaches it).
+            # Also accepted, never advertised: the legacy flat single-op fields.
         },
         "required": ["operations"],
     },

@@ -551,6 +551,58 @@ describe('primary failure foreground isolation', () => {
     expect(toasts[0].action?.label).toBe('Open Gateways')
   })
 
+  it('a rejected background primary offers Settings when reauth arrives via boot-progress, not just a socket drop', async () => {
+    // Same failure as the socket-drop case above, but arriving through the
+    // OTHER producer: main re-emits boot-progress after the initial boot
+    // completed (a post-boot startHermes()/ticket mint failing on liveness
+    // reset/rebuild/wake recovery), independently of the renderer's own
+    // reconnect loop ever attempting anything.
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'remote', remoteKind: 'cloud', authMode: 'oauth' } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+    expect(isActivePrimary()).toBe(false)
+
+    act(() =>
+      desktop.emitBootProgress({
+        error: 'Your remote gateway session has expired.',
+        fakeMode: false,
+        message: 'Your remote gateway session has expired.',
+        phase: 'backend.error',
+        progress: 94,
+        retryable: false,
+        running: false,
+        timestamp: Date.now()
+      })
+    )
+    await flushAsync()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {

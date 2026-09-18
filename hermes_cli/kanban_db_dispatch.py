@@ -183,6 +183,14 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# Windows spawn-handle tracking: subprocess.Popen objects whose exit code
+# can't be reaped via os.waitpid on Windows (CREATE_NO_WINDOW). Cleaned by
+# _default_spawn when it detects a completed exit and by
+# _poll_spawned_worker_exit.
+_SPAWNED_WORKER_PROCS_MAX = 4096
+_spawned_worker_procs: "dict[int, subprocess.Popen]" = {}
+_spawned_worker_exit_codes: "dict[int, tuple[int, float]]" = {}
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status; duplicate pids overwrite (latest wins)."""
@@ -201,28 +209,76 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
             _recent_worker_exits.pop(_pid, None)
 
 
+def _poll_spawned_worker_exit(pid: int) -> "Optional[int]":
+    """Poll a subprocess.Popen (Windows) for exit code; None = still running."""
+    proc = _spawned_worker_procs.get(int(pid))
+    if proc is None:
+        return None
+    try:
+        rc = proc.poll()
+    except Exception:
+        rc = None
+    if rc is not None:
+        _spawned_worker_exit_codes[int(pid)] = (rc, time.time())
+        _spawned_worker_procs.pop(int(pid), None)
+    return rc
+
+
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     """``(kind, code)`` for a reaped worker PID: ``clean_exit`` (rc 0 while
     still ``running`` = protocol violation), ``rate_limited``
     (``KANBAN_RATE_LIMIT_EXIT_CODE``, never counts as a failure),
     ``nonzero_exit``, ``signaled`` (``code`` is the signal), ``unknown`` (pid
-    not in the reap registry; ``code`` None)."""
+    not in the reap registry; ``code`` None).
+
+    Uses ``os.waitstatus_to_exitcode()`` (Python 3.9+) where available, falling
+    back to the legacy ``os.WIFEXITED`` / ``os.WIFSIGNALED`` macros on older
+    platforms; on Windows the exit code is polled from the tracked
+    ``subprocess.Popen`` handle instead.
+    """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
+        # On Windows the PID likely won't appear in _recent_worker_exits at
+        # all because os.waitpid is a no-op there; poll the tracked handle.
+        if os.name == "nt":
+            code = _poll_spawned_worker_exit(pid)
+            if code is not None:
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
         return ("unknown", None)
     raw, _ = entry
     try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
+        exit_code = os.waitstatus_to_exitcode(raw)
     except Exception:
-        pass
+        exit_code = None
+    if exit_code is not None and exit_code != 0xFFFF:
+        # waitstatus_to_exitcode returns 0 for clean exit, nonzero for error,
+        # and raises on signals instead of returning negative.
+        if exit_code == 0:
+            return ("clean_exit", 0)
+        if exit_code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", exit_code)
+        # Negative means killed by signal: map back to signaled.
+        if exit_code < 0:
+            return ("signaled", -exit_code)
+        return ("nonzero_exit", exit_code)
+    # Fallback: legacy macros (POSIX-only so wrap in try/except on nt).
+    if os.name != "nt":
+        try:
+            if os.WIFEXITED(raw):
+                code = os.WEXITSTATUS(raw)
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
+            if os.WIFSIGNALED(raw):
+                return ("signaled", os.WTERMSIG(raw))
+        except Exception:
+            pass
     return ("unknown", None)
 
 
@@ -913,6 +969,53 @@ _EXIT_SUMMARY_MARKER = "Resume this session with:"
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
 _LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
 
+# Output-capture constants for the reclaim crash-detail suite.
+_WORKER_LOG_TAIL_BYTES = 2048
+_WORKER_LOG_EXCERPT_CHARS = 300
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _worker_output_tail(task_id: str, board: Optional[str] = None) -> str:
+    """Raw tail of a dead worker's log, stripped of ANSI escape sequences.
+
+    The output is not cleaned further (no summary-marker trim or chrome strip)
+    so the event payload preserves the last thing the worker printed before it
+    died. Returns ``""`` on missing/empty log.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=_WORKER_LOG_TAIL_BYTES, board=board)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", raw)
+
+
+def _worker_error_excerpt(raw: str) -> str:
+    """First ``_WORKER_LOG_EXCERPT_CHARS`` chars of raw log text, with ANSI codes stripped,
+    and non-printable characters replaced."""
+    stripped = _ANSI_ESCAPE_RE.sub("", raw)
+    cleaned = "".join(ch if 32 <= ord(ch) < 127 else " " for ch in stripped)
+    return cleaned[:_WORKER_LOG_EXCERPT_CHARS]
+
+
+def _attach_worker_output(dead: _DeadWorker, task_id: str, board: Optional[str] = None) -> None:
+    """Attach the worker's own last output to a ``_DeadWorker`` in-place.
+
+    Sets both ``error_text`` (human-readable excerpt) and
+    ``event_payload["output_tail"]`` (raw tail) so the board and the retry
+    worker see WHY instead of a bare label.
+    """
+    raw_tail = _worker_output_tail(task_id, board=board)
+    if not raw_tail:
+        return
+    excerpt = _worker_error_excerpt(raw_tail)
+    if excerpt:
+        dead.error_text += f" Output tail: {excerpt!r}"
+    # Always set the raw tail for the event payload (even if excerpt is empty).
+    dead.event_payload["output_tail"] = raw_tail
+    dead.event_payload["output_tail_len"] = len(raw_tail)
+
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
@@ -970,16 +1073,14 @@ def _classify_dead_worker(
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
-    A clean exit or a crash carries the worker's own last output (``worker_output``
-    in the event payload, appended to the error text) so the board and the retry
-    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
+    Attaches the worker's last output tail (``output_tail`` in the event
+    payload) so the board and the retry worker see WHY instead of a bare
+    label; rate-limited requeues also carry the output so the operator can
+    diagnose a quota wall without opening logs.
     """
     dead = _classify_dead_worker_exit(pid, claimer)
-    if task_id and not dead.rate_limited:
-        worker_output = _worker_final_output(task_id, board=board)
-        if worker_output:
-            dead.error_text += f" Worker's last output: {worker_output!r}"
-            dead.event_payload["worker_output"] = worker_output
+    if task_id:
+        _attach_worker_output(dead, task_id, board)
     return dead
 
 
@@ -2641,6 +2742,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
+        # Track the spawned worker for crash-detection on Windows, where
+        # os.waitpid is a no-op. Clean up old entries when the registry grows.
+        _spawned_worker_procs[int(proc.pid)] = proc
+        if len(_spawned_worker_procs) > _SPAWNED_WORKER_PROCS_MAX // 2:
+            _spawned_worker_procs = {
+                p: h for p, h in _spawned_worker_procs.items()
+                if h.poll() is None or p == int(proc.pid)
+            }
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(

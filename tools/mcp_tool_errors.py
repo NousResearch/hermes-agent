@@ -34,6 +34,13 @@ def _handshake_rejected_as_modern(exc: BaseException) -> bool:
         code=getattr(exc, "code", None)) or _is_method_not_found_error(exc)
 
 
+def _handshake_answered_with_unsupported_version(exc: BaseException) -> bool:
+    """True when ``initialize`` SUCCEEDED on the wire (HTTP 200, a valid InitializeResult) but the SDK
+    refused the ``protocolVersion`` the server named — its ``RuntimeError("Unsupported protocol version
+    from the server: ...")``. Distinct from a JSON-RPC -32022 rejection, where the server refused us."""
+    return "unsupported protocol version from the server" in str(_unwrap_exception_group(exc)).lower()
+
+
 def _is_method_not_found_error(exc: BaseException) -> bool:
     """True if *exc* is a JSON-RPC ``method not found`` (-32601; ``ping`` is optional in MCP). The
     substring fallback includes "Unknown method: <name>" — without it the ping→list_tools keepalive

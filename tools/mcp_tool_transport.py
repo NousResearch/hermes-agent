@@ -12,7 +12,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -131,7 +131,20 @@ class MCPServerTransportMixin:
                 if isinstance(exc, asyncio.TimeoutError) or not should_fallback(exc):
                     raise
                 logger.info(log_fmt, self.name, exc, *log_extra)
-                return await call(fallback)
+                try:
+                    return await call(fallback)
+                except Exception as fallback_exc:
+                    # #113359: the server ANSWERED ``initialize`` (200, valid result) but named a version the
+                    # SDK's handshake refuses (e.g. 2026-07-28 echoed to a 2025-11-25 offer), and it has no
+                    # ``server/discover`` either. The wire handshake succeeded, so complete it ourselves.
+                    if (isinstance(fallback_exc, asyncio.TimeoutError) or primary != "initialize"
+                            or not _handshake_answered_with_unsupported_version(exc)):
+                        raise
+                    logger.info("MCP server '%s': server/discover also failed (%s) — completing the handshake "
+                                "at %s, the version this client offered", self.name, fallback_exc,
+                                _core.LATEST_HANDSHAKE_VERSION)
+                    return await asyncio.wait_for(self._complete_handshake_at_offered_version(session),
+                                                  timeout=connect_timeout)
         mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
         if mode in ("stateless", "modern", "2026-07-28"):
             return await attempt("discover", "initialize", lambda exc: True,
@@ -146,6 +159,28 @@ class MCPServerTransportMixin:
         return await attempt(
             "initialize", "discover", lambda exc: _handshake_rejected_as_modern(exc) and hasattr(session, "discover"),
             "MCP server '%s': legacy handshake rejected (%s) — retrying via server/discover (2026-07-28 stateless server)")
+
+    async def _complete_handshake_at_offered_version(self, session):
+        """Re-run the legacy ``initialize`` exchange the SDK already proved works against this server and
+        adopt its result pinned to the version WE offered (#113359). ``ClientSession.initialize()`` raises
+        on a ``protocolVersion`` outside its handshake set even though the server answered 200, and a
+        stateless server that echoes 2026-07-28 to every offer has no ``server/discover`` — so this is the
+        only way to reach ``notifications/initialized`` and ``tools/list``. Pinning to the offered version
+        keeps later requests legacy-shaped (envelope and MCP-Protocol-Version header), the form the
+        handshake itself just proved the server accepts. The returned result keeps the server's own
+        version for logging/diagnostics."""
+        import mcp.types as types  # late: keeps the SDK import lazy
+        offered = _core.LATEST_HANDSHAKE_VERSION
+        build_caps = getattr(session, "_build_capabilities", None)
+        capabilities = build_caps(offered) if callable(build_caps) else types.ClientCapabilities()
+        client_info = getattr(session, "_client_info", None) or types.Implementation(name="hermes-agent", version="0")
+        result = await session.send_request(
+            types.InitializeRequest(params=types.InitializeRequestParams(
+                protocolVersion=offered, capabilities=capabilities, clientInfo=client_info)),
+            types.InitializeResult)
+        session.adopt(result.model_copy(update={"protocol_version": offered}))
+        await session.send_notification(types.InitializedNotification())
+        return result
 
     async def _serve_session(self, session, connect_timeout: float,
                              label: str = "", mark_lifecycle: bool = False) -> str:

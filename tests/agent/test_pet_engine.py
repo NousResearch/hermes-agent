@@ -282,3 +282,26 @@ def test_wezterm_is_not_placeholder_capable(monkeypatch):
 
     monkeypatch.setenv("WEZTERM_PANE", "1")
     assert render.supports_kitty_placeholders() is False
+
+
+def test_http_get_refuses_ssrf_url():
+    """Manifest-derived URLs are remote-party-controlled — metadata endpoints
+    must be refused before a socket opens."""
+    with pytest.raises(ValueError, match="SSRF"):
+        store._http_get("http://169.254.169.254/latest/meta-data", timeout=5)
+
+
+def test_download_refuses_ssrf_url(tmp_path):
+    dest = tmp_path / "sheet.png"
+    with pytest.raises(store.PetStoreError, match="SSRF"):
+        store._download("http://169.254.169.254/x.png", dest, timeout=5)
+    assert not dest.exists()
+    assert not dest.with_suffix(".png.part").exists()
+
+
+def test_fetch_manifest_refuses_ssrf_url(monkeypatch):
+    """The manifest URL is validated by the SSRF guard before any fetch."""
+    from agent.pet import manifest
+    monkeypatch.setattr(manifest, "MANIFEST_URL", "http://169.254.169.254/api/manifest")
+    with pytest.raises(manifest.ManifestError, match="could not fetch"):
+        manifest.fetch_manifest(force=True)

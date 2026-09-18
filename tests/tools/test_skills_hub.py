@@ -228,6 +228,41 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
+    def test_sitemap_skips_metadata_loc_entries(self, monkeypatch):
+        """A hostile sitemap index advertising an internal <loc> must not be fetched."""
+        index_xml = (
+            "<urlset>"
+            "<url><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></url>"
+            "<url><loc>http://169.254.169.254/sitemap-skills-2.xml</loc></url>"
+            "</urlset>"
+        )
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda key, m: None)
+        fetched = []
+
+        def _fake_get_text(url, **kw):
+            fetched.append(url)
+            return index_xml if "sitemap.xml" in url else None
+
+        monkeypatch.setattr("tools.skills_hub_skillssh._get_text", _fake_get_text)
+
+        class _Client:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get(self, url, **kw):
+                fetched.append(url)
+                body = "<urlset><url><loc>https://skills.sh/acme/tools/my-skill</loc></url></urlset>"
+                return httpx.Response(200, text=body, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr("tools.url_safety.create_ssrf_safe_client", lambda **kw: _Client())
+
+        self._source()._sitemap_catalog(limit=5)
+
+        assert "http://169.254.169.254/sitemap-skills-2.xml" not in fetched
+        assert fetched == [
+            "https://www.skills.sh/sitemap.xml",
+            "https://www.skills.sh/sitemap-skills-1.xml",
+        ]
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -2042,3 +2077,4 @@ class TestUrlSourceFetchMissingReferencedFile:
         assert bundle is not None
         assert bundle.name == "demo"
         assert "references/missing.md" not in bundle.files
+

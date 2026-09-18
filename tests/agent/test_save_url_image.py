@@ -56,6 +56,14 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/404":
             self.send_response(404)
             self.end_headers()
+        elif self.path == "/redirect-metadata":
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+            self.end_headers()
+        elif self.path == "/redirect-loop":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-loop")
+            self.end_headers()
         elif self.path == "/no-type-with-url-ext.jpg":
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -75,8 +83,16 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def http_server(tmp_path, monkeypatch):
-    """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path."""
+    """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path.
+
+    ``HERMES_ALLOW_PRIVATE_URLS`` opts the test server into private-IP reach
+    (the same toggle a LAN-hosted provider would set); the cloud-metadata
+    floor stays blocked regardless, which is what the SSRF tests pin.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+    from tools import url_safety
+    url_safety._reset_allow_private_cache()
     (tmp_path / ".hermes").mkdir()
 
     # Force the constants/image cache helpers to re-read HERMES_HOME.
@@ -91,6 +107,8 @@ def http_server(tmp_path, monkeypatch):
     thread.start()
     yield f"http://127.0.0.1:{port}", httpd
     httpd.shutdown()
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
 
 
 class TestSaveUrlImage:
@@ -114,10 +132,37 @@ class TestSaveUrlImage:
         """HTTP errors must propagate — caller decides whether to fall back."""
         base, _ = http_server
         from agent.image_gen_provider import save_url_image
-        import requests as req_lib
+        import httpx
 
-        with pytest.raises(req_lib.HTTPError):
+        with pytest.raises(httpx.HTTPStatusError):
             save_url_image(f"{base}/404")
+
+    def test_metadata_url_refused_before_any_fetch(self, http_server):
+        """The provider-supplied URL must pass the SSRF check before a socket
+        opens — cloud metadata is always blocked, even under
+        allow_private_urls."""
+        from agent.image_gen_provider import save_url_image
+
+        with pytest.raises(ValueError, match="SSRF"):
+            save_url_image("http://169.254.169.254/latest/meta-data/", timeout=2)
+        with pytest.raises(ValueError, match="SSRF"):
+            save_url_image("file:///etc/passwd", timeout=2)
+
+    def test_redirect_to_metadata_aborts_mid_chain(self, http_server):
+        """A safe first hop must not launder an unsafe redirect target —
+        each hop is re-validated."""
+        base, _ = http_server
+        from agent.image_gen_provider import save_url_image
+
+        with pytest.raises(ValueError, match="SSRF"):
+            save_url_image(f"{base}/redirect-metadata", timeout=2)
+
+    def test_redirect_loop_is_bounded(self, http_server):
+        base, _ = http_server
+        from agent.image_gen_provider import save_url_image
+
+        with pytest.raises(ValueError, match="redirect"):
+            save_url_image(f"{base}/redirect-loop")
 
 
     def test_oversize_raises_and_cleans_up(self, http_server, tmp_path):

@@ -14,6 +14,10 @@ import datetime
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from urllib.parse import urljoin
+
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+_MAX_SAVE_URL_REDIRECTS = 5
 
 
 def cache_dir(kind: str) -> Path:
@@ -55,43 +59,64 @@ def save_url(
     the URL suffix (some CDNs return ``application/octet-stream``), then
     *default_extension*. Raises on any network / HTTP / oversize / empty error so
     callers can fall back to the bare URL; a partial file is never left behind.
+
+    The URL is provider-supplied, so every hop is validated with
+    ``tools.url_safety`` before a socket opens (and again at TCP connect by the
+    guarded transport, closing DNS-rebinding TOCTOU). Caller-supplied *headers*
+    (e.g. provider auth) go to the first hop only — a redirect target never
+    receives them.
     """
-    import requests
-    response = requests.get(url, headers=headers, timeout=timeout, stream=True)
-    response.raise_for_status()
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    extension = content_types.get(content_type)
-    if require_known_content_type and extension is None:
-        raise ValueError(
-            f"{label} download returned unexpected Content-Type {content_type or '(missing)'}"
-        )
-    if extension is None:
-        url_path = url.split("?", 1)[0].lower()
-        extension = next(
-            ("jpg" if ext == "jpeg" else ext for ext in url_extensions if url_path.endswith(f".{ext}")),
-            default_extension,
-        )
-    path = cache_path(kind, prefix, extension)
-    bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                _unlink_quiet(path)
-                raise ValueError(
-                    f"{label} at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    current_url, hop_headers = url, headers
+    for _ in range(_MAX_SAVE_URL_REDIRECTS + 1):
+        if not is_safe_url(current_url):
+            raise ValueError(f"{label} URL failed the SSRF safety check: {current_url}")
+        with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
+            with client.stream("GET", current_url, headers=hop_headers) as response:
+                if response.status_code in _REDIRECT_STATUS_CODES:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError(f"{label} download redirected without a Location: {current_url}")
+                    current_url, hop_headers = urljoin(current_url, location), None
+                    continue
+                if not response.is_success:
+                    response.read()
+                    response.raise_for_status()
 
-    if bytes_written == 0:
-        _unlink_quiet(path)
-        raise ValueError(empty_error.format(url=url))
+                content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                extension = content_types.get(content_type)
+                if require_known_content_type and extension is None:
+                    raise ValueError(
+                        f"{label} download returned unexpected Content-Type {content_type or '(missing)'}"
+                    )
+                if extension is None:
+                    url_path = current_url.split("?", 1)[0].lower()
+                    extension = next(
+                        ("jpg" if ext == "jpeg" else ext for ext in url_extensions if url_path.endswith(f".{ext}")),
+                        default_extension,
+                    )
+                path = cache_path(kind, prefix, extension)
+                bytes_written = 0
+                with path.open("wb") as fh:
+                    for chunk in response.iter_bytes(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        bytes_written += len(chunk)
+                        if bytes_written > max_bytes:
+                            fh.close()
+                            _unlink_quiet(path)
+                            raise ValueError(
+                                f"{label} at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
+                            )
+                        fh.write(chunk)
 
-    return path
+                if bytes_written == 0:
+                    _unlink_quiet(path)
+                    raise ValueError(empty_error.format(url=url))
+
+                return path
+    raise ValueError(f"{label} download exceeded {_MAX_SAVE_URL_REDIRECTS} redirects: {url}")
 
 
 def _unlink_quiet(path: Path) -> None:

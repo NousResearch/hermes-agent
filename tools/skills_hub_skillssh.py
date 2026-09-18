@@ -125,15 +125,26 @@ class SkillsShSource(SkillSource):
 
         # Step 1: sitemap index -> per-skill sitemap URLs.
         index_xml = _get_text(self.SITEMAP_INDEX_URL, follow_redirects=True, headers=self._SITEMAP_HEADERS)
+        # <loc> targets are remote-party-controlled — a hostile index could point a
+        # sitemap at an internal address; skip anything the SSRF guard rejects.
+        from tools.url_safety import is_safe_url
         skill_sitemap_urls = [m.group(1).strip() for m in self._SITEMAP_LOC_RE.finditer(index_xml or "")
-                              if "sitemap-skills" in m.group(1)]
+                              if "sitemap-skills" in m.group(1) and is_safe_url(m.group(1).strip())]
         if not skill_sitemap_urls:
             return self._featured_skills(limit)
 
         # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap.
+        # The guarded client re-validates every redirect hop at connect time, so a
+        # safe-looking <loc> can't 302 to an internal target.
+        from tools.url_safety import create_ssrf_safe_client
         seen, results = set(), []
         for sitemap_url in skill_sitemap_urls:
-            xml = _get_text(sitemap_url, timeout=30, follow_redirects=True, headers=self._SITEMAP_HEADERS)
+            with create_ssrf_safe_client(timeout=30, follow_redirects=True) as client:
+                try:
+                    resp = client.get(sitemap_url, headers=self._SITEMAP_HEADERS)
+                except Exception:
+                    continue
+            xml = resp.text if resp.status_code == 200 else None
             for loc_match in self._SITEMAP_LOC_RE.finditer(xml or ""):
                 m = self._SITEMAP_SKILL_RE.match(loc_match.group(1).strip())
                 if not m:

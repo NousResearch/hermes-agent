@@ -119,6 +119,15 @@ class TestSourceImageLoading:
             openai_plugin._load_image_bytes(str(auth_json))
 
 
+    def test_load_image_bytes_refuses_ssrf_url(self, tmp_path, monkeypatch):
+        """A model-supplied remote image ref pointing at a metadata endpoint must be
+        refused before any fetch."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        with pytest.raises(ValueError, match="SSRF"):
+            openai_plugin._load_image_bytes("http://169.254.169.254/latest/meta-data")
+
     def test_load_image_bytes_allows_legit_local_image(self, tmp_path, monkeypatch):
         """Negative control: a legitimate local image path is NOT blocked and
         loads normally — proves the guard doesn't over-fire on everything."""

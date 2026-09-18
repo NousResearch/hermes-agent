@@ -174,15 +174,30 @@ class TestGenerate:
 
     def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
         # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+        # codex_backend monkeypatches httpx.Client; build the fetch client from
+        # the unpatched class so the ref-image download gets the PNG responder.
+        real_client = httpx._client.Client
         monkeypatch.setattr(
-            httpx, "get",
-            lambda url, **kw: httpx.Response(200, content=_png_bytes(), request=httpx.Request("GET", url)))
+            "tools.url_safety.create_ssrf_safe_client",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=_png_bytes(), request=request)),
+                **kw))
 
         result = provider.generate("edit", image_url="https://example.com/ref.png")
 
         assert result["success"] is True
         body = json.loads(codex_backend["requests"][0].content)
         assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
+
+    def test_remote_source_url_refused_by_ssrf_guard(self, provider, codex_backend):
+        """A model-supplied image_url pointing at a metadata endpoint must be
+        refused before any fetch."""
+        result = provider.generate("edit", image_url="http://169.254.169.254/latest/meta-data")
+
+        assert result["success"] is False
+        assert codex_backend["requests"] == []
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()

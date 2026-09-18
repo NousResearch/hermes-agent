@@ -10,15 +10,9 @@ from typing import Optional
 
 from aiohttp import web
 
+from gateway.platforms.shared_ingress import is_wildcard_host
+
 logger = logging.getLogger(__name__)
-
-_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
-
-
-def is_wildcard_host(host: Optional[str]) -> bool:
-    """True for the dual-stack default (None/"") and the per-family wildcards."""
-    return not host or host.strip() in _WILDCARD_HOSTS
-
 
 def has_live_listener(host: str, port: int) -> bool:
     """Blocking probe: True when something accepts connections on ``host:port``. Refused = nobody listens;

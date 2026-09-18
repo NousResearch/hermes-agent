@@ -19,7 +19,6 @@ from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
-    _READ_MAX_CONTENT,
     _is_compacted_message,
     _resolve_to_parent,
     _session_link,
@@ -504,7 +503,7 @@ class TestReadShape:
         assert result["mode"] == "read"
         assert result["truncated"] is False  # 3 messages, count-wise it all fits
         big = next(m for m in result["messages"] if m.get("content_truncated"))
-        assert len(big["content"]) <= _READ_MAX_CONTENT + 1  # cap plus ellipsis
+        assert len(big["content"]) <= 2001  # read cap (2000) plus ellipsis
         assert big["original_content_chars"] == 80_000
         assert sum(len(m.get("content") or "") for m in result["messages"]) < 5_000
 

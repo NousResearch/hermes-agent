@@ -49,6 +49,26 @@ from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_direct_operator_notice_resolves_user_without_touching_channel_send():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    user = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=777)))
+    adapter._client = SimpleNamespace(
+        get_user=MagicMock(return_value=user),
+        fetch_user=AsyncMock(),
+        get_channel=MagicMock(),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_direct_notice("123", "operator notice")
+
+    assert result.success is True
+    assert result.message_id == "777"
+    adapter._client.get_user.assert_called_once_with(123)
+    adapter._client.get_channel.assert_not_called()
+    user.send.assert_awaited_once_with(content="operator notice")
+
+
+@pytest.mark.asyncio
 async def test_send_rejects_whitespace_and_records_failed_final_reply(
     caplog, monkeypatch, tmp_path
 ):

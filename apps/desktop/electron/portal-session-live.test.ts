@@ -46,12 +46,28 @@ test.skipIf(displayPrefix === null)(
       }
 
       const electron: string = createRequire(import.meta.url)('electron')
-      const [command, ...args] = [...(displayPrefix ?? []), electron, bundle, root]
+      // Chromium switches go after the fixture's positional root so
+      // `process.argv[2]` in the fixture stays the root. `--no-sandbox` matches
+      // the Playwright fixture: the npm-installed chrome-sandbox helper is not
+      // setuid and Ubuntu 24.04 runners restrict unprivileged user namespaces,
+      // so a sandboxed launch aborts before the main script runs.
+      const [command, ...args] = [...(displayPrefix ?? []), electron, bundle, root, '--no-sandbox', '--disable-gpu']
 
-      const { stdout } = await promisify(execFile)(command, args, {
-        env: { ...env, HERMES_HOME: join(root, '.hermes'), XDG_CONFIG_HOME: join(root, 'config') },
-        timeout: 45_000
-      })
+      let stdout = ''
+
+      try {
+        stdout = (
+          await promisify(execFile)(command, args, {
+            env: { ...env, HERMES_HOME: join(root, '.hermes'), XDG_CONFIG_HOME: join(root, 'config') },
+            timeout: 45_000
+          })
+        ).stdout
+      } catch (error) {
+        // execFile's rejection carries only "Command failed"; Electron's real
+        // reason (sandbox abort, missing libs, fixture assertion) is on stderr.
+        const { stderr = '', stdout: partial = '' } = error as { stderr?: string; stdout?: string }
+        throw new Error(`Electron fixture failed.\n--- stdout ---\n${partial}\n--- stderr ---\n${stderr}`, { cause: error })
+      }
 
       expect(stdout).toContain('PORTAL_SESSION_LIVE_OK')
     } finally {

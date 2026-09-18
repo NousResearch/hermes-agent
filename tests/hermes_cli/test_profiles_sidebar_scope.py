@@ -273,22 +273,21 @@ class TestSidebarTruncation:
             payload = client.get("/api/profiles/sessions/sidebar", params=params).json()
             return len(payload["recents"]["sessions"]), payload["recents"]["profiles_truncated"]
 
+        def pin(session_id):
+            db = SessionDB(db_path=home / "state.db")
+            try:
+                assert db.set_session_pinned(session_id, True)
+            finally:
+                db.close()
+
         for index in range(3):
             _seed_session(home, f"s-{index}", source="desktop")
-        db = SessionDB(db_path=home / "state.db")
-        try:
-            assert db.set_session_pinned("s-2", True)
-        finally:
-            db.close()
+        pin("s-2")
         # Short list: the pin is already on the page, nothing to back-fill, no "more".
         assert truncated() == (3, {"default": False})
 
         for index in range(3, 6):
             _seed_session(home, f"s-{index}", source="desktop")
-        db = SessionDB(db_path=home / "state.db")
-        try:
-            assert db.set_session_pinned("s-5", True)
-        finally:
-            db.close()
+        pin("s-5")
         # Six on disk, two pins among the newest four: a full window, more below it.
         assert truncated() == (4, {"default": True})

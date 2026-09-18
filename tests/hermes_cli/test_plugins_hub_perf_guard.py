@@ -157,7 +157,7 @@ def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=lambda: True)
     monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
 
-    def removed_annotation(name, _dir_path, _removed_entries=None):
+    def removed_annotation(name, _dir_path, _removed_entries):
         annotation_threads.append(threading.current_thread())
         return "withdrawn by catalog" if name == "demo" else None
 

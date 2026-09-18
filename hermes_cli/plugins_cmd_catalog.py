@@ -94,15 +94,13 @@ def catalog_annotation(dir_path) -> Optional[str]:
     return f"catalog:{sidecar.get('tier') or 'community'}@{str(sidecar.get('sha') or '')[:8]}"
 
 
-def removed_annotation(name: str, dir_path, removed_entries: Optional[List[RemovedEntry]] = None) -> Optional[str]:
+def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry]) -> Optional[str]:
     """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``.
 
-    Callers annotating many rows (``plugins list``, the dashboard hub) resolve the kill list once
-    with :func:`plugin_catalog.resolved_removed_entries` and pass it as ``removed_entries``:
-    resolving per row cost one live-catalog fetch — one network timeout, offline — per plugin.
+    ``removed_entries`` is required: callers annotating many rows (``plugins list``, the dashboard hub)
+    resolve the kill list once with :func:`plugin_catalog.resolved_removed_entries` and pass it in.
+    Resolving per row cost one live-catalog fetch — one network timeout, offline — per plugin.
     """
-    if removed_entries is None:
-        removed_entries = resolved_removed_entries()
     sidecar = read_catalog_sidecar(dir_path) or {}
     for candidate in (name, sidecar.get("catalog_name"), sidecar.get("repo")):
         removed = match_removed(str(candidate), removed_entries) if candidate else None

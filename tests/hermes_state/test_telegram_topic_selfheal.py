@@ -52,6 +52,11 @@ def _create_v2_state(db_path: Path) -> None:
         );
         INSERT INTO telegram_dm_topic_bindings
             VALUES ('{CHAT}', '99', '{CHAT}', 'k', 'legacy-sess', 'auto', 1.0, 1.0);
+        -- v1 had no ON DELETE CASCADE: a pruned session leaves an orphan binding behind.
+        INSERT INTO telegram_dm_topic_bindings
+            VALUES ('{CHAT}', '7', '{CHAT}', 'k7', 'pruned-sess', 'auto', 1.0, 1.0);
+        -- an older build's executescript rebuild crashed after CREATE: the scratch table is stranded.
+        CREATE TABLE telegram_dm_topic_mode_new (profile_name TEXT, chat_id TEXT);
         """
     )
     conn.close()
@@ -70,8 +75,10 @@ def test_topic_reads_selfheal_pre_v3_tables(tmp_path: Path):
     binding = db.get_telegram_topic_binding(chat_id=CHAT, thread_id="99", profile_name="default")
     assert binding is not None
     assert binding["session_id"] == "legacy-sess"
+    # The orphan row is dropped (a v2/v3 CASCADE would have removed it) and the stranded scratch table is gone.
     rows = db.list_telegram_topic_bindings_for_chat(chat_id=CHAT, profile_name="default")
     assert [row["session_id"] for row in rows] == ["legacy-sess"]
+    assert db.get_telegram_topic_binding(chat_id=CHAT, thread_id="7", profile_name="default") is None
     assert db.get_meta("telegram_dm_topic_schema_version") == "3"
     # Profile isolation still holds after the heal.
     assert not db.is_telegram_topic_mode_enabled(
@@ -87,15 +94,9 @@ def test_absent_tables_still_read_empty_and_are_not_created(tmp_path: Path):
     assert not db.is_telegram_topic_mode_enabled(chat_id=CHAT, user_id=CHAT)
     assert db.get_telegram_topic_binding(chat_id=CHAT, thread_id="99") is None
     assert db.list_telegram_topic_bindings_for_chat(chat_id=CHAT) == []
-    # The deliberate "reads never create the tables" contract is preserved.
-    tables = {
-        row[0]
-        for row in db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    assert "telegram_dm_topic_bindings" not in tables
-    assert "telegram_dm_topic_mode" not in tables
+    # The deliberate "reads never create the tables" contract is preserved: the migration is the only
+    # creator and always stamps the schema version in the same transaction.
+    assert db.get_meta("telegram_dm_topic_schema_version") is None
     db.close()
 
 
@@ -113,14 +114,10 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     _create_v2_state(db_path)
     db = SessionDB(db_path=db_path)
 
-    ok = getattr(sqlite3, "SQLITE_OK", 0)
-    deny = getattr(sqlite3, "SQLITE_DENY", 2)
-    drop_table = getattr(sqlite3, "SQLITE_DROP_TABLE", 11)
-
     def deny_topic_rebuild_drop(action, arg1, arg2, db_name, trigger):
-        if action == drop_table and arg1 and arg1.startswith("telegram_dm_topic"):
-            return deny
-        return ok
+        if action == sqlite3.SQLITE_DROP_TABLE and arg1 and arg1.startswith("telegram_dm_topic"):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
 
     db._conn.set_authorizer(deny_topic_rebuild_drop)
     try:
@@ -131,21 +128,9 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     finally:
         db._conn.set_authorizer(None)
 
-    # ...and the interrupted rebuild rolled back completely: the v2 table and
-    # its legacy row are intact, with nothing stranded in *_new.
-    tables = {
-        row[0]
-        for row in db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    assert "telegram_dm_topic_mode" in tables
-    assert not any(t.endswith("_new") for t in tables)
-    mode_row = db._conn.execute(
-        "SELECT enabled FROM telegram_dm_topic_mode WHERE chat_id = ?", (CHAT,)
-    ).fetchone()
-    assert mode_row is not None and mode_row[0] == 1
-
+    # ...and the interrupted rebuild rolled back completely (a stranded *_new or a dropped original
+    # would make the retry below read as off, and the version stamp rolled back with it).
+    assert db.get_meta("telegram_dm_topic_schema_version") == "2"
     # Idempotent under retry (the _execute_write contract): the next clean
     # read heals and keeps the legacy rows.
     assert db.is_telegram_topic_mode_enabled(

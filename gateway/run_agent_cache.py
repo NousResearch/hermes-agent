@@ -504,7 +504,19 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            parked = adapter.get_pending_message(session_key)
+            if (
+                parked is not None
+                and invalidation_reason == "stop_command"
+                and getattr(parked, "internal", False)
+            ):
+                # /stop must not drop a parked internal wake (e.g. an async-delegation
+                # completion notice): the post-command drain restarts it once the session
+                # is idle. /new and /reset keep the discard so stale text does not replay
+                # into a fresh history. See #114456.
+                pending_slot = getattr(adapter, "_pending_messages", None)
+                if pending_slot is not None:
+                    pending_slot[session_key] = parked
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

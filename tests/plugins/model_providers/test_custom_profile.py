@@ -169,6 +169,32 @@ class TestCustomReasoningWireShape:
         )
         assert eb.get("think") is not True
 
+    def test_supports_reasoning_false_omits_reasoning_params(self, custom_profile):
+        """When supports_reasoning is False, omit top-level reasoning_effort and think."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="non-thinking-model",
+            supports_reasoning=False,
+            base_url="http://127.0.0.1:11434/v1",
+        )
+        assert "reasoning_effort" not in tl
+        assert "think" not in eb
+
+    def test_supports_reasoning_override_false_omits_reasoning_params(self, custom_profile, monkeypatch):
+        """When explicit model override disables reasoning, omit reasoning params."""
+        monkeypatch.setattr(
+            "agent.models_dev._explicit_model_override",
+            lambda provider, model: {"supports_reasoning": False} if model == "override-no-reason" else None,
+        )
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="override-no-reason",
+            provider="custom",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+        assert "reasoning_effort" not in tl
+        assert "think" not in eb
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
@@ -179,4 +205,5 @@ class TestCustomReasoningWithNumCtx:
         )
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
+
 

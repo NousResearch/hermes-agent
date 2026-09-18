@@ -1865,7 +1865,8 @@ export const zh = defineLocale({
         needsSetupHint: '此后端已选中但尚未完成设置——在设置完成前命令将会失败。',
         needsSetupConfirmTitle: backend => `仍要选择 ${backend} 吗？`,
         needsSetupConfirmDescription: detail => `${detail} 此更改生效后启动的会话在设置完成前将没有终端或文件工具。`,
-        needsSetupConfirmDescriptionGeneric: '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
+        needsSetupConfirmDescriptionGeneric:
+          '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
         needsSetupConfirmAction: '仍然选择'
       },
       browserRealProfile: {

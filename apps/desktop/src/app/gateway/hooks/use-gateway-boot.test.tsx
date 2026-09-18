@@ -527,7 +527,12 @@ describe('primary failure foreground isolation', () => {
       }))
     })
 
-    desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'remote', remoteKind: 'cloud', authMode: 'oauth' } as typeof primaryConn)
+    desktop.getConnection.mockResolvedValue({
+      ...primaryConn,
+      mode: 'remote',
+      remoteKind: 'cloud',
+      authMode: 'oauth'
+    } as typeof primaryConn)
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
     render(<Harness />)
     await flushAsync()
@@ -655,7 +660,9 @@ describe('primary failure foreground isolation', () => {
       desktop.getGatewayWsUrl.mockImplementation(async conn => conn?.wsUrl ?? primaryConn.wsUrl)
       // A rejected session waits for explicit recovery, even after credentials change.
       let recovery!: Promise<void>
-      act(() => { recovery = reconnectGateway() })
+      act(() => {
+        recovery = reconnectGateway()
+      })
       await flushAsync()
       await recovery
       expect($gatewayState.get()).toBe('open')
@@ -691,7 +698,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await advanceBackoff()
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(calls)
     desktop.getGatewayWsUrl.mockResolvedValue(primaryConn.wsUrl)
-    act(() => { connectionApplied?.() })
+    act(() => {
+      connectionApplied?.()
+    })
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()

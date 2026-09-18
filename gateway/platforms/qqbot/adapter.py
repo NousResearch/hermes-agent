@@ -81,6 +81,10 @@ def check_qq_requirements() -> bool:
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
+# Channel-directory ``type`` → QQ scene for outbound routing. The gateway persists the generic
+# type (``dm``/``group``) where the API needs the scene (``c2c``/``group``); a ``dm`` entry must
+# never resolve to the literal "dm", which no ``_TEXT_SENDERS`` key accepts.
+_DIRECTORY_CHAT_TYPES = {"dm": "c2c", "c2c": "c2c", "group": "group", "guild": "guild"}
 _STT_PROVIDER_BASE_URLS = {
     "zai": "https://open.bigmodel.cn/api/coding/paas/v4",
     # Aliases that target direct REST APIs not modeled as first-class providers in PROVIDER_REGISTRY. Used
@@ -162,6 +166,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        self._dir_chat_types: Optional[Dict[str, str]] = None  # persisted fallback, loaded lazily
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
@@ -1642,9 +1647,35 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     def _is_url(source: str) -> bool:
         return urlparse(str(source)).scheme in {"http", "https"}
 
+    def _persisted_chat_types(self) -> Dict[str, str]:
+        """chat_id → scene learned in an EARLIER process, from the channel directory.
+
+        ``_chat_type_map`` only holds chats THIS process saw inbound traffic from, so the first
+        send to a group after a gateway restart guessed ``c2c`` and posted the reply to
+        ``/v2/users/<group_openid>``; QQ answered 400 "请求的资源不存在(用户/群已注销)" and the reply was
+        dropped. The directory survives restarts and records the same chat types, so it backs the
+        in-memory map. Read once per adapter: a miss there is a genuinely unknown chat, not a
+        reason to re-read the file on every send.
+        """
+        if self._dir_chat_types is None:
+            from gateway.channel_directory import load_directory
+            entries = load_directory().get("platforms", {}).get(Platform.QQBOT.value, [])
+            persisted: Dict[str, str] = {}
+            for entry in entries if isinstance(entries, list) else ():
+                if not isinstance(entry, dict) or not entry.get("id"):
+                    continue
+                scene = _DIRECTORY_CHAT_TYPES.get(str(entry.get("type") or "").strip().lower())
+                if scene:
+                    persisted[str(entry["id"])] = scene
+            self._dir_chat_types = persisted
+        return self._dir_chat_types
+
     def _guess_chat_type(self, chat_id: str) -> str:
-        """Determine chat type from stored inbound metadata, fallback to 'c2c'."""
-        return self._chat_type_map.get(chat_id, "c2c")
+        """Scene learned inbound this process, else the persisted one, else 'c2c'."""
+        learned = self._chat_type_map.get(chat_id)
+        if learned:
+            return learned
+        return self._persisted_chat_types().get(chat_id, "c2c")
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:

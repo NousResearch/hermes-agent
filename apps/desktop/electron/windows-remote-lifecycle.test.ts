@@ -58,6 +58,8 @@ test('Windows spawn publishes the initial ownership record before releasing the 
 
   assert.match(script, /read-lock/)
   assert.match(script, /write-lock/)
+  assert.ok(script.indexOf('$lock|&') >= 0, 'ownership JSON is piped to write-lock stdin')
+  assert.ok(script.indexOf('$lock|&') < script.indexOf("'write-lock'"))
   assert.ok(script.indexOf('write-lock') < script.indexOf('Unlock'))
 })
 
@@ -69,6 +71,53 @@ test('PowerShell transport uses UTF-16LE encoded commands and literal escaping',
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")
   assert.equal(psLiteral("a'b"), "'a''b'")
   assert.match(powerShellCommand('Write-Output ok'), /^powershell\.exe -NoProfile -NonInteractive .* -EncodedCommand /)
+})
+
+test('Windows remote commands keep handlers attached to their try blocks', async () => {
+  const decode = command => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const scripts: Array<[string, string]> = []
+
+  await probeWindowsRemote(
+    sshWith(async command => {
+      scripts.push(['platform probe', decode(command)])
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\\\Users\\\\alice\\\\.hermes',
+        hermesPath: 'C:\\\\Hermes\\\\hermes.exe',
+        python: 'C:\\\\Hermes\\\\python.exe'
+      })
+    })
+  )
+
+  await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      scripts.push(['update marker probe', decode(command)])
+
+      return 'CLEAR'
+    }),
+    'C:\\\\Users\\\\alice\\\\.hermes'
+  )
+
+  scripts.push([
+    'atomic spawn',
+    decode(
+      atomicWindowsSpawnCommand({
+        hermesHome: 'C:\\\\Users\\\\alice\\\\.hermes',
+        python: 'C:\\\\Users\\\\alice\\\\.hermes\\\\python.exe'
+      })
+    )
+  ])
+
+  for (const [name, script] of scripts) {
+    assert.doesNotMatch(
+      script,
+      /}\s*;\s*(?:catch|finally)\b/,
+      `${name} separates a PowerShell handler from its try block`
+    )
+    assert.doesNotMatch(script, /\$home\s*=/i, `${name} writes PowerShell's read-only $HOME variable`)
+  }
 })
 
 test('Windows relaunch gate refuses live and uncertain markers before executing the remote runtime', async () => {

@@ -285,11 +285,10 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
         _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
     # Declared names the bound profile scope holds but the process env never did (a routed
     # profile's own .env / sources) — the filter above can only see names already present.
-    try:
-        from tools.env_passthrough import scoped_passthrough_additions
-        out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
-    except Exception:
-        logger.debug("Could not resolve scope-only passthrough names", exc_info=True)
+    # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
+    # declared secret again (#114209); _scrub_child_env calls it the same way.
+    from tools.env_passthrough import scoped_passthrough_additions
+    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment

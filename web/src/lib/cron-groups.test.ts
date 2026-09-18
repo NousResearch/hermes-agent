@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   UNCATEGORISED_GROUP,
+  cronJobCategories,
   cronJobCategory,
   groupCronJobsByCategory,
   hasCategorisedJobs,
@@ -62,5 +63,22 @@ describe("groupCronJobsByCategory", () => {
     const jobs = [job("a", "one"), job("b"), job("c", "two"), job("d", "one")];
     const seen = groupCronJobsByCategory(jobs).flatMap((g) => g.jobs.map((j) => j.id));
     expect(seen.sort()).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+describe("cronJobCategories", () => {
+  it("lists each label once, trimmed and case-insensitively deduped, sorted", () => {
+    const jobs = [
+      job("a", "  Family  "),
+      job("b", "backups"),
+      job("c"),
+      job("d", "family"), // same label, different spelling
+      job("e", "Backups"),
+    ];
+    expect(cronJobCategories(jobs)).toEqual(["backups", "Family"]);
+  });
+
+  it("returns nothing when no job carries a label", () => {
+    expect(cronJobCategories([job("a"), job("b", "   ")])).toEqual([]);
   });
 });

@@ -20,6 +20,21 @@ export function hasCategorisedJobs(jobs: CronJob[]): boolean {
   return jobs.some((job) => cronJobCategory(job) !== "");
 }
 
+/** Every category currently in use, deduped case-insensitively and sorted.
+ *  Feeds the editor's autocomplete: what you can pick is what already exists. */
+export function cronJobCategories(jobs: CronJob[]): string[] {
+  const seen = new Map<string, string>();
+  for (const job of jobs) {
+    const category = cronJobCategory(job);
+    if (!category) continue;
+    const key = category.toLowerCase();
+    if (!seen.has(key)) seen.set(key, category);
+  }
+  return [...seen.values()].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" }),
+  );
+}
+
 /** Group jobs by category for the dashboard's grouped list.
  *
  *  Labels merge on an exact trimmed match ("family" and " family " are one

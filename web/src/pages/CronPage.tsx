@@ -27,9 +27,11 @@ import {
   type CronJobFormState,
 } from "@/lib/cron-job";
 import {
+  cronJobCategories,
   groupCronJobsByCategory,
   hasCategorisedJobs,
 } from "@/lib/cron-groups";
+import { CronCategoryField } from "@/components/CronCategoryField";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -139,6 +141,8 @@ interface CronJobFormResources {
   availableToolsets: ToolsetInfo[];
   modelOptions: ModelOptionsResult | null;
   deliveryTargets: CronDeliveryTarget[];
+  /** Labels already in use, for the category autocomplete. */
+  categoryOptions: string[];
 }
 
 function emptyCronJobForm(): CronJobEditorState {
@@ -202,12 +206,14 @@ function CronAdvancedFields({
   onChange,
   modelOptions,
   availableToolsets,
+  categoryOptions,
 }: {
   idPrefix: string;
   form: CronJobEditorState;
   onChange: (form: CronJobEditorState) => void;
   modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
+  categoryOptions: string[];
 }) {
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
@@ -304,12 +310,15 @@ function CronAdvancedFields({
 
         <div className="grid gap-1">
           <Label htmlFor={`${idPrefix}-category`}>Category</Label>
-          <Input
+          <CronCategoryField
             id={`${idPrefix}-category`}
             value={form.category}
-            onChange={(e) => update("category", e.target.value)}
-            placeholder="e.g. Family"
+            options={categoryOptions}
+            onChange={(next) => update("category", next)}
           />
+          <span className="text-xs text-muted-foreground">
+            Groups this job in the list when grouping is on. Reuse a label or type a new one.
+          </span>
         </div>
 
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -365,7 +374,8 @@ function CronJobFormFields({
   onChange,
 }: CronJobFormFieldsProps) {
   const { t } = useI18n();
-  const { availableSkills, availableToolsets, deliveryTargets, modelOptions } = resources;
+  const { availableSkills, availableToolsets, deliveryTargets, modelOptions, categoryOptions } =
+    resources;
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -454,6 +464,7 @@ function CronJobFormFields({
         onChange={onChange}
         modelOptions={modelOptions}
         availableToolsets={availableToolsets}
+        categoryOptions={categoryOptions}
       />
     </>
   );
@@ -1027,6 +1038,7 @@ export default function CronPage() {
                   availableToolsets,
                   modelOptions,
                   deliveryTargets,
+                  categoryOptions: cronJobCategories(jobs),
                 }}
               />
 
@@ -1087,6 +1099,7 @@ export default function CronPage() {
                   availableToolsets,
                   modelOptions,
                   deliveryTargets,
+                  categoryOptions: cronJobCategories(jobs),
                 }}
               />
 

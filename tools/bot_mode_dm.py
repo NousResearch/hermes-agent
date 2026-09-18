@@ -729,8 +729,41 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     return True
 
 
+def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
+    """The relay reply waiter (``tools/bot_relay.waiter_command``): block until the sender-side
+    reply file exists, print it as the completion notification the sender wakes on, exit 1 on a
+    delivery error or when the budget runs out. Stdlib only: this runs as a background process
+    from any bot turn, and the sender's completion notification is exactly its stdout."""
+    try:
+        deadline = time.time() + float(budget_seconds)
+    except ValueError:
+        return 2
+    while time.time() < deadline:
+        if os.path.exists(reply_path):
+            with open(reply_path, encoding="utf-8") as fh:
+                d = json.load(fh)
+            if d.get("error"):
+                # Typed reason code rides ahead of the free text so the sender can branch on it
+                # without parsing provider prose. See #93091.
+                code = str(d.get("reason") or "").strip()
+                tag = f" [reason: {code}]" if code else ""
+                print(f"Delivery to {label} failed{tag}: {d['error']}")
+                return 1
+            print(f"Reply from {label}:")
+            print(d.get("reply") or "(empty reply)")
+            return 0
+        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
+        time.sleep(0.25)
+    print(f"No reply from {label} within {budget_seconds}s. The message may still be delivered when "
+          "the Desktop reconnects; do not resend blindly.")
+    return 1
+
+
 def _delivery_main(args: list[str]) -> int:
-    """Runner entry for the argv ``_delivery_command`` builds. Malformed argv exits 2 without touching the DM file."""
+    """Runner entry for the argv ``_delivery_command`` and ``bot_relay.waiter_command`` build.
+    Malformed argv exits 2 without touching the DM file."""
+    if args[:1] == ["--wait-reply"]:
+        return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
     if not args or args[0] != "--run-delivery":
         return 2
     rest, author = args[1:], None

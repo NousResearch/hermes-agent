@@ -1,6 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
+import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
@@ -26,12 +27,15 @@ function agentKey(value: unknown): string {
 }
 
 /**
- * Did THIS bot send a `message_agent` to `sender` in `earlier` (the thread up
- * to, not including, the inbound "Message from <sender>" row)? True means that
- * row is the teammate's answer to our dispatch — the round trip is complete and
- * the next assistant message addresses the human, not the teammate. Matching
- * the sender by handle OR display name (either may sign the inbound row) errs
- * towards "expanded": a missed fold shows content, a wrong fold hides it.
+ * Did THIS bot send a `message_agent` to `sender` in the CURRENT exchange of
+ * `earlier` (the thread up to, not including, the inbound "Message from
+ * <sender>" row)? True means that row is the teammate's answer to our dispatch
+ * — the round trip is complete and the next assistant message addresses the
+ * human, not the teammate. The scan stops at the nearest earlier human row or
+ * previous inbound row from the same sender: one dispatch exempts only the
+ * answer that follows it, never every later unsolicited delivery (#85884).
+ * Matching the sender by handle OR display name (either may sign the inbound
+ * row) errs towards "expanded": a missed fold shows content, a wrong fold hides it.
  */
 export function dispatchedTo(earlier: readonly { content?: unknown; role?: string }[], sender: (string | undefined)[]): boolean {
   const keys = new Set(sender.map(agentKey).filter(Boolean))
@@ -42,6 +46,16 @@ export function dispatchedTo(earlier: readonly { content?: unknown; role?: strin
 
   for (let i = earlier.length - 1; i >= 0; i--) {
     const row = earlier[i]
+
+    if (row.role === 'user') {
+      const inbound = AGENT_MESSAGE_RE.exec(messageContentText(row.content))
+
+      if (!inbound || [inbound[1], inbound[2], inbound[3]].some(part => keys.has(agentKey(part)))) {
+        return false
+      }
+
+      continue
+    }
 
     if (row.role !== 'assistant' || !Array.isArray(row.content)) {
       continue

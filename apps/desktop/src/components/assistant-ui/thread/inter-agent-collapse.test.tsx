@@ -134,6 +134,30 @@ describe('inter-agent collapse gate', () => {
     expect(screen.getByText('show reply')).toBeTruthy()
   })
 
+  it('collapses the reply to a LATER unsolicited delivery from a teammate dispatched to earlier', async () => {
+    // One dispatch exempts only the answer that follows it. Turns later, the
+    // same teammate messages in on its own — that exchange had no dispatch,
+    // so the deliberate fold (#85884) must still apply.
+    render(
+      <Harness
+        messages={[
+          user('u1', 'ask hermes for the list'),
+          dispatch('a0', '@Hermes'),
+          user('u2', DELIVERY),
+          assistant('a1', 'here is the list hermes sent', false),
+          user('u3', 'ok thanks'),
+          assistant('a2', 'anytime', false),
+          user('u4', 'Message from 🤖 Hermes (@hermes): unsolicited: build broke'),
+          assistant('a3', 'on it, checking the build', false)
+        ]}
+      />
+    )
+
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getAllByText(/Replied to/)).toHaveLength(1)
+    expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
   it('collapses a settled reply to an inter-agent delivery', async () => {
     render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'build is green', false)]} />)
 

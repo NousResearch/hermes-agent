@@ -1,4 +1,7 @@
 import pytest
+import yaml
+
+from hermes_cli import inventory, moa_cmd
 
 from agent.errors import MoAPresetNotFoundError
 from hermes_cli.moa_config import (
@@ -16,7 +19,7 @@ def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
     from hermes_cli import moa_cmd
 
     captured = {}
-    monkeypatch.setattr(moa_cmd, "load_picker_context", lambda: object())
+    monkeypatch.setattr(moa_cmd, "load_picker_context", lambda: inventory.ConfigContext("", "", "", {}, []))
 
     def fake_build(_context, **kwargs):
         captured.update(kwargs)
@@ -31,6 +34,60 @@ def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
 
     assert [row["slug"] for row in moa_cmd._model_options()] == ["opencode-go"]
     assert captured["include_unconfigured"] is False
+
+
+@pytest.fixture
+def picker_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "model": {
+            "provider": "main",
+            "default": "main-model",
+            "base_url": "https://main.example/v1",
+            "picker": {"hide": ["main", "hidden", "slot"], "order": ["second", "first"]},
+        },
+        "model_catalog": {"excluded_providers": ["excluded"]},
+    }
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
+
+    def discover(**kwargs):
+        return [
+            {"slug": slug, "name": slug, "models": [f"{slug}-model"],
+             "is_current": slug == kwargs["current_provider"]}
+            for slug in ("main", "first", "hidden", "slot", "second", "moa")
+        ]
+
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers", discover)
+    # Managed local rows are injected after authenticated-provider exclusions.
+    monkeypatch.setattr(inventory, "_local_runtime_row", lambda ctx: {
+        "slug": "excluded", "name": "excluded", "models": ["excluded-model"],
+        "is_current": ctx.current_provider == "excluded",
+    })
+    monkeypatch.setattr(inventory, "_moa_provider_row", lambda current: None)
+    for name in ("_apply_picker_hints", "_apply_pricing", "_apply_capabilities", "_apply_custom_aliases"):
+        monkeypatch.setattr(inventory, name, lambda rows, **kwargs: None)
+
+
+def test_moa_options_filter_excluded_hidden_and_order(picker_config):
+    assert [row["slug"] for row in moa_cmd._model_options()] == ["second", "first"]
+
+
+def test_moa_slot_retains_only_its_current_hidden_provider(picker_config, monkeypatch):
+    prompts = []
+
+    def choose(title, rows, default=0):
+        prompts.append((rows, default))
+        return default
+
+    monkeypatch.setattr(moa_cmd, "_prompt_choice", choose)
+    slot = {"provider": "slot", "model": "slot-model"}
+    assert moa_cmd._pick_slot(slot) == slot
+    assert prompts[0] == (["second  (second)", "first  (first)", "slot  (slot)"], 2)
+    prompts.clear()
+    assert moa_cmd._pick_slot({"provider": "excluded", "model": "excluded-model"}) == {
+        "provider": "second", "model": "second-model",
+    }
+    assert prompts[0] == (["second  (second)", "first  (first)"], 0)
 
 
 def _enabled_refs(refs):

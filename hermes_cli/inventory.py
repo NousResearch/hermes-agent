@@ -77,12 +77,15 @@ def build_models_payload(
     pricing_cache_only: bool = False,
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
-    for_picker: bool = False, max_models: int | None = None,
+    for_picker: bool = False, apply_picker_prefs: bool = False, max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
-    in process caches (normal picker opens, while a background worker warms cold endpoints)."""
+    in process caches (normal picker opens, while a background worker warms cold endpoints).
+    ``apply_picker_prefs`` opts interactive consumers into ``model.picker`` hide/order;
+    runtime inventories remain unchanged. Applied after row injection so excluded
+    providers cannot be resurrected as current/unconfigured/local/virtual rows."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -145,6 +148,10 @@ def build_models_payload(
         _apply_featured(rows)
     _apply_custom_aliases(rows)
 
+    if apply_picker_prefs:
+        from hermes_cli.model_switch_providers import _apply_picker_preferences
+        rows = _apply_picker_preferences(rows, ctx.current_provider, excluded_providers=ctx.excluded_providers)
+
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 
@@ -189,7 +196,7 @@ def build_model_options_payload(
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, apply_picker_prefs=True,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
     )
     if not refresh:
@@ -222,7 +229,7 @@ def build_aux_picker_rows(
     )
     rows = build_models_payload(
         ctx, for_picker=True, probe_custom_providers=False, probe_current_custom_provider=True,
-        max_models=max_models,
+        max_models=max_models, apply_picker_prefs=True,
     )["providers"]
     return _without_slug(rows, "moa")
 

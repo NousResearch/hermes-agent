@@ -883,6 +883,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
     from hermes_cli.models_catalog_static import group_providers, provider_group_for_slug
+    from hermes_cli.model_switch_providers import _apply_picker_preferences
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
     _cli_excluded = {
         str(p).strip().lower()
@@ -912,12 +913,16 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             default_idx = len(ordered)
         ordered.append((key, label, members))
 
-    for row in group_providers(_visible_slugs):
+    visible = _apply_picker_preferences(
+        [{"slug": s} for s in _visible_slugs], active, config=config)
+    for row in group_providers([p["slug"] for p in visible]):
         if row["kind"] == "group":
             gid = row["group_id"]
             group_desc = row.get("description", "")
             label = f"{row['label']} ▸ ({group_desc})" if group_desc else f"{row['label']} ▸"
-            _add(f"group:{gid}", label, row["members"], bool(active_group) and gid == active_group)
+            members = _apply_picker_preferences(
+                [{"slug": s} for s in row["members"]], active, config=config)
+            _add(f"group:{gid}", label, [p["slug"] for p in members], bool(active_group) and gid == active_group)
         else:
             slug = row["slug"]
             label = canonical_descs.get(slug, provider_labels.get(slug, slug))
@@ -931,7 +936,11 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
                 label = tier_row["name"]
             _add(slug, label, [], bool(active) and slug == active)
 
-    for key, provider_info in custom_provider_map.items():
+    custom_rows = _apply_picker_preferences(
+        [{"slug": key, "is_user_defined": True} for key in custom_provider_map], active, config=config)
+    for custom_row in custom_rows:
+        key = custom_row["slug"]
+        provider_info = custom_provider_map[key]
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],

@@ -1243,6 +1243,61 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
         return providers
 
 
+def _apply_picker_preferences(
+    rows: List[dict], current_provider: str = "", *, config: dict | None = None,
+    excluded_providers: list | None = None,
+) -> List[dict]:
+    """Cosmetic provider-slug hide/order, after hard availability exclusions.
+
+    Sorting preserves canonical/custom row slots. Discovery may establish current
+    identity via custom endpoint aliases or URLs, rather than exact slug equality.
+    """
+    from fnmatch import fnmatchcase
+    from hermes_cli.models import _PROVIDER_ALIASES
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+    config = config if isinstance(config, dict) else {}
+    catalog = config.get("model_catalog") or {}
+    excluded = (excluded_providers if excluded_providers is not None else
+                catalog.get("excluded_providers", []) if isinstance(catalog, dict) else [])
+    excluded = {str(p).strip().lower() for p in excluded} if isinstance(excluded, list) else set()
+    excluded |= {_PROVIDER_ALIASES.get(p, p) for p in excluded}
+    model = config.get("model")
+    prefs = model.get("picker") if isinstance(model, dict) else None
+    prefs = prefs if isinstance(prefs, dict) else {}
+    hide = prefs.get("hide")
+    hide = [p.strip().lower() for p in hide if isinstance(p, str) and p.strip()] if isinstance(hide, list) else []
+    order = prefs.get("order")
+    order = [p.strip().lower() for p in order if isinstance(p, str) and p.strip()] if isinstance(order, list) else []
+    ranks = {}
+    for p in order:
+        ranks.setdefault(p, len(ranks))
+    current = str(current_provider or "").strip().lower()
+    result = []
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        names = {slug, str(row.get("provider_id") or "").strip().lower()}
+        names |= {_PROVIDER_ALIASES.get(n, n) for n in names}
+        if names & excluded:
+            continue
+        if (slug != current and not row.get("is_current")
+                and any(fnmatchcase(slug, pattern) for pattern in hide)):
+            continue
+        result.append(row)
+    for custom in (False, True):
+        indices = [i for i, row in enumerate(result) if bool(row.get("is_user_defined")) == custom]
+        ordered = sorted((result[i] for i in indices),
+                         key=lambda row: ranks.get(str(row.get("slug") or "").strip().lower(), len(ranks)))
+        for i, row in zip(indices, ordered):
+            result[i] = row
+    return result
+
+
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
@@ -1275,4 +1330,4 @@ def list_picker_providers(
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:
             filtered.append(p)
-    return filtered
+    return _apply_picker_preferences(filtered, current_provider, excluded_providers=excluded_providers)

@@ -201,7 +201,13 @@ def test_served_profile_wake_runs_in_process_only_for_the_session_it_owns(served
     assert resolve(_api_sub(chat_id="20260918_051500_deadbe")) is None           # unknown session
     assert resolve(_api_sub(), profile="atlas") is None                          # not the owner
     assert resolve(_api_sub(), profile="ghost") is None                          # unserved profile
-    assert resolve(_api_sub(), builder_adapters={Platform.DISCORD: object()}) is None  # own boundary
+    other_platform_runner = _make_runner(builder_adapters={Platform.DISCORD: object()})
+    assert _adapter_for_subscription(  # other-platform adapters are no boundary here (#115460)
+        other_platform_runner, Platform.API_SERVER, _api_sub(), "builder"
+    ) is other_platform_runner.adapters[Platform.API_SERVER]
+    assert _adapter_for_subscription(  # unowned sessions still fail closed
+        other_platform_runner, Platform.API_SERVER, _api_sub(chat_id="20260918_051500_deadbe"), "builder"
+    ) is None
     _own_session(served.atlas, "stamped-elsewhere", "builder")                   # foreign store
     assert resolve(_api_sub(chat_id="stamped-elsewhere")) is None
     # A row in the served store stamped for another profile is not ownership either.

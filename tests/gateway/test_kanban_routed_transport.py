@@ -113,8 +113,18 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
     assert all(unseen(task) for task in tasks)
 
     good = completion()
+    # A secondary connected on other platforms only is not a credential boundary
+    # for this platform: the pinned sub falls through to the primary adapter (#115460).
     runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
-    assert not collect(runner)
+    rows = collect(runner)
+    assert [row["task"].id for row in rows] == [good]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert not unseen(good)
+    primary.sent.clear()
+    primary.handled.clear()
+    # Fresh task for the tombstone half below (good events are consumed above).
+    good = completion()
     runner._profile_adapters["yuki"] = {}
     # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
     from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
@@ -212,3 +222,40 @@ def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_pa
     assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
     assert "--parent-chat-id" in warnings[0].getMessage()
     assert unseen(task)
+
+
+def test_other_platform_secondary_falls_through_to_primary(tmp_path, monkeypatch):
+    """A pinned profile whose secondary bot covers only OTHER platforms must not
+    dead-end this platform's route: the sub falls through to the primary adapter (#115460)."""
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = runner.adapters[Platform.DISCORD]
+    runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
+    task = completion()
+    rows = collect(runner)
+    assert [row["task"].id for row in rows] == [task]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert not unseen(task)
+
+
+def test_pinned_profile_dead_end_warns_once_with_resubscribe(tmp_path, monkeypatch, caplog):
+    """When the pinned profile owns THIS platform's credential but no adapter resolves
+    (disconnected secondary), the skip must name the dead-end chat and the re-subscribe
+    command ONCE at WARNING instead of failing silently (#115460)."""
+    import logging
+    from gateway import kanban_watchers_notifier as notifier
+    from gateway.kanban_watchers_notifier import _adapter_for_subscription
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(notifier, "_DEAD_END_WARNED", set())
+    runner._profile_adapters["yuki"] = {Platform.DISCORD: RecordingAdapter()}
+    # Secondary entry persists but the bot is disconnected: no live adapter resolves.
+    runner._authorization_adapter = lambda platform, profile=None: None
+    sub = {"task_id": "task-1", "platform": "discord", "chat_id": "post", "thread_id": "post",
+           "delivery_metadata": {"guild_id": "guild", "scope_id": "guild", "parent_chat_id": "parent"}}
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert _adapter_for_subscription(runner, Platform.DISCORD, sub, "yuki") is None
+        assert _adapter_for_subscription(runner, Platform.DISCORD, sub, "yuki") is None
+    warnings = [r for r in caplog.records if "task-1" in r.getMessage() and "post" in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "notify-subscribe" in warnings[0].getMessage()

@@ -105,6 +105,23 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
 
 
 _ANCHORLESS_WARNED: set[tuple] = set()
+_DEAD_END_WARNED: set[tuple] = set()
+
+
+def _warn_dead_end_sub_once(sub: dict, platform: str, profile: str) -> None:
+    """Pinned profile owns this platform credential but no live adapter resolves;
+    say so once at WARNING instead of skipping silently (#115460)."""
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "", profile)
+    if key in _DEAD_END_WARNED:
+        return
+    _DEAD_END_WARNED.add(key)
+    logger.warning(
+        "kanban notifier: subscription for %s on %s chat %s is pinned to profile %s. "
+        "It will not be delivered. Re-subscribe with `hermes kanban notify-subscribe %s --platform %s --chat-id %s --notifier-profile %s` "
+        "or reconnect the profile %s bot.",
+        sub.get("task_id"), platform, sub.get("chat_id"), profile,
+        sub.get("task_id"), platform, sub.get("chat_id"), profile, platform,
+    )
 
 
 def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
@@ -146,8 +163,12 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
     profile = profile or primary_profile
     # Empty maps are startup placeholders for route-only profiles; a connected
-    # secondary on ANY platform establishes an independent credential boundary.
-    if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
+    # secondary for THIS platform establishes an independent credential boundary.
+    # Other-platform adapters must not dead-end this platform route (#115460).
+    profile_map = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
+    platform_name = getattr(platform, "value", str(platform))
+    if str(platform_name).lower() in _platform_names(profile_map):
+        _warn_dead_end_sub_once(sub, str(platform_name), profile)
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")

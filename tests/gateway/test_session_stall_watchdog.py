@@ -12,6 +12,8 @@ from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session_stall import (
     format_session_stall_notification,
+    format_session_stall_watchdog_payload,
+    inject_session_stall_recovery,
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
     should_emit_session_stall_notification,
@@ -560,3 +562,136 @@ async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, mo
         agent._last_activity_ts = time.time() - 120
         assert await runner._check_session_stalls(60) == (0 if muted else 1)
         assert len(adapter.sent) == (0 if muted else 2)
+
+
+class _SteerableStallingAgent(_FakeAgent):
+    """Model-side stall: steer() accepts without cancelling the in-flight request."""
+
+    def __init__(
+        self,
+        last_activity_ts: float,
+        *,
+        model_active: bool = True,
+        executing_tools: bool = False,
+        redirect_ok: bool = True,
+    ):
+        super().__init__(last_activity_ts)
+        self.model_active = model_active
+        self.executing_tools = executing_tools
+        self.redirect_ok = redirect_ok
+        self.redirect_attempts: list[str] = []
+        self.redirects: list[str] = []
+        self.steers: list[str] = []
+        self.model_cancelled = False
+
+    def redirect(self, text: str) -> bool:
+        self.redirect_attempts.append(text)
+        if self.executing_tools or not self.model_active or not self.redirect_ok:
+            return False
+        self.redirects.append(text)
+        self.model_cancelled = True
+        return True
+
+    def steer(self, text: str) -> bool:
+        self.steers.append(text)
+        return True
+
+
+def _assert_watchdog_payload(text: str) -> None:
+    lowered = text.lower()
+    assert "stall" in lowered or "watchdog" in lowered
+    assert text.strip()
+
+
+def test_format_session_stall_watchdog_payload_mentions_stall():
+    payload = format_session_stall_watchdog_payload(125)
+    _assert_watchdog_payload(payload)
+    assert "2 min" in payload
+
+
+def test_inject_session_stall_recovery_prefers_redirect():
+    agent = _SteerableStallingAgent(time.time() - 120)
+    assert inject_session_stall_recovery(agent, format_session_stall_watchdog_payload(120))
+    assert agent.redirects and not agent.steers
+
+
+def test_inject_session_stall_recovery_falls_back_when_redirect_false():
+    agent = _SteerableStallingAgent(time.time() - 120, executing_tools=True)
+    assert inject_session_stall_recovery(agent, format_session_stall_watchdog_payload(120))
+    assert agent.redirect_attempts and agent.steers and not agent.redirects
+
+
+@pytest.mark.asyncio
+async def test_session_stall_nudge_uses_redirect_not_steer_during_model_request():
+    """steer() only drains after a future tool result. A model-side stall can
+    accept that nudge and never see it. Prefer redirect() so the in-flight
+    request is cancelled and retried with the watchdog payload."""
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:redirect"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableStallingAgent(time.time() - 120, model_active=True)
+    runner._running_agents[session_key] = agent
+
+    assert await runner._check_session_stalls(60) == 1
+    assert agent.redirects
+    _assert_watchdog_payload(agent.redirects[0])
+    assert agent.steers == []
+    assert agent.model_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_session_stall_nudge_falls_back_to_steer_during_tool_execution():
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:tools"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableStallingAgent(time.time() - 120, executing_tools=True)
+    runner._running_agents[session_key] = agent
+
+    assert await runner._check_session_stalls(60) == 1
+    assert agent.redirect_attempts
+    assert agent.redirects == []
+    assert agent.steers
+    _assert_watchdog_payload(agent.steers[0])
+    assert agent.model_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_session_stall_nudge_falls_back_when_redirect_declines():
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:decline"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableStallingAgent(time.time() - 120, redirect_ok=False)
+    runner._running_agents[session_key] = agent
+
+    assert await runner._check_session_stalls(60) == 1
+    assert agent.redirect_attempts
+    assert agent.redirects == []
+    assert agent.steers
+    _assert_watchdog_payload(agent.steers[0])
+
+
+@pytest.mark.asyncio
+async def test_session_stall_recovery_latches_independent_of_flood_wait_notice():
+    """Telegram flood-wait / send timeout must not re-inject the agent nudge."""
+
+    class _FloodWaitAdapter(_FakeAdapter):
+        async def send(self, chat_id, content, metadata=None):
+            raise RuntimeError("flood wait")
+
+    adapter = _FloodWaitAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:flood"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableStallingAgent(time.time() - 120)
+    runner._running_agents[session_key] = agent
+
+    assert await runner._check_session_stalls(60) == 0
+    assert session_key not in runner._session_stall_notified
+    assert len(agent.redirects) == 1
+
+    assert await runner._check_session_stalls(60) == 0
+    assert len(agent.redirects) == 1
+    assert agent.steers == []

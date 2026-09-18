@@ -44,6 +44,41 @@ def format_session_stall_notification(idle_seconds: float) -> str:
             "task, or /new to start a fresh conversation.")
 
 
+def format_session_stall_watchdog_payload(idle_seconds: float) -> str:
+    """Agent-facing recovery text for an in-flight stall (redirect/steer payload)."""
+    mins = max(1, int(idle_seconds // 60))
+    return (
+        "[watchdog] Session stall: no activity for "
+        f"{mins} min. Continue the current task or report that you are stuck."
+    )
+
+
+def inject_session_stall_recovery(agent: Any, payload: str) -> bool:
+    """Prefer ``redirect()`` so a stalled model request is cancelled and retried.
+
+    ``steer()`` only drains after a future tool result, so a model-side stall can
+    accept that nudge and never see it. Fall back to steer during tool execution
+    or when redirect declines. Empty payload is a no-op.
+    """
+    if not payload or not str(payload).strip() or agent is None:
+        return False
+    text = str(payload).strip()
+    redirect = getattr(agent, "redirect", None)
+    if callable(redirect):
+        try:
+            if redirect(text):
+                return True
+        except Exception:
+            pass
+    steer = getattr(agent, "steer", None)
+    if callable(steer):
+        try:
+            return bool(steer(text))
+        except Exception:
+            return False
+    return False
+
+
 def _finite_float(value: Any) -> Optional[float]:
     """``value`` as a finite float, or None (bools are rejected as non-numeric)."""
     if value is None or isinstance(value, bool):

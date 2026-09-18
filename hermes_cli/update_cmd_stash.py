@@ -25,6 +25,18 @@ _AUTOSTASH_WARN_AGE_DAYS = 7
 
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
 
+#: Checkout-hygiene guard: past this many untracked files the pre-update audit refuses
+#: (default ``updates.max_untracked_files``). The threshold is deliberately generous —
+#: a checkout accumulating a few scripts is normal; hundreds mean a broken stash/fetch
+#: cycle is leaking files into the tree (see _audit_checkout_hygiene).
+_DEFAULT_MAX_UNTRACKED_FILES = 25
+
+#: Refuse when this many ``hermes-update-autostash-*`` entries older than
+#: ``_AUTOSTASH_WARN_AGE_DAYS`` sit in the stash (default
+#: ``updates.max_stale_autostashes``). Every parked/failed autostash is one more
+#: orphaned snapshot of local work that no surface ever re-surfaces.
+_DEFAULT_MAX_STALE_AUTOSTASHES = 2
+
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
@@ -103,22 +115,18 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
     return None
 
 
-def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
-    """Print a notice for update autostashes older than the warn threshold; return the count (0 on any git failure).
+def _stale_autostash_entries(git_cmd: list[str], cwd: Path) -> "list[tuple[str, str]] | None":
+    """Autostash entries older than the warn threshold as ``(selector, stamp)``.
 
-    Autostashes legitimately outlive a run (--keep-stash, failed restore) but nothing re-surfaces them.
-    Deliberately NOT a GC: a stash may be the only copy of the user's work, so Hermes never drops one.
-
-    Autostash entries legitimately outlive an update run (``--keep-stash`` parks them; a conflicted or
-    failed restore preserves them for safety), but nothing ever re-surfaces them afterwards — they sit in
-    ``git stash`` invisibly for weeks (#63717 problem 6). This prints a short notice naming the stale
-    entries with recovery/cleanup guidance.
+    ``None`` when git failed or the list could not be parsed — callers treat that as
+    "unknown, don't guess". Shares the subject contract with the producer
+    (``_stash_local_changes_if_needed``): ``hermes-update-autostash-YYYYMMDD-HHMMSS``.
     """
     from hermes_cli.update_cmd import _git_run
     try:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
-            return 0
+            return None
         cutoff = datetime.now(timezone.utc) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
@@ -133,23 +141,133 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
                 continue  # age unknown — leave it alone rather than guess
             if stash_time < cutoff:
                 stale.append((selector, stamp))
-        if not stale:
-            return 0
-        print()
-        print(
-            f"⚠ {len(stale)} leftover update autostash entr"
-            f"{'y is' if len(stale) == 1 else 'ies are'} more than "
-            f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
-        )
-        for selector, stamp in stale:
-            print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
-        print("  These hold local changes stashed by earlier updates and never")
-        print("  restored. Review with: git stash show -p <entry>")
-        print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
-        return len(stale)
+        return stale
     except Exception as exc:
         logger.debug("Autostash age check failed: %s", exc)
+        return None
+
+
+def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
+    """Print a notice for update autostashes older than the warn threshold; return the count (0 on any git failure).
+
+    Autostashes legitimately outlive a run (--keep-stash, failed restore) but nothing re-surfaces them.
+    Deliberately NOT a GC: a stash may be the only copy of the user's work, so Hermes never drops one.
+
+    Autostash entries legitimately outlive an update run (``--keep-stash`` parks them; a conflicted or
+    failed restore preserves them for safety), but nothing ever re-surfaces them afterwards — they sit in
+    ``git stash`` invisibly for weeks (#63717 problem 6). This prints a short notice naming the stale
+    entries with recovery/cleanup guidance.
+    """
+    stale = _stale_autostash_entries(git_cmd, cwd)
+    if not stale:
         return 0
+    print()
+    print(
+        f"⚠ {len(stale)} leftover update autostash entr"
+        f"{'y is' if len(stale) == 1 else 'ies are'} more than "
+        f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
+    )
+    for selector, stamp in stale:
+        print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
+    print("  These hold local changes stashed by earlier updates and never")
+    print("  restored. Review with: git stash show -p <entry>")
+    print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
+    return len(stale)
+
+
+def _audit_checkout_hygiene(git_cmd: list[str], cwd: Path) -> "tuple[str | None, dict]":
+    """Assess checkout hygiene before an update mutates anything.
+
+    Returns ``(refusal_reason, facts)``. ``refusal_reason`` is ``None`` when the checkout
+    is clean enough to update; otherwise a short human-readable reason naming the class of
+    problem. ``facts`` always carries the raw observations (``untracked_count``,
+    ``stale_autostashes``) so callers can record a receipt step even on the clean path.
+
+    The two accumulation classes this catches — both silent until they hard-block an
+    activation with a 797-behind/dirty checkout (production incident 2026-09-16):
+    - untracked files past ``updates.max_untracked_files``: a stalled fast-forward plus
+      ``reset --hard`` leaves every fetched-but-never-merged file in the tree, and the
+      next update's ``--include-untracked`` stash sweeps them in until the stash apply
+      starts conflicting forever;
+    - parked autostashes past ``updates.max_stale_autostashes``: every conflicted restore
+      parks the stash for safety and only a printed warning (in a log nobody re-reads)
+      ever mentions it again.
+
+    Git failures are NOT refusals — the updater's own guards own those paths; this only
+    refuses on positive evidence of accumulation.
+    """
+    from hermes_cli.update_cmd import _git_run, _updates_config
+    from hermes_cli.update_cmd_common import _best_effort
+    facts: dict = {}
+
+    untracked = _git_paths_z(git_cmd, ["ls-files", "--others", "--exclude-standard", "-z"], cwd)
+    if untracked is None:
+        facts["untracked_count"] = None
+    else:
+        facts["untracked_count"] = len(untracked)
+
+    stale = _stale_autostash_entries(git_cmd, cwd)
+    facts["stale_autostashes"] = len(stale) if stale is not None else None
+
+    config = {}
+    with _best_effort("Could not read updates.* hygiene config: %s"):
+        config = _updates_config()
+
+    def _int_limit(key: str, default: int) -> int:
+        try:
+            value = int(config.get(key, default))
+            return value if value >= 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    max_untracked = _int_limit("max_untracked_files", _DEFAULT_MAX_UNTRACKED_FILES)
+    max_stale = _int_limit("max_stale_autostashes", _DEFAULT_MAX_STALE_AUTOSTASHES)
+    facts["limits"] = {"max_untracked_files": max_untracked, "max_stale_autostashes": max_stale}
+
+    if facts["untracked_count"] is not None and facts["untracked_count"] > max_untracked:
+        return (
+            f"{facts['untracked_count']} untracked files in the checkout "
+            f"(limit {max_untracked}, updates.max_untracked_files)",
+            facts,
+        )
+    if stale and len(stale) > max_stale:
+        return (
+            f"{len(stale)} update autostash entries older than {_AUTOSTASH_WARN_AGE_DAYS} days "
+            f"parked in git stash (limit {max_stale}, updates.max_stale_autostashes)",
+            facts,
+        )
+    return None, facts
+
+
+def _print_checkout_hygiene_refusal(reason: str, facts: dict) -> None:
+    """Loud, actionable refusal text for a failed pre-update hygiene audit."""
+    print()
+    print("✗ Update refused: this checkout has accumulated local state an update")
+    print("  must not sweep up or leave behind. Nothing was changed.")
+    print(f"  Reason: {reason}")
+    print()
+    print("  Why: a dirty/diverged checkout is how installs end up hundreds of")
+    print("  commits behind with untracked files colliding into the next update.")
+    print("  Clean it up first, then re-run the update:")
+    print()
+    untracked = facts.get("untracked_count")
+    if untracked:
+        print(f"  - {untracked} untracked file(s): inspect with `git status --short`,")
+        print("    then commit them (worktree), move them out, or delete them.")
+    stale = facts.get("stale_autostashes")
+    if stale:
+        print(f"  - {stale} stale autostash entries: review each with")
+        print("      git stash show -p stash@{N}")
+        print("    then apply (git stash apply stash@{N}) or drop")
+        print("      (git stash drop stash@{N}) until only the intended ones remain.")
+    print()
+    print("  Override for this run only (operator has reviewed the tree):")
+    print("      hermes update --force")
+    print("  Tune or disable the audit in config.yaml:")
+    print("      updates:")
+    print(f"        max_untracked_files: {facts.get('limits', {}).get('max_untracked_files', _DEFAULT_MAX_UNTRACKED_FILES)}")
+    print(f"        max_stale_autostashes: {facts.get('limits', {}).get('max_stale_autostashes', _DEFAULT_MAX_STALE_AUTOSTASHES)}")
+    print("      checkout_hygiene: warn   # warn-only   |  off   # disabled")
 
 
 def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] = None) -> None:

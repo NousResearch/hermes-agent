@@ -93,6 +93,217 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
     assert ts.resolve_streaming_provider({"provider": "edge"}) is None
 
 
+# ── Kokoro (local, self-hosted) ──────────────────────────────────────────
+
+
+class _FakeResponse:
+    """Minimal stand-in for a streamed requests.Response."""
+
+    def __init__(self, status_code=200, chunks=(b"pcm",), text=""):
+        self.status_code = status_code
+        self._chunks = chunks
+        self.text = text
+        self.closed = False
+
+    def iter_content(self, chunk_size=None):
+        yield from self._chunks
+
+    def close(self):
+        self.closed = True
+
+
+def _kokoro(section=None, tts_config=None):
+    return ts.KokoroStreamer(tts_config or {}, section or {})
+
+
+def test_kokoro_available_probes_the_service(monkeypatch):
+    calls = []
+
+    def fake_get(url, timeout=None):
+        calls.append((url, timeout))
+        return _FakeResponse(status_code=200)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    assert ts.KokoroStreamer.available() is True
+    # The probe must be short: it runs on the `auto` resolution path, and a
+    # down local service has to cost milliseconds, not seconds.
+    assert calls[0][1] == ts.KOKORO_PROBE_TIMEOUT_S
+
+
+def test_kokoro_unavailable_when_service_is_down(monkeypatch):
+    import requests
+
+    def refuse(url, timeout=None):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr("requests.get", refuse)
+    assert ts.KokoroStreamer.available() is False
+
+
+def test_kokoro_availability_never_imports_torch(monkeypatch):
+    """The probe must stay a socket check.
+
+    Importing Kokoro in-process would drag a multi-GB CUDA stack into every
+    Hermes process, including CLI ones that never speak.
+    """
+    import builtins
+    import requests
+
+    real_import = builtins.__import__
+
+    def guard(name, *args, **kwargs):
+        assert not name.startswith(("torch", "kokoro")), f"availability imported {name}"
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("requests.get", lambda url, timeout=None: (_ for _ in ()).throw(
+        requests.ConnectionError("down")))
+    monkeypatch.setattr(builtins, "__import__", guard)
+    assert ts.KokoroStreamer.available() is False
+
+
+def test_kokoro_streams_pcm_chunks(monkeypatch):
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None, stream=None):
+        captured.update(url=url, json=json, stream=stream)
+        return _FakeResponse(chunks=[b"aa", b"bb"])
+
+    monkeypatch.setattr("requests.post", fake_post)
+    assert list(_kokoro().stream("hello")) == [b"aa", b"bb"]
+    assert captured["stream"] is True
+    # PCM is the contract with the speak-stream WS (raw int16 frames).
+    assert captured["json"]["response_format"] == "pcm"
+    assert captured["json"]["input"] == "hello"
+
+
+def test_kokoro_defaults_to_loopback(monkeypatch):
+    # Local synthesis must not become a network service by accident.
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {})
+    assert ts.KokoroStreamer._base_url().startswith("http://127.0.0.1")
+
+
+def test_kokoro_honors_configured_base_url():
+    url = ts.KokoroStreamer._base_url({"base_url": "http://10.0.0.5:11640/v1/"})
+    assert url == "http://10.0.0.5:11640/v1"  # trailing slash normalised
+
+
+def test_kokoro_error_response_raises(monkeypatch):
+    monkeypatch.setattr("requests.post", lambda *a, **k: _FakeResponse(
+        status_code=500, text="boom"))
+    with pytest.raises(RuntimeError, match="Kokoro TTS failed"):
+        list(_kokoro().stream("hi"))
+
+
+def test_kokoro_response_is_closed_on_abandoned_stream(monkeypatch):
+    """Barge-in abandons the iterator; the socket must not leak."""
+    response = _FakeResponse(chunks=[b"a", b"b", b"c"])
+    monkeypatch.setattr("requests.post", lambda *a, **k: response)
+    stream = _kokoro().stream("hi")
+    assert next(stream) == b"a"
+    stream.close()  # what a barge-in does
+    assert response.closed is True
+
+
+def test_kokoro_sample_rate_is_configurable():
+    # The WS handshake reports this; a mismatch plays back at the wrong pitch.
+    assert _kokoro().sample_rate == 24000
+    assert _kokoro({"sample_rate": 22050}).sample_rate == 22050
+
+
+def test_auto_prefers_local_kokoro_over_cloud(monkeypatch):
+    _register_fake(monkeypatch, "kokoro")
+    _register_fake(monkeypatch, "elevenlabs")
+    prov = ts.resolve_streaming_provider({"streaming": {"provider": "auto"}})
+    assert ts._REGISTRY["kokoro"] is type(prov)
+
+
+def test_auto_skips_kokoro_when_service_is_down(monkeypatch):
+    _register_fake(monkeypatch, "kokoro", available=False)
+    _register_fake(monkeypatch, "elevenlabs")
+    prov = ts.resolve_streaming_provider({"streaming": {"provider": "auto"}})
+    assert ts._REGISTRY["elevenlabs"] is type(prov)
+
+
+# ── Configured fallback (local provider can be DOWN, unlike a cloud key) ──
+
+
+def test_configured_fallback_is_used_when_primary_is_down(monkeypatch):
+    _register_fake(monkeypatch, "kokoro", available=False)
+    _register_fake(monkeypatch, "elevenlabs")
+    prov = ts.resolve_streaming_provider(
+        {"provider": "kokoro", "kokoro": {"fallback_provider": "elevenlabs"}})
+    assert ts._REGISTRY["elevenlabs"] is type(prov)
+
+
+def test_no_fallback_configured_means_no_swap(monkeypatch):
+    # The "never silently swap the user's voice" rule still holds by default.
+    _register_fake(monkeypatch, "kokoro", available=False)
+    _register_fake(monkeypatch, "elevenlabs")
+    assert ts.resolve_streaming_provider({"provider": "kokoro"}) is None
+
+
+def test_fallback_to_sync_only_provider_yields_none(monkeypatch):
+    # Piper has no streamer. None is correct: the caller then speaks it
+    # per-sentence through the sync path rather than losing audio entirely.
+    _register_fake(monkeypatch, "kokoro", available=False)
+    prov = ts.resolve_streaming_provider(
+        {"provider": "kokoro", "kokoro": {"fallback_provider": "piper"}})
+    assert prov is None
+
+
+def test_fallback_chain_is_followed(monkeypatch):
+    _register_fake(monkeypatch, "kokoro", available=False)
+    _register_fake(monkeypatch, "elevenlabs", available=False)
+    _register_fake(monkeypatch, "openai")
+    prov = ts.resolve_streaming_provider({
+        "provider": "kokoro",
+        "kokoro": {"fallback_provider": "elevenlabs"},
+        "elevenlabs": {"fallback_provider": "openai"},
+    })
+    assert ts._REGISTRY["openai"] is type(prov)
+
+
+def test_fallback_cycle_terminates(monkeypatch):
+    # A config typo (a -> b -> a) must not hang the speech path.
+    _register_fake(monkeypatch, "kokoro", available=False)
+    _register_fake(monkeypatch, "elevenlabs", available=False)
+    prov = ts.resolve_streaming_provider({
+        "provider": "kokoro",
+        "kokoro": {"fallback_provider": "elevenlabs"},
+        "elevenlabs": {"fallback_provider": "kokoro"},
+    })
+    assert prov is None
+
+def test_kokoro_probe_uses_configured_target_and_one_deadline(monkeypatch):
+    import requests
+    times = iter([100.0, 100.0, 100.9, 100.9])
+    monkeypatch.setattr(ts.time, "monotonic", lambda: next(times))
+    calls = []
+    def down(url, timeout=None):
+        calls.append((url, timeout))
+        raise requests.ConnectionError("down")
+    monkeypatch.setattr("requests.get", down)
+    assert ts.KokoroStreamer.available({"base_url": "http://10.10.99.103:11640/v1"}) is False
+    assert calls[0][0].startswith("http://10.10.99.103:11640/v1/")
+    assert [call[1] for call in calls] == [ts.KOKORO_PROBE_TIMEOUT_S, pytest.approx(0.6)]
+
+
+def test_kokoro_error_body_is_bounded_without_response_text(monkeypatch):
+    response = _FakeResponse(status_code=502, chunks=[b"x" * 1024])
+    type(response).text = property(lambda _self: (_ for _ in ()).throw(AssertionError("must not materialise response.text")))
+    monkeypatch.setattr("requests.post", lambda *a, **k: response)
+    with pytest.raises(RuntimeError, match="Kokoro TTS failed"):
+        list(_kokoro().stream("hi"))
+
+
+def test_fallback_chain_depth_is_bounded(monkeypatch):
+    for index in range(ts.MAX_CONFIGURED_FALLBACK_DEPTH + 1):
+        _register_fake(monkeypatch, f"p{index}", available=False)
+    config = {"provider": "p0"}
+    config.update({f"p{index}": {"fallback_provider": f"p{index + 1}"} for index in range(ts.MAX_CONFIGURED_FALLBACK_DEPTH)})
+    assert ts.resolve_streaming_provider(config) is None
+
+
 # ── Built-in provider availability ───────────────────────────────────────
 
 

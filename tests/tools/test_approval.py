@@ -114,6 +114,15 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
+    @pytest.mark.parametrize("command", [
+        "rm -f /tmp/arbitrary-probe.py",
+        "git diff --check && git status --short && rm -f /tmp/arbitrary-probe.py",
+        "rm -f /var/tmp/arbitrary-probe.py",
+    ])
+    def test_nonrecursive_absolute_temp_cleanup_is_not_dangerous(self, command):
+        """A single-file temp cleanup is not a root-directory deletion."""
+        assert detect_dangerous_command(command) == (False, None, None)
+
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
@@ -131,14 +140,43 @@ class TestDetectDangerousRm:
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
-            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert approval_detection._is_verification_artifact_cleanup(
+                f"rm -f {linked_temp / basename}"
+            ) is False
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
             assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
                 False,
                 None,
                 None,
             )
 
-    def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+    @pytest.mark.parametrize("command", [
+        "rm -f foo.txt",
+        "rm -f build/foo.o",
+        "unlink /tmp/arbitrary-probe.py",
+        "rm foo.txt -f",
+    ])
+    def test_existing_nonrecursive_cleanup_forms_remain_unprompted(self, command):
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize("command", [
+        "rm -f /",
+        "rm -rf /",
+        "rm -rf /etc/nginx",
+        "rm -rf /home/alice/project",
+        "rm build/ -rf",
+    ])
+    def test_root_and_recursive_deletions_remain_dangerous(self, command):
+        is_dangerous, key, description = detect_dangerous_command(command)
+        assert is_dangerous is True, command
+        assert key is not None, command
+        assert "delete" in description.lower(), command
+
+    def test_verification_cleanup_exemption_still_rejects_noncanonical_shapes(self):
         commands = (
             "rm -rf /tmp/hermes-verify-example.py",
             "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
@@ -151,11 +189,10 @@ class TestDetectDangerousRm:
             "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
         )
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
-            for command in commands:
-                is_dangerous, key, desc = detect_dangerous_command(command)
-                assert is_dangerous is True, command
-                assert key is not None, command
-                assert "delete" in desc.lower(), command
+            assert all(
+                approval_detection._is_verification_artifact_cleanup(command) is False
+                for command in commands
+            )
 
 
 class TestDynamicShellWordSpellings:
@@ -1335,6 +1372,77 @@ class TestDetectSudoStdin:
         ):
             is_dangerous, _, _ = detect_dangerous_command(cmd)
             assert is_dangerous is False, cmd
+
+
+class TestSudoArgvAnchoring:
+    """Sudo flag detection is anchored to sudo's OWN argv (card t_6a479602).
+
+    The earlier ``\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b`` lazy bridge spanned
+    ACROSS the subcommand, so any later flag cluster containing s/a was
+    misattributed to sudo: `sudo ls -la <path>` (plus cp -a, rsync -a, df -a,
+    tar -xaf, ss -atp), including inside ssh-wrapped one-liners, hard-blocked
+    in single-query mode as "sudo with combined-flag privilege escalation".
+    Only tokens that can be part of sudo's own argv (env assignments, sudo's
+    own options and their values) may precede the gated flag cluster; the
+    subcommand token ends the walk, so subcommand flags can never match.
+    """
+
+    def test_read_only_sudo_subcommand_flags_not_flagged(self):
+        for cmd in (
+            "sudo ls -la /opt/nginxproxymanager/data/nginx/proxy_host/",
+            "ssh S2 'sudo ls -la /opt/nginxproxymanager/data/nginx/proxy_host/'",
+            'ssh S2 "sudo ls -la /opt/x && sudo cat /opt/y"',
+            "ssh S2 'sudo ls -la /opt/x; sudo grep -rl foo /opt/y'",
+            "sudo grep -rl nginx /opt/nginxproxymanager/data/nginx/proxy_host/",
+            "sudo ls -lt /var/log/elasticsearch/",
+            "sudo docker ps",
+            "sudo cp -a /src /dst",
+            "sudo rsync -a /srv/app/ /opt/byrd-it/",
+            "sudo ss -atp",
+            "sudo df -a",
+            "sudo tar -xaf /tmp/b.tar",
+            "sudo journalctl -u elasticsearch -n 50",
+        ):
+            assert detect_dangerous_command(cmd) == (False, None, None), cmd
+
+    def test_sudo_own_short_privilege_flags_still_detected(self):
+        for cmd in (
+            "sudo -ns whoami",
+            "sudo -sa id",
+            "sudo -S cat /etc/shadow",
+            "sudo -s",
+            "sudo -a id",
+            "sudo -u root -S cat /etc/shadow",
+            'sudo -p "pw:" -S id',
+            "sudo -i -S id",
+            "sudo -n -S cat /etc/shadow",
+            "sudo --user root -S id",
+            "sudo -kn -sa id",
+            "sudo -u alice -S id",
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "sudo" in desc.lower()
+
+    def test_sudo_long_privilege_flags_still_detected(self):
+        for cmd in (
+            "sudo --stdin apt upgrade",
+            "sudo --askpass whoami",
+            "sudo -i --stdin apt upgrade",
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "privilege flag" in desc.lower()
+
+    def test_sudo_options_before_subcommand_stay_safe(self):
+        for cmd in (
+            "sudo -u alice ls -la /opt/x",
+            "sudo --preserve-env=PATH ls -la /opt/x",
+            "sudo -nv ls -la /opt/x",
+            "sudo --non-interactive ls -la /opt/x",
+            "sudo systemctl status nginx",
+        ):
+            assert detect_dangerous_command(cmd) == (False, None, None), cmd
 
 
 class TestMacOSPrivateSystemPaths:

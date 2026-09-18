@@ -440,10 +440,26 @@ class EmailAdapter(BasePlatformAdapter):
                     # arrived during the outage stays eligible for the next poll.
                     self._seen_uids = set(snapshot)
                     passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
-                else:  # first connect (or no snapshot): mark all existing messages seen
-                    status, data = imap.uid("search", None, "ALL")
+                else:
+                    # First connect (or no snapshot): mark only already-SEEN messages as seen.
+                    # Marking ALL existing messages as seen (including UNSEEN ones) would silently
+                    # drop support requests that arrived while the gateway was down before this
+                    # adapter instance ever started — they'd never reach the poll loop. UNSEEN
+                    # messages are deliberately left out of ``_seen_uids`` so the next poll picks
+                    # them up as a backfill.
+                    backfill_count = 0
+                    status, data = imap.uid("search", None, "SEEN")
                     self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
-                    passed = "[Email] IMAP connection test passed. %d existing messages skipped."
+                    status, unread_data = imap.uid("search", None, "UNSEEN")
+                    if status == "OK" and unread_data and unread_data[0]:
+                        backfill_count = len(unread_data[0].split())
+                    if backfill_count > 0:
+                        passed = (
+                            "[Email] IMAP connection test passed. %d existing messages marked seen, "
+                            f"{backfill_count} unread messages will be processed on next poll (backfill)."
+                        )
+                    else:
+                        passed = "[Email] IMAP connection test passed. %d existing messages skipped."
                 self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)

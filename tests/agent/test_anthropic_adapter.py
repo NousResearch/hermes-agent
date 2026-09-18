@@ -84,9 +84,9 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14"
-            }
+            assert kwargs["default_headers"]["anthropic-beta"] == "interleaved-thinking-2025-05-14"
+            # bearer-only construction omits x-api-key so an env ANTHROPIC_API_KEY never rides along
+            assert kwargs["default_headers"]["X-Api-Key"] is mock_sdk.Omit.return_value
 
 
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
@@ -1203,8 +1203,9 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert "Hello" in result[0]["content"]
-        assert "World" in result[0]["content"]
+        # Each turn stays its own text block (never joined into one string), so the first turn's
+        # bytes match what a later request replays standalone and the cache prefix survives.
+        assert result[0]["content"] == [{"type": "text", "text": "Hello"}, {"type": "text", "text": "World"}]
 
     def test_preserves_proper_alternation(self):
         messages = [

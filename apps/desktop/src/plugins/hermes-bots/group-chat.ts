@@ -13,6 +13,8 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { displayName } from './labels'
+import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
 import type {
   Attachment,
@@ -40,7 +42,7 @@ export const $groupNeedsYou = atom<Record<string, boolean>>({})
 // Members run in invisible plumbing sessions, so a member's blocking prompt
 // used to park server-side with no surface to answer it — the user saw
 // "is thinking…" until the prompt timeout. The turn poll mirrors each
-// member's `pending_clarify` / `pending_approval` resume fields in here;
+// member's `open_requests` / `pending_approval` resume fields in here;
 // the room renders answer cards from it.
 export const $groupClarify = atom<Record<string, GroupPrompt>>({})
 
@@ -631,7 +633,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
 
-    if (!isPreserved) {
+    // Membership follows the higher revision (a tie unions, as the publish
+    // merge does). An OLDER projection never unions: a room-side roster edit
+    // bumps the local revision precisely so a lagging mirror cannot re-seat
+    // the member it just removed.
+    if (!isPreserved && remoteRevision >= localRevision) {
       if (remoteRevision > localRevision) {
         members.clear()
       }
@@ -751,6 +757,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       image: room.image || null,
       rosterOrder: room.rosterOrder,
       pinned: room.pinned,
+      // Sidebar filing (user-sections) is room-local; keep it across sync.
+      sectionId: room.sectionId ?? null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -1215,7 +1223,7 @@ export const GROUP_CHAT_MAX_CONTINUATIONS = 2
 export const GROUP_CHAT_HISTORY_LIMIT = 24
 export const GROUP_CHAT_MAX_MEMBERS = 6
 
-/** Transcript form of a room speaker's profile name. Friendly identity wins:
+/** Transcript form of a room speaker's identity. Friendly identity wins:
  *  a Bot Mode title or a core profile display_name (e.g. default renamed to
  *  "Lucy") labels the speaker everywhere this helper feeds — the "X is
  *  thinking…" working line, the activity feed, and transcript lines — so a
@@ -1223,37 +1231,82 @@ export const GROUP_CHAT_MAX_MEMBERS = 6
  *  (community report, Aug 21 2026: renamed default still read "Hermes is
  *  thinking…" in group rooms). The untitled primary profile is literally
  *  named "default" — render it as Hermes (matching displayName and the
- *  @hermes handle) so the main agent never loses its name in rooms. */
-export function groupSpeakerLabel(name?: null | string) {
+ *  @hermes handle) so the main agent never loses its name in rooms.
+ *
+ *  Accepts either a member key (`connectionId::profile`, what the activity
+ *  feed records) or a raw profile name (legacy rooms, the round prompt).
+ *  Bot meta is persisted under the route-qualified key (botMetaKey), so a
+ *  keyed caller resolves through the exact roster row + botRosterMeta — the
+ *  same pipeline the Bots tab renders — and a raw name resolves the same
+ *  way when exactly one roster row carries it. Same-named members that
+ *  resolve to the same label get their connection label appended, so two
+ *  failing `default`s are never one anonymous "Hermes" — judged against the
+ *  ROOM's seats when the caller names the room (#94869: a room whose only
+ *  `reviewer` is local reads plain "Reviewer" however many other connections
+ *  expose one), against the whole roster otherwise. A key with no roster row
+ *  ($lastRoster is empty until the Bots pane mounts; the owning connection
+ *  may be gone) still resolves through the route-keyed meta and the profile
+ *  segment — a keyed caller never renders the raw key. */
+export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   const trimmed = (name || '').trim()
 
   if (!trimmed) {
     return trimmed
   }
 
-  // Bot Mode title (edit dialog) — same first rung as displayName().
-  const title = String($botMeta.get()?.[trimmed]?.title || '').trim()
+  const roster = $lastRoster.get()
+  const rows: RosterRow[] = Array.isArray(roster) ? roster.filter(Boolean) : []
+  const meta = $botMeta.get()
+  const friendly = (bot: RosterRow) => displayName(bot, botRosterMeta(bot, meta))
+
+  const exact = rows.find(bot => botRosterKey(bot) === trimmed)
+
+  if (exact) {
+    const label = friendly(exact)
+    const seats = group ? new Set(($groupChats.get()[group]?.members || []).map(botRosterKey)) : null
+    const peers = seats?.size ? rows.filter(bot => seats.has(botRosterKey(bot))) : rows
+    const twin = peers.some(bot => bot !== exact && bot.name === exact.name && friendly(bot) === label)
+
+    return twin ? `${label} · ${exact.connectionLabel || exact.connectionId}` : label
+  }
+
+  const boundary = trimmed.indexOf('::')
+
+  if (boundary !== -1) {
+    const connection = trimmed.slice(0, boundary)
+    const profile = trimmed.slice(boundary + 2)
+    const title = String(meta?.[trimmed]?.title || meta?.[profile]?.title || '').trim()
+    const label = title || (profile.toLowerCase() === 'default' ? 'Hermes' : profile)
+
+    // Another connection still exposes this name: keep them tellable apart.
+    return rows.some(bot => bot.name === profile) ? `${label} · ${connection}` : label
+  }
+
+  // A raw `default` names the ACTIVE gateway's primary profile — it must
+  // never borrow a remote default's identity, so only a local row counts.
+  const isDefault = trimmed.toLowerCase() === 'default'
+  const named = rows.filter(bot => bot.name === trimmed && !(isDefault && (bot.remoteSource || bot.sourceScoped)))
+
+  if (named.length === 1) {
+    return friendly(named[0])
+  }
+
+  // Legacy rungs for names the roster cannot place: a bare-keyed Bot Mode
+  // title, then the local row's display_name, then default → Hermes.
+  const title = String(meta?.[trimmed]?.title || '').trim()
 
   if (title) {
     return title
   }
 
-  // Core profile display_name (`hermes profile rename …` / dashboard) from
-  // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
-  // their device suffix separately and keep their raw name here.
-  const roster = $lastRoster.get()
-
-  const row = Array.isArray(roster)
-    ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)
-    : null
-
+  const row = rows.find(bot => bot.name === trimmed && !bot.remoteSource && !bot.sourceScoped)
   const renamed = typeof row?.display_name === 'string' ? row.display_name.trim() : ''
 
   if (renamed) {
     return renamed
   }
 
-  return trimmed.toLowerCase() === 'default' ? 'Hermes' : trimmed
+  return isDefault ? 'Hermes' : trimmed
 }
 
 /** Trim a room log + its watermarks to the retained window, keeping
@@ -1352,6 +1405,8 @@ export function updateGroupChat(
         image: room.image || null,
         rosterOrder: room.rosterOrder,
         pinned: room.pinned,
+        // Sidebar filing (user-sections) is room-local; keep it durable.
+        sectionId: room.sectionId ?? null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
       }
     }
@@ -1379,12 +1434,12 @@ export interface GroupHoldStamp extends GroupHold {
 }
 
 /** The room record as the coordination engine handles it: `GroupChat` plus
- *  `turn`, the runtime-only name of the member currently mid-turn. Like
+ *  `turn`, the runtime-only descriptor of the member currently mid-turn. Like
  *  `running`/`epoch` it never persists, so it has no place in the durable
  *  shape. Holds carry the fuller live stamp. */
 export interface GroupChatRoom extends GroupChat {
   holds?: Record<string, GroupHoldStamp>
-  turn?: null | string
+  turn?: GroupMember | null
 }
 
 /** Set or clear a group chat's room picture (small data URL, normalized by

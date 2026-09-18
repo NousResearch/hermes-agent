@@ -143,11 +143,31 @@ default applies.
 #### Failure cooldown and provider-proven overflow
 
 A failed or stalled summary attempt arms a per-session **failure cooldown**
-(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
-ordinary threshold-triggered compaction is deferred so a broken summary backend
-does not re-fire every turn. Two paths run a real attempt anyway:
+(escalating 60s → 300s → 900s, never shorter than
+`compression.context_timeout_seconds`, persisted in `state.db`). While it is
+armed, ordinary threshold-triggered compaction is deferred so a broken summary
+backend does not re-fire every turn. Three paths run a real attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- The same-turn `fallback_chain` retry after a stalled primary route — the
+  cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
+  If that pinned route's summary call fails, compress() still commits its
+  deterministic fallback summary (default `abort_on_summary_failure: false`);
+  the log then says "committed a deterministic fallback summary", not
+  "recovered".
+- **Repeated stall → deterministic fallback.** A first stall keeps the
+  transcript, arms the cooldown and lets the LLM route retry after it lapses.
+  When the route stalls *again* while a stall-class failure is still on the
+  ladder (`_consecutive_timeout_failures >= 1`), the retry ladder ends with a
+  deterministic rung: the worker is re-run with the summary LLM skipped
+  (`DETERMINISTIC_SUMMARY_ROUTE` pin) and commits the static fallback summary
+  through the ordinary lease/fence/watermark pipeline — the same degrade a
+  failed summary call gets — instead of "continuing without compression" and
+  re-entering the same silent stream every turn (#112420).
+  `abort_on_summary_failure: true` still aborts (nothing dropped). A committed
+  compaction rebinds the compressor and resets the ladder count, so each
+  compaction cycle grants the LLM route one stall before escalating; the
+  persisted cooldown row still paces attempts across turns and restarts.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring
@@ -191,7 +211,7 @@ auxiliary:
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins). The small-context floor still applies on top (see below) |
+| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
@@ -241,12 +261,20 @@ compression:
     "glm-5.2": 0.40
     "glm-5.2-1M": 0.25
     "claude-sonnet": 0.35
+    "openai-codex:astra": 0.85   # only on the Codex OAuth route (272K cap)
 ```
 
 Resolution rules:
 
 - Keys are **substring-matched** against the model name; the **longest
   matching key wins** (`glm-5.2-1M` beats `glm-5.2` for model `glm-5.2-1M`).
+- Keys may be **provider-scoped** as `"<provider>:<substring>"` (e.g.
+  `"openai-codex:astra": 0.85`). A scoped key only matches when the session's
+  provider is that route, so the same slug served with a different window
+  elsewhere (OpenRouter, Nous, direct OpenAI) keeps the global `threshold`.
+  Ranking uses the model substring only, so `"astra-900k"` still beats
+  `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
+  with the identical substring.
 - When no key matches (or the map is empty), the global `threshold` applies.
 - The override is re-resolved on every `/model` switch; switching to a model
   with no matching key falls back to the global `threshold`.

@@ -29,6 +29,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_install.add_argument(
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
+    plugins_install.add_argument(
+        "--no-deps", action="store_true",
+        help="Skip the plugin's declared Python dependencies (no conflict check, nothing installed); "
+             "you manage them yourself")
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable", action="store_true",
@@ -50,6 +54,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_validate = plugins_subparsers.add_parser(
         "validate", help="Validate a plugin directory for catalog admission (CI gate)")
     plugins_validate.add_argument("path", help="Path to the plugin directory")
+    plugins_validate.add_argument(
+        "--install-deps", action="store_true",
+        help="Install the plugin's declared Python dependencies (pyproject/python_dependencies) into this "
+             "venv before the capability probe, exactly as `plugins install` would — the catalog CI gate")
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
     plugins_update = plugins_subparsers.add_parser(

@@ -62,6 +62,7 @@ describe('free-tier introduction branch table', () => {
 describe('acknowledging the introduction', () => {
   it('reports a failed ack so the ready screen stays up', async () => {
     const { ackFreeTierIntro } = await import('@/store/onboarding')
+
     const failing = async <T>(method: string): Promise<T> => {
       if (method === 'free_tier.ack_notice') {
         throw new Error('gateway away')
@@ -72,5 +73,14 @@ describe('acknowledging the introduction', () => {
 
     expect(await ackFreeTierIntro({ requestGateway: failing })).toBe(false)
     expect(await ackFreeTierIntro({ requestGateway: gatewayReturning(READY) })).toBe(false) // status stub returns no {acked: true}
+  })
+})
+
+describe('a background readiness round', () => {
+  it('never completes onboarding when the picker was touched during the round', async () => {
+    // The `setup.ready` listener passes `stillWanted`; a user opening the API-key form while the
+    // readiness request was out must not have it dismissed by a late "ready".
+    expect(await refreshOnboarding({ requestGateway: gatewayReturning(READY) }, () => false)).toBe(false)
+    expect($desktopOnboarding.get().freeTierReady).toBe(false)
   })
 })

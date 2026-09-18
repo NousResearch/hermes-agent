@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from pathlib import Path
 
-from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -292,7 +292,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if has_binary_extension(path):
             return True
         if content_sample:
             # Undecodable bytes arrive as U+FFFD ("printable", so the ratio misses
@@ -312,6 +312,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         A/B, while dropping numbers regressed line-referencing."""
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line — it does not start a new,
+        # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
+        # gutter line on every newline-terminated file (`cat -n` semantics).
+        # Exactly ONE terminator is dropped, so a genuinely selected trailing
+        # blank line in a page keeps its own number.
+        if content.endswith('\n'):
+            content = content[:-1]
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -469,7 +476,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         allows (base64 sample), else the legacy text heuristic (sample is None)."""
         sample_bytes = self._sample_file_bytes(path)
         if sample_bytes is not None:
-            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            ext_binary = has_binary_extension(path)
             return ext_binary or self._is_likely_binary_bytes(sample_bytes), sample_bytes
         sample_output = _strip_terminal_fence_leaks(self._head(path, 1000).stdout)
         return self._is_likely_binary(path, sample_output), None
@@ -490,7 +497,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
         to the binary-file error). Skips known-binary extensions and files over
         10 MiB. ``path`` must already be expanded."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS or file_size > self._UTF16_MAX_BYTES:
+        if has_binary_extension(path) or file_size > self._UTF16_MAX_BYTES:
             return None
         snippet = (
             "import sys, json, os\n"
@@ -576,7 +583,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Images / known-binary extensions never inline content; the sequential
         # path stops at the probes for them, so don't stream their bytes.
-        if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if self._is_image(path) or has_binary_extension(path):
             return self._read_file_sequential(path, offset, limit)
 
         from tools.tool_output_limits import get_max_line_length
@@ -700,7 +707,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         try:
             with open(full, "rb") as fh:
                 sample = fh.read(1000)
-                ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+                ext_binary = has_binary_extension(path)
                 if ext_binary or self._is_likely_binary_bytes(sample):
                     return self._read_binary_file(path, offset, limit, file_size, sample)
                 fh.seek(0)
@@ -869,6 +876,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
         None when the caller could not tell (artifact left alone, as before)."""
+        # ``wc -l`` counts newlines, not lines: a nonempty file whose last byte
+        # is not a newline holds one more line than the count (#3907). Adjust
+        # here — the single choke point — so total_lines, truncation, and the
+        # past-EOF guard agree on every read path (compound, sequential, native).
+        if file_size > 0 and file_ends_with_newline is False:
+            total_lines += 1
         if offset == 1:  # only the first chunk can carry a BOM (byte 0)
             read_output, _ = _strip_bom(read_output)
         truncated = total_lines > end_line

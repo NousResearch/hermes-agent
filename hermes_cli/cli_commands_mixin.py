@@ -29,6 +29,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
@@ -356,7 +357,7 @@ def _without_session_meta(messages) -> list:
 
 def _db_unavailable_line() -> str:
     from hermes_state import format_session_db_unavailable
-    return f"  {format_session_db_unavailable()}"
+    return f"  {format_session_db_unavailable(details=True)}"
 
 
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
@@ -378,11 +379,11 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
-        label = _skin.get_branding("response_label", "⚕ Hermes")
+        label = _skin.get_branding("response_label", "☤ Hermes")
         _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
         _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
-        label, _resp_color, _resp_text = "⚕ Hermes", "#CD7F32", "#FFF8DC"
+        label, _resp_color, _resp_text = "☤ Hermes", "#CD7F32", "#FFF8DC"
     rich_console.print(Panel(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
         title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
@@ -1176,8 +1177,8 @@ class CLICommandsMixin:
             return _cp("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
         if not self._session_db:
             with suppress(Exception):
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
@@ -1260,6 +1261,8 @@ class CLICommandsMixin:
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /resume.")
         from cli import _sync_process_session_id
         target = _command_arg(cmd_original)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
@@ -1366,6 +1369,11 @@ class CLICommandsMixin:
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""
+        # An in-flight agent run would flush through the rotating session identity: the branch
+        # ends the parent row and repoints agent.session_id (_sync_agent_to_session), so the
+        # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /branch.")
         from cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp("  No conversation to branch — send a message first.")
@@ -1373,11 +1381,12 @@ class CLICommandsMixin:
             return _cp(_db_unavailable_line())
         branch_name = _command_arg(cmd_original)
         now = datetime.now()
-        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id
-        _end_current_session(self, "branched")
+        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
+        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
         try:
@@ -1388,6 +1397,7 @@ class CLICommandsMixin:
                               "_branched_from": parent_session_id})
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
+        _end_current_session(self, "branched")
         # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
         # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
         with suppress(Exception):
@@ -1996,9 +2006,8 @@ class CLICommandsMixin:
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
                                          title_suffix=title_suffix, empty_note=empty_note,
                                          console=console)
-                if bell and self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                if bell:
+                    self._ring_bell(context=f"{fail_label} complete")
             except Exception as e:
                 _refresh_tui_before_print(self)
                 line = f"  ❌ {fail_label} failed: {e}"
@@ -2078,7 +2087,9 @@ class CLICommandsMixin:
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],
-            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": getattr(parent_agent, "session_id", None),
+        }
         preview = _ellipsize(question, 60)
         _cp(f"  💬 Side question: \"{preview}\"",
             "  Answering from a snapshot of this conversation — the current work continues.\n")
@@ -2654,12 +2665,12 @@ class CLICommandsMixin:
         choices = [("once", "Update Now", "exit the current session and update Hermes Agent"),
                    ("cancel", "Cancel", "keep the current session")]
         raw = self._prompt_text_input_modal(
-            title="⚕  Update Hermes Agent",
+            title="☤  Update Hermes Agent",
             detail="This will exit the current session and run `hermes update`.", choices=choices)
         if raw is None or self._normalize_slash_confirm_choice(raw, choices) != "once":
             print("  🟡 /update cancelled.")
             return False
-        _say_block("  ⚕ Launching update...")
+        _say_block("  ☤ Launching update...")
         # run() execs this on the main thread after prompt_toolkit restores terminal modes;
         # relaunching from this daemon thread would skip cleanup (POSIX) / only end the thread (Windows).
         self._pending_relaunch = ["update"]

@@ -90,6 +90,9 @@ class SuggestSpec:
 
     keywords: List[str] = field(default_factory=list)  # lowercase whole-word/phrase triggers
     hosts: List[str] = field(default_factory=list)  # hostname suffixes ("atlassian.net")
+    applications: List[str] = field(default_factory=list)  # reviewed local app labels/aliases
+    examples: List[str] = field(default_factory=list)  # capability examples, not executable instructions
+    requires_app: bool = False  # local app prerequisite, unlike cloud services with desktop clients
 
 
 @dataclass
@@ -209,12 +212,26 @@ def _parse_suggest(path: Path, suggest_raw: Any) -> Optional[SuggestSpec]:
     hosts_raw = suggest_raw.get("hosts") or []
     _require_str_list(path, "suggest.keywords", kw_raw, non_empty=True)
     _require_str_list(path, "suggest.hosts", hosts_raw, non_empty=True)
-    if not kw_raw and not hosts_raw:
-        raise CatalogError(f"{path}: 'suggest' requires at least one keyword or host")
+    from hermes_cli.mcp_app_detection import validate_applications
+
+    try:
+        applications = validate_applications(suggest_raw.get("applications", []))
+    except ValueError as exc:
+        raise CatalogError(f"{path}: {exc}") from exc
+    examples = suggest_raw.get("examples", [])
+    _require_str_list(path, "suggest.examples", examples, non_empty=True)
+    if len(examples) > 6 or any(len(e) > 240 or not e.isprintable() for e in examples):
+        raise CatalogError(f"{path}: suggest.examples allows at most 6 single-line examples of 240 characters")
+    requires_app = suggest_raw.get("requires_app", False)
+    if not isinstance(requires_app, bool) or (requires_app and not applications):
+        raise CatalogError(f"{path}: suggest.requires_app must be a boolean, with applications when true")
+    if not kw_raw and not hosts_raw and not applications:
+        raise CatalogError(f"{path}: 'suggest' requires at least one keyword, host or application")
     # Matching is case-insensitive whole-word / host-suffix: store lowercase so UIs needn't re-normalize.
     return SuggestSpec(
         keywords=[k.strip().lower() for k in kw_raw],
-        hosts=[h.strip().lower().lstrip(".") for h in hosts_raw])
+        hosts=[h.strip().lower().lstrip(".") for h in hosts_raw],
+        applications=applications, examples=examples, requires_app=requires_app)
 
 
 def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
@@ -561,7 +578,9 @@ def _apply_tool_selection(
         return
 
     if not probed:
-        _write_tools_filter(name, "include", None)
+        # Keep a prior explicit selection: "no tools today" must not widen ``include: []`` to
+        # "all tools" the next time the server does advertise some.
+        _write_tools_filter(name, "include", prior_selection)
         _say("  Server reported no tools.", Colors.YELLOW)
         return
 
@@ -576,7 +595,9 @@ def _apply_tool_selection(
         )
         return
 
-    pre_set = {n for n in (prior_selection or entry.tools.default_enabled or tool_names) if n in tool_names}
+    # A prior ``include: []`` (user chose zero tools) outranks manifest defaults, like the non-TTY path.
+    preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or tool_names)
+    pre_set = {n for n in preferred if n in tool_names}
     pre_indices = {i for i, n in enumerate(tool_names) if n in pre_set}
     _say(f"  Found {len(probed)} tool(s). Pre-checked: {len(pre_indices)}.")
 

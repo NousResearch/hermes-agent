@@ -139,12 +139,12 @@ class TestDeduplication:
 
     def test_first_message_not_duplicate(self):
         adapter = self._make_adapter()
-        assert adapter._is_duplicate("msg-1") is False
+        assert adapter._dedup.is_duplicate("msg-1") is False
 
     def test_second_occurrence_is_duplicate(self):
         adapter = self._make_adapter()
-        adapter._is_duplicate("msg-1")
-        assert adapter._is_duplicate("msg-1") is True
+        adapter._dedup.is_duplicate("msg-1")
+        assert adapter._dedup.is_duplicate("msg-1") is True
 
 
 # ---------------------------------------------------------------------------

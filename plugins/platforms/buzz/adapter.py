@@ -9,6 +9,7 @@ BUZZ_PRIVATE_KEY (nsec or hex): it reaches the CLI via the subprocess env and is
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -27,152 +28,23 @@ from urllib.parse import urlsplit, urlunsplit
 # Profile-scoped read (adapter startup, Slack pattern #59739): a scoped read honors the profile's own
 # secret; only an UNSCOPED read under multiplex (default-profile startup loop) falls back to the process
 # env, which is that profile's own value.
-from agent.secret_scope import (
-    UnscopedSecretError as _UnscopedSecretError, current_secret_scope as _current_secret_scope,
-    get_secret as _scoped_get_secret, is_multiplex_active as _is_multiplex_active,
+from agent.secret_scope import is_multiplex_active as _is_multiplex_active
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _shared_scoped_secret, profile_scoped as _profile_scoped,
+    seed_extra_from_env as _seed_extra_from_env,
 )
-from gateway.platforms._shared import profile_scoped as _profile_scoped
+from gateway.platforms._shared import send_error
 
 
 def _get_scoped_secret(name, default=None):
-    """Scope-aware credential read: an active scope is authoritative (a miss is ``default``, never an env
-    borrow). Unscoped adds one rung over ``_shared``: the startup gate runs before any scope exists, so
-    externally managed secrets are consulted via a one-shot profile-scope build.
-
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and connects *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash
-    startup/reconnect (#70652 class); there ``os.environ`` is that profile's own value, so fall back to it.
-    Same pattern as ``whatsapp_common._get_wsecret`` and the WeCom/IRC/ntfy plugin adapters.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    Secondary profiles construct their adapters under a profile secret scope -- the scope is authoritative
-    and a scoped miss returns ``default`` (no cross-profile borrow from ``os.environ``, which may hold
-    another profile's value). The DEFAULT profile's adapter constructs and sends *unscoped* under
-    multiplexing, where a bare ``get_secret`` would raise ``UnscopedSecretError`` and crash this path; there
-    ``os.environ`` is that profile's own value, so fall back to it. Same pattern as the Slack
-    ``SLACK_APP_TOKEN`` read (#59739) and ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
-    """
-    try:
-        val = _scoped_get_secret(name, None)
-    except _UnscopedSecretError:
-        # DEFAULT profile's adapter constructs/connects outside any _profile_runtime_scope under
-        # multiplexing; os.environ is that profile's own value there. Same pattern as Slack SLACK_APP_TOKEN
-        # (#59739) and the Matrix recovery key. A *scoped* miss still returns the default (no cross-profile
-        # borrow).
-        val = os.getenv(name)
-    if val is None and _current_secret_scope() is None:
-        val = _unscoped_profile_secrets().get(name)
-    return val if val is not None else default
-
-
-_UNSCOPED_PROFILE_SECRETS: Optional[Dict[str, str]] = None
-
-
-def _unscoped_profile_secrets() -> Dict[str, str]:
-    """Process-cached profile secret mapping (external resolvers are slow); failures degrade to {}."""
-    global _UNSCOPED_PROFILE_SECRETS
-    if _UNSCOPED_PROFILE_SECRETS is None:
-        try:
-            from agent.secret_scope import build_profile_secret_scope
-            from hermes_constants import get_hermes_home
-            _UNSCOPED_PROFILE_SECRETS = dict(build_profile_secret_scope(get_hermes_home()))
-        except Exception:
-            logger.warning(
-                "Buzz requirement probe could not build the profile secret "
-                "scope; Bitwarden-managed credentials will not be visible "
-                "to the startup gate (#95216)",
-                exc_info=True,
-            )
-            _UNSCOPED_PROFILE_SECRETS = {}
-    return _UNSCOPED_PROFILE_SECRETS
+    """Buzz reads consult a one-shot profile-scope build when unscoped: ``check_requirements`` runs at
+    startup before any scope exists, so Bitwarden-managed keys would otherwise be invisible (#95216)."""
+    return _shared_scoped_secret(name, default, external_fallback=True)
 
 
 def _scoped_platform_setting(env_name, extra, key):
-    """Raw non-secret setting; in a secondary profile scope ``os.environ`` is the DEFAULT profile's, so ``extra`` wins.
+    """Raw non-secret setting; in a secondary profile scope ``os.environ`` is the DEFAULT profile's, so the
+    profile's own secret scope (its ``.env``) stands in for env and ``extra`` is the fallback.
 
     Inside a secondary profile scope ``os.environ`` holds the DEFAULT profile's YAML-to-env bridge output
     (#98738), so the profile's ``PlatformConfig.extra`` is authoritative and env is not consulted: a missing
@@ -181,7 +53,10 @@ def _scoped_platform_setting(env_name, extra, key):
     under multiplexing — the legacy ``os.getenv`` read is returned unchanged, so env-over-config precedence
     is preserved.
     """
-    return (extra or {}).get(key) if _profile_scoped() else os.getenv(env_name)
+    if _profile_scoped():
+        scoped = _get_scoped_secret(env_name)
+        return scoped if scoped is not None else (extra or {}).get(key)
+    return os.getenv(env_name)
 
 
 logger = logging.getLogger(__name__)
@@ -189,6 +64,7 @@ logger = logging.getLogger(__name__)
 from gateway.platforms.base import (
     BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
 )
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -283,6 +159,13 @@ _MARKDOWN_MEDIA_RE = re.compile(
 )
 _BARE_MEDIA_RE = re.compile(_MEDIA_URL_PATTERN, re.IGNORECASE)
 _MEDIA_PATH_RE = re.compile(r"^/media/(?P<sha>[0-9a-f]{64})(?P<ext>\.[a-z0-9]{1,10})?/?$", re.IGNORECASE)
+
+
+def _consume_ws_read_task(task: asyncio.Task) -> None:
+    """Retrieve a detached stalled receive task's result without blocking recovery."""
+    if not task.cancelled():
+        with contextlib.suppress(Exception):
+            task.exception()
 
 
 def _effective_port(parsed) -> Optional[int]:
@@ -413,10 +296,9 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
 
 def _reply_to_mode(config, extra: dict) -> str:
     """Reply mode ("first"/"all" thread, "off" posts flat); env overrides config, ``reply_in_thread: false`` = "off"."""
-    mode = str(os.getenv("BUZZ_REPLY_TO_MODE") or getattr(config, "reply_to_mode", "first") or "first").strip().lower()
-    rit = os.getenv("BUZZ_REPLY_IN_THREAD")
-    if rit is None:
-        rit = extra.get("reply_in_thread")
+    mode_env = _get_scoped_secret("BUZZ_REPLY_TO_MODE") if _profile_scoped() else os.getenv("BUZZ_REPLY_TO_MODE")
+    mode = str(mode_env or getattr(config, "reply_to_mode", "first") or "first").strip().lower()
+    rit = _setting_or("BUZZ_REPLY_IN_THREAD", extra, "reply_in_thread", None)
     return "off" if rit is not None and str(rit).strip().lower() in ("false", "0", "no", "off") else mode
 
 
@@ -657,7 +539,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # Entries may be hex or npub (normalized to hex). Reaction-only identities get a 👀 on explicit tags but
         # never dispatch; allowed_users wins on overlap.
         self._allowed_pubkeys: set = _pubkey_set(_setting_or("BUZZ_ALLOWED_USERS", extra, "allowed_users", []))
-        self._reaction_only_pubkeys: set = _pubkey_set(os.getenv("BUZZ_REACTION_ONLY_USERS") or extra.get("reaction_only_users", []))
+        self._reaction_only_pubkeys: set = _pubkey_set(_setting_or("BUZZ_REACTION_ONLY_USERS", extra, "reaction_only_users", []))
         # Secret — resolved lazily (never at import time, never logged); connect() re-resolves.
         self._private_key = self._auth_tag = ""
         # Identity — filled in by connect() from ``buzz users get``
@@ -666,7 +548,6 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
         self._membership_since = self._poll_count = 0
-        self._lock_key: Optional[str] = None
         # Channels the relay permanently rejected ("restricted"); persists across reconnects so we never re-subscribe.
         # channel_id -> { "chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
         # OrderedDict[event_id, (author_pubkey, content_snippet)], } event_meta backs NIP-10 reply-parent
@@ -758,17 +639,9 @@ class BuzzAdapter(BasePlatformAdapter):
         self._display_name = str(profiles[0].get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
         # Two profiles must not drive the same identity on one relay (duplicate replies, split de-dupe state).
-        try:
-            from gateway.status import acquire_scoped_lock
-            lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
-                return self._connect_failed(
-                    "lock_conflict", "Buzz identity in use by another profile",
-                    "Buzz: identity %s… on %s already in use by another profile", self._self_pubkey[:8], self.relay_url,
-                )
-            self._lock_key = lock_key
-        except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
+        if not self._acquire_platform_lock(
+                "buzz", f"{self.relay_url}:{self._self_pubkey}", f"Buzz identity {self._self_pubkey[:8]}… on {self.relay_url}"):
+            return False
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -823,29 +696,14 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
-        lock_key = getattr(self, "_lock_key", None)
-        if lock_key:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("buzz", lock_key)
-            except Exception:
-                pass
-            self._lock_key = None
-        await self._cancel_task(self._ws_task)
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
+        await cancel_task(self._ws_task)
         self._ws_task = None
-        await self._cancel_task(self._poll_task)
+        await cancel_task(self._poll_task)
         self._poll_task = None
         self._channel_state = {}
         self._poll_count = 0
-
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -1127,7 +985,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return True
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning("Buzz: WebSocket did not authenticate in time")
-            await self._cancel_task(self._ws_task)
+            await cancel_task(self._ws_task)
             self._ws_task = None
             return False
 
@@ -1213,7 +1071,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _ws_discovery_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
         """Periodic discovery on the poll cadence: relays don't guarantee a kind-44100 event for every new
-        conversation. Failures retry next tick; the read loop alone owns connection health.
+        conversation. Failures retry next tick, except a closed socket: that is the same dead connection the
+        read loop may still be parked on, so it propagates and tears the connection down (#112049).
 
         The kind-44100 membership subscription is the fast path, but relays do not guarantee a membership
         event for every conversation that materializes mid-session (#93557) — some emit none at all for new
@@ -1221,12 +1080,14 @@ class BuzzAdapter(BasePlatformAdapter):
         ``_DM_DISCOVERY_EVERY`` sweeps; this loop gives the WS transport the same guarantee on the same
         cadence.
         """
+        from websockets.exceptions import ConnectionClosed
+
         interval = max(self.poll_interval * _DM_DISCOVERY_EVERY, _MIN_POLL_INTERVAL)
         while True:
             await asyncio.sleep(interval)
             try:
                 await self._rediscover_and_subscribe(websocket, subscriptions)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, ConnectionClosed):
                 raise
             except Exception:
                 logger.warning("Buzz: WebSocket discovery sweep failed", exc_info=True)
@@ -1235,6 +1096,7 @@ class BuzzAdapter(BasePlatformAdapter):
         """Persistent authenticated subscription with bounded reconnect backoff; `since` filters resume on reconnect."""
         import websockets
         backoff = 1.0
+        reconnecting = False
         while True:
             try:
                 async with websockets.connect(
@@ -1245,33 +1107,61 @@ class BuzzAdapter(BasePlatformAdapter):
                     subscriptions = await self._subscribe_websocket(websocket)
                     if self._ws_ready is not None:
                         self._ws_ready.set()
+                    if reconnecting:
+                        # connect() published "connected" once; a recovered socket has to say so again.
+                        reconnecting = False
+                        self._mark_connected()
                     backoff = 1.0
-                    discovery_task = asyncio.create_task(self._ws_discovery_loop(websocket, subscriptions))
+                    # Whichever side notices the dead socket first ends the connection: the read loop's idle
+                    # bound, or a discovery send() raising ConnectionClosed while the read is still parked.
+                    tasks = {
+                        asyncio.create_task(self._ws_read_loop(websocket, subscriptions)),
+                        asyncio.create_task(self._ws_discovery_loop(websocket, subscriptions)),
+                    }
                     try:
-                        await self._ws_read_loop(websocket, subscriptions)
+                        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                        for finished in done:
+                            finished.result()
                     finally:
-                        discovery_task.cancel()
-                        try:
-                            await discovery_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                # The health map only ever saw "connected"; say "retrying" until the socket is back (#112049).
+                if not reconnecting:
+                    reconnecting = True
+                    self._mark_degraded()
                 logger.warning("Buzz: WebSocket disconnected; retrying in %.1fs: %s", backoff, e)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
     async def _ws_read_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
-        """Read frames until the relay closes; an idle read raises ConnectionError to reconnect."""
+        """Read frames until the relay closes; a close or an idle read raises ConnectionError to reconnect."""
         frame_iter = websocket.__aiter__()
         while True:
+            read_task = asyncio.ensure_future(frame_iter.__anext__())
             try:
-                raw = await asyncio.wait_for(frame_iter.__anext__(), timeout=_WS_READ_IDLE_TIMEOUT)
+                done, _ = await asyncio.wait(
+                    {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done:
+                    # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
+                    # A transport receive stuck below asyncio can ignore that cancellation forever, leaving the
+                    # adapter healthy-looking. Detach the read instead so the outer loop can close and reconnect.
+                    raise ConnectionError(
+                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
+                    )
+                raw = read_task.result()
             except StopAsyncIteration:
-                return
-            except asyncio.TimeoutError:
-                raise ConnectionError(f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent") from None
+                # A clean relay close is still a disconnect: raising sends it through the same
+                # backoff + "retrying" path instead of reconnecting in a hot loop.
+                raise ConnectionError("relay closed the WebSocket") from None
+            finally:
+                if not read_task.done():
+                    read_task.cancel()
+                    read_task.add_done_callback(_consume_ws_read_task)
             try:
                 message = json.loads(raw)
             except (ValueError, TypeError):
@@ -1894,7 +1784,7 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type = MessageType.DOCUMENT
         source = self.build_source(
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
-            user_id=user_id, user_name=user_name, thread_id=thread_id,
+            user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,
         )
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message, message_id=message_id,
@@ -1931,11 +1821,11 @@ def _profile_buzz_extra() -> dict:
 def check_requirements() -> bool:
     """Check if Buzz is configured: a relay URL plus a resolvable key."""
     if _profile_scoped():
-        # Secondary profile: os.environ's BUZZ_* are the default profile's and must not satisfy the gate.
-        # Consult the profile's own config.yaml (via the scoped home override) and its secret scope instead;
+        # Scoped profile: os.environ's BUZZ_* may be another profile's and must not satisfy the gate.
+        # Consult the profile's own .env (secret scope) and config.yaml (scoped home override) instead;
         # an unconfigured profile fails closed. See #98738.
         extra = _profile_buzz_extra()
-        return bool(str(extra.get("relay_url") or "").strip() and _resolve_private_key(extra))
+        return bool(_configured_relay(extra) and _resolve_private_key(extra))
     # The gate runs before per-profile scopes install; the relay can be externally managed too.
     return bool((_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip()) and bool(_resolve_private_key())
 
@@ -1958,70 +1848,43 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
-# (extra key, env var, kind): "str" bridges truthy values as-is, "csv" joins lists,
-# "flag" lowercases when present, "thread" lowercases and ignores profile scope.
-_YAML_BRIDGE = (
+_YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("relay_url", "BUZZ_RELAY_URL", "str"), ("cli_path", "BUZZ_CLI_PATH", "str"),
     ("home_channel", "BUZZ_HOME_CHANNEL", "str"), ("transport", "BUZZ_TRANSPORT", "str"),
+    ("poll_interval", "BUZZ_POLL_INTERVAL", "str"),
     ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
-    ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "flag"),
-    ("require_mention", "BUZZ_REQUIRE_MENTION", "flag"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "thread"),
-    ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "thread"),
+    ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
+    ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
+    ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),
 )
 
 
 def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
-    """Bridge ``buzz.extra`` into ``BUZZ_*`` env so a config.yaml-only setup passes the env-reading gate.
-    Env wins over YAML; ``BUZZ_PRIVATE_KEY`` is never sourced from config.yaml."""
+    """``apply_yaml_config_fn``: bridge ``buzz.extra`` into ``BUZZ_*`` env (env wins; skipped under a
+    secondary profile's scope, #98738) and seed the same keys into the returned ``extra`` so each profile's
+    adapter reads its own. ``BUZZ_PRIVATE_KEY`` is never sourced from config.yaml."""
     extra = buzz_cfg.get("extra", buzz_cfg) or {}
     if not isinstance(extra, dict):
         return None
-    # A secondary profile must NOT write the process-global env (first-writer-wins would pin it for every profile).
-    # Under multiplex, a secondary profile's config loads inside its runtime scope; its values must NOT be
-    # written to the process-global env, where first-writer-wins would pin them for every other profile
-    # (issue #72348 Telegram/Discord mirror, Buzz side of #98738). Its adapter reads the profile's
-    # PlatformConfig.extra directly instead.
-    skip_env_bridge = _profile_scoped()
-    interval = extra.get("poll_interval")
-    if interval is not None and not skip_env_bridge and not os.getenv("BUZZ_POLL_INTERVAL"):
-        os.environ["BUZZ_POLL_INTERVAL"] = str(interval)
-    for src, env, kind in _YAML_BRIDGE:
-        val = extra.get(src)
-        missing = {"str": not val, "csv": val is None}.get(kind, src not in extra)
-        if missing or (kind != "thread" and skip_env_bridge) or os.getenv(env):
-            continue
-        if kind == "csv" and isinstance(val, (list, tuple)):
-            val = ",".join(str(v) for v in val)
-        os.environ[env] = str(val).lower() if kind in ("flag", "thread") else str(val)
-    return None
+    return _apply_yaml_bridge(extra, _YAML_BRIDGE)
+
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed ``PlatformConfig.extra`` from env so env-only setups show in gateway status; None if unconfigured."""
-    if _profile_scoped():
-        # Process env holds the default profile's BUZZ_*; never fabricate Buzz for a secondary profile.
-        return None
-    # Secondary profile scope (#98738): the process env's BUZZ_* values are the default profile's
-    # configuration, not this profile's — env enablement must not fabricate a Buzz platform for a profile
-    # that did not configure one.
-    relay = os.getenv("BUZZ_RELAY_URL", "").strip()
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the owning profile's env so env-only setups
+    show in gateway status; None if unconfigured. Reads go through the profile scope: a served secondary sees
+    only its own ``.env`` (#98738 — the process env is the DEFAULT profile's and must not fabricate Buzz here).
+    Cron delivery target defaults to the first watched channel."""
+    relay = str(_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip()
     if not relay or not _resolve_private_key():
         return None
-    seed: dict = {"relay_url": relay}
-    if channels := os.getenv("BUZZ_CHANNELS", "").strip():
-        seed["channels"] = [c.strip() for c in channels.split(",") if c.strip()]
-    if interval := os.getenv("BUZZ_POLL_INTERVAL", "").strip():
-        try:
-            seed["poll_interval"] = float(interval)
-        except ValueError:
-            pass
-    if cli_path := os.getenv("BUZZ_CLI_PATH", "").strip():
-        seed["cli_path"] = cli_path
-    # Cron delivery target; defaults to the first watched channel.
-    home = os.getenv("BUZZ_HOME_CHANNEL", "").strip() or (seed.get("channels") or [""])[0]
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("BUZZ_HOME_CHANNEL_NAME", home)}
-    return seed
+    seed = _seed_extra_from_env((
+        ("BUZZ_CHANNELS", "channels", lambda v: [c.strip() for c in v.split(",") if c.strip()]),
+        ("BUZZ_POLL_INTERVAL", "poll_interval", float), ("BUZZ_CLI_PATH", "cli_path", None),
+    ))
+    home = _seed_extra_from_env((), home_env="BUZZ_HOME_CHANNEL", home_default=(seed.get("channels") or [""])[0])
+    return {"relay_url": relay, **seed, **home}
+
 
 
 async def _standalone_send(
@@ -2035,14 +1898,14 @@ async def _standalone_send(
     try:
         auth_tag = _resolve_auth_tag(extra)
     except ValueError as exc:
-        return {"error": f"Buzz standalone send: {exc}"}
+        return send_error(f"Buzz standalone send: {exc}")
     cli_path = _configured_cli_path(extra)
     if not relay or not private_key:
-        return {"error": "Buzz standalone send: BUZZ_RELAY_URL and BUZZ_PRIVATE_KEY must be configured"}
+        return send_error("Buzz standalone send: BUZZ_RELAY_URL and BUZZ_PRIVATE_KEY must be configured")
     if not cli_path:
-        return {"error": "Buzz standalone send: buzz CLI binary not found"}
+        return send_error("Buzz standalone send: buzz CLI binary not found")
     if not (target := (chat_id or "").strip() or _configured_home_channel(extra)):
-        return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
+        return send_error("Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)")
     args = ["messages", "send", "--channel", target, "--content", "-"]
     # Same reply_to_mode / reply_in_thread gate as the live adapter.
     if thread_id and _reply_to_mode(pconfig, extra) != "off":
@@ -2059,12 +1922,12 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except OSError as e:
-        return {"error": f"Buzz standalone send failed to launch CLI: {_bounded_cli_message(str(e))}"}
+        return send_error(f"Buzz standalone send failed to launch CLI: {_bounded_cli_message(str(e))}")
     if code != 0:
-        return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
+        return send_error(f"Buzz standalone send failed: {_cli_error_message(err, code)}")
     event_id, receipt_error = _parse_send_receipt(out)
     if receipt_error:
-        return {"error": f"Buzz standalone send failed: {receipt_error}"}
+        return send_error(f"Buzz standalone send failed: {receipt_error}")
     result = {"success": True, "message_id": event_id}
     if media_files:
         result["media_delivered"] = True
@@ -2076,15 +1939,14 @@ def interactive_setup() -> None:
     from hermes_cli.setup import (
         prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning, print_success,
     )
+    from hermes_cli.setup_platforms import declines_reconfigure
     def ask(label: str, env: str) -> str:
         return prompt(label, default=get_env_value(env) or "")
 
     print_header("Buzz")
     existing_relay = get_env_value("BUZZ_RELAY_URL")
-    if existing_relay:
-        print_info(f"Buzz: already configured (relay: {existing_relay})")
-        if not prompt_yes_no("Reconfigure Buzz?", False):
-            return
+    if declines_reconfigure("Buzz", "Reconfigure Buzz?", "BUZZ_RELAY_URL"):
+        return
     print_info("Connect Hermes to a Buzz community (Block's Nostr-based human+agent platform).")
     print_info("   Requires the buzz CLI binary and a Nostr key that is a community member.")
     print()

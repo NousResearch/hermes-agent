@@ -439,7 +439,7 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
+        if sibling_keys and self._is_user_authorized_for_source(source):
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
@@ -805,7 +805,11 @@ class GatewaySlashCommandsMixin(
             model, rt = None, {}
         if not rt.get("api_key"):
             return t("gateway.btw.no_provider")
-        main_runtime = {"model": model, **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+        main_runtime = {
+            "model": model,
+            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": session_entry.session_id,
+        }
         history_snapshot = list(history)
         # Prefer the cache-parity fork when a live cached AIAgent exists: it replays the snapshot
         # against the warm provider prefix cache, giving FULL context at cache-read prices. With no
@@ -950,8 +954,8 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply("Busy input mode could not be saved to config. Mode unchanged.")
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
-            from gateway.run import _load_gateway_runtime_config
-            self._snapshot_profile_busy_modes(profile_name, _load_gateway_runtime_config())
+            from gateway.run import _load_gateway_config
+            self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
         else:
             self._busy_input_mode = arg
             # busy_input_mode is also the source of truth for the text mode — re-derive it so the

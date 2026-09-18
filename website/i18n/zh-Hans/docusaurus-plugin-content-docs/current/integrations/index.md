@@ -76,7 +76,7 @@ Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用�
 ## 记忆与个性化
 
 - **[内置记忆](/user-guide/features/memory)** — 通过 `MEMORY.md` 和 `USER.md` 文件实现持久化、精选记忆。Agent 维护有界的个人笔记和用户画像数据存储，跨会话保留。
-- **[记忆提供商](/user-guide/features/memory-providers)** — 接入外部记忆后端以实现更深度的个性化。支持八个提供商：Honcho（辩证推理）、OpenViking（分层检索）、Mem0（云端提取）、Hindsight（知识图谱）、Holographic（本地 SQLite）、RetainDB（混合搜索）、ByteRover（基于 CLI）和 Supermemory。
+- **[记忆提供商](/user-guide/features/memory-providers)** — 接入外部记忆后端以实现更深度的个性化。支持九个提供商：Honcho（辩证推理）、OpenViking（分层检索）、Mem0（云端提取）、Hindsight（知识图谱）、Holographic（本地 SQLite）、RetainDB（混合搜索）、ByteRover（基于 CLI）、Supermemory、Memori，以及 PLUR（本地存储、本地检索、社区维护）。
 
 ## 消息平台
 

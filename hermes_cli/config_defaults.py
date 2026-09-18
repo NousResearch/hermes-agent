@@ -107,6 +107,12 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Codex no-event reconnect policy, read from config.yaml per request.
+        "codex": {
+            "ttfb_below_stale": True,
+            "ttfb_fast_reconnect_seconds": 40.0,
+            "ttfb_below_stale_margin_seconds": 10.0,
+        },
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

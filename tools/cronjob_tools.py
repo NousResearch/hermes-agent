@@ -610,6 +610,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
+            api_max_retries=a["api_max_retries"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -762,6 +763,8 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
     if a["reasoning_effort"] is not None:
         # CLI-only lane; update_job validates, empty string clears the pin.
         updates["reasoning_effort"] = a["reasoning_effort"]
+    if a["api_max_retries"] is not None:
+        updates["api_max_retries"] = a["api_max_retries"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -959,7 +962,8 @@ def cronjob(
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    api_max_retries: Optional[Union[int, str]] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1008,6 +1012,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
     "parameters": {
         "type": "object",
         "properties": {
+            "api_max_retries": {
+                "anyOf": [{"type": "integer", "minimum": 1}, {"type": "string", "enum": [""]}],
+                "description": "Per-job API attempt budget. Only raises agent.api_max_retries from config.yaml; lower values cannot reduce it. Empty string clears on update.",
+            },
             "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
@@ -1115,7 +1123,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "all")
+    "paused_reason", "all", "api_max_retries")
 
 
 def _cronjob_handler(args, **kw):

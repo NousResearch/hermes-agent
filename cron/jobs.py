@@ -1616,6 +1616,21 @@ def _normalize_failure_deliver(value: Any) -> Optional[str]:
     return _normalize_job_optional_text(value)
 
 
+def _normalize_api_max_retries(value: Any) -> Optional[int]:
+    """Positive attempt budget; None/empty clears the per-job override."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError("api_max_retries must be a positive integer")
+    try:
+        result = int(value)
+    except ValueError:
+        raise ValueError("api_max_retries must be a positive integer") from None
+    if result < 1:
+        raise ValueError("api_max_retries must be a positive integer")
+    return result
+
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Spelling-only validation via the shared parser (cron knob never stricter/looser than
     config.yaml); model capability is deliberately NOT checked (model unknowable at create time,
@@ -1657,6 +1672,7 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "api_max_retries": _normalize_api_max_retries,
 }
 
 
@@ -1770,6 +1786,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    api_max_retries: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1802,6 +1819,7 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_api_max_retries = _normalize_api_max_retries(api_max_retries)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
@@ -1865,6 +1883,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
+        ("api_max_retries", normalized_api_max_retries),
         ("failure_deliver", f["failure_deliver"]),
     ):
         if value is not None:

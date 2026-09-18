@@ -163,11 +163,19 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
     def _json(self, code: int, payload: dict):
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        for k, v in (("Content-Type", "application/json"), ("Content-Length", str(len(body)))):
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            for k, v in (("Content-Type", "application/json"), ("Content-Length", str(len(body)))):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Peer (A2A client) disconnected before we wrote the response — e.g. it timed out
+            # waiting on a slow upstream. There is nothing to send to, so drop the write instead
+            # of letting the handler thread raise: ``socketserver`` catches it, calls
+            # ``handle_error`` and prints a full traceback per occurrence, and the streaming
+            # paths above already swallow this same class of disconnect.
+            logger.debug("A2A http: client disconnected before response write (code=%s)", code)
 
     def _error(self, http_code: int, req_id: Any, code: int, message: str):
         self._json(http_code, _err(req_id, code, message))

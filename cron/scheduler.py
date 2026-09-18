@@ -3122,6 +3122,13 @@ def _wait_for_external_cron_worker_body(
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             if _is_terminal():
+                # The worker committed its terminal row and is exiting: reap
+                # it before returning so no zombie is left behind (#114509).
+                # Bounded so a worker that is still alive after terminalizing
+                # cannot hang the waiter; then return as before and leave the
+                # live child alone.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5.0)
                 return True
             continue
         # The worker can commit its terminal row and exit between the first

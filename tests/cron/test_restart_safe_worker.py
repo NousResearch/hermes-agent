@@ -877,3 +877,67 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_timeout_with_terminal_ledger_reaps_exiting_worker(monkeypatch):
+    """#114509: ``wait(timeout=1.0)`` can raise ``TimeoutExpired`` after the worker
+    committed its terminal row but before its process exited. Returning ``True``
+    without reaping leaves a zombie; the waiter must reap the child first."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+    )
+
+    calls = []
+
+    class ZombieRaceProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+            self.returncode = 0
+            return 0
+
+    process = ZombieRaceProcess()
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    # The exiting worker must be reaped: a second, bounded wait() call.
+    assert calls == [1.0, 5.0]
+    assert process.poll() == 0
+
+
+def test_timeout_with_terminal_ledger_leaves_live_worker_alone(monkeypatch):
+    """A worker that is still alive after terminalizing must not hang the
+    waiter: the bounded reap times out and the waiter returns ``True`` as
+    before, leaving the live child alone."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+    )
+
+    class LiveWorkerProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    process = LiveWorkerProcess()
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    assert process.poll() is None

@@ -380,6 +380,18 @@ def _scan_gateway_pids(
             wmic_path = shutil.which("wmic")
             used_fallback = False
             result = None
+            # Both wmic and powershell are console apps.  When the caller has no
+            # console of its own — the gateway runs under pythonw.exe — Windows
+            # allocates a *new* console and shows its window, so this scan pops a
+            # visible PowerShell window on the desktop for its whole duration.
+            # CREATE_NO_WINDOW suppresses the window while still letting
+            # capture_output=True collect stdout.
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                _hide_console = {"creationflags": windows_hide_flags()}
+            except Exception:
+                _hide_console = {}
             if wmic_path is not None:
                 try:
                     result = subprocess.run(
@@ -395,6 +407,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
+                        **_hide_console,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
@@ -420,6 +433,7 @@ def _scan_gateway_pids(
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,
+                        **_hide_console,
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []

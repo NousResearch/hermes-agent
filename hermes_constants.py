@@ -373,12 +373,21 @@ def agent_browser_runnable(path: str | None) -> bool:
         return False
     import subprocess
 
+    # Console apps (node.exe, browsers, …) spawned from a process that owns no
+    # console — the gateway runs under pythonw.exe — make Windows allocate a
+    # *new* console and SHOW its window, i.e. a visible pop-up on the user's
+    # desktop.  CREATE_NO_WINDOW keeps the probe invisible.  A zero value is
+    # harmless on POSIX (subprocess only rejects non-zero there).
+    _no_window = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    )
     try:
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
+            creationflags=_no_window,
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False

@@ -78,10 +78,22 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
+            # netstat/taskkill are console apps, and this runs inside the
+            # gateway which owns no console — Windows would allocate a *new*
+            # console and SHOW its window, so every bridge (re)start flashed
+            # two windows on the user's desktop.  CREATE_NO_WINDOW hides them
+            # while keeping capture_output=True working.
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+            except Exception:  # pragma: no cover - defensive
+                def windows_hide_flags() -> int:
+                    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+            _hidden = {"creationflags": windows_hide_flags()}
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, **_hidden,
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -91,7 +103,7 @@ def _kill_port_process(port: int) -> None:
                         try:
                             subprocess.run(
                                 ["taskkill", "/PID", parts[4], "/F"],
-                                capture_output=True, timeout=5,
+                                capture_output=True, timeout=5, **_hidden,
                             )
                         except subprocess.SubprocessError:
                             pass
@@ -210,12 +222,21 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
         cmd = ["taskkill", "/PID", str(proc.pid), "/T"]
         if force:
             cmd.append("/F")
+        # taskkill is a console app; spawned from the console-less gateway it
+        # would flash a visible console window on the user's desktop.
+        try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+        except Exception:  # pragma: no cover - defensive
+            def windows_hide_flags() -> int:
+                return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=10,
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError:
             if force:
@@ -589,6 +610,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
+            # node.exe is a console app: with the console-less gateway as its
+            # parent, Windows allocates a *new* console and SHOWs its window —
+            # so a black console sat on the desktop for the whole lifetime of
+            # the bridge, and reappeared on every restart.  CREATE_NO_WINDOW
+            # keeps it invisible; stdout/stderr already go to bridge_log_fh.
+            _bridge_kwargs = {}
+            if _IS_WINDOWS:
+                try:
+                    from hermes_cli._subprocess_compat import windows_hide_flags
+                except Exception:  # pragma: no cover - defensive
+                    def windows_hide_flags() -> int:
+                        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+                _bridge_kwargs["creationflags"] = windows_hide_flags()
+
             self._bridge_process = subprocess.Popen(
                 [
                     find_node_executable("node") or "node",
@@ -601,6 +637,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 stderr=bridge_log_fh,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
+                **_bridge_kwargs,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

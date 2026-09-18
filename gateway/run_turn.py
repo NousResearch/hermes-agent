@@ -413,8 +413,12 @@ class GatewayTurnMixin:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
             # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index).
-            switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
+            # awaits above are a window for /new or /resume to move the route; the CAS on the
+            # snapshot id lets that win instead of being clobbered by a stale binding.
+            switched = await self.async_session_store.switch_session(
+                session_key, bound_session_id, expected_session_id=session_entry.session_id,
+            )
             if switched is not None:
                 session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:

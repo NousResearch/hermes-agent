@@ -1184,7 +1184,10 @@ def _(rid, params: dict) -> dict:
 
 @_rpc("skills.reload", 5025)
 def _(rid, params: dict) -> dict:
-    result = _tools_mod("agent.skill_commands").reload_skills()
+    # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
+    # project skills as "Removed" and republishes a registry without them (#114359).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+        result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
     for label, items in (("Added skills:", added), ("Removed skills:", removed)):

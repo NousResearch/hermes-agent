@@ -7615,6 +7615,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
         "properties": {
           "text": {
             "anyOf": [
@@ -7627,6 +7628,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "title": "CompleteSlashParams",
@@ -28181,7 +28194,21 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
         "title": "SkillsReloadParams",
         "type": "object"
       },

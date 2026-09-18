@@ -3106,12 +3106,9 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
 
 
-def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cwd(tmp_path, monkeypatch):
-    # TUI/desktop: the RPC thread has no session context and the terminal scope / process env resolve a
-    # placeholder ``terminal.cwd`` to $HOME, so project skills of the session's repo never registered and
-    # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
-    # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
-    # keyed by project root, not just platform + home).
+def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a
+    launch shape whose process cwd and TERMINAL_CWD both point at a non-project dir."""
     import agent.skill_commands as skill_commands
     import agent.skill_utils as skill_utils
     import tools.skills_tool as skills_tool
@@ -3144,7 +3141,18 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     monkeypatch.setattr(server, "_sessions", {
         "sid-a": {"session_key": "key-a", "cwd": str(repo_a)},
         "sid-b": {"session_key": "key-b", "cwd": str(repo_b)}})
+    return repo_a, repo_b
 
+
+def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cwd(tmp_path, monkeypatch):
+    # TUI/desktop: the RPC thread has no session context and the terminal scope / process env resolve a
+    # placeholder ``terminal.cwd`` to $HOME, so project skills of the session's repo never registered and
+    # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
+    # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
+    # keyed by project root, not just platform + home).
+    import agent.skill_utils as skill_utils
+
+    _two_repo_project_skill_sessions(tmp_path, monkeypatch)
     for sid, own, other in (("sid-a", "alpha-skill", "beta-skill"), ("sid-b", "beta-skill", "alpha-skill")):
         catalog = server._methods["commands.catalog"]("c", {"session_id": sid})["result"]
         assert f"/{own}" in catalog["skills"] and f"/{other}" not in catalog["skills"]
@@ -3155,6 +3163,24 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
         assert miss["error"]["code"] == 4018
     # Nothing leaks past the RPC: the thread's logical cwd is unbound again.
     assert skill_utils.find_project_root() is None
+
+
+def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path, monkeypatch):
+    # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
+    # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills
+    # as "Removed" and republished a registry without them.
+    import agent.skill_commands as skill_commands
+
+    _two_repo_project_skill_sessions(tmp_path, monkeypatch)
+    items = server._methods["complete.slash"]("s", {"text": "/alph", "session_id": "sid-a"})["result"]["items"]
+    assert [i["text"] for i in items if i["kind"] == "skill"] == ["alpha-skill"]
+    assert server._methods["command.dispatch"]("d", {"name": "alpha-skill", "arg": "", "session_id": "sid-a"})[
+        "result"]["type"] == "skill"
+    reload = server._methods["skills.reload"]("r", {"session_id": "sid-a"})["result"]
+    assert reload["result"]["removed"] == [] and "/alpha-skill" in skill_commands._skill_commands, reload["output"]
+    # Another session's reload resolves ITS repo, not the launch env.
+    other = server._methods["skills.reload"]("r", {"session_id": "sid-b"})["result"]
+    assert {i["name"] for i in other["result"]["added"]} == {"beta-skill"}, other["output"]
 
 
 def test_history_to_messages_types_a_legacy_auto_continue_row():

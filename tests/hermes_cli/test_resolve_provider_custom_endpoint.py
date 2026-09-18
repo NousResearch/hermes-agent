@@ -48,6 +48,11 @@ def isolated_home(tmp_path, monkeypatch):
             "model:\n  default: openrouter/auto\n  provider: openrouter\n",
             id="provider-openrouter",
         ),
+        pytest.param(
+            "model:\n  default: openrouter/auto\n  provider: openrouter\n"
+            "  base_url: https://openrouter-mirror.example.com/api/v1\n",
+            id="provider-openrouter-mirror",
+        ),
     ],
 )
 def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block):
@@ -84,10 +89,11 @@ def test_configured_openrouter_pin_resolves_as_a_provider(isolated_home):
 
 def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_home):
     """The URL rung follows the runtime's own trust rule: a non-loopback ``base_url`` left behind
-    under another provider's pin is not custom intent (#14676), so a blank machine still reads
-    as unconfigured."""
+    under a bare (unpinned) provider is not custom intent (#14676), so a blank machine still reads
+    as unconfigured. (A ``provider: openrouter`` pin is excluded from this guard — a non-openrouter
+    ``base_url`` under it is a deliberate mirror/proxy, #10622/#109397.)"""
     (isolated_home / "config.yaml").write_text(
-        "model:\n  default: some/model\n  provider: openrouter\n  base_url: https://api.z.ai/v1\n",
+        "model:\n  default: some/model\n  base_url: https://api.z.ai/v1\n",
         encoding="utf-8",
     )
     from hermes_cli.auth import AuthError, resolve_provider

@@ -31,7 +31,6 @@ from urllib.parse import urlparse
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
-from utils import base_url_host_matches  # noqa: F401  (used by _config_model_provider openrouter pin)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -1322,12 +1321,12 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         # that absence). A config that pins ``model.provider: openrouter`` is explicit intent and
         # must read the same as a registry pin here, otherwise the boot inventory treats it as
         # "nothing configured" and the dashboard parks sessions on Setup Required (#109397).
-        # A non-openrouter ``base_url`` under the openrouter pin is contradictory config (leftover
-        # from another provider), not intent — mirror the stale-base_url guard below.
+        # A non-openrouter ``base_url`` under the openrouter pin is NOT contradictory: the runtime
+        # treats it as a deliberate mirror/proxy (runtime_provider_backends.py #10622, pinned by
+        # test_explicit_openrouter_honors_config_base_url_mirror), so carry that intent forward
+        # regardless of the mirror host.
         if provider == "openrouter":
-            if not base_url or base_url_host_matches(base_url, "openrouter.ai"):
-                return model_cfg, "openrouter"
-            return model_cfg, None
+            return model_cfg, "openrouter"
         if provider in PROVIDER_REGISTRY:
             return model_cfg, provider
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback

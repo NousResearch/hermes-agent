@@ -12,7 +12,7 @@ import pytest
 from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
 from tools.approval_context import reset_current_session_key, set_current_session_key
 from tools.approval_detection import HARDLINE_PATTERNS
-from tools import approval_context
+from tools import approval_context, approval_detection
 
 
 # -------------------------------------------------------------------------
@@ -132,6 +132,17 @@ _HARDLINE_BLOCK = [
     "{ poweroff; }",
     "true && (reboot)",
     "echo hi; { reboot; }",
+    # bare-name hardline commands sitting behind a wrapper option's OPERAND
+    # (`-u root`, `-Eu root`, `env -i`, or an unambiguous `--us` abbreviation)
+    # used to slip past: the flat _CMDPOS-anchored pattern only reaches a
+    # command word that is anchored ("\n"-preceded), and the operand-skip /
+    # option-skip branches in the two prefix walkers never set
+    # `prefix_consumed`, so no anchor was spliced in front of the bare
+    # command word that followed (egilewski, PR #82830 second report, B-1).
+    "sudo -u root rm -rf /etc",
+    "sudo -Eu root rm -rf /etc",
+    "env -i rm -rf /etc",
+    "sudo --us root rm -rf /etc",
 ]
 
 
@@ -200,6 +211,10 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # B-1 non-regression: a benign command behind a wrapper option's operand
+    # must still be allowed — the operand-skip anchor must not manufacture a
+    # false positive out of an ordinary command word.
+    "sudo -u root whoami",
 ]
 
 
@@ -741,6 +756,364 @@ def test_recoverable_dangerous_commands_still_pass_yolo(clean_session, monkeypat
         # And yolo bypasses the dangerous check
         result = check_dangerous_command(cmd, "local")
         assert result["approved"] is True, f"yolo should have bypassed {cmd!r}"
+
+
+# Absolute-path invocations must not defeat the floor. _CMDPOS only accepted
+# "start | separator | subshell opener | sudo/env-style wrappers" before the
+# command word, so spelling the binary by path — the natural form on systems
+# where PATH is unreliable, and the default an LLM produces for Windows
+# tools — returned (False, None) for every hardline pattern. Regression set
+# pins both directions: path-spelled commands at command position are
+# blocked, the same strings as data arguments stay allowed.
+_ABS_PATH_BLOCK = [
+    "/sbin/shutdown -h now",
+    "/usr/sbin/reboot",
+    "/sbin/halt",
+    "/sbin/init 6",
+    "/bin/rm -rf /",
+    "sudo /sbin/shutdown -h now",
+    "env LC_ALL=C /sbin/reboot",
+    "echo done; /sbin/shutdown -h now",
+    "true && /usr/sbin/poweroff",
+    r"C:\Windows\System32\shutdown.exe /s /t 0",
+    "C:/Windows/System32/shutdown.exe /s /t 0",
+    r'"C:\Program Files\Git\usr\bin\rm.exe" -rf /',
+    r"C:\Windows\System32\shutdown.EXE /s",
+    # path-spelled wrapper chains resolve in the single projection pass
+    "/usr/bin/sudo /sbin/shutdown -h now",
+    "/usr/bin/env /usr/bin/sudo /sbin/shutdown -h now",
+    "exec /sbin/reboot",
+    "( /sbin/shutdown -h now )",
+    "/sbin/telinit 6",
+    "./shutdown -h now",
+    "shutdown.exe /s",
+    # composed spellings reduce through the same collapsing as r\m detection
+    "'/sbin/'shutdown -h now",
+    "/sbin/shut\\down -h now",
+    # a payload's executable can be path-spelled too
+    "bash -c '/sbin/shutdown -h now'",
+    "exec bash -c '/bin/rm -rf /'",
+    # group/substitution closers stay outside the projected word
+    "(/sbin/reboot)",
+    "$(/sbin/reboot)",
+    "`/sbin/reboot`",
+    "{ /sbin/reboot; }",
+    "env -u FOO /sbin/reboot",
+    # leading redirections are POSIX prefix words, not the command (egilewski,
+    # PR #82830): the executable that follows must still reach the floor
+    "</dev/null /sbin/shutdown -h now",
+    "2>/dev/null /usr/sbin/reboot",
+    "< /dev/null /sbin/shutdown -h now",
+    "2>&1 /sbin/shutdown -h now",
+    "&>/dev/null /sbin/reboot",
+    "<<EOF /sbin/shutdown -h now",
+    "<<<word /sbin/reboot",
+    # prefix repetition must not exhaust the walk before the command word
+    "2>/dev/null </dev/null 1>/tmp/a 2>>/tmp/b <>/tmp/c >|/tmp/d /sbin/reboot",
+    # a redirection prefix in front of a bare-name command (main-era gap,
+    # closed here by the same normalization)
+    "</dev/null shutdown -h now",
+    "2>/dev/null reboot",
+    # an assignment prefix in front of a bare-name command (same gap)
+    "FOO=1 shutdown -h now",
+    # process substitution as a redirection operand still resumes at the cmd
+    "> >(cat) /sbin/shutdown -h now",
+    # gluing must not hide the command: no separator before the redirection
+    "shutdown&>out -h now",
+    # an escaped > is a literal, so & stays a background operator and the
+    # following command starts fresh and must block
+    "printf x \\>& shutdown -h now",
+    # a sudo option that takes an argument must not shift the command word
+    "sudo -D /tmp /sbin/shutdown -h now",
+    # >&file redirects both streams to a filename (not an fd), so the file is
+    # the operand and the command still follows (Grok round 1)
+    ">&/dev/null /sbin/shutdown -h now",
+    # a quoted ) inside a process substitution must not end the balance early
+    '> >(echo "x)y") /sbin/shutdown -h now',
+    # a digit run glued to non-digits after >&/2>& is a filename operand, not
+    # a bare fd number, so the whole token is consumed and the command follows
+    # (Grok round 2)
+    ">&2x /sbin/shutdown -h now",
+    "2>&1x /sbin/reboot",
+    # sudo/env wrapper options use their case-sensitive upstream grammars.
+    "sudo -E /sbin/shutdown",
+    "sudo -P /sbin/shutdown",
+    "sudo -H /sbin/shutdown",
+    "sudo -a type /sbin/shutdown",
+    "sudo -Eu root /sbin/shutdown",
+    "sudo -PC 5 /sbin/shutdown",
+    # getopt_long exact and unambiguous abbreviated required options own the
+    # following word, while an =-attached operand remains in the option token.
+    "sudo --use root /sbin/shutdown",
+    "sudo --chd /tmp /sbin/shutdown",
+    "sudo --chdir=/tmp /sbin/shutdown",
+    # Both command-word walkers must share the same bundle handling.
+    "sudo -P /sbin/shut\\down",
+    # Whitespace inside a redirection operand's command substitution must not
+    # terminate the operand scan before the following executable.
+    ">$(printf '%s' a) /sbin/shutdown",
+    # Every paren the shell treats as grouping balances the operand's
+    # substitution, so a nested process substitution cannot close it early and
+    # leave the executable outside the scanned range.
+    ">$(echo <(true) tail >/dev/null; printf /dev/null) /sbin/shutdown -h now",
+    ">$(echo >(cat) ; printf /dev/null) /sbin/shutdown",
+    ">$(echo <(true)) /sbin/shutdown",
+    ">$(printf /tmp/)$(printf %.0s <(true))out /sbin/reboot",
+    (
+        ">$(printf /tmp/out "
+        + "${x:-" * 8
+        + "z"
+        + "}" * 8
+        + " <(true)) /sbin/reboot"
+    ),
+    # Parens the shell does NOT treat as grouping must not count, or the scan
+    # runs past the real closer and swallows the command word behind it. The
+    # `#` in `$(true)#` is glued to the word and starts no comment.
+    "( > $(echo /tmp/f # (\n) shutdown -h now )",
+    "( > $(echo /tmp/f # (\n) rm -rf /etc )",
+    "( >$(echo $(true)#) /sbin/shutdown -h now\n)",
+    "> $(echo $((1 + (2))) ) /sbin/shutdown",
+    # Comment and Windows executable-word boundaries.
+    "> >(printf x # (\n) /sbin/shutdown -h now",
+    r"%SystemRoot%\System32\shutdown.exe /s",
+    r"& 'C:\Windows\System32\shutdown.exe' /s",
+]
+
+_ABS_PATH_ALLOW = [
+    # A paren inside a parameter expansion is literal text, so counting it
+    # would end the operand early and block an ordinary command.
+    "> $(echo ${d:-(}) cat /etc/hosts",
+    "echo /sbin/shutdown",
+    "ls -la /sbin/shutdown",
+    "grep 'shutdown' /var/log/syslog",
+    "stat /usr/sbin/reboot",
+    r"stat C:\Windows\System32\shutdown.exe",
+    "cat /bin/rm",
+    'echo "/sbin/init 6"',
+    "md5sum /sbin/halt",
+    # basename must match the pattern word exactly, not a near-miss
+    "/usr/local/bin/rebooter --dry-run",
+    "./deploy.sh shutdown",
+    "cat /etc/init.d/reboot",
+    # a bare assignment prefix is data — projecting its value manufactured
+    # a False->True flip in the first cut of this fix
+    "X=/sbin/shutdown echo ok",
+    # a wrapper option's operand is data, not the command word
+    "env --chdir /tmp/reboot /bin/echo ok",
+    "env --chdir /tmp/reboot echo ok",
+    "env --argv0 /tmp/reboot /bin/echo ok",
+    # GNU env accepts the unambiguous --argv0 abbreviation and still treats
+    # its following word as data.
+    "env --arg /tmp/x /bin/echo ok",
+    # Ambiguous sudo long options make sudo exit before executing a command.
+    # The projection must not invent an operand skip for them.
+    "sudo --pre root /sbin/shutdown",
+    # `}` is not a shell metacharacter: it can end a legitimate word
+    "/tmp/reboot}",
+    # benign leading redirections in front of a benign command stay allowed
+    ">out.txt make build",
+    "2>/dev/null ls /tmp",
+    "< /dev/null cat file",
+    # process substitution feeding a benign command is not the floor's concern
+    "diff <(sort a) <(sort b)",
+    # `env -C dir cmd` operand is data; the benign command is not blocked
+    "env -C /tmp /bin/ls",
+    # background operator between two benign commands keeps its meaning
+    "echo hi & echo bye",
+    # A nested process substitution keeps path-looking argument data inside.
+    ">$(echo <(true) /sbin/reboot) cat /etc/hosts",
+    ">$(printf /tmp/)$(printf %.0s <(true) /sbin/reboot)out cat /etc/hosts",
+    (
+        ">$(printf /tmp/out "
+        + "${x:-" * 32
+        + "z"
+        + "}" * 32
+        + " <(true) /sbin/reboot) cat /etc/hosts"
+    ),
+]
+
+# Unsupported heredoc and over-depth operands remain intentionally unprojected.
+_KNOWN_UNPROJECTED_SPELLINGS = [
+    "( > $(cat <<'E'\n(\nE\n) shutdown -h now )",
+    (
+        ">$(printf /tmp/out "
+        + "${x:-" * 40
+        + "z"
+        + "}" * 40
+        + " <(true)) /sbin/reboot"
+    ),
+]
+
+
+@pytest.mark.parametrize("command", _KNOWN_UNPROJECTED_SPELLINGS)
+def test_known_unprojected_spellings_stay_unprojected(command):
+    assert detect_hardline_command(command) == (False, None)
+    assert list(approval_detection._hardline_projected_variants(command)) == []
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_BLOCK)
+def test_abs_path_invocation_is_hardline_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"absolute-path spelling bypassed the floor: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_ALLOW)
+def test_abs_path_as_data_is_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"path-as-data false positive: {command!r} (got: {desc})"
+
+
+def test_abs_path_hardline_not_bypassed_by_yolo(clean_session, monkeypatch):
+    """The floor must hold for path-spelled commands under yolo too."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards("/sbin/shutdown -h now", "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_description"),
+    [
+        ("/bin/rm -rf /", "recursive delete of root filesystem"),
+        ("/bin/rm -rf /etc", "recursive delete of system directory"),
+        ("/bin/rm -rf ~", "recursive delete of home directory"),
+        ("/sbin/mkfs.ext4 /dev/sda1", "format filesystem (mkfs)"),
+        ("/usr/bin/mkfs /dev/sdb", "format filesystem (mkfs)"),
+        ("/bin/dd if=/dev/zero of=/dev/sda", "dd to raw block device"),
+        ("/bin/kill -9 -1", "kill all processes"),
+        ("/sbin/shutdown -h now", "system shutdown/reboot"),
+        ("/sbin/reboot", "system shutdown/reboot"),
+        ("/sbin/halt", "system shutdown/reboot"),
+        ("/sbin/poweroff", "system shutdown/reboot"),
+        ("/sbin/init 6", "init 0/6 (shutdown/reboot)"),
+        ("/bin/systemctl poweroff", "systemctl poweroff/reboot"),
+        ("/sbin/telinit 6", "telinit 0/6 (shutdown/reboot)"),
+    ],
+)
+def test_hardline_projection_name_gate(command, expected_description):
+    assert detect_hardline_command(command) == (True, expected_description)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_verdict"),
+    [
+        (">$(echo <(true) /sbin/reboot)", "ok"),
+        ("> >(printf x # (\n) /sbin/shutdown -h now", "ok"),
+        (">$(printf %s ${x:-${y:-/tmp/}(}) /sbin/reboot", "ok"),
+        ("( > $(cat <<'E'\n(\nE\n) shutdown -h now )", "undecidable"),
+        (">$(echo foo /sbin/shutdown", "unterminated"),
+    ],
+)
+def test_redirection_operand_parser_verdicts(command, expected_verdict):
+    operand_start = min(
+        command.find(prefix)
+        for prefix in ("$(", "<(", ">(")
+        if command.find(prefix) >= 0
+    )
+    end, verdict = approval_detection._scan_redirection_operand_end(
+        command, operand_start
+    )
+    assert verdict == expected_verdict
+    assert (end is not None) is (expected_verdict == "ok")
+
+    if expected_verdict == "undecidable":
+        assert detect_hardline_command(command) == (False, None)
+        assert list(
+            approval_detection._hardline_projected_variants(command)
+        ) == []
+    elif expected_verdict == "unterminated":
+        assert detect_hardline_command(command) == (False, None)
+        assert list(
+            approval_detection._hardline_projected_variants(command)
+        ) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ">$(printf /tmp)/out /sbin/reboot",
+        ">$(printf %s ${x:-${y:-/tmp/}(}) /sbin/reboot",
+        "env --split /sbin/reboot",
+        "env -iS /sbin/reboot",
+        "env --split-string=/sbin/reboot",
+        "env -S/sbin/reboot",
+        "env --split-string /sbin/reboot",
+        "env -S /sbin/reboot",
+    ],
+)
+def test_redirection_suffix_and_env_split_forms_reach_hardline(command):
+    assert detect_hardline_command(command)[0] is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ">$(printf /tmp)/reboot cat /etc/hosts",
+        "env -Si /sbin/reboot",
+    ],
+)
+def test_redirection_suffix_and_split_operand_data_stay_allowed(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
+def test_redirection_suffix_data_stays_out_of_deny_projection():
+    command = ">$(printf /tmp)/reboot cat /etc/hosts"
+    deny_variants = list(approval_detection._deny_command_variants(command))
+    assert "/reboot cat /etc/hosts" not in deny_variants
+    assert "reboot cat /etc/hosts" not in deny_variants
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ">$(printf /tmp)/out /sbin/reboot",
+        ">$(printf %s ${x:-${y:-/tmp/}(}) /sbin/reboot",
+        "env --split /sbin/reboot",
+        "env -iS /sbin/reboot",
+    ],
+)
+def test_redirection_and_split_commands_reach_deny_projection(command):
+    deny_variants = list(approval_detection._deny_command_variants(command))
+    assert "/sbin/reboot" in deny_variants
+    assert "reboot" in deny_variants
+
+
+def test_nested_process_substitution_data_stays_out_of_both_projections():
+    command = ">$(echo <(true) /sbin/reboot) cat /etc/hosts"
+    assert detect_hardline_command(command) == (False, None)
+
+    deny_variants = list(approval_detection._deny_command_variants(command))
+    assert "/sbin/reboot" not in deny_variants
+    assert "reboot" not in deny_variants
+
+
+def test_comment_closed_process_substitution_reaches_both_projections():
+    command = "> >(printf x # (\n) /sbin/shutdown -h now"
+    assert detect_hardline_command(command)[0] is True
+
+    deny_variants = list(approval_detection._deny_command_variants(command))
+    assert "/sbin/shutdown -h now" in deny_variants
+    assert "shutdown -h now" in deny_variants
+
+
+def test_parser_limit_precedes_hardline_projection(monkeypatch):
+    def unexpected_projection(_command):
+        raise AssertionError("hardline projection ran after parser-limit block")
+
+    monkeypatch.setattr(
+        approval_detection,
+        "_hardline_projected_variants",
+        unexpected_projection,
+    )
+    command = (
+        "/sbin/reboot "
+        + "x" * approval_detection._MAX_SEPARATOR_FREE_COMMAND_CHARS
+    )
+    assert detect_hardline_command(command) == (
+        True,
+        approval_detection._PARSER_LIMIT_DESCRIPTION,
+    )
 
 
 def test_hardline_list_is_small():

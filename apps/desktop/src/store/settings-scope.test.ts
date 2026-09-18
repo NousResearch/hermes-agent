@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileInfo } from '@/types/hermes'
+
 // Keep store/profile's side-effecting imports inert — same seam as
 // store/profile.test.ts.
 vi.mock('@/store/gateway', () => ({
@@ -16,14 +18,20 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
-const { $activeGatewayProfile } = await import('./profile')
+const { $activeGatewayProfile, $profiles } = await import('./profile')
 
-const { $settingsRequestProfile, $settingsScopeOverride, $settingsScopeProfile, setSettingsScope } =
-  await import('./settings-scope')
+const {
+  $settingsRequestProfile,
+  $settingsScopeEditsNonDefault,
+  $settingsScopeOverride,
+  $settingsScopeProfile,
+  setSettingsScope
+} = await import('./settings-scope')
 
 beforeEach(() => {
   $activeGatewayProfile.set('default')
   $settingsScopeOverride.set(null)
+  $profiles.set([])
 })
 
 describe('settings scope store', () => {
@@ -70,6 +78,35 @@ describe('settings scope store', () => {
 
     setSettingsScope('default')
     expect($settingsRequestProfile.get()).toBeUndefined()
+  })
+
+  it('flags a non-default edit target whether it comes from the active profile or an override', () => {
+    const roster = [
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'scout' }
+    ] as unknown as ProfileInfo[]
+
+    $profiles.set(roster)
+
+    // Following the active DEFAULT profile → editing the default.
+    expect($settingsScopeEditsNonDefault.get()).toBe(false)
+
+    // A Bot Mode chat made the bot the active profile; no override is set,
+    // yet the settings pages now edit profiles/scout/config.yaml.
+    $activeGatewayProfile.set('scout')
+    expect($settingsScopeEditsNonDefault.get()).toBe(true)
+
+    // Explicit override back onto the default → editing the default again.
+    setSettingsScope('default')
+    expect($settingsScopeEditsNonDefault.get()).toBe(false)
+  })
+
+  it('treats an unloaded roster as "default = the root profile", so an unknown default fails loud', () => {
+    $activeGatewayProfile.set('scout')
+    expect($settingsScopeEditsNonDefault.get()).toBe(true)
+
+    $activeGatewayProfile.set('default')
+    expect($settingsScopeEditsNonDefault.get()).toBe(false)
   })
 
   it('drops the override on an app-wide profile switch', () => {

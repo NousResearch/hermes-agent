@@ -51,6 +51,21 @@ def test_result_auth_reasons_map_to_auth_layer():
     assert surface["retryable"] is False
 
 
+def test_auth_surface_names_oauth_vs_api_key_recovery():
+    """The desktop's one-click fix differs by credential kind: an OAuth provider
+    (Accounts tab) needs a re-login, an API-key provider a new key. The descriptor
+    carries the kind + display label so the client never guesses from the slug."""
+    oauth = build_error_surface_from_result(_failed_result("auth"), provider="nous")
+    assert oauth["auth_kind"] == "oauth"
+    assert oauth["provider_label"] == "Nous Portal"
+
+    key = build_error_surface_from_result(_failed_result("auth"), provider="openrouter")
+    assert key["auth_kind"] == "api_key"
+
+    # Non-auth layers never carry the field (clients gate the button on it).
+    assert "auth_kind" not in build_error_surface_from_result(_failed_result("rate_limit"), provider="nous")
+
+
 def test_result_billing_block_wins():
     surface = build_error_surface_from_result(
         _failed_result("rate_limit", billing_block={"provider": "nous"})
@@ -214,3 +229,32 @@ def test_exception_never_raises_on_weird_input():
 
     # Must not raise, whatever it returns.
     build_error_surface_from_exception(Hostile("x"))
+
+
+# ── Nous free tier ────────────────────────────────────────────────────────
+
+
+def test_free_tier_block_gets_its_own_code_and_carries_the_sentence():
+    """A free-tier refusal is never an OAuth re-login: its own ``free_tier_<kind>`` code on the
+    provider layer, with the chat sentence riding along as the card body."""
+    result = _failed_result("auth_permanent", error="HTTP 403: no permissions",
+                            free_tier={"kind": "disabled", "message": "Using Hermes without signing in is switched off."})
+    surface = build_error_surface_from_result(result, provider="nous", model="nous/welcome")
+    assert surface["layer"] == LAYER_PROVIDER and surface["code"] == "free_tier_disabled"
+    assert surface["retryable"] is False and "auth_kind" not in surface
+    assert surface["message"] == "Using Hermes without signing in is switched off."
+
+
+@pytest.mark.parametrize("kind,retryable", [
+    ("rate_limited", True), ("at_capacity", True), ("outage", True),
+    ("disabled", False), ("model_not_free", False), ("route", False), ("refused", False),
+])
+def test_free_tier_kinds_say_whether_a_later_send_can_succeed(kind, retryable):
+    surface = build_error_surface_from_result(_failed_result("rate_limit", free_tier={"kind": kind}), provider="nous")
+    assert surface["code"] == f"free_tier_{kind}" and surface["retryable"] is retryable
+    assert "message" not in surface
+
+
+def test_a_free_tier_block_without_a_kind_is_ignored():
+    surface = build_error_surface_from_result(_failed_result("auth_permanent", free_tier={}), provider="nous")
+    assert surface["code"] == "auth_permanent" and surface["layer"] == LAYER_AUTH

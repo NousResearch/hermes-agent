@@ -7,6 +7,8 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import itertools
+import logging
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -210,6 +212,21 @@ class TestRunTurn:
         assert r.turn_id == "turn-fake-001"
 
 
+
+    def test_result_records_the_exact_submitted_input(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        rich_input = [
+            {"type": "text", "text": "caption"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        result = make_session(client).run_turn(rich_input, turn_timeout=2.0)
+        _, params = next(request for request in client.requests if request[0] == "turn/start")
+        assert result.submitted_user_text == params["input"][0]["text"]
+        assert result.submitted_user_text != rich_input
 
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
@@ -693,8 +710,8 @@ class TestApprovalPromptEnrichment:
 class TestSessionRetirement:
     """Mirrors openclaw beta.8's resilience fixes:
       - retire timed-out app-server clients (should_retire on deadline)
-      - post-tool completion watchdog (don't burn the full deadline after a
-        tool result if codex goes silent)
+      - post-tool silence is a warning, never a retirement: only a dead
+        subprocess or the turn deadline retires (#112928)
       - <turn_aborted> raw marker as terminal (don't wait for turn/completed
         that never comes)
       - OAuth refresh failure classification (suggest `codex login` instead
@@ -732,7 +749,11 @@ class TestSessionRetirement:
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
 
-    def test_post_tool_watchdog_uses_monotonic_clock(self):
+    def test_post_tool_silence_warns_but_does_not_retire_a_healthy_turn(self, caplog):
+        """#112928: codex can reason for minutes after a large tool result without
+        emitting a single wire event while the process stays alive. Silence past
+        the quiet threshold must only warn; a later turn/completed ends the turn
+        normally with no turn/interrupt and no retirement."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
@@ -744,9 +765,15 @@ class TestSessionRetirement:
             },
             threadId="t", turnId="tu1",
         )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
         s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
-        with patch.object(
+        # Clock: deadline arm, tool item at 999.0, then every later poll sits
+        # well past the 0.15s quiet threshold until turn/completed is drained.
+        monotonic_values = itertools.chain([1000.0, 999.0, 999.0, 999.0], itertools.repeat(1000.2))
+        with caplog.at_level(logging.WARNING, logger=session_mod.logger.name), patch.object(
             session_mod.time,
             "monotonic",
             side_effect=lambda: next(monotonic_values),
@@ -757,13 +784,16 @@ class TestSessionRetirement:
                 notification_poll_timeout=0.0,
                 post_tool_quiet_timeout=0.15,
             )
-        assert r.interrupted is True
-        assert r.should_retire is True
-        assert r.error and "silent" in r.error
+        assert r.interrupted is False
+        assert r.should_retire is False
+        assert r.error is None
+        assert r.tool_iterations == 1
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+        assert any("no events for" in rec.getMessage() for rec in caplog.records)
 
-    def test_post_tool_watchdog_resets_on_further_activity(self):
-        """A tool completion followed by an agent message should NOT trip
-        the watchdog — further activity = codex still alive."""
+    def test_post_tool_activity_clears_the_quiet_timer_and_never_retires(self):
+        """A tool completion followed by an agent message completes normally: further activity clears
+        the post-tool quiet timer, and even when it expires it only warns, never retires."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
@@ -775,7 +805,7 @@ class TestSessionRetirement:
             },
             threadId="t", turnId="tu1",
         )
-        # Non-tool activity immediately after — resets watchdog.
+        # Non-tool activity immediately after — clears the quiet timer.
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "tool finished"},
@@ -791,7 +821,7 @@ class TestSessionRetirement:
             notification_poll_timeout=0.01,
             post_tool_quiet_timeout=0.05,
         )
-        # Tool ran, then text reset the watchdog, then turn/completed.
+        # Tool ran, then text cleared the quiet timer, then turn/completed.
         # Should NOT be a retirement case.
         assert r.tool_iterations == 1
         assert r.final_text == "tool finished"

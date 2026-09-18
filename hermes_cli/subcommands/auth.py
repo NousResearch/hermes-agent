@@ -16,6 +16,10 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "--type", dest="auth_type", choices=["oauth", "api-key", "api_key"],
         help="Credential type to add")
     auth_add.add_argument("--label", help="Optional display label")
+    auth_add.add_argument(
+        "--priority", type=int,
+        help="Place the new credential at this priority (0 = tried first under fill_first); "
+             "appends last when omitted")
     auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
     auth_add.add_argument("--portal-url", help="Nous portal base URL")
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
@@ -34,13 +38,32 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_remove.add_argument("provider", help="Provider id")
     auth_remove.add_argument("target", help="Credential index, entry id, or exact label")
     auth_reset = auth_subparsers.add_parser(
-        "reset", help="Clear exhaustion status for all credentials for a provider")
+        "reset", help="Clear exhaustion status for a provider's credentials (all, or one target)")
     auth_reset.add_argument("provider", help="Provider id")
+    auth_reset.add_argument(
+        "target", nargs="?",
+        help="Optional credential index, entry id, or exact label; clears every credential when omitted")
+    auth_priority = auth_subparsers.add_parser(
+        "priority", help="Move a pooled credential to a priority (0 = tried first under fill_first)")
+    auth_priority.add_argument("provider", help="Provider id")
+    auth_priority.add_argument("target", help="Credential index, entry id, or exact label")
+    auth_priority.add_argument("priority", type=int, help="New priority; others are renumbered")
+    auth_refresh = auth_subparsers.add_parser(
+        "refresh", help="Refresh a pooled OAuth credential's tokens and clear its cooldown")
+    auth_refresh.add_argument("provider", help="Provider id")
+    auth_refresh.add_argument(
+        "target", nargs="?",
+        help="Credential index, entry id, or exact label (required when the pool holds more than one)")
     auth_status = auth_subparsers.add_parser("status", help="Show auth status for a provider")
     auth_status.add_argument("provider", help="Provider id")
     auth_logout = auth_subparsers.add_parser(
         "logout", help="Log out a provider and clear stored auth state")
     auth_logout.add_argument("provider", help="Provider id")
+    auth_upgrade = auth_subparsers.add_parser(
+        "upgrade", help="Sign in with a Nous account, keeping your connectors")
+    auth_upgrade.add_argument(
+        "--no-browser", action="store_true", help="Do not auto-open a browser for sign-in")
+    auth_upgrade.add_argument("--timeout", type=float, help="Network timeout in seconds")
     auth_spotify = auth_subparsers.add_parser(
         "spotify", help="Authenticate Hermes with Spotify via PKCE")
     auth_spotify.add_argument(

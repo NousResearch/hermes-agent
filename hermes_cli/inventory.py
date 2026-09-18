@@ -291,8 +291,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
             if get_model_capabilities is not None and slug:
                 try:
                     meta = get_model_capabilities(slug, model)
-                    if meta is not None:
-                        reasoning = bool(meta.supports_reasoning)
+                    if meta is not None and meta.supports_reasoning is not None:
+                        reasoning = meta.supports_reasoning
                 except Exception:
                     reasoning = True
 
@@ -407,7 +407,7 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
@@ -419,16 +419,19 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
+            saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
             auth_type, key_env = _provider_auth_hint(entry.slug)
+            tail = (
+                "Astra requires successful account-scoped model discovery."
+                if cur_model and not saved_model else "Showing the saved model only."
+            )
             warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
-                "Showing the saved model only."
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. {tail}"
                 if auth_type == "api_key" and key_env
-                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
-                "Showing the saved model only."
+                else f"Configured provider is not authenticated; run `hermes model` to reactivate. {tail}"
             )
             extras.append(_canonical_row(
-                entry, cur, models=[cur_model] if cur_model else [], total_models=1 if cur_model else 0,
+                entry, cur, models=[saved_model] if saved_model else [], total_models=1 if saved_model else 0,
                 source="configured-current", authenticated=False, auth_type=auth_type, key_env=key_env,
                 warning=warning,
             ))
@@ -483,10 +486,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            _provider_is_keyless(slug)  # zero-setup providers need no configuration at all
             # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
             # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            or (slug == "anthropic" and _anthropic_oauth_credentials_present())
+            (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )
@@ -502,16 +504,6 @@ def _external_process_signed_in(slug: str) -> bool:
         pconfig = PROVIDER_REGISTRY.get(slug)
         return bool(pconfig and pconfig.auth_type == "external_process"
                     and get_external_process_provider_status(slug).get("auth_verified"))
-    except Exception:
-        return False
-
-
-def _provider_is_keyless(slug: str) -> bool:
-    """True when the provider's Hermes overlay declares it keyless."""
-    try:
-        from hermes_cli.providers import HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS.get(slug)
-        return bool(overlay is not None and getattr(overlay, "keyless", False))
     except Exception:
         return False
 
@@ -592,6 +584,10 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         slug = str(row.get("slug", "")).lower()
         models = row.get("models") or []
         if not models:
+            continue
+        if row.get("free_tier_row"):
+            # The free tier's one model has no Portal pricing and no entitlement to read: pricing
+            # it would lock the only row a free-tier install can select.
             continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
@@ -737,6 +733,6 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
         return _row(
             "moa", "Mixture of Agents", (current_provider or "").lower() == "moa", models=models,
             total_models=len(models), source="virtual", authenticated=True, auth_type="virtual",
-            warning="Aggregator acts as the selected model; references provide analysis before each call.")
+            warning="Aggregator is the acting model billed for the run; references only advise once per user turn by default.")
     except Exception:
         return None

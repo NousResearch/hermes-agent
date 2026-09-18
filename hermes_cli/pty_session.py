@@ -71,11 +71,15 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            ws = self._ws
             try:
-                if self._ws is not None:
-                    await self._ws.send_bytes(chunk)
+                if ws is not None:
+                    await ws.send_bytes(chunk)
             except Exception:
-                pass                                 # detached mid-send; keep buffering
+                # The viewer is gone; nothing else observes this failure (the handler's finally
+                # only runs once ws.receive() sees the disconnect). detach() is a no-op when a
+                # replacement socket attached during the send, so the new viewer keeps its session.
+                self.detach(ws)
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
@@ -108,7 +112,13 @@ class PtySession:
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
+            try:
+                await ws.send_bytes(snap)
+            except Exception:
+                # Client dropped mid-replay; the caller never reaches its writer loop, so undo the
+                # attach here or reap_idle() can never reclaim this PTY (#110849).
+                self.detach(ws)
+                return False
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)
         return True
@@ -140,7 +150,10 @@ class PtySession:
 
 
 class RegistryFull(Exception):
-    pass
+    """Every keep-alive slot holds a PTY that some tab is still attached to."""
+
+    def __init__(self, message: str = "Too many chat terminals are open in other tabs; close one and try again.") -> None:
+        super().__init__(message)
 
 
 async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
@@ -191,7 +204,12 @@ class PtySessionRegistry:
             if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
         ]
         for key in doomed:
-            await self._sessions.pop(key).close()
+            # Reaps overlap (attach_or_spawn and the background reaper) and close()
+            # awaits, so a concurrent reap can have popped this key already — skip
+            # it instead of raising KeyError into the websocket handler.
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()
 
     def _reap_one_idle_or_raise(self) -> None:
         idle = [s for s in self._sessions.values() if not s.attached and s.last_detached_at is not None]
@@ -203,4 +221,8 @@ class PtySessionRegistry:
 
     async def close_all(self) -> None:
         for key in list(self._sessions):
-            await self._sessions.pop(key).close()
+            # Same overlap window as reap_idle: an in-flight reap may have popped
+            # a snapshot key while we awaited an earlier close().
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()

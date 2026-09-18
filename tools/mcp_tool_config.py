@@ -15,31 +15,48 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
-_mcp_stderr_log_fh: Optional[Any] = None
+_mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, opened once per process. Must expose a
-    real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    global _mcp_stderr_log_fh
+    """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
+    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
+    expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
+    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
+    home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
-        if _mcp_stderr_log_fh is None:
+        fh = _mcp_stderr_log_fh.get(home_key)
+        if fh is None or fh.closed:
             try:
-                from hermes_constants import get_hermes_home
                 log_dir = get_hermes_home() / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
+                mkdir_under_hermes_home(log_dir)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
-                _mcp_stderr_log_fh = fh
             except Exception as exc:  # pragma: no cover — best-effort fallback
                 logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
                 try:
-                    _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
+                    fh = open(os.devnull, "w", encoding="utf-8")
                 except Exception:
-                    _mcp_stderr_log_fh = sys.stderr
-        return _mcp_stderr_log_fh
+                    fh = sys.stderr
+            _mcp_stderr_log_fh[home_key] = fh
+        return fh
+
+
+def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
+    """Release cached parent handles after the selected MCP transports have stopped."""
+    with _mcp_stderr_log_lock:
+        keys = list(_mcp_stderr_log_fh) if scope is None else [scope]
+        for key in keys:
+            fh = _mcp_stderr_log_fh.pop(key, None)
+            # The last-resort fallback is borrowed, not owned by MCP.
+            if fh is None or fh is sys.stderr or fh is sys.__stderr__:
+                continue
+            try:
+                fh.close()
+            except OSError:
+                logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -95,17 +112,25 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
-    try:
-        from hermes_cli.env_loader import get_secret_source
-    except Exception:  # pragma: no cover — early bootstrap/import fallback
-        get_secret_source = None
+    from agent.secret_scope import get_secret
+    from hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
-        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
-        or key.startswith("XDG_") or (get_secret_source is not None and get_secret_source(key))}
+        if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
+    # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
+    # holds only the LAUNCH profile's values, so the value must come from the active profile's
+    # secret scope; a profile that lacks the name gets nothing, never another profile's token.
+    for key in secret_source_names():
+        value = get_secret(key)
+        if value is not None:
+            env[key] = value
+    for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
+        if key in os.environ:
+            env[key] = os.environ[key]
     if user_env:
         env.update(user_env)
-    return env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):
@@ -124,14 +149,19 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
             os.environ["PATHEXT"] = saved
 
 
-def _node_fallback(command: str) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists."""
+def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+
+    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
+    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
+    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
+    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
     home = os.path.expanduser("~")
-    hermes_home = os.path.expanduser(os.getenv("HERMES_HOME", os.path.join(home, ".hermes")))
     # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
     # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    candidates = (os.path.join(hermes_home, "node", "bin", command), os.path.join(home, ".local", "bin", command),
-                  os.path.join(os.sep, "usr", "local", "bin", command))
+    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
+                   os.path.join(os.sep, "usr", "local", "bin")]
+    candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 
 

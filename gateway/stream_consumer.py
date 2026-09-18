@@ -131,6 +131,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
         # Returns False after /new or /stop; run() then abandons the stream.
         self._run_still_current = run_still_current or (lambda: True)
+        # Whether this consumer is fed the final reply's stream deltas. A consumer built only to
+        # relay interim commentary (text streaming off, ``display.interim_assistant_messages`` on)
+        # never receives the final's deltas, so the duplicate-risk diagnostic in
+        # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
+        # other construction site (incl. the proxy path) creates consumers only when streaming is on.
+        self.stream_deltas_enabled = True
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
@@ -164,6 +170,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
         self._draft_failures = 0
+        # TERMINAL authorization refusal for THIS RUN (see _send_draft_frame).
+        # Per-run state, constructed fresh each turn, so a refusal can never
+        # mute a healthy destination on a later turn.
+        self._egress_declined = False
         self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min

@@ -68,7 +68,14 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   useEffect(() => {
     let cancelled = false
 
+    // Everything keyed by var name is dropped together with the reload: the
+    // cached `vars`, plus any in-flight edit or revealed value. Those maps are
+    // keyed by name alone, so leaving a draft behind after the target profile
+    // changed left its Save button live — writing the value into the profile
+    // now being targeted instead of the one it was typed for.
     setVars(null)
+    setEdits({})
+    setRevealed({})
 
     void (async () => {
       try {

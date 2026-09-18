@@ -91,9 +91,20 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 (output_dir / source_job_id).glob("*.md"), key=lambda f: f.stat().st_mtime,
                 reverse=True,
             )
-            if not output_files:
-                continue  # silent skip — no output yet
-            latest_output = output_files[0].read_text(encoding="utf-8").strip()
+            latest_output = ""
+            for output_file in output_files:
+                candidate = output_file.read_text(encoding="utf-8").strip()
+                # Only the run header describes suppression; script/agent payloads can
+                # quote these markers. Keep error documents useful for recovery context.
+                header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]
+                silent_audit = candidate.startswith("# Cron Job:") and any(
+                    line.startswith(("**Status:** no_change", "**Status:** silent",
+                                     "Script gate returned `wakeAgent=false`"))
+                    for line in header.splitlines()
+                )
+                if candidate and not silent_audit:
+                    latest_output = candidate
+                    break
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (
                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
@@ -119,6 +130,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_commands import _inject_skill_config
     from agent.skill_utils import normalize_skill_lookup_name
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
@@ -165,6 +177,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
             "",
             str(loaded.get("content") or "").strip()])
+        _inject_skill_config(loaded, parts)
 
     if skipped:
         parts.insert(0, (
@@ -184,17 +197,30 @@ _CRON_HINT = (
     "final response and the system handles the rest. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+    "[SILENT] is a literal ASCII control token — never translate or "
+    "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
-    "findings normally, or say [SILENT] and nothing more.]\n\n"
+    "findings normally, or say [SILENT] and nothing more. "
+    "FAILURE: If a delegated child fails and this cron run must be "
+    "recorded as failed, put [CRON_FAILURE] on the first line by itself, "
+    "then explain the child failure on following lines. "
+    "RECURSION: This is a run of an EXISTING scheduled job — execute "
+    "the task now. NEVER create or update a cron job because of "
+    "recurring or future-schedule language in the task prompt below; "
+    "treat phrasing like \"each Monday\" or \"every day at 9\" as "
+    "context for this run, not as a request to schedule another job.]\n\n"
 )
 
 
 def _build_job_prompt(
-    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None) -> str:
+    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None,
+) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
-    check) — skips re-execution. ``extra_prompt``: per-run ``## Run Context`` for this fire only,
-    never persisted to the job.
+    check) — skips re-execution. ``extra_prompt``: user-authored per-run ``## Run Context`` for this
+    fire only, never persisted to the job. ``runtime_data_prompt`` is operator-configured runtime
+    data (such as monitor output) and is scanned as injected data rather than user input.
 
     When provided, the script is not re-executed and the cached result is used for prompt injection. When
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
@@ -207,11 +233,16 @@ def _build_job_prompt(
     # Runtime DATA (script stdout, upstream output) legitimately quotes command-shape strings, so it
     # must not be scanned with the strict user-prompt set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+    if runtime_data_prompt:
+        prompt = f"{prompt}\n\n## Run Context\n{runtime_data_prompt}"
+        has_injected_data = True
 
     script_path = job.get("script")
     if script_path:
         success, script_output = (
-            prerun_script if prerun_script is not None else _script._run_job_script(script_path))
+            prerun_script if prerun_script is not None
+            else _script._run_job_script(
+                script_path, workdir=_sched._resolve_job_workdir(job, str(job.get("id") or ""))))
         if success and not script_output:
             return None  # no output → nothing to report, skip the AI call
         heading, intro = (

@@ -135,8 +135,9 @@ RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
 
 
 def _approx_tokens(text: str) -> int:
-    """Cheap chars//4 token estimate — same shape Codex uses for retention."""
-    return max(1, len(text) // 4)
+    """Retention cost of one carried-over text; never 0 so an empty item still consumes budget."""
+    from agent.model_metadata import estimate_tokens_rough
+    return max(1, estimate_tokens_rough(text))
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
@@ -328,7 +329,12 @@ def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
 def has_compaction_checkpoint(items: Any) -> bool:
     """Does this ``codex_reasoning_items`` sidecar carry a compaction checkpoint? A checkpoint is
     cumulative context living in exactly one place: rewrite/discard the sidecar only after asking."""
-    return isinstance(items, list) and any(_is_compaction_item(item) for item in items)
+    return isinstance(items, list) and any(
+        _is_compaction_item(item)
+        and isinstance(item.get("encrypted_content"), str)
+        and bool(item["encrypted_content"].strip())
+        for item in items
+    )
 
 
 def merge_interim_reasoning_items(prior_items: Any, new_items: Any) -> List[Dict[str, Any]]:

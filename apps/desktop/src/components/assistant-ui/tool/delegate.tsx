@@ -19,6 +19,7 @@ import { $subagentsBySession } from '@/store/subagents'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import {
+  delegateCostLabel,
   type DelegateRow,
   delegateRowsFromCall,
   type DelegateRowStatus,
@@ -85,7 +86,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
     row.inputTokens !== undefined || row.outputTokens !== undefined
       ? `${(row.inputTokens ?? 0) + (row.outputTokens ?? 0)} tokens`
       : '',
-    row.costUsd !== undefined ? `$${row.costUsd.toFixed(4)}` : '',
+    delegateCostLabel(row.costUsd, row.costStatus) ?? '',
     row.schemaValid === false ? 'schema invalid' : row.schemaValid === true ? 'schema valid' : '',
     row.schemaRetries ? `${row.schemaRetries} schema retry` : '',
     row.truncated ? 'truncated' : ''

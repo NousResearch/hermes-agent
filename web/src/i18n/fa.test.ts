@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { applyDocumentLocale } from "@hermes/shared/i18n";
 
 import { fa } from "./fa";
-import { LOCALE_META, localeDirection } from "./context";
+import { LOCALE_META } from "./context";
 
 // The dashboard pluralizes count labels by substituting the `{s}` token with a
 // literal "s" (EnvPage/SkillsPage/ConfigPage: `.replace("{s}", n !== 1 ? "s" :
@@ -74,8 +75,16 @@ describe("Persian locale pluralization", () => {
 describe("Persian locale registration", () => {
   it("is exposed by its endonym and uses RTL direction", () => {
     expect(LOCALE_META.fa.name).toBe("فارسی");
-    expect(localeDirection("fa")).toBe("rtl");
-    expect(localeDirection("en")).toBe("ltr");
+    const root = { lang: "", dir: "" };
+    vi.stubGlobal("document", { documentElement: root });
+    try {
+      applyDocumentLocale("fa");
+      expect(root).toEqual({ lang: "fa", dir: "rtl" });
+      applyDocumentLocale("en");
+      expect(root).toEqual({ lang: "en", dir: "ltr" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("translates the latest bulk and destructive kanban actions", () => {

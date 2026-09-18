@@ -64,7 +64,7 @@ describe('storedSessionIdForRuntimeId', () => {
   })
 
   it('maps a MAIN-PANE runtime id through the per-runtime state mirror (no tile involved)', () => {
-    // approval.respond from a native notification, a queued send: the caller
+    // The approval.respond RPC fallback from a native notification, a queued send: the caller
     // holds the runtime id of the primary thread, which no tile knows. The
     // state mirror carries the stored id the wiring cache bound.
     publishSessionState('rt-main', createClientSessionState('stored-main'))

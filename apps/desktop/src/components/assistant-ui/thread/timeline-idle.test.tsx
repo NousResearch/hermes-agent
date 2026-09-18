@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
  * The timeline must do NO work it can't currently show. Two gates are proven
@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  *
  *  - a background (kept-alive but hidden) tab derives nothing and subscribes
  *    to nothing — the transcript selector is never even called;
- *  - an unhovered rail builds its ticks but not the popover's rows.
+ *  - an unhovered rail builds only a bounded tick slice, never a label list.
  *
  * The prompt-id selector is also asserted to be content-blind, which is what
  * keeps a streaming assistant reply from re-deriving previews per token.
@@ -62,8 +62,14 @@ const transcript = (count: number): FakeMessage[] =>
 
 const renderTimeline = (ui: ReactNode = <ThreadTimeline />) => render(ui)
 
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(48)
+})
+
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   selectorCalls.mockClear()
   transcriptReads.mockClear()
   paneActive = true
@@ -92,44 +98,54 @@ describe('ThreadTimeline in a background tab', () => {
   })
 })
 
-describe('ThreadTimeline popover', () => {
-  it('builds no rows until the rail is hovered', () => {
+describe('ThreadTimeline idle work', () => {
+  it('builds ticks without a separate popover or mounted labels', () => {
     messages = transcript(6)
 
     const { container } = renderTimeline()
     const popover = container.querySelector('[data-slot="thread-timeline-popover"]')
 
-    // The shell renders (it owns the fade transition); its rows do not.
-    expect(popover).not.toBeNull()
-    expect(popover?.querySelectorAll('button')).toHaveLength(0)
+    expect(popover).toBeNull()
+    expect(container.querySelectorAll('[data-timeline-id]')).toHaveLength(6)
     expect(screen.queryByText('prompt 0')).toBeNull()
   })
 
-  it('builds the rows on hover and keeps them for the close fade', () => {
-    messages = transcript(6)
+  it('keeps a large rail bounded before and after pointer movement', () => {
+    messages = transcript(5000)
 
     const { container } = renderTimeline()
-    const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline"]')!
+    const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')!
+    const ticks = Array.from(rail.querySelectorAll('[data-timeline-id]'))
 
-    fireEvent.mouseEnter(rail)
+    expect(ticks.length).toBeGreaterThan(0)
+    expect(ticks.length).toBeLessThan(60)
 
-    const popover = container.querySelector('[data-slot="thread-timeline-popover"]')
-    expect(popover?.querySelectorAll('button')).toHaveLength(6)
+    fireEvent.pointerMove(rail, { clientY: 100, pointerType: 'mouse' })
+    fireEvent.pointerLeave(rail)
 
-    fireEvent.mouseLeave(rail)
+    expect(Array.from(rail.querySelectorAll('[data-timeline-id]'))).toEqual(ticks)
+    expect(container.querySelector('[data-slot="thread-timeline-popover"]')).toBeNull()
+    expect(screen.queryByText('prompt 0')).toBeNull()
+  })
 
-    // Still mounted — the popover fades out, it does not pop out of existence.
-    expect(popover?.querySelectorAll('button')).toHaveLength(6)
+  it('schedules no history read for an unsaved conversation', () => {
+    messages = transcript(2)
+    const schedule = vi.spyOn(window, 'setTimeout')
+
+    renderTimeline()
+
+    expect(schedule.mock.calls.filter(([, delay]) => delay === 200)).toHaveLength(0)
   })
 })
 
-describe('ThreadTimeline below the threshold', () => {
-  it('renders nothing for a short thread', () => {
+describe('ThreadTimeline availability', () => {
+  it('keeps navigation available for a short thread', () => {
     messages = transcript(2)
 
     const { container } = renderTimeline()
 
-    expect(container.querySelector('[data-slot="thread-timeline"]')).toBeNull()
+    expect(container.querySelector('[data-slot="thread-timeline"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-timeline-id]')).toHaveLength(2)
   })
 })
 

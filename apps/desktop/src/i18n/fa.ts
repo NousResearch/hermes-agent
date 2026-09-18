@@ -137,7 +137,6 @@ export const fa = defineLocale(mergeLocaleOverrides({
         'بک‌اند دسکتاپ آن درخواست را رد کرد (405 Method Not Allowed). Hermes Desktop را دوباره راه‌اندازی کنید.',
       microphonePermission: 'دسترسی به میکروفون رد شد.',
       openaiRejectedApiKey: 'OpenAI کلید API را نپذیرفت.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI کلید API را نپذیرفت (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'سرویس OpenAI TTS به VOICE_TOOLS_OPENAI_KEY یا OPENAI_API_KEY نیاز دارد.'
     },
     voice: {
@@ -352,7 +351,7 @@ export const fa = defineLocale(mergeLocaleOverrides({
       about: 'درباره',
       billing: 'صورت‌حساب',
       notifications: 'اعلان‌ها',
-      plugins: 'افزونه‌ها'
+      vault: 'گذرواژه‌ها و ورودها'
     },
     plugins: {
       title: 'افزونه‌های دسکتاپ',
@@ -366,19 +365,7 @@ export const fa = defineLocale(mergeLocaleOverrides({
       failed: 'ناموفق',
       empty: 'هنوز افزونهٔ دسکتاپی نصب نشده است.',
       kinds: { bundled: 'همراه برنامه', disk: 'روی دیسک', runtime: 'زمان اجرا' },
-      agent: {
-        title: 'افزونه‌های عامل',
-        blurb:
-          'در بک‌اند Hermes اجرا می‌شوند — ابزارها، مهارت‌ها، سرورهای MCP، قلاب‌ها و فرمان‌های اسلش. موارد قابل حمل، بسته‌های Agent Plugins هستند (مجموعه‌های مهارت + MCP که در عامل‌های دیگر هم کار می‌کنند). تغییرات از نشست‌های جدید اعمال می‌شود.',
-        empty: 'هنوز افزونهٔ عاملی نصب نشده است.',
-        loadFailed: 'بارگذاری افزونه‌های عامل ممکن نشد',
-        portable: 'قابل حمل',
-        search: 'جست‌وجوی افزونه‌ها…',
-        noMatches: 'هیچ افزونه‌ای با جست‌وجوی شما مطابقت ندارد.',
-        toggleFailed: (name: string) => `تغییر وضعیت ${name} ممکن نشد`,
-        updateBackendToManage: 'برای مدیریت این افزونه از دسکتاپ، بک‌اند Hermes را به‌روزرسانی کنید.',
-        sources: { bundled: 'همراه برنامه', user: 'کاربر', git: 'git', project: 'پروژه', entrypoint: 'pip' }
-      }
+
     },
     notifications: {
       title: 'اعلان‌ها',
@@ -1050,6 +1037,23 @@ export const fa = defineLocale(mergeLocaleOverrides({
     disableUnused: 'غیرفعال‌سازی موارد بی‌استفاده',
     bulkUpdated: count => `${count} مورد برای نشست‌های جدید به‌روزرسانی شد.`,
     bulkNoChange: 'چیزی برای تغییر نیست.',
+    tabPlugins: 'افزونه‌ها',
+    plugins: {
+      agentTitle: 'افزونه‌های عامل',
+      agentBlurb: 'عامل پروفایل انتخاب‌شده را با ابزارها، قلاب‌ها و ارائه‌دهندگان گسترش دهید. تغییرات پس از راه‌اندازی دوبارهٔ دروازه اعمال می‌شوند.',
+      empty: 'هیچ افزونهٔ عاملی برای این پروفایل نصب نشده است.',
+      loadFailed: 'بارگذاری افزونه‌های عامل ممکن نشد',
+      toggleFailed: (name: string) => `تغییر وضعیت ${name} ممکن نشد`,
+      portableBadge: 'قابل حمل',
+      catalogTitle: 'فهرست افزونه‌ها',
+      catalogBrowse: 'مرور',
+      catalogHide: 'پنهان‌کردن فهرست',
+      halfDesktop: 'دسکتاپ',
+      halfAgent: 'عامل',
+      kindAgent: 'عامل',
+      kindDesktop: 'دسکتاپ',
+      kindBoth: 'عامل و دسکتاپ'
+    },
     usageCount: count => `${count} بار استفاده شده`,
     provenance: {
       agent: 'آموخته‌شده',
@@ -2871,22 +2875,18 @@ export const fa = defineLocale(mergeLocaleOverrides({
       lateAnswerHint: 'این پرامپت دیگر در انتظار نیست. گزینه‌ای را برگزینید تا به‌عنوان پیام پیگیری پیش‌نویس شود.'
     },
     mcpSetup: {
-      installTitle: server => `سرور MCP با نام ${server} افزوده شود؟`,
-      enableTitle: server => `سرور MCP با نام ${server} فعال شود؟`,
-      authorizeTitle: server => `سرور MCP با نام ${server} مجاز شود؟`,
+      installTitle: 'سرور MCP افزوده شود؟',
+      enableTitle: 'سرور MCP فعال شود؟',
+      authorizeTitle: 'به سرور MCP مجوز داده شود؟',
       installAction: 'نصب',
       enableAction: 'فعال‌سازی',
       authorizeAction: 'اعطای مجوز',
-      decline: 'الان نه',
-      declined: 'رد شد',
       installed: server => `${server} نصب شد`,
       enabled: server => `${server} فعال شد`,
       authorized: server => `${server} مجاز شد`,
       failed: server => `راه‌اندازی ${server} ناموفق بود`,
-      unanswered: 'بدون پاسخ',
       toolCount: count => `${count} ابزار`,
       notInCatalog: server => `«${server}» در فهرست MCP نیست`,
-      catalogSource: 'از فهرست تأییدشدهٔ Nous',
       envRequired: 'ابتدا اعتبارنامه‌های لازم را پر کنید',
       sendFailed: 'ارسال پاسخ راه‌اندازی MCP ممکن نشد',
       reloadFailed: 'سرور ذخیره شد، اما بارگذاری دوبارهٔ ابزارهای MCP ناموفق بود — در نشست بعدی بارگذاری می‌شوند',

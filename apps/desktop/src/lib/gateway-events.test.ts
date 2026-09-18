@@ -34,7 +34,9 @@ describe('gateway event routing', () => {
     expect(gatewayEventRequiresSessionId('message.interim')).toBe(false)
     expect(gatewayEventRequiresSessionId('reasoning.delta')).toBe(false)
     expect(gatewayEventRequiresSessionId('tool.start')).toBe(false)
-    expect(gatewayEventRequiresSessionId('approval.request')).toBe(false)
+    // Prompts are server→client requests now; the one prompt-related EVENT
+    // left (`request.cancel`) is likewise the focused turn's own when unscoped.
+    expect(gatewayEventRequiresSessionId('request.cancel')).toBe(false)
   })
 
   it('allows global events to remain unscoped', () => {

@@ -71,7 +71,6 @@ export const faCurrent = {
   settings: {
     nav: { gateway: 'دروازه‌ها' },
     plugins: {
-      agent: { appliesTo: 'اعمال روی:' },
       installModal: {
         title: 'نصب افزونه',
         description: 'پیش از نصب، محتوای این مخزن را بررسی کنید.',

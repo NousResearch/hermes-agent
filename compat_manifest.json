@@ -2646,7 +2646,7 @@
    "facade": "gateway.slash_commands",
    "name": "MessageType",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "gateway.slash_commands",
@@ -4061,18 +4061,6 @@
   {
    "facade": "hermes_cli.models",
    "name": "is_nous_free_tier",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "hermes_cli.models",
-   "name": "_OPENCODE_KEYLESS_EXTRA_SLUGS",
-   "kind": "restored-helper",
-   "target": "(deleted; restored as a dependency of is_opencode_zen_free_model)"
-  },
-  {
-   "facade": "hermes_cli.models",
-   "name": "is_opencode_zen_free_model",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
   },
@@ -8262,7 +8250,7 @@
    "facade": "plugins.platforms.dingtalk.adapter",
    "name": "MessageType",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "plugins.platforms.discord.adapter",
@@ -8340,7 +8328,7 @@
    "facade": "plugins.platforms.photon.adapter",
    "name": "ProcessingOutcome",
    "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
+   "target": "gateway.platforms.event"
   },
   {
    "facade": "plugins.platforms.photon.adapter",

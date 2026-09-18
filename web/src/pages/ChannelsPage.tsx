@@ -36,6 +36,7 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -166,7 +167,7 @@ export default function ChannelsPage() {
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
-      .catch((e) => showToast(`Error: ${e}`, "error"));
+      .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
   }, [showToast]);
 
   useEffect(() => {
@@ -215,13 +216,19 @@ export default function ChannelsPage() {
     setSaving(true);
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
-      await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      const result = await api.updateMessagingPlatform(editing.id, body);
+      showToast(
+        result.hot_served
+          ? `${editing.name} saved; the running gateway is connecting`
+          : `${editing.name} saved`,
+        "success",
+      );
       setEditing(null);
-      setRestartNeeded(true);
+      if (!result.hot_served) setRestartNeeded(true);
       await load();
+      if (result.hot_served) setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`Failed to save: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -231,7 +238,7 @@ export default function ChannelsPage() {
     const next = !platform.enabled;
     setTogglingId(platform.id);
     try {
-      await api.updateMessagingPlatform(platform.id, { enabled: next });
+      const result = await api.updateMessagingPlatform(platform.id, { enabled: next });
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
@@ -239,9 +246,10 @@ export default function ChannelsPage() {
             : p,
         ),
       );
-      setRestartNeeded(true);
+      if (result.hot_served) setTimeout(() => void load(), 4000);
+      else setRestartNeeded(true);
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
     } finally {
       setTogglingId(null);
     }
@@ -253,7 +261,7 @@ export default function ChannelsPage() {
       const res = await api.testMessagingPlatform(platform.id);
       showToast(`${platform.name}: ${res.message}`, res.ok ? "success" : "error");
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not test the channel: ${errorMessage(e)}`, "error");
     } finally {
       setTestingId(null);
     }
@@ -268,7 +276,7 @@ export default function ChannelsPage() {
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${e}`, "error");
+      showToast(`Failed to restart: ${errorMessage(e)}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -565,6 +573,12 @@ export default function ChannelsPage() {
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
+                        </span>
+                      )}
+                      {platform.ingress_url && (
+                        <span className="text-xs text-muted-foreground break-all">
+                          Callback URL (shared listener):{" "}
+                          <code className="font-mono">{platform.ingress_url}</code>
                         </span>
                       )}
                     </div>

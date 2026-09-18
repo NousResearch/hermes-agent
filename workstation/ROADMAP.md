@@ -76,16 +76,26 @@ already performs its principal inventory in one `webContents.executeJavaScript`
 round trip.
 
 
-## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED / CONTRACT VERIFIED; NATIVE GATE OPEN
+## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED; SEMANTIC-HOMOGENEITY HARDENING OPEN; NATIVE GATE OPEN
 
-Implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6` closes the
-operation-scoped policy, canonical effects/routes, bounded adaptive discovery,
-compact handoff/resume and verified reuse contracts below. Final Python gate:
-570 passed / 2 skipped (complete Workstation plus adjacent executor/guardrails).
-Work100: 30 PASS / 0 FAIL / 0 gaps; Desktop owner contracts: 36 passed.
-KI-011 is resolved at the contract layer. Remaining qualification is authenticated
-native/packaged Electron browser smoke; executable/build artifacts were absent.
-Simulated provider-call reductions do not establish paid-provider savings.
+Remote implementation `9e7292ab7825e5ce1ea294490eec57ba1f286069`
+(documentation/evidence `5e1b22527fd40d732ee4fa7a1035e6366953f6b7`; local
+pre-publish implementation SHA `365794e29d66cd63a6134c5c67ecc1ef603d70a6`)
+correctly removes the turn-wide mutation latch, normalizes effects/routes,
+adds bounded adaptive discovery, compact handoff/resume and verified reuse.
+Final recorded Python gate: 570 passed / 2 skipped; Work100: 30 PASS / 0 FAIL /
+0 gaps; Desktop owner contracts: 36 passed.
+
+AEPC-E002 reopened one narrow contract boundary: structural call similarity is
+not sufficient proof of homogeneous fan-out. Current built-in browser mutations
+such as `browser_type`, `browser_click` and `browser_press` do not declare a
+concrete mutation target/target family, so three semantically different stateful
+UI actions can still converge on the same structural signature and trigger
+`REQUIRE_COMPILE`. KI-011 therefore has its original global-latch cause fixed,
+but long stateful-browser closure remains open until semantic homogeneity is
+proven before mandatory compilation. Authenticated native/packaged Electron
+smoke remains a separate final product gate. Simulated provider-call reductions
+do not establish paid-provider savings.
 
 Real native-browser dogfood exposed an architectural overreach in the durable
 compiler boundary: the baseline mechanism introduced to keep repetitive mechanical work
@@ -130,9 +140,37 @@ Implemented sequence (retained as the acceptance checklist):
 8. add regressions proving both sides: native-browser adaptive progress works and
    homogeneous fan-out still cannot bypass TaskCompiler/canary.
 
-**Sequencing:** contract implementation is complete; retain the native qualification gate before claiming product-level closure.
-Do not weaken fan-out safety to fix usability, and do not require determinism as a
-precondition for discovering a safe deterministic path.
+### AEPC-E002 follow-up — semantic homogeneity before mandatory compilation
+
+Required hardening, in order:
+
+1. separate **structural similarity** from **semantic homogeneity** in
+   `CompilationCandidate` / `execution_policy.py`;
+2. require a stable owner-declared or safely derived operation family before
+   `REQUIRE_COMPILE`: operation + canonical route/provider + concrete
+   target-family/contract identity. Shape-only browser calls are not enough;
+3. keep long stateful native-browser sequences adaptive when successive
+   click/type/press actions target different semantic UI goals, while preserving
+   TaskRun/BrowserTask fencing, approval, uncertainty and no-progress limits;
+4. retain mandatory TaskCompiler/canary admission for real homogeneous fan-out;
+5. add paired regressions: a long stateful browser flow with 3+ same-tool
+   mutations remains adaptive, while three true same-family mutations still
+   transition to `REQUIRE_COMPILE`;
+6. rename or redefine `CompilationCandidate.successful_occurrences` so
+   `executed_unverified` is never represented as verified success;
+7. reconcile all canonical docs to the remote SHAs above and preserve the
+   original local SHA only as pre-publish history.
+
+**Exit criteria:** no threshold increase, browser-name exemption or global bypass.
+The runtime must be able to explain *why* operations are one compilable family;
+absence of that proof keeps execution bounded/adaptive rather than manufacturing
+homogeneity.
+
+**Sequencing:** the global-latch correction is implemented, but AEPC-E002 must
+close before KI-011 is called fully resolved. Retain the native qualification
+gate before claiming product-level closure. Do not weaken fan-out safety to fix
+usability, and do not require determinism as a precondition for discovering a
+safe deterministic path.
 
 ## Canonical Execution Reliability Gate (2026-09-17) — IMPLEMENTED & VERIFIED
 

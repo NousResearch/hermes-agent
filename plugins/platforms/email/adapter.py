@@ -176,12 +176,14 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
 
 
 def check_email_requirements() -> bool:
-    """True when all email settings are present and non-blank (blank keys left by an abandoned setup must not enable the platform).
+    """True when outbound email is configured: ``EMAIL_ADDRESS`` + ``EMAIL_SMTP_HOST`` are present and non-blank.
 
     Treats blank/whitespace-only values as missing so an abandoned setup that left empty ``EMAIL_*`` keys in
-    ``.env`` does not enable the platform (#40715).
+    ``.env`` does not enable the platform (#40715). ``EMAIL_PASSWORD`` and ``EMAIL_IMAP_HOST`` are optional:
+    an empty password selects unauthenticated SMTP (internal relay), and an empty IMAP host makes the adapter
+    send-only (no inbound polling).
     """
-    return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"))
+    return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_SMTP_HOST"))
 
 
 def _safe_decode(payload: bytes, charset: "Optional[str]") -> str:
@@ -342,12 +344,15 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
-        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._password = _get_secret("EMAIL_PASSWORD", "").strip()
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
         self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
         self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
+        # SMTP AUTH login id; defaults to the From address. A separate username lets a relay
+        # authenticate as a different account than the visible sender (EMAIL_SMTP_USERNAME).
+        self._smtp_username = (setting("EMAIL_SMTP_USERNAME", "smtp_username") or self._address).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
@@ -369,6 +374,14 @@ class EmailAdapter(BasePlatformAdapter):
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
         self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Reception needs both an IMAP host and a password; an empty password sends through an
+        # unauthenticated SMTP relay (no SMTP AUTH), and an empty IMAP host makes the adapter send-only.
+        self._use_smtp_auth = bool(self._password)
+        self._use_imap = bool(self._imap_host and self._use_smtp_auth)
+        if not self._use_imap:
+            logger.info("[Email] IMAP reception disabled — send-only mode")
+        if not self._use_smtp_auth:
+            logger.info("[Email] SMTPAUTH disabled — no-auth SMTP mode")
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -456,11 +469,12 @@ class EmailAdapter(BasePlatformAdapter):
                               f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}", retryable=True)
 
     def _probe_smtp(self) -> bool:
-        """SMTP connect + login test. Sets a fatal error and returns False on failure."""
+        """SMTP connect test, plus login when SMTP AUTH is configured. Sets a fatal error and returns False on failure."""
         try:
             smtp = self._connect_smtp()
             try:
-                smtp.login(self._address, self._password)
+                if self._use_smtp_auth:
+                    smtp.login(self._smtp_username, self._password)
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -468,24 +482,35 @@ class EmailAdapter(BasePlatformAdapter):
         except smtplib.SMTPAuthenticationError as e:
             # Typed auth failure (535 & friends) can never self-heal, so drop out of the reconnect queue — unambiguous, unlike IMAP4.error.
             return self._fail("[Email] SMTP authentication failed: %s", e, "email_auth_error",
-                              f"SMTP authentication failed for {self._address}: {e}. Check EMAIL_PASSWORD (for Gmail/Outlook "
+                              f"SMTP authentication failed for {self._smtp_username}: {e}. Check EMAIL_PASSWORD"
+                              " (and EMAIL_SMTP_USERNAME if the login differs from the address; for Gmail/Outlook "
                               "this must be an app password, not the account password).", retryable=False)
         except Exception as e:
             return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
                               f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Validate SMTP, probe IMAP (when configured) and start inbound polling.
+
+        Send-only setups work with just ``EMAIL_ADDRESS`` + ``EMAIL_SMTP_HOST`` — an empty
+        ``EMAIL_IMAP_HOST`` skips both the IMAP probe and the polling loop, and an empty
+        ``EMAIL_PASSWORD`` skips SMTP AUTH (unauthenticated relay).
+        """
         # Validate up front so a missing host is an actionable config error, not IMAP4_SSL("") raising ``[Errno 8]``.
-        required = (("EMAIL_ADDRESS", self._address), ("EMAIL_PASSWORD", self._password), ("EMAIL_IMAP_HOST", self._imap_host), ("EMAIL_SMTP_HOST", self._smtp_host))
+        required = (("EMAIL_ADDRESS", self._address), ("EMAIL_SMTP_HOST", self._smtp_host))
         if missing := [name for name, value in required if not value]:
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        if self._use_imap and not self._probe_imap(is_reconnect):
+            return False
+        if not self._probe_smtp():
             return False
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._use_imap:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+        else:
+            logger.info("[Email] Skipping IMAP setup — send-only mode")
         print(f"[Email] Connected as {self._address}")
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
@@ -683,10 +708,11 @@ class EmailAdapter(BasePlatformAdapter):
         return msg, msg_id, subject
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
-        """Login, send, and always release the SMTP connection (quit, else close)."""
+        """Send, authenticating only when a password is configured; always release the SMTP connection (quit, else close)."""
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            if self._use_smtp_auth:
+                smtp.login(self._smtp_username, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -777,14 +803,18 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
-    if not all([address, password, smtp_host]):
-        return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
+    # SMTP AUTH login id; defaults to the From address unless EMAIL_SMTP_USERNAME / extra sets another.
+    smtp_username = (extra.get("smtp_username") or _get_secret("EMAIL_SMTP_USERNAME", "") or address).strip()
+    if not all([address, smtp_host]):
+        return send_error("Email not configured (EMAIL_ADDRESS and EMAIL_SMTP_HOST required)")
+    use_auth = bool((password or "").strip())
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
+        if use_auth:
+            server.login(smtp_username, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

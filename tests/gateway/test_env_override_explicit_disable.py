@@ -31,10 +31,10 @@ CRED_ENV = {
     "homeassistant": {"HASS_TOKEN": "hass-long-lived-token"},
     # flag-driven, not credential-driven: WHATSAPP_ENABLED=true must not beat an explicit YAML disable (#73289)
     "whatsapp": {"WHATSAPP_ENABLED": "true"},
+    # Send-only: ADDRESS + SMTP_HOST alone drive enablement; PASSWORD (SMTP AUTH)
+    # and IMAP_HOST (inbound) are optional and no longer gate the platform.
     "email": {
         "EMAIL_ADDRESS": "bot@example.com",
-        "EMAIL_PASSWORD": "app-password",
-        "EMAIL_IMAP_HOST": "imap.example.com",
         "EMAIL_SMTP_HOST": "smtp.example.com",
     },
     "sms": {"TWILIO_ACCOUNT_SID": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},

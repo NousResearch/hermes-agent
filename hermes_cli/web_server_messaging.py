@@ -80,8 +80,8 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "email": {
         "name": "Email", "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
-        "env_vars": ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
-        "required_env": ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+        "env_vars": ("EMAIL_ADDRESS", "EMAIL_SMTP_HOST", "EMAIL_SMTP_USERNAME", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST"),
+        "required_env": ("EMAIL_ADDRESS", "EMAIL_SMTP_HOST"),
     },
     "sms": {
         "name": "SMS (Twilio)", "description": "Send and receive text messages via Twilio.",

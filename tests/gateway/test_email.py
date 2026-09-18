@@ -1043,31 +1043,31 @@ class TestConnectionConfigResolution(unittest.TestCase):
     """Host/address resolution and pre-connect validation (#49736)."""
 
 
-    def test_connect_aborts_without_attempting_imap_when_host_missing(self):
-        """A missing host returns False without the cryptic DNS error, and marks
-        the failure non-retryable so the gateway stops reconnecting (#40715)."""
+    def test_connect_send_only_mode_when_imap_and_password_missing(self):
+        """With only EMAIL_ADDRESS + EMAIL_SMTP_HOST, connect succeeds in send-only
+        mode: the IMAP probe is skipped, no inbound poll task starts, and no fatal
+        error is set. (Replaces the old "blank IMAP host is fatal" expectation.)"""
         import asyncio
         from gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
+            "EMAIL_PASSWORD": "",
             "EMAIL_IMAP_HOST": "",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }, clear=False):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
 
-        with patch("imaplib.IMAP4_SSL") as mock_imap:
+        self.assertFalse(adapter._use_imap)
+        self.assertFalse(adapter._use_smtp_auth)
+        with patch.object(adapter, "_probe_imap") as mock_probe_imap, \
+             patch.object(adapter, "_probe_smtp", return_value=True):
             result = asyncio.run(adapter.connect())
 
-        self.assertFalse(result)
-        mock_imap.assert_not_called()
-        # The OOM fix (#40715): a blank host must NOT leave the platform in the
-        # retryable reconnect loop — it is a permanent config error.
-        self.assertTrue(adapter.has_fatal_error)
-        self.assertEqual(adapter.fatal_error_code, "email_missing_configuration")
-        self.assertFalse(adapter.fatal_error_retryable)
-        self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
+        self.assertTrue(result)
+        mock_probe_imap.assert_not_called()  # IMAP is not probed in send-only mode
+        self.assertIsNone(adapter._poll_task)  # no inbound polling loop
+        self.assertFalse(adapter.has_fatal_error)
 
     def test_blank_present_env_vars_are_not_required(self):
         """Blank/whitespace EMAIL_* values must read as missing (#40715) — an

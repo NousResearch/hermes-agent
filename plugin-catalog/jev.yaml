@@ -1,0 +1,20 @@
+name: jev
+repo: https://github.com/ourines/hermes-jev
+sha: 591bf074158ecc85c992b5ed76f7eda0592a6d9a
+subdir: ""
+description: "Explicit Jev decision sidekick via TypeSafe or Cloudflare; advisory judgments, no automatic tool gating."
+maintainer: ourines
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/ourines/hermes-jev/blob/591bf074158ecc85c992b5ed76f7eda0592a6d9a/README.md
+version: "0.1.2"
+platforms: []
+capabilities:
+  provides_tools:
+    - jev_evaluate
+  provides_hooks: []
+  provides_middleware: []
+  # Credentials are alternatives, selected per backend during interactive setup.
+  # Offline guide/status/presets and plugin registration require neither key.
+  requires_env: []

@@ -2471,17 +2471,28 @@ def mark_job_run(
                 return False
         claim = job.get("fire_claim") if isinstance(job.get("fire_claim"), dict) else {}
         event_run = bool(_coerce_event_items(claim.get("event_batch")))
-        # Ownership is on the claim, not stamp presence and not fire_claim.at
-        # (heartbeats refresh at in place). trigger_job may stamp during an
-        # in-flight run; only that in-flight claim (no consumed_manual) leaves
-        # the stamp. A completion with no live claim still consumes it.
-        consumed_manual = bool(claim.get("consumed_manual")) or not claim
-        leftover_manual_at = None if consumed_manual else job.get("manual_run_at")
+        # Ownership is the stamp identity recorded at claim time, not the
+        # consumed_manual flag and not fire_claim.at (heartbeats refresh at).
+        # trigger_job may rewrite the stamp during an in-flight run; this claim
+        # owns it only when job.manual_run_at still equals consumed_manual_at.
+        # A completion with no live claim still consumes whatever stamp is present.
+        this_claim_consumed_manual = bool(claim.get("consumed_manual")) or (
+            claim.get("consumed_manual_at") is not None
+        ) or not claim
+        current_stamp = job.get("manual_run_at")
+        claimed_stamp = claim.get("consumed_manual_at") if claim else None
+        if not claim:
+            owns_stamp = True
+        elif claimed_stamp is not None:
+            owns_stamp = current_stamp == claimed_stamp
+        else:
+            owns_stamp = bool(claim.get("consumed_manual"))
+        leftover_manual_at = None if owns_stamp else current_stamp
         scheduled_next = job.get("next_run_at")
         now = _hermes_now().isoformat()
         _record_run_outcome(
             job, success, error, delivery_error, status, now,
-            consume_manual=consumed_manual,
+            consume_manual=owns_stamp,
         )
         pending_after = _coerce_event_items(job.get("pending_event_batch"))
         if event_run:
@@ -2489,7 +2500,7 @@ def mark_job_run(
             job["next_run_at"] = scheduled_next
             if job.get("state") != "paused" and job.get("next_run_at"):
                 job["state"] = "scheduled"
-        elif consumed_manual and pending_after:
+        elif this_claim_consumed_manual and pending_after:
             # Run-now while events are still queued: occurrence-free, no repeat bump.
             # next_run_at was already re-anchored at claim time for interval jobs.
             job["next_run_at"] = scheduled_next
@@ -2504,6 +2515,7 @@ def mark_job_run(
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
+        retired_this_completion = is_terminal_job(job)
         pending = pending_after
         if pending:
             job["event_rerun_due"] = True
@@ -2514,14 +2526,25 @@ def mark_job_run(
             job.pop("event_rerun_due", None)
             if event_run:
                 _complete_event_run_if_exhausted(job)
-        if leftover_manual_at:
-            # In-flight completion did not own this run-now: keep the operator
-            # stamp due for the next tick's manual-precedence fire.
-            job["next_run_at"] = leftover_manual_at
             if is_terminal_job(job):
-                job["enabled"] = True
-                job["state"] = "scheduled"
-            elif job.get("state") != "paused" and job.get("next_run_at"):
+                retired_this_completion = True
+        if leftover_manual_at and retired_this_completion:
+            # Do not resurrect a record this completion just retired. Pending
+            # re-enable above still drains a 202-accepted batch. Drop the
+            # leftover run-now (base parity) — it cannot fire on a terminal job.
+            logger.info(
+                "Job '%s': dropping leftover run-now; this completion retired the record",
+                job.get("name") or job.get("id"),
+            )
+            job.pop("manual_run_at", None)
+            job.pop("manual_run_prompt", None)
+        elif leftover_manual_at:
+            # In-flight completion did not own this run-now: keep the operator
+            # stamp due for the next tick's manual-precedence fire. Never
+            # re-enable a terminal record here — pending-driven re-enable
+            # above is what drains a leftover event batch.
+            job["next_run_at"] = leftover_manual_at
+            if job.get("state") != "paused" and job.get("next_run_at"):
                 job["state"] = "scheduled"
         save_jobs(jobs)
         return True
@@ -2832,6 +2855,7 @@ def claim_job_for_fire(
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
         if live_manual_stamp:
             job["fire_claim"]["consumed_manual"] = True
+            job["fire_claim"]["consumed_manual_at"] = job.get("manual_run_at")
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:

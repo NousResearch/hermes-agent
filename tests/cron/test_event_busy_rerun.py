@@ -768,3 +768,308 @@ class TestReviewR3InflightTrigger:
         )
         assert result["inflight_prompts"] == [None]
         self._assert_no_phantom(result, scheduled_counted=True)
+
+
+class TestReviewR4InflightManual:
+    """Review-r4 R4-A: consumed_manual is a flag, not the consumed stamp identity.
+
+    A run-now issued while a stamp-consuming manual run is in flight must leave
+    the newer stamp for the next tick. With pending events the second prompt
+    must run, then the batch; without pending the second run-now is honoured
+    rather than dropped. The leftover instant must not fire as a bare
+    scheduled occurrence.
+    """
+
+    def _second_trigger_during_manual(self, monkeypatch, *, pending_when):
+        import threading
+
+        from cron.executions import list_executions
+        from cron.jobs import (
+            admit_job_event,
+            create_job,
+            get_job,
+            mark_job_run,
+            trigger_job,
+        )
+        import cron.scheduler as sched
+
+        op_one = "op-ONE"
+        op_two = "op-TWO"
+        pending_ctx = "ctx-ONE"
+        started = threading.Event()
+        release = threading.Event()
+        prompts = []
+        thread_errors = []
+
+        def fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            started.set()
+            assert release.wait(15)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        job = create_job(prompt="x", schedule="every 5m", name="q", repeat=5)
+        job_id = job["id"]
+
+        if pending_when == "before":
+            first = admit_job_event(job_id, delivery_id="d-run", context="running")
+            owner = first["job"]["fire_claim"]["by"]
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+            assert mark_job_run(job_id, True, expected_fire_owner=owner) is True
+            armed = get_job(job_id)
+            assert armed.get("event_rerun_due") is True
+
+        trigger_job(job_id, extra_prompt=op_one)
+
+        def _run_tick():
+            try:
+                sched.tick(verbose=False, sync=True)
+            except Exception as exc:
+                thread_errors.append(exc)
+                started.set()
+
+        worker = threading.Thread(target=_run_tick)
+        worker.start()
+        assert started.wait(15), f"manual run never started; errors={thread_errors!r}"
+        assert not thread_errors
+        inflight_prompts = list(prompts)
+        mid = get_job(job_id)
+        assert mid.get("fire_claim")
+
+        if pending_when == "mid":
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+
+        second = trigger_job(job_id, extra_prompt=op_two)
+        assert second is not None
+        leftover_at = second.get("manual_run_at")
+        assert leftover_at
+        assert second.get("manual_run_prompt") == op_two
+
+        release.set()
+        worker.join(30)
+        assert not worker.is_alive()
+        assert not thread_errors
+        after = get_job(job_id)
+        assert after.get("fire_claim") in (None, {})
+        ticks = []
+        for _ in range(3):
+            prompts.clear()
+            n = sched.tick(verbose=False, sync=True)
+            ticks.append((n, list(prompts)))
+        final = get_job(job_id)
+        ledger = list_executions(job_id=job_id)
+        return {
+            "job_id": job_id,
+            "op_one": op_one,
+            "op_two": op_two,
+            "pending_ctx": pending_ctx,
+            "pending_when": pending_when,
+            "inflight_prompts": inflight_prompts,
+            "after": after,
+            "ticks": ticks,
+            "final": final,
+            "leftover_at": leftover_at,
+            "ledger": ledger,
+        }
+
+    def _assert_second_prompt_honoured(self, result, *, with_pending):
+        from datetime import datetime
+
+        from cron import jobs as jobs_mod
+
+        leftover_at = result["leftover_at"]
+        after = result["after"]
+        ticks = result["ticks"]
+        final = result["final"]
+        op_two = result["op_two"]
+        pending_ctx = result["pending_ctx"]
+
+        assert result["inflight_prompts"] == [result["op_one"]]
+        assert after.get("manual_run_prompt") == op_two
+        assert after.get("manual_run_at") == leftover_at
+        assert after.get("next_run_at") == leftover_at
+
+        assert ticks[0][0] >= 1
+        assert ticks[0][1] == [op_two]
+        if with_pending:
+            assert (after.get("repeat") or {}).get("completed", 0) == 0
+            assert ticks[1][0] >= 1
+            assert len(ticks[1][1]) == 1
+            assert pending_ctx in str(ticks[1][1][0])
+            assert op_two not in str(ticks[1][1][0])
+            assert ticks[2][0] == 0
+            assert ticks[2][1] == []
+            assert (final.get("repeat") or {}).get("completed", 0) == 0
+            assert not (final.get("pending_event_batch") or {}).get("events")
+        else:
+            assert ticks[1][0] == 0
+            assert ticks[1][1] == []
+            assert ticks[2][0] == 0
+            assert ticks[2][1] == []
+            assert (final.get("repeat") or {}).get("completed", 0) == 2
+
+        bare = [tick for tick in ticks if tick[0] >= 1 and tick[1] == [None]]
+        assert bare == [], f"leftover instant fired as a bare occurrence: {ticks!r}"
+        dispatch = final.get("last_dispatch") or {}
+        assert dispatch.get("scheduled_at") != leftover_at
+        assert all(row.get("scheduled_instant") != leftover_at for row in result["ledger"])
+        assert datetime.fromisoformat(final["next_run_at"]) > jobs_mod._hermes_now()
+
+    @pytest.mark.parametrize("pending_when", ["before", "mid"])
+    def test_second_run_now_during_manual_with_pending(
+        self, temp_home, monkeypatch, pending_when
+    ):
+        result = self._second_trigger_during_manual(
+            monkeypatch, pending_when=pending_when
+        )
+        self._assert_second_prompt_honoured(result, with_pending=True)
+
+    def test_second_run_now_during_manual_without_pending(self, temp_home, monkeypatch):
+        result = self._second_trigger_during_manual(monkeypatch, pending_when=None)
+        self._assert_second_prompt_honoured(result, with_pending=False)
+
+
+class TestReviewR4OneshotLeftover:
+    """Review-r4 R4-B: leftover restore must not resurrect a finite one-shot
+    this completion just retired. The record stays inspectable; a 202-accepted
+    pending batch still drains via pending-driven re-enable.
+    """
+
+    def _trigger_during_inflight_oneshot(self, monkeypatch, *, with_pending):
+        import threading
+
+        from cron import jobs as jobs_mod
+        from cron.jobs import (
+            admit_job_event,
+            create_job,
+            get_job,
+            load_jobs,
+            save_jobs,
+            trigger_job,
+        )
+        import cron.scheduler as sched
+
+        operator = "op-during-run"
+        pending_ctx = "ctx-ONE"
+        started = threading.Event()
+        release = threading.Event()
+        prompts = []
+        thread_errors = []
+
+        def fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            started.set()
+            assert release.wait(15)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        job = create_job(prompt="x", schedule="in 30m", name="once")
+        job_id = job["id"]
+        records = load_jobs()
+        for record in records:
+            if record["id"] == job_id:
+                record["next_run_at"] = jobs_mod._hermes_now().isoformat()
+        save_jobs(records)
+
+        def _run_tick():
+            try:
+                sched.tick(verbose=False, sync=True)
+            except Exception as exc:
+                thread_errors.append(exc)
+                started.set()
+
+        worker = threading.Thread(target=_run_tick)
+        worker.start()
+        assert started.wait(15), f"oneshot run never started; errors={thread_errors!r}"
+        assert not thread_errors
+
+        if with_pending:
+            queued = admit_job_event(job_id, delivery_id="d-p", context=pending_ctx)
+            assert queued["status"] == "queued"
+
+        triggered = trigger_job(job_id, extra_prompt=operator)
+        assert triggered is not None
+        assert triggered.get("manual_run_at")
+        assert triggered.get("fire_claim")
+
+        release.set()
+        worker.join(30)
+        assert not worker.is_alive()
+        assert not thread_errors
+        after = get_job(job_id)
+        ticks = []
+        for _ in range(3):
+            prompts.clear()
+            n = sched.tick(verbose=False, sync=True)
+            ticks.append((n, list(prompts)))
+        final = get_job(job_id)
+        return {
+            "job_id": job_id,
+            "operator": operator,
+            "pending_ctx": pending_ctx,
+            "after": after,
+            "ticks": ticks,
+            "final": final,
+        }
+
+    def test_trigger_during_inflight_oneshot_without_pending(
+        self, temp_home, monkeypatch, caplog
+    ):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            result = self._trigger_during_inflight_oneshot(
+                monkeypatch, with_pending=False
+            )
+        final = result["final"]
+        assert final is not None, "retired one-shot record was deleted"
+        assert final.get("id") == result["job_id"]
+        assert final.get("state") == "completed"
+        assert final.get("enabled") is False
+        assert all(tick[0] == 0 and tick[1] == [] for tick in result["ticks"])
+        misleading = [
+            rec
+            for rec in caplog.records
+            if "re-armed without a budget reset" in rec.getMessage()
+            or "WITHOUT firing" in rec.getMessage()
+        ]
+        assert misleading == []
+
+    def test_trigger_during_inflight_oneshot_with_pending(
+        self, temp_home, monkeypatch, caplog
+    ):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            result = self._trigger_during_inflight_oneshot(
+                monkeypatch, with_pending=True
+            )
+        ticks = result["ticks"]
+        final = result["final"]
+        pending_ctx = result["pending_ctx"]
+        assert final is not None, "retired one-shot record was deleted"
+        assert final.get("id") == result["job_id"]
+        assert ticks[0][0] >= 1
+        assert len(ticks[0][1]) == 1
+        assert pending_ctx in str(ticks[0][1][0])
+        assert result["operator"] not in str(ticks[0][1][0])
+        assert ticks[1][0] == 0
+        assert ticks[2][0] == 0
+        assert not (final.get("pending_event_batch") or {}).get("events")
+        assert final.get("state") == "completed"
+        assert final.get("enabled") is False
+        misleading = [
+            rec
+            for rec in caplog.records
+            if "re-armed without a budget reset" in rec.getMessage()
+            or "WITHOUT firing" in rec.getMessage()
+        ]
+        assert misleading == []

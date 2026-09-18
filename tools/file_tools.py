@@ -731,6 +731,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+        else:
+            redacted = False
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)

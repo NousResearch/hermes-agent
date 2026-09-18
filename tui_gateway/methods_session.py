@@ -409,14 +409,28 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
-        if title_lookup == BOT_CHAT_TITLE and db.unarchive_recoverable_session(row["id"]):
-            # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
-            # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
-            # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same
-            # recoverable-reason set as stale-route recovery. Deliberate archives (no/explicit end_reason)
-            # still hide. Re-fetch by ID: title has no DB-level UNIQUE, so a title re-query could grab a
-            # different (still-archived) duplicate row.
-            row = db.get_session(row["id"])
+        if title_lookup == BOT_CHAT_TITLE:
+            if db.read_only:
+                # Escalate to a short-lived writer: the foreign store belongs to its
+                # gateway/dashboard — a writer here would take its write lock per RPC.
+                from hermes_state_registry import acquire
+                wdb = acquire(db.db_path)
+                try:
+                    if wdb.unarchive_recoverable_session(row["id"]):
+                        row = wdb.get_session(row["id"])
+                    else:
+                        row = None
+                finally:
+                    from hermes_state_registry import release_or_close
+                    release_or_close(wdb)
+            elif db.unarchive_recoverable_session(row["id"]):
+                # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
+                # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
+                # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same
+                # recoverable-reason set as stale-route recovery. Deliberate archives (no/explicit end_reason)
+                # still hide. Re-fetch by ID: title has no DB-level UNIQUE, so a title re-query could grab a
+                # different (still-archived) duplicate row.
+                row = db.get_session(row["id"])
     if not row or row.get("archived") or _denied_source(row):
         return _ok(rid, {"sessions": []})
     tip = row["id"]

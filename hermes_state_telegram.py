@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from hermes_state_common import _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _sql_session_last_active
+from hermes_state_errors import StateDbReplacedError
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -111,7 +112,7 @@ class SessionTelegramTopicsMixin:
                 return empty
         try:
             self.apply_telegram_topic_migration()
-        except sqlite3.Error:
+        except (sqlite3.Error, StateDbReplacedError):
             logger.warning("telegram topic tables are pre-v3 and the heal failed; reading as empty", exc_info=True)
             return empty
         return read()
@@ -139,22 +140,18 @@ class SessionTelegramTopicsMixin:
                 if "profile_name" in have:
                     continue
                 # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
-                # ON DELETE CASCADE). Legacy rows land in "default" only. execute(), not
-                # executescript(): executescript COMMITs the open BEGIN IMMEDIATE, so a crash after
-                # the DROP strands rows in {table}_new (#42004). A {table}_new left by such a crash
-                # on an older build is dropped first; the legacy table is still intact to re-copy.
+                # ON DELETE CASCADE); _rebuild_table runs inside the open BEGIN IMMEDIATE so a crash
+                # rolls back instead of stranding rows (#42004). A {table}_new left by an older
+                # build's executescript crash is dropped first; its legacy table is still intact.
                 # v1 bindings had no ON DELETE CASCADE, so pruned sessions left orphan rows that
                 # the v3 FK (foreign_keys=ON on the writer) would reject — copy only live ones.
                 legacy_columns = columns.replace("profile_name, ", "", 1)
                 live = " WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_id)" if "session_id" in columns else ""
                 conn.execute(f"DROP TABLE IF EXISTS {table}_new")
-                conn.execute(f"CREATE TABLE {table}_new ({ddl})")
-                conn.execute(
-                    f"INSERT INTO {table}_new ({columns}) "
-                    f"SELECT 'default', {legacy_columns} FROM {table}{live}"
+                self._rebuild_table(
+                    conn.cursor(), table, f"{table}_legacy", f"CREATE TABLE {table} ({ddl})",
+                    f"INSERT INTO {table} ({columns}) SELECT 'default', {legacy_columns} FROM {table}_legacy{live}",
                 )
-                conn.execute(f"DROP TABLE {table}")
-                conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
             # Indexes after any rebuild: the user index needs profile_name.
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session "

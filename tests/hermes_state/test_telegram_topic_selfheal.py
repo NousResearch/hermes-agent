@@ -101,27 +101,21 @@ def test_absent_tables_still_read_empty_and_are_not_created(tmp_path: Path):
 
 
 def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
-    """The v2→v3 rebuild must stay inside _execute_write's transaction.
-
-    Pre-fix the rebuild ran via executescript, which implicitly commits the
-    open transaction and then autocommits each statement: a failure once the
-    rebuild reaches the DROP strands legacy rows in {table}_new (#42004
-    diagnosed the same shape for the v1→v2 rebuild) and the retry then builds
-    an empty v3 table. The same mid-rebuild failure must now roll back to the
-    intact v2 table so the next read can heal cleanly.
-    """
+    """The v2→v3 rebuild must stay inside _execute_write's transaction: a mid-rebuild
+    failure leaves the intact v2 table (and its version stamp) for the next read to heal,
+    never a half-built v3 table the retry would mistake for a finished one (#42004)."""
     db_path = tmp_path / "v2-upgrade.db"
     _create_v2_state(db_path)
     db = SessionDB(db_path=db_path)
 
-    def deny_topic_rebuild_rename(action, arg1, arg2, db_name, trigger):
-        # Fail the rebuild's LAST statement, after the legacy table is already dropped: only a
-        # transactional rebuild still has the rows at that point.
-        if action == sqlite3.SQLITE_ALTER_TABLE and arg2 == "telegram_dm_topic_mode_new":
+    def deny_topic_rebuild_copy(action, arg1, arg2, db_name, trigger):
+        # Fail the copy into the fresh table, after the live table was renamed away: a
+        # non-transactional rebuild leaves an empty v3 table behind and the retry skips it.
+        if action == sqlite3.SQLITE_INSERT and arg1 == "telegram_dm_topic_mode":
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
-    db._conn.set_authorizer(deny_topic_rebuild_rename)
+    db._conn.set_authorizer(deny_topic_rebuild_copy)
     try:
         # The guarded read degrades to "off" instead of raising...
         assert not db.is_telegram_topic_mode_enabled(
@@ -130,8 +124,8 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     finally:
         db._conn.set_authorizer(None)
 
-    # ...and the interrupted rebuild rolled back completely: the dropped original is back
-    # (otherwise the retry below builds an empty v3 table and reads as off) and so is the version stamp.
+    # ...and the interrupted rebuild rolled back completely: the renamed-away original is back
+    # (otherwise the retry below finds no legacy table, builds an empty v3 one and reads as off).
     assert db.get_meta("telegram_dm_topic_schema_version") == "2"
     # Idempotent under retry (the _execute_write contract): the next clean
     # read heals and keeps the legacy rows.

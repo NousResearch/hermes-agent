@@ -384,7 +384,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_exec_approval import (
+    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -436,6 +439,20 @@ def streaming_tts_should_skip_whole_file(completed_turns: set[str], session_key:
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually.")
+
+# One sentence for every "you may not press/run this" refusal on every platform (slash commands,
+# approval buttons, pickers, prompts). ``{platform}`` is the ``Platform.value`` for the
+# ``hermes pairing approve`` command (hermes_cli/subcommands/pairing.py) that lets the owner fix it.
+# Kept under 200 chars: Telegram's answerCallbackQuery truncates longer text.
+UNAUTHORIZED_ACTION_NOTICE = (
+    "This bot is private and you're not on its allowed list. If you own it, run "
+    "`hermes pairing approve {platform} <request-id>` on the host (`hermes pairing list` shows the id).")
+
+
+def unauthorized_action_notice(platform: Any) -> str:
+    """``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name."""
+    name = getattr(platform, "value", platform)
+    return UNAUTHORIZED_ACTION_NOTICE.format(platform=str(name or "<platform>"))
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -1302,11 +1319,43 @@ def _has_media_directives(text: str) -> bool:
     return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
 
 
+# A provider can leak its exact end-of-sequence control token glued to the last MEDIA path
+# (``MEDIA:/x.png<|eos|>``). Neither tag regex accepts ``<`` as a path terminator — deliberately,
+# since widening the delimiter set re-opens the glue classes #68773/#88038 — so the attachment was
+# silently dropped (#111046). The one exact token is recognised here, at the seam every scan shares
+# (extraction, display strip, stream cleanup), and only when it terminates the whole response.
+_TERMINAL_SENTINEL = "<|eos|>"
+
+
+def _terminal_sentinel_start(text: str) -> int:
+    """Offset where the run of exact ``<|eos|>`` tokens closing ``text`` (trailing whitespace
+    ignored) begins, else -1; the run ends at ``len(text.rstrip())``."""
+    end = start = len(text.rstrip())
+    while start >= len(_TERMINAL_SENTINEL) and text[start - len(_TERMINAL_SENTINEL):start] == _TERMINAL_SENTINEL:
+        start -= len(_TERMINAL_SENTINEL)
+    return start if start < end else -1
+
+
 def _mask_media_scan_text(text: str) -> str:
-    """Offset-preserving mask of protected spans (code, quotes, JSON string values).
+    """Offset-preserving mask of protected spans (code, quotes, JSON string values) and of a
+    terminal ``<|eos|>`` sentinel, so a tag glued to it ends on whitespace like any other.
     BasePlatformAdapter is defined later in this module; resolved at call time."""
     A = BasePlatformAdapter
-    return A._mask_json_string_media(A._mask_protected_spans(text))
+    masked = A._mask_json_string_media(A._mask_protected_spans(text))
+    start = _terminal_sentinel_start(text)
+    if start >= 0:
+        masked = _blank_spans(masked, [(start, len(text.rstrip()))])
+    return masked
+
+
+def _deliverable_tag_spans(text: str) -> list:
+    """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
+    plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
+    spans = _real_media_tag_spans(_mask_media_scan_text(text))
+    start = _terminal_sentinel_start(text)
+    if spans and start >= 0:
+        spans.append((start, len(text.rstrip())))
+    return spans
 
 
 def _extensionless_media_matches(masked: str):
@@ -1373,7 +1422,7 @@ def _strip_media_tag_directives(text: str) -> str:
     if not text or not _has_media_directives(text):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return _delete_spans(cleaned, _real_media_tag_spans(_mask_media_scan_text(cleaned)))
+    return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -2514,11 +2563,14 @@ class BasePlatformAdapter(ABC):
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
 
-    # ── ``_format_exec_approval`` templates; adapters override to keep historical wording.
-    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
+    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
+    # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
+    # says the same thing.
+    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = "Reason: "
+    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
+    _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
@@ -2537,17 +2589,23 @@ class BasePlatformAdapter(ABC):
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
 
+    def _ea_deadline_line(self) -> str:
+        """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
+        return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
+
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
-        plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
+        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
+        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
+        platform-local."""
         if self._EA_REASON_BUDGET:
             description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._truncate_preview(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}")
+                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
+                f"{self._ea_deadline_line()}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
@@ -2627,7 +2685,9 @@ class BasePlatformAdapter(ABC):
         ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
         ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
-        ``mark_awaiting_text``."""
+        ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
+        ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify
+        ends without a click (timeout, session reset, superseding free prose)."""
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
@@ -2782,8 +2842,55 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
-        text = f"{caption}\n{text}" if caption else text
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata,
+                                             shown_metadata=metadata)
+
+    async def emit_warning(
+        self, chat_id: str, content: str, *, reply_to=None, metadata=None, logical_platform=None,
+    ) -> Optional[SendResult]:
+        """Present a classified channel diagnostic in the caller's owning scope.
+
+        None means suppressed, NOT successfully sent. Transport receipts/exceptions
+        pass through unchanged; logs and producer state belong outside this boundary.
+        Existing routing/stream metadata is preserved, never inferred from text.
+        """
+        if not self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return None
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def emit_media_warning(
+        self, chat_id: str, notice: str, *, caption=None, reply_to=None, metadata=None,
+        shown_metadata=None,
+    ) -> SendResult:
+        """Present an optional media diagnostic without losing the requested caption.
+
+        Preserve the legacy fallback-text receipt when shown (``shown_metadata`` is the exact
+        metadata the legacy shown path passed; default None keeps callers that sent none
+        byte-identical). When hidden, preserve the media failure even if the independent
+        caption itself was delivered.
+        """
+        result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
+                                         reply_to=reply_to, metadata=shown_metadata)
+        if result is not None:
+            return result
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        return SendResult(success=False, error=notice)
+
+    def warning_text(self, visible: str, hidden: Optional[str] = "", *, logical_platform=None, chat_id=None, metadata=None) -> Optional[str]:
+        """Project mixed content: the diagnostic variant when visible, else the requested remainder.
+
+        For payloads that combine a requested result (caption, answer) with an automatic
+        diagnostic. The requested part must be present in BOTH variants; never hide it.
+        """
+        if self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return visible
+        return hidden
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        """Presentation policy under the caller's owning profile; old plugins inherit it."""
+        from gateway.warning_notifications import warning_notifications_enabled
+        return warning_notifications_enabled(logical_platform or self.platform)
 
     def prepare_tts_text(self, text: str) -> str:
         """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,
@@ -2874,8 +2981,8 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
-            problem = None if notice.success else notice.error
+            notice = await self.emit_warning(chat_id, text, metadata=metadata)
+            problem = None if notice is None or notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
         if problem is not None:
@@ -2985,7 +3092,7 @@ class BasePlatformAdapter(ABC):
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
         if media:
-            spans = _real_media_tag_spans(_mask_media_scan_text(cleaned))
+            spans = _deliverable_tag_spans(cleaned)
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
         return media, cleaned
@@ -3251,8 +3358,8 @@ class BasePlatformAdapter(ABC):
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
-        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
-        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        """Routed home + terminal policy for post-handler text, media and error delivery;
+        a no-op without a runner or outside multiplexing."""
         resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
         if not callable(resolve) or source is None:
             return contextlib.nullcontext()
@@ -3365,6 +3472,7 @@ class BasePlatformAdapter(ABC):
                     )
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                # Not a diagnostic: the requested result itself was lost and this is its only signal.
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent.")
@@ -3392,7 +3500,9 @@ class BasePlatformAdapter(ABC):
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
-            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            chat_id=chat_id, content=self.warning_text(
+                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
     @staticmethod
@@ -3972,12 +4082,19 @@ class BasePlatformAdapter(ABC):
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
         try:
-            error_detail = str(e)[:300] if str(e) else "no details available"
             _thread_metadata = _thread_metadata_for_event(event)
-            await self.send(
-                chat_id=event.source.chat_id,
-                content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
+            error_detail = str(e)[:300] if str(e) else "no details available"
+            # Only the policy reads bind the routed profile; the send stays in the launch scope
+            # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
+            with self._media_delivery_scope(event.source):
+                content = None if diagnostic_wake_muted(event) else self.warning_text(
+                    f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                    "Try again or use /reset to start a fresh session.",
+                    "Sorry, I encountered an error.",
+                    logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
+            if content is None:
+                return _thread_metadata
+            await self.send(chat_id=event.source.chat_id, content=content, metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -4008,7 +4125,8 @@ class BasePlatformAdapter(ABC):
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        if not getattr(self.config, "typing_indicator", True):
+        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
+        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
             return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
@@ -4118,6 +4236,11 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            # A muted diagnostic wake ran for the session; its reply is not presented. The
+            # policy read binds the routed profile; delivery itself stays in the launch scope.
+            with self._media_delivery_scope(event.source):
+                if diagnostic_wake_muted(event):
+                    response = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)

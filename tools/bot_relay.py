@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
 from utils import atomic_json_write
@@ -78,6 +78,18 @@ _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
 BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
 
+# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
+# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
+# Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
+# the re-run is told to adopt that row instead of appending a second copy
+# (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).
+RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
+
+
+def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
+    """The re-run's child env: the first attempt's env plus the resume marker."""
+    return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
+
 
 def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
@@ -86,7 +98,8 @@ def relay_root(root: Path | str) -> Path:
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
-        (base / sub).mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(base / sub)
     return base
 
 
@@ -241,6 +254,15 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     return True
 
 
+def _queued_at(path: Path) -> tuple[float, str]:
+    """Claim order for one outbox entry: oldest first. ``mtime`` is what ``_sweep_stale`` already
+    treats as an envelope's age, and unlike the whole-second ``created_at`` field it separates two
+    DMs sent in the same second. The name only breaks ties."""
+    with contextlib.suppress(OSError):
+        return (path.stat().st_mtime, path.name)
+    return (0.0, path.name)
+
+
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
     """Drain the outbox (rename → claimed/ so a second drain can't double-deliver).
     TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
@@ -254,7 +276,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     ttl = _envelope_ttl_seconds()
     now = time.time()
     out: list[dict] = []
-    for path in sorted((base / OUTBOX_DIR).glob("*.json")):
+    # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
+    # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
+    # by filename ordered them by ``uuid4().hex`` — at random.
+    for path in sorted((base / OUTBOX_DIR).glob("*.json"), key=_queued_at):
         if ttl > 0 and _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()
@@ -404,13 +429,34 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
             "is_bot": True}
 
 
-def delivery_env(author: Optional[dict]) -> dict[str, str]:
-    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
-    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
-    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+def _delivery_child_session_env_names() -> "tuple[str, ...]":
+    """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
 
-    env = dict(os.environ)
+    Synced with the session binding surface as vars are added; deliberately NOT a
+    ``HERMES_SESSION_*`` prefix match, which would also strip non-identity knobs
+    (e.g. ``HERMES_SESSION_STALL_TIMEOUT``)."""
+    from gateway.session_context import _VAR_MAP
+
+    return tuple(_VAR_MAP)
+
+
+def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
+    HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
+    that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
+    dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
+    notify with the grandparent's key, or the live recipient never resumes. The child runs the target
+    profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
+    profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
+    ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
+    caller knows it (relay RPC, roster); otherwise the active override."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from tools.environments.local import served_profile_child_env
+
+    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
+    for name in _delivery_child_session_env_names():
+        env.pop(name, None)
     if author:
         env.update(turn_author_env(author))
     return env

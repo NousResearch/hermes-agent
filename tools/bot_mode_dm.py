@@ -136,16 +136,19 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         tools = getattr(agent, "tools", None)
-        if tools and any(
+        present = bool(tools) and any(
             isinstance(t, dict) and t.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
             for t in tools
-        ):
-            return True
-        if not message_agent_authorized(agent):
-            return False
-        if agent.tools is None:
-            agent.tools = []
-        agent.tools.append(message_agent_tool_schema())
+        )
+        if not present:
+            if not message_agent_authorized(agent):
+                return False
+            if agent.tools is None:
+                agent.tools = []
+            agent.tools.append(message_agent_tool_schema())
+        # Success means BOTH halves hold: a tool-surface rebuild (compaction, MCP refresh)
+        # can keep the schema while valid_tool_names is republished without it, and an
+        # advertised-but-nondispatchable tool sends the model hunting for shellouts (#96105).
         valid = getattr(agent, "valid_tool_names", None)
         if isinstance(valid, set):
             valid.add(MESSAGE_AGENT_TOOL_NAME)
@@ -155,12 +158,24 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         return False
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
+    """Map a target to a local profile FOLDER id: 'hermes' → 'default'; an exact folder id
+    (case-insensitive); else — when ``root`` is given — a friendly name or its Desktop @-slug
+    (profile.yaml ``display_name`` / Bot Mode title: 'Scribe', '@scribe', 'Dr. Foo' → 'foo').
+    Ambiguous friendly names resolve to None so a DM never lands on the wrong bot (#100671)."""
     want = target.strip().lower()
+    if not want:
+        return None
     if want == "hermes":
         return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    exact = next((name for name in roster if name.lower() == want), None)
+    if exact is not None or root is None:
+        return exact
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    aliases = local_alias_map(root)
+    hits = set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+    return next(iter(hits)) if len(hits) == 1 else None
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
@@ -180,10 +195,10 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            BOT_CHAT_TITLE, _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
+            _roster, is_bot_mode_managed,
         )
-        from tools.bot_relay import BOT_CHAT_TURN_ARGS
+        from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
 
         if _session_title(agent) != BOT_CHAT_TITLE:
             return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
@@ -213,7 +228,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:
         return _roster_err("target is required.")
-    content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
+    # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
+    content = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)))} (@{_handle(me)}): " + body
     delivery = dict(task_id=task_id, agent=agent)
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
     author = {"id": f"bot:{me}", "name": _handle(me), "is_bot": True}
@@ -231,15 +247,20 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
         # load_config(), while the roster above reads the machine-root config — the CLI must run
         # in that same profile or a secondary-profile bot sees an empty registry.
-        return _start_delivery(["hermes", "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
+        # The delivery runs in a background service context whose PATH lacks the gateway's
+        # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
+        # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
+        # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
+        # so the absolute path stays compatible.
+        return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
-    # Local teammate.
+    # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
+    resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
-    if not is_local_shape and "@" not in raw_target:
+    if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
-    resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
@@ -252,7 +273,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
-    return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
+    return _start_delivery([_hermes_cli(), "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
 
@@ -284,7 +305,19 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        return _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        raw = _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        waiter_error = json.loads(raw).get("error")
+        if not waiter_error:
+            return raw
+        # The envelope is already queued and the Desktop drains it on its own, so a waiter that
+        # failed to start loses only the reply wake-up. Reporting a hard failure here makes the
+        # sender resend and deliver the message twice. Same shape as the live-owner branch of
+        # _start_delivery: queued + notification_error.
+        return json.dumps({
+            "status": "queued", "to": label, "notification_error": waiter_error,
+            "detail": (f"Message queued for {label}; the relay delivers it on its own, but the reply "
+                       "waiter did not start, so the reply will NOT wake you. Do NOT resend."),
+        })
     except Exception:
         logger.debug("relay delivery attempt failed", exc_info=True)
         return None
@@ -315,7 +348,12 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     temp_root = Path(tempfile.gettempdir())
     locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
     with contextlib.suppress(OSError):
-        locations.append((_dm_dir(), "*.txt"))
+        dm_dir = _dm_dir()
+        locations.append((dm_dir, "*.txt"))
+        # Live-delivery intents (``<dm file>.live.json``, message plaintext included) outlive
+        # their runner on purpose — a retry replays the same delivery id from them — so the
+        # orphans of runners that never settled are swept here too.
+        locations.append((dm_dir, "*.live.json"))
     from tools.bot_relay import unlink_files_older_than
 
     return sum(unlink_files_older_than(d, pattern, cutoff) for d, pattern in locations)
@@ -368,16 +406,19 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
-    def _turn():
+    def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=turn_env)
 
     proc = _turn()
     if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
+        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
+        from tools.bot_relay import retry_turn_env
 
-        if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
-            proc = _turn()
+        # The re-run replays the same session and payload; the failed attempt already persisted the
+        # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
+        if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
+            proc = _turn(retry_turn_env(env))
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()
@@ -398,8 +439,15 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         }))
         return 1
     # Re-emit the transport's streams: stdout is the reply text the
-    # completion notification carries back to the sending agent.
-    for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
+    # completion notification carries back to the sending agent. A successful bare
+    # silence marker is a delivery decision (same rule as the gateway and the live
+    # Bot Chat completion): the turn stays in the target's transcript, the sender
+    # never sees the marker as prose.
+    from gateway.response_filters import is_intentional_silence_response
+    reply = proc.stdout or ""
+    if proc.returncode == 0 and is_intentional_silence_response(reply):
+        reply = ""
+    for stream, text in ((sys.stdout, reply), (sys.stderr, proc.stderr)):
         if text:
             stream.write(text)
             stream.flush()
@@ -441,7 +489,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     return record
 
 
-def _wait_live_dm(home: str, delivery_id: str) -> int:
+def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
     from tools.bot_live_delivery import read_delivery_result
 
     deadline = time.monotonic() + _LIVE_WAIT_SECONDS
@@ -455,6 +503,12 @@ def _wait_live_dm(home: str, delivery_id: str) -> int:
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
+    elif status == "settled" and dm_file is not None:
+        # The intent carries the message plaintext so a retry can replay the SAME delivery id;
+        # once the owner settled it nothing retries, so it goes along with the dm file (same
+        # plaintext) — the live branch returns before _run_delivery's own unlink.
+        _unlink_dm_file(str(dm_file) + ".live.json")
+        _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
 
@@ -495,11 +549,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                     "evidence_file": dm_file}))
                 return 1
             if record is not None:
-                return _wait_live_dm(record["profile_home"], record["delivery_id"])
+                return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
     try:
         from tools.bot_relay import delivery_env
 
-        env = delivery_env(author)
+        env = delivery_env(author, profile_home if not stdin_file else None)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
                 return _run_local_turn(argv, dm_file, env=env)
@@ -579,6 +633,12 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         proc_id = parsed.get("session_id") or ""
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
+        if parsed.get("status") == "pending_approval":
+            # terminal_tool's approval gate answers with an EMPTY error and no session_id: the runner
+            # never launched because nobody in this turn could approve its command.
+            return _err(f"Delivery to {label} failed to start: its command needs terminal approval that nobody "
+                        "in this turn can grant" + (", so nothing was sent. Approve it (or add it to "
+                                                    "command_allowlist) and send again." if dm_file else "."))
         if not proc_id:
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).

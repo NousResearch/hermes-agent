@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import importlib
 import json
 import logging
@@ -384,6 +385,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._project_id = self._subscription_path = self._bot_user_id = None  # bot id is users/{id}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # The profile scope this adapter was connected under (multiplex: HERMES_HOME override + secret
+        # scope). Pub/Sub callbacks arrive on the gRPC SubscriberClient's own threads with an EMPTY
+        # context, and ``run_coroutine_threadsafe`` copies THAT context onto the loop task — so
+        # ``_dispatch_message`` and everything it reaches (attachment cache, per-user OAuth token
+        # store, delivery ledger, TTS keys) would resolve the launch profile. Captured in ``connect()``.
+        self._scope_ctx: Optional[contextvars.Context] = None
         # User-authed Chat clients for native ``media.upload`` (bot identity is rejected
         # there) keyed by sender email; ``_user_credentials``/``_user_chat_api`` = LEGACY fallback.
         self._user_chat_api = self._user_credentials = None
@@ -496,9 +503,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return
         try:
             from agent.async_utils import safe_schedule_threadsafe
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="[GoogleChat] Failed to schedule background callback",
-                log_level=logging.WARNING,
+            # run_coroutine_threadsafe copies the CALLING thread's context onto the loop task; from the
+            # gRPC callback thread that is empty. Run the scheduling inside the adapter's connect-time
+            # scope so the task (and every to_thread/create_task under it) carries the profile.
+            ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+            future = ctx.run(
+                safe_schedule_threadsafe, coro, loop, logger=logger,
+                log_message="[GoogleChat] Failed to schedule background callback", log_level=logging.WARNING,
             )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
@@ -608,6 +619,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                   message="google-cloud-pubsub / google-api-python-client not installed")
             return False
         self._loop = asyncio.get_running_loop()
+        self._scope_ctx = contextvars.copy_context()  # the profile scope connect() runs under (see __init__)
         try:
             project_id, subscription_path = self._validate_config()
             credentials = self._load_sa_credentials()
@@ -782,7 +794,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
     def _on_pubsub_message(self, message: Any) -> None:
         """Pub/Sub callback — parse envelope and dispatch to the asyncio loop.
         Runs in a SubscriberClient worker thread: never block, never raise (that
-        triggers nack + infinite redelivery). Event type comes from ``ce-type``."""
+        triggers nack + infinite redelivery). Event type comes from ``ce-type``. The body runs under
+        the adapter's profile scope (a per-callback copy: a Context cannot be entered concurrently) so
+        ``_save_cached_bot_id`` and the loop hand-off resolve the served profile, not the launch one."""
+        ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+        ctx.run(self._handle_pubsub_message, message)
+
+    def _handle_pubsub_message(self, message: Any) -> None:
         if self._shutting_down:
             message.nack()
             return
@@ -1491,16 +1509,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                         thread_id: Optional[str]) -> SendResult:
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
-        lines = [caption] if caption else []
-        lines.extend([
+        notice = "\n".join([
             f"⚠️ No he podido adjuntar **{filename}**.",
             "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
             "Es un consentimiento único que se hace desde este chat.",
             "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
             f"Mientras tanto el archivo está en el host: `{path}`",
         ])
+        body = self.warning_text(f"{caption}\n{notice}" if caption else notice, caption or "")
         try:
-            await self._create_message(chat_id, _thread_body("\n".join(lines), thread_id))
+            if body:
+                await self._create_message(chat_id, _thread_body(body, thread_id))
         except Exception:
             logger.debug("[GoogleChat] attachment fallback notice send failed", exc_info=True)
         return SendResult(

@@ -8,8 +8,9 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,18 @@ class UpdatePlan:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "UpdatePlan":
+        """Inverse of :meth:`to_dict` (the plan crosses the post-swap hand-off as JSON)."""
+        fields_ = {f.name for f in dataclass_fields(cls)}
+        plan = cls(**{k: v for k, v in data.items() if k in fields_ and k != "runtimes"})
+        record_fields = {f.name for f in dataclass_fields(RuntimeRecord)}
+        plan.runtimes = [
+            RuntimeRecord(**{k: v for k, v in r.items() if k in record_fields})
+            for r in data.get("runtimes") or [] if isinstance(r, dict)
+        ]
+        return plan
 
 
 def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids: set | None = None) -> str:
@@ -318,11 +331,17 @@ def match_runtime_outcomes(
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed`` or ``unaccounted`` (no
-    bookkeeping mentions it — the blind-spot tripwire). Never raises. Serve/dashboard runtimes are
-    reconciled in their OWN vocabulary and never borrow the gateway's outcome: with
-    ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as ``restarted``, one
-    still alive is ``unaccounted``; without the probe an untouched serve stays ``unaccounted``.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
+    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
+    outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
+    ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
+    ``unaccounted``. A Desktop-supervised serve is ``deferred`` only when the survivor probe RAN
+    and still lists its pid: the restart phase is forbidden to restart it out from under the app (it
+    hosts the live Desktop chats), so it is handed back to its supervisor and surfaced. Without a
+    probe result it remains ``unaccounted``, rather than claiming the app owns an unknown
+    incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
+    surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -343,10 +362,18 @@ def match_runtime_outcomes(
                     return "stopped"
                 if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
-                if stale_serves is not None:
+                if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
-                    # dashboard cleanup respawn / the Desktop app) or it is still alive on pre-update code.
-                    return "unaccounted" if r.pid in stale_serves else "restarted"
+                    # dashboard cleanup respawn / the Desktop app).
+                    return "restarted"
+                if r.supervisor == "desktop":
+                    if stale_serves is not None:
+                        # Still alive on pre-update code, but the Desktop app owns it and the restart phase
+                        # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
+                        return "deferred"
+                    return "unaccounted"
+                if stale_serves is not None:
+                    return "unaccounted"
                 return "restarted" if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set) else "unaccounted"
             if r.profile in relaunched:
                 return "restarted"
@@ -373,6 +400,14 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
     exists to kill.
     """
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    if deferred:
+        # Surfaced but not escalated: the updater has no authority over these, so holding
+        # ``fleet_restart_pending`` for them would never be discharged. See #111494.
+        print()
+        print("  ℹ Left to the Desktop app (still on pre-update code until it is relaunched):")
+        for o in deferred:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — relaunch the Desktop app to pick up the update")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
@@ -387,8 +422,9 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     if any(o.get("kind") in _SERVE_KINDS for o in missed):
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
-        print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
-        print("      relaunch `hermes serve` / `hermes dashboard` / the Desktop app")
+        if sys.platform == "linux":
+            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+        print("      relaunch `hermes serve` / `hermes dashboard`")
     return True
 
 

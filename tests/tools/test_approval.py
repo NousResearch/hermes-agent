@@ -10,7 +10,7 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 import tools.approval as approval_module
-from tools import approval_context
+from tools import approval_context, approval_detection
 from tools import approval_smart
 from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
@@ -156,6 +156,43 @@ class TestDetectDangerousRm:
                 assert is_dangerous is True, command
                 assert key is not None, command
                 assert "delete" in desc.lower(), command
+
+
+class TestDynamicShellWordSpellings:
+    """Unquoted brace/glob words that the shell can expand into `find -delete`/`-exec` or into a
+    program-bearing read-tool option require approval. Additive detection of these spellings only:
+    approval is decided from source text, so `$var`-built words are out of scope here."""
+
+    @pytest.mark.parametrize("command", [
+        "find ./missing-approval-target -{delete,print}",
+        "find ./missing-approval-target -del*",
+        "find ./missing-approval-target -delet?",
+        "find ./missing-approval-target -delet[e]",
+        "echo x; find ./missing-approval-target -{delete,print}",
+        "rg --pre{=,=sh} pattern missing-approval-payload.sh",
+        "rg --hostname-bin{=,=sh} pattern file",
+        "sort --compress-program{=,=sh} file",
+        "ag --pager{=,=sh} pattern",
+    ])
+    def test_dynamic_spellings_require_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True and key is not None, command
+        assert "dynamic shell word" in desc, command
+
+    @pytest.mark.parametrize("command", [
+        "echo '-{delete,print}' '-del*'",
+        'echo -g"*.py" \'-{delete,print}\' "--pre{=,=sh}"',
+        "find . -name '*.pyc' -print",
+        "find . -name 'log-del*'",
+        "find . -name 'pre-exec*.sh'",
+        "find src -path '*-exec[0-9]*'",
+        "echo find . -{delete,print}",
+        "grep -r 'find . -del*' docs",
+        "rg --pretty pattern file",
+        'rg "--pre*" pattern file',
+    ])
+    def test_inert_spellings_remain_safe(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
 
 
 class TestWindowsShellDestructiveCommands:
@@ -1125,6 +1162,30 @@ class TestLaunchctlGatewayLifecycle:
         assert "launchd" in desc.lower()
 
 
+class TestQuotedCommandWordVariants:
+    """#113535: a heredoc body of quoted lines is hundreds of quoted command words; one full-length
+    detection variant per word made both detection passes O(words * len) and stalled the gateway."""
+
+    def test_many_quoted_command_words_stay_bounded_in_both_passes(self):
+        cmd = "\n".join(f'"key{i}": "line {i} with some text"' for i in range(460))
+        start = time.monotonic()
+        assert detect_hardline_command(cmd) == (False, None)
+        assert detect_dangerous_command(cmd) == (False, None, None)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"detection took {elapsed:.2f}s for a {len(cmd)}-char command"
+
+    def test_obfuscated_command_words_still_detected_when_merged_into_one_variant(self):
+        cmd = 'echo "one"; $(echo rm) -rf ~/.ssh; echo "two"; r\'\'m -rf ~/.gnupg'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc.lower(), desc
+        # Nested spans (the backtick word and the substitution inside it) overlap, so they cannot share a
+        # variant; the inner one must land in a second-round variant instead of being dropped.
+        variants = list(approval_detection._command_detection_variants('echo `$("echo" rm) -rf ~/.ssh`'))
+        assert any("echo `rm -rf ~/.ssh`" in v for v in variants), variants
+        assert any("echo `$(echo rm) -rf ~/.ssh`" in v for v in variants), variants
+
+
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy
     work and rewrite shared history. Not covered by rm/chmod patterns.
@@ -1180,7 +1241,7 @@ class TestFailClosedUnderPromptToolkit:
 
     When prompt_toolkit owns the terminal and no approval callback is
     registered on the calling thread, prompt_dangerous_approval() must
-    deny fast instead of falling through to the input() fallback -- which
+    fail closed fast instead of falling through to the input() fallback -- which
     deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
     stdin capture, not to input().
     """
@@ -1209,7 +1270,7 @@ class TestFailClosedUnderPromptToolkit:
                 "prompt_dangerous_approval deadlocked under prompt_toolkit "
                 "with no callback -- fail-closed guard is broken"
             )
-            assert result == ["deny"]
+            assert result == ["cancelled"]  # unanswered, not a user denial (#22992)
         finally:
             ptc.get_app_or_none = orig
 

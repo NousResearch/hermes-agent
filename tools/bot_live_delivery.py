@@ -8,29 +8,29 @@ not permission to execute the same input again. Receipts are permanent.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 import uuid
 from contextlib import contextmanager
 
-from utils import atomic_json_write, fsync_directory
+from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
 from typing import Any
 
 from hermes_cli.active_sessions import _FileLock
 
+log = logging.getLogger(__name__)
+
 DELIVERY_DIR_NAME = "bot_live_delivery"
+_SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
-def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Resolve exact Bot Chat's compression tip without creating/migrating its DB.
-
-    Capability advertisement is mandatory; old Desktop/TUI processes must not
-    receive work they cannot consume. Registry errors propagate, failing closed.
-    """
+def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
     from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
 
@@ -46,12 +46,18 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     if not session_id:
         return None
     for entry in active_session_registry_snapshot(registry_home=home):
-        meta = entry.get("metadata") or {}
-        if (entry["session_id"] == session_id
-                and meta.get("bot_live_delivery_consumer") is True
-                and meta.get("live_session_id")):
-            return dict(profile_home=str(home), session_id=session_id,
-                        lease_id=entry["lease_id"], live_session_id=meta["live_session_id"])
+        if entry["session_id"] == session_id:
+            return {**entry, "profile_home": str(home)}
+    return None
+
+
+def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
+    entry = find_canonical_owner(profile_home)
+    meta = (entry or {}).get("metadata") or {}
+    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
+        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
+            "live_session_id": meta["live_session_id"]}
     return None
 
 
@@ -72,6 +78,13 @@ def _delivery_id(value: str) -> str:
 
 def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
+
+
+def has_mailbox(profile_home: Path | str) -> bool:
+    """Whether any delivery was ever admitted for this profile (the mailbox directory is created on
+    first admission only). A cheap pre-check for pollers: no mailbox means nothing to claim, so the
+    owner lookup — a state.db open plus the exclusive active-session registry lock — can be skipped."""
+    return _root(profile_home).is_dir()
 
 
 @contextmanager
@@ -96,6 +109,53 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+# Tickets already reported unreadable by this process. The live poller rescans the
+# dir twice a second, so a persistent bad ticket is WARNING once and DEBUG after.
+_warned_unreadable: set[Path] = set()
+
+
+def _scan_read(path: Path) -> dict[str, Any] | None:
+    """Bulk-scan variant: one unreadable ticket must not wedge the whole dir.
+
+    Directory scans (sequence high-water mark, queued-claim sweep) may only
+    treat a file as absent when it is provably absent; an unreadable ticket
+    degrades to "that one delivery is uninspectable" with a warning.
+    Exact-id reads (admission idempotency, completion, result lookup) keep
+    using _read so a permission error still fails closed instead of
+    licensing an overwrite of a possibly-live receipt.
+    """
+    try:
+        record = _read(path)
+    except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+        level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
+        _warned_unreadable.add(path)
+        log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
+        return None
+    _warned_unreadable.discard(path)
+    return record
+
+
+def _next_sequence(root: Path) -> int:
+    """Allocate the next admission sequence under the dir lock.
+
+    The high-water mark lives in a counter file beside the tickets, so a ticket
+    the scan cannot read does not drop its sequence and hand a later admission
+    a duplicate or lower one. Readable tickets still bootstrap dirs written
+    before the counter existed. Wall time can roll back; sequences never do.
+    """
+    counter = root / _SEQUENCE_FILE
+    try:
+        persisted = int(counter.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        persisted = 0
+    scanned = max((record.get("sequence", record["created_at"])
+                   for candidate in root.glob("*.json")
+                   if (record := _scan_read(candidate)) is not None), default=0)
+    sequence = max(persisted, scanned) + 1
+    atomic_write_text(counter, str(sequence), mode=0o600, fsync_dir=True)
+    return sequence
+
+
 def _write(path: Path, record: dict[str, Any]) -> None:
     atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
 
@@ -103,6 +163,7 @@ def _write(path: Path, record: dict[str, Any]) -> None:
 def deliver_to_live_owner(
     profile_home: Path | str, owner: dict[str, Any], message: str,
     *, delivery_id: str | None = None, author: dict[str, Any] | None = None,
+    notification_category: str = "result",
 ) -> dict[str, Any]:
     """Return durable admission immediately, without waiting for the owner.
 
@@ -117,17 +178,15 @@ def deliver_to_live_owner(
         path = root / f"{key}.json"
         existing = _read(path)
         if existing is not None:
-            if existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author:
+            if (existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author
+                    or existing.get("notification_category", "result") != notification_category):
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
-        # Wall time can roll back. Permanent receipts retain the admission
-        # high-water mark, allocated while holding the cross-process lock.
-        sequence = max((record.get("sequence", record["created_at"])
-                        for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
-                      sequence=sequence, **({"author": dict(author)} if author else {}))
+                      sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
+        if notification_category == "diagnostic":
+            record["notification_category"] = notification_category
         _write(path, record)
         return record
 
@@ -162,7 +221,7 @@ def claim_pending_delivery(
     with _locked(profile_home) as root:
         pending = []
         for path in root.glob("*.json"):
-            record = _read(path)
+            record = _scan_read(path)
             if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
                 pending.append(record)
         if not pending:

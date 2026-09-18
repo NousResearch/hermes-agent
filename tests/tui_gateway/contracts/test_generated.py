@@ -117,11 +117,28 @@ def test_catalog_covers_the_whole_wire():
     registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())
 
 
+def _meta_schema_registry():
+    """Resolve the meta-schema's EXTERNAL refs from the vendored stub, never the network.
+
+    The vendored meta-schema references ``https://meta.json-schema.tools``; ``jsonschema`` answers
+    that with an automatic remote retrieval (deprecated, and dependent on the runner's egress —
+    this check flaked in CI for exactly that reason). The stub carries the only shape the
+    meta-schema dereferences, so the validation stays hermetic and unchanged for our document.
+    """
+    import referencing
+    from referencing.jsonschema import DRAFT7
+
+    stub = json.loads((META_SCHEMA.parent / "meta-json-schema-tools.json").read_text(encoding="utf-8"))
+
+    return referencing.Registry().with_resource(
+        "https://meta.json-schema.tools", referencing.Resource.from_contents(stub, default_specification=DRAFT7))
+
+
 def test_openrpc_validates_against_vendored_meta_schema(gen):
     schema = json.loads(META_SCHEMA.read_text(encoding="utf-8"))
     document = json.loads(gen.render_openrpc())
 
-    assert list(Draft7Validator(schema).iter_errors(document)) == []
+    assert list(Draft7Validator(schema, registry=_meta_schema_registry()).iter_errors(document)) == []
 
 
 def test_rendering_is_deterministic(gen):

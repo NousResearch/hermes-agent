@@ -1115,6 +1115,27 @@ class TestGatewaySystemServiceRouting:
         assert result is False
         assert replacement_observed == [True]
 
+    def test_wait_accepts_a_degraded_replacement_as_restarted(self, monkeypatch, capsys):
+        """A replacement serving with a parked platform stamps ``degraded`` for its whole life; the
+        restart verifier must report a restart (with a warning), not wait out the timeout (#91547)."""
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 777, "gateway_state": "degraded"},
+        )
+
+        result = gateway_cli._wait_for_systemd_service_restart(previous_pid=654, timeout=1.0)
+
+        assert result is True
+        assert "DEGRADED" in capsys.readouterr().out
+
     def test_launchd_restart_uses_sigusr1_and_exit_wait_budget(self, monkeypatch, capsys):
         """launchd_restart must take the same graceful path as systemd_restart.
 

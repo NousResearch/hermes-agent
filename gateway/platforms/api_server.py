@@ -199,6 +199,7 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
 
 
 def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
@@ -4028,19 +4029,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
             # (enabled) for instant restart rebinds.
             try:
-                # A restart's predecessor may still hold the port for a moment after its PID is gone;
-                # a fresh TCPSite per attempt (a failed one stays registered in the runner) bounds the
-                # retry before the conflict is treated as a real config error.
-                for attempt in range(5):
+                # A restart's predecessor may still hold the port for a moment after its PID is gone.
+                # aiohttp registers a site with its runner before binding, so a failed start leaves the
+                # site registered: rebuild the runner per attempt rather than reach into its internals.
+                for attempt in range(_BIND_ATTEMPTS):
                     self._site = web.TCPSite(
                         self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
                     try:
                         await self._site.start()
                         break
                     except OSError as exc:
-                        self._runner._unreg_site(self._site)
-                        if getattr(exc, "errno", None) != errno.EADDRINUSE or attempt == 4:
+                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
                             raise
+                        await self._runner.cleanup()
+                        self._runner = web.AppRunner(self._app)
+                        await self._runner.setup()
                         await asyncio.sleep(0.2 * (attempt + 1))
             except OSError as exc:
                 await self._runner.cleanup()

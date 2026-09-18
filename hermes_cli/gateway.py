@@ -1223,8 +1223,12 @@ def _wait_for_systemd_service_restart(
                 if runtime_state and _runtime_state_pid(runtime_state) != new_pid:
                     runtime_state = None
             gateway_state = (runtime_state or {}).get("gateway_state")
-            if gateway_state == "running":
+            if gateway_state in ("running", "degraded"):
                 print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                if gateway_state == "degraded":
+                    # Serving, but a configured platform is parked or retrying: a real restart, not a
+                    # failure — say so instead of waiting out the timeout and reporting one.
+                    print(f"⚠ {scope_label} gateway is DEGRADED — see `hermes gateway status`")
                 return True
             if gateway_state == "startup_failed":
                 reason = (runtime_state or {}).get("exit_reason") or "startup failed"
@@ -4332,7 +4336,7 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     """Wait until nothing accepts TCP connections on host:port.
 
     PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
-    the race logs EADDRINUSE and keeps running with no API. Only connection-refused means the
+    the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
     listener is gone; a timed-out connect is a live listener with a slow accept queue.
     """
     deadline = time.monotonic() + timeout
@@ -4342,8 +4346,10 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
                 pass
         except ConnectionRefusedError:
             return True
+        except TimeoutError:
+            pass  # a slow accept queue is still a live listener
         except OSError:
-            pass
+            return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
         time.sleep(0.1)
     return False
 

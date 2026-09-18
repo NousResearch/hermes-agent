@@ -1671,7 +1671,9 @@ def restart() -> None:
                 "start a duplicate. Investigate stray PIDs before retrying."
             )
 
-    time.sleep(1.0)   # let Windows release the listening port
+    from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
+
+    _wait_for_api_server_port_free()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):

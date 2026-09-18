@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $parkedQueueSessions, $queuedPromptsBySession, enqueueQueuedPrompt } from '@/store/composer-queue'
-import { $activeSessionId, $busy, $messages, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $activeSessionId, $busy, $messages, $selectedStoredSessionId, $sessions, setSessionsLoading } from '@/store/session'
 import { $sessionStates, publishSessionState } from '@/store/session-states'
 
 import type { QueueEditState } from '../composer-utils'
@@ -75,9 +75,16 @@ describe('composer queue across a session switch', () => {
     $selectedStoredSessionId.set(null)
     $messages.set([])
     $busy.set(false)
+    // The auto-drain effect defers while session discovery is in flight, and
+    // `$sessionsLoading` is `atom(true)` until a gateway boot clears it. These
+    // tests drive the settle path directly, so discovery has finished.
+    setSessionsLoading(false)
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    setSessionsLoading(true)
+  })
 
   const startRunningTurnForA = () => {
     publishSessionState(RUNTIME_A, { ...createClientSessionState(STORED_A), busy: true })

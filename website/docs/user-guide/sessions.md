@@ -950,7 +950,9 @@ workers, subagents, one-shot CLI runs — can die without ever marking their
 session ended, and pruning only deletes *ended* rows. To keep those from
 accumulating forever, each auto-prune pass also *closes* open sessions from
 those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
-`subagent`, `tool`) whose last activity is older than `retention_days`
+`subagent`, `tool`, plus the `recovered` placeholders that
+`hermes sessions recover` synthesizes for orphaned messages) whose last
+activity is older than `retention_days`
 (`end_reason: startup_orphan_reap`). Closing is non-destructive — the
 session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging

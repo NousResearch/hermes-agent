@@ -860,7 +860,7 @@ class OpenAICompatRoutesMixin:
         _declared_selected = not stored_session_id and bool(gateway_session_key)
         session_id = (
             stored_session_id
-            or self._declared_conversation_session(gateway_session_key)
+            or await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
             or str(uuid.uuid4()))
         stream = _coerce_request_bool(body.get("stream"), default=False)
         route, agent_overrides, selection_error = self._select_request_route(

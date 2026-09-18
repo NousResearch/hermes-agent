@@ -759,11 +759,16 @@ def _probe_failure_next_step(name: str, exc: BaseException) -> str:
 
 
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Returns the process exit code so health probes and watchdogs can branch on ``$?`` instead of
+    parsing the output: 0 connected, 1 connection failed, 3 server not in the config (argparse
+    already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
+    """
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 3
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -790,13 +795,14 @@ def cmd_mcp_test(args):
         elapsed = time.monotonic() - start
         _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
-        return
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -1080,8 +1086,8 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

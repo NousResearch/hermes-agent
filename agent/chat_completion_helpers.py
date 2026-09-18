@@ -1851,6 +1851,12 @@ def _update_fallback_context_compressor(agent) -> None:
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
+    # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
+    # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
+    # resolving an auxiliary client while the primary route is failing (#114707).
+    if getattr(agent, "_compression_feasibility_checked", False) is True:
+        from agent.conversation_compression import revalidate_compression_feasibility
+        revalidate_compression_feasibility(agent)
 
 
 def _reresolve_fallback_reasoning_config(agent) -> None:
@@ -3166,6 +3172,11 @@ class _StreamingCall(StreamingWaitMonitor):
             if not self.agent._interrupt_requested and raw_stream is not None:
                 try:
                     base_final_message = raw_stream.get_final_message()
+                    # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
+                    # refusal's stop_details (category/explanation) survives only in our accumulator.
+                    _stop_details = accumulator.finalize().get("stop_details")
+                    if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
+                        base_final_message.stop_details = _stop_details
                 except AssertionError:
                     if not saw_stream_event:
                         raise EmptyStreamError(

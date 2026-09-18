@@ -7,10 +7,13 @@ print and issue strings to append. No printing inside workers — the caller pri
 from __future__ import annotations
 
 import concurrent.futures
+import errno
 import functools
 import os
+import socket
 import sys
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
@@ -210,6 +213,9 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # Google's Generative Language API rejects ``Authorization: Bearer <api-key>`` with 401
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
     if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
+        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], key) + "/models"
         headers.pop("Authorization", None)
         headers["x-goog-api-key"] = key
     return base, url, headers
@@ -276,12 +282,58 @@ def _probe_azure_entra() -> ProbeResult:
     return _row(name, "warn", f"({err})", [f"Azure Foundry Entra: {err}. {hint}"], label=label)
 
 
+def _load_network_config() -> dict:
+    try:
+        from hermes_cli.config import load_config_readonly
+        net = (load_config_readonly() or {}).get("network")
+    except Exception:
+        return {}
+    return net if isinstance(net, dict) else {}
+
+
+def _tcp_connect(sockaddr, timeout: float) -> None:
+    """Open + close one IPv6 TCP connection; raises OSError (TimeoutError on a dead route)."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(sockaddr)
+
+
+_IPV6_PROBE_TIMEOUT = 2.0
+
+
+def _probe_ipv6_path() -> ProbeResult:
+    """Dead-IPv6-route detector (#114265): an advertised AAAA path that only times out makes every
+    serial connect burn its full timeout before IPv4 answers. Name the remedy instead of stalling."""
+    name = "IPv6 route"
+    if _load_network_config().get("force_ipv4"):
+        return _skip(name)  # IPv6 is never dialled
+    host = urlsplit(OPENROUTER_MODELS_URL).hostname
+    try:
+        infos = socket.getaddrinfo(host, 443, socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    if not infos:
+        return _skip(name)  # no AAAA record / no IPv6 resolver: nothing to test
+    try:
+        _tcp_connect(infos[0][4], _IPV6_PROBE_TIMEOUT)
+    except TimeoutError:
+        remedy = "set `network.force_ipv4: true` in config.yaml (or fix the IPv6 route)"
+        return _row(name, "warn", f"(IPv6 route to {host} advertised but dead: connect timed out after "
+                    f"{_IPV6_PROBE_TIMEOUT:g}s — {remedy})",
+                    [f"Dead IPv6 route: every IPv6-first connect stalls before IPv4 answers. Fix: {remedy}"])
+    except OSError as e:
+        if e.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL):
+            return _row(name, "ok", "(no IPv6 route — IPv4 only)")  # fails fast, so no stall
+    return _row(name, "ok", f"(IPv6 path to {host} reachable)")  # refused/reset also prove a live path
+
+
 def build_probes() -> list:
     """(label, callable) pairs in display order."""
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:
         _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
     return [
+        ("IPv6 route", _probe_ipv6_path),
         ("OpenRouter API", _probe_openrouter), ("Anthropic API", _probe_anthropic),
         # functools.partial binds each row's args so every callable keeps its own provider.
         *((row[0], functools.partial(_probe_apikey_provider, *row)) for row in _APIKEY_PROVIDERS_CACHE),

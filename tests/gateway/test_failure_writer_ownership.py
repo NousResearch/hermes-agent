@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
+
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     root = Path(__file__).resolve().parents[2]
@@ -103,12 +105,12 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             # leaves an open user tail on the live route — never anything else.
             assert db.message_count() == before + (not owned) + ((not owned) or open_tail), location
             assert store.has_input_owner(sid, owner), location
-            assert runner._PARTIAL_FAILED_TURN_NOTICE in reply
+            assert PARTIAL_FAILED_TURN_NOTICE in reply
             live_messages = db.get_messages(child)
             assert not live_messages or live_messages[-1]["role"] != "user", location
             assert sum(m["role"] == "assistant" for m in live_messages) <= 1, location
             if not owned:
-                assert live_messages[-1]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
+                assert live_messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
                 assert persisted_user["content"] == prepared.persist_user_message
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
@@ -187,7 +189,7 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
 
     from gateway.run import _CONTEXT_OVERFLOW_REPLY
     assert reply == _CONTEXT_OVERFLOW_REPLY
-    assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply
+    assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
 
 def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):

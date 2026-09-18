@@ -777,9 +777,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 accepted.append((url, "unknown"))
         return [u for u, _ in accepted], [m for _, m in accepted]
 
-    def _inject_document_text(self, cached_urls: list, body: str) -> str:
-        """Prepend text-readable document contents (≤100KB) so the agent reads them inline."""
-        for doc_path in cached_urls:
+    def _inject_document_text(self, cached_urls: list, body: str) -> tuple[str, list[bool]]:
+        """Prepend text-readable document contents (≤100KB) so the agent reads them inline; returns
+        ``(body, media_text_inlined)`` with one flag per ``cached_urls`` entry (True = injected)."""
+        inlined = [False] * len(cached_urls)
+        for i, doc_path in enumerate(cached_urls):
             p = Path(doc_path)
             if p.suffix.lower() not in _TEXT_INJECT_EXTS:
                 continue
@@ -792,10 +794,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection
+                inlined[i] = True
                 print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
             except Exception as e:
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
-        return body
+        return body, inlined
 
     def _quoted_media(self, data: Dict[str, Any], raw_reply_id: Any) -> list[tuple[str, str]]:
         """``(path, mime)`` for the quoted message's attachment, folded into this event's own media so the
@@ -840,8 +843,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 for path, mime in self._quoted_media(data, raw_reply_id):
                     cached_urls.append(path)
                     media_types.append(mime)
+            media_text_inlined: list[bool] = []
             if msg_type == MessageType.DOCUMENT and cached_urls:
-                body = self._inject_document_text(cached_urls, body)
+                body, media_text_inlined = self._inject_document_text(cached_urls, body)
             native_metadata = data.get("nativeMetadata")
             metadata: Dict[str, Any] = {k: v for k, v in (
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
@@ -855,7 +859,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
             return MessageEvent(
                 text=body, message_type=msg_type, source=source, raw_message=data, message_id=data.get("messageId"),
-                media_urls=cached_urls, media_types=media_types, metadata=metadata,
+                media_urls=cached_urls, media_types=media_types, media_text_inlined=media_text_inlined, metadata=metadata,
                 reply_to_message_id=str(raw_reply_id) if raw_reply_id is not None else None,
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,

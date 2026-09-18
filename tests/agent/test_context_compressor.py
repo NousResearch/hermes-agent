@@ -872,6 +872,14 @@ class TestAuthFailureAborts:
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
         )
         assert _is_summary_access_or_quota_error(err) is True
+        # OAuth aux provider with no login: the hint names the sign-in command instead of an
+        # env var (#114405 / #78996) and must classify as permanent, not be retried.
+        oauth_err = RuntimeError(
+            "Provider 'minimax-oauth' is set in config.yaml but no credentials were found. "
+            "Run `hermes auth add minimax-oauth` to sign in, or switch to a different provider "
+            "with `hermes model`."
+        )
+        assert _is_summary_access_or_quota_error(oauth_err) is True
 
     def test_unscoped_secret_read_is_terminal_access_failure(self):
         # Multiplexed gateway: a credential read reached get_secret() from a

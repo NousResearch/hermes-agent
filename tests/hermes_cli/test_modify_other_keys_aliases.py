@@ -264,6 +264,57 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
     )
 
 
+# ---------------------------------------------------------------------------
+# Shift+symbols (modifyOtherKeys tilde form)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cp", [
+    58,   # ':'
+    95,   # '_' (Shift+Minus)
+    123,  # '{'
+    125,  # '}'
+])
+def test_modify_other_keys_shift_symbol_produces_char(cp):
+    """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+[ -> '{') arrives as
+    ESC[27;2;<produced_cp>~ (xterm's own key table; Ghostty follows it). It must parse
+    to the produced character, not leak literal escape text. The kitty CSI-u spelling
+    carries the UNSHIFTED codepoint and must stay unmapped (layout-specific)."""
+    ch = chr(cp)
+    mok_seq = f"\x1b[27;2;{cp}~"
+    assert _parse(mok_seq) == [ch], (
+        f"modifyOtherKeys Shift+symbol ({mok_seq!r}) should produce {ch!r}"
+    )
+    assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") is None
+
+
+@pytest.mark.parametrize("seq, ch", [
+    ("\x1b[27;9;111~", "o"),   # Super+o (the #114242 report)
+    ("\x1b[27;10;79~", "O"),   # Super+Shift+o
+])
+def test_modify_other_keys_super_printable_produces_char(seq, ch):
+    """Ghostty encodes Super+<printable> as ESC[27;9;<cp>~ under modifyOtherKeys=2;
+    the CLI has no Super bindings, so it must type the character (Ink TUI parity),
+    not leak the escape text (#114242)."""
+    assert _parse(seq) == [ch]
+
+
+def test_shift_symbol_data_normalized_in_buffer():
+    """End-to-end: Vt100Parser with install_keypress_data_normalization
+    must deliver the character in KeyPress.data, not the raw escape."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    install_keypress_data_normalization()
+
+    out = []
+    parser = Vt100Parser(out.append)
+    for c in "\x1b[27;2;95~":
+        parser.feed(c)
+    parser.flush()
+
+    assert len(out) == 1
+    assert out[0].key == "_"
+    assert out[0].data == "_"
+
+
 def test_does_not_clobber_shift_enter_alias():
     """install_modify_other_keys_aliases must not overwrite mappings
     installed by install_shift_enter_alias (modifier=2, not 5)."""

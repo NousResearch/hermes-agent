@@ -184,6 +184,28 @@ stack to `~/.hermes/logs/gateway_faulthandler.log` and the gateway keeps
 running — use it to see what a stalled or misbehaving gateway is doing without
 restarting it.
 
+### Built-in event-loop liveness watchdog
+
+On every platform the gateway runs an out-of-loop watchdog thread that probes
+the asyncio loop (`gateway.loop_watchdog_probe_interval_s`, default 30 s). When
+the loop stops dispatching for `gateway.loop_watchdog_max_strikes` consecutive
+probes (default 3), housekeeping, the cron scheduler and the embedded kanban
+dispatcher have all frozen with it, so the watchdog dumps every thread's stack
+to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
+`exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
+supervisor restarts the process. `hermes gateway status` renders that record as
+`⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
+gateway process overwrites it, and the dashboard's gateway badge shows
+**Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
+`config.yaml` to disable the watchdog.
+
+Housekeeping also re-stamps `gateway_state.json`'s `updated_at` every tick
+(60 s), so it doubles as a heartbeat: when the process is still alive but that
+stamp is more than 120 s old, `hermes gateway status` prints
+`⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json
+for N s …` and the dashboard badge reads **Heartbeat stale** — the "looks
+running but nothing is scheduled" case. Restart the gateway.
+
 ### Optional Linux event-loop watchdog
 
 A systemd-managed gateway can opt into process recovery when Python's asyncio
@@ -405,7 +427,7 @@ Send a message while the agent is working to correct the active turn:
 
 By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.

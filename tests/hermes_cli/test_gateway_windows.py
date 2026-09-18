@@ -340,6 +340,51 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
+    """The Startup folder is the staging dir: a leftover .tmp there is opened by Windows at every login."""
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    entry, staging = startup / "Hermes_Gateway.vbs", startup / "Hermes_Gateway.tmp"
+
+    def _denied(self, target):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(Path, "replace", _denied)
+    with pytest.raises(PermissionError):
+        gateway_windows._atomic_write(entry, "launcher\r\n", staging)
+
+    assert sorted(p.name for p in startup.iterdir()) == []
+
+
+def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, tmp_path):
+    """Debris from a pre-fix failed swap is removed by uninstall() and by an install() that takes the
+    Scheduled Task path (which never rewrites the Startup folder itself)."""
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    entry, staging = startup / "Hermes_Gateway_alice.vbs", startup / "Hermes_Gateway_alice.tmp"
+    script = tmp_path / "task" / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    staging.write_text("stale", encoding="utf-8")
+    gateway_windows.uninstall()
+    assert not staging.exists()
+
+    staging.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *a, **k: (False, True))
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda name, path: (True, "created"))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+    gateway_windows.install()
+    assert not staging.exists()
+
+
 
 
 

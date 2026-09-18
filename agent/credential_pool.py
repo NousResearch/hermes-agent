@@ -1788,6 +1788,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             available, _pending = self._available_entries()
             return available[0] if available else None
 
+    def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way
+        ``select`` would), else ``None``. Never bumps ``request_count`` or round-robin order: a
+        live session asking "may I go back?" every turn is not a request."""
+        with self._lock:
+            available, pending = self._available_entries(clear_expired=True, refresh=True, model=model)
+        if any(e.id == credential_id for e in pending):
+            self._refresh_pending_entries([e for e in pending if e.id == credential_id])
+            with self._lock:
+                available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
+        return next((e for e in available if e.id == credential_id), None)
+
     # ---- rotation ----------------------------------------------------------
 
     def _identify_failed_entry(

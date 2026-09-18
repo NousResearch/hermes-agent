@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish
 from tools import mcp_tool_config as _config
@@ -48,6 +50,60 @@ def _enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
+def _owner_scope_home() -> Optional[Path]:
+    """The profile home whose secret scope MCP credential reads must resolve under, or None when
+    the caller is already scoped or this is a single-profile process (scope key ``None``).
+
+    The owner is the profile the connection is keyed under (``_mcp_registry_scope()``), never the
+    ambient one, so a served profile is never handed another profile's token (#111151)."""
+    from agent.secret_scope import current_secret_scope
+    if current_secret_scope() is not None:
+        return None
+    scope_key = _core._mcp_registry_scope()
+    return None if scope_key is None else Path(scope_key)
+
+
+async def _install_owner_secret_scope():
+    """Bind the connection OWNER's profile secret scope when the caller has none; else None.
+
+    ``MCPServerTask.start`` ensure_futures the run task, which copies THIS context, so one
+    binding covers transport bring-up (``_build_safe_env`` stdio child env) and every later
+    revival inside that task; unscoped, those ``get_secret`` reads fail closed under multiplexing
+    and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
+    config load, under :func:`_owner_secret_scope`.
+    """
+    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    home = _owner_scope_home()
+    if home is None:
+        return None
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    # Off-loop: an external source runs a helper subprocess (once per home, then cached).
+    await asyncio.to_thread(hydrate_profile_secret_sources, home)
+    return set_secret_scope(build_profile_secret_scope(home))
+
+
+@contextmanager
+def _owner_secret_scope():
+    """Sync twin of :func:`_install_owner_secret_scope` for the config load in the caller's thread.
+
+    ``_load_mcp_config`` interpolates ``${VAR}`` header/URL refs through ``get_secret`` and swallows
+    the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
+    probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
+    binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    home = _owner_scope_home()
+    if home is None:
+        yield
+        return
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    hydrate_profile_secret_sources(home)
+    token = set_secret_scope(build_profile_secret_scope(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
 async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     """Create an MCPServerTask, start it, return once ready (tear down with ``server.shutdown()``
     on the same loop). Raises on bad config, missing HTTP support or connect failure."""
@@ -57,7 +113,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         claim(server)
     # The run task copies this context: don't retain the discovery closure for its life.
     claim_token = _core._connect_server_claim.set(None) if claim is not None else None
+    scope_token = None
     try:
+        scope_token = await _install_owner_secret_scope()
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -70,6 +128,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
                 logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
         raise
     finally:
+        if scope_token is not None:
+            from agent.secret_scope import reset_secret_scope
+            reset_secret_scope(scope_token)
         if claim_token is not None:
             _core._connect_server_claim.reset(claim_token)
     return server
@@ -447,7 +508,8 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
-    servers = _config._load_mcp_config()
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
         return []
@@ -502,7 +564,8 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
     ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
-    servers = _config._load_mcp_config()
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
     wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
     scope = _core._mcp_registry_scope()
     with _core._lock:
@@ -565,7 +628,11 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
     ``lazy`` is a registered-but-not-spawned server (``lazy: true``, tools from the schema
     cache): its tools are callable and the process starts on first use. Reporting it as
     ``configured`` (never registered) misreads a working setup (#111717)."""
-    configured = _config._load_mcp_config() if configured is None else dict(configured)
+    if configured is None:
+        with _owner_secret_scope():
+            configured = _config._load_mcp_config()
+    else:
+        configured = dict(configured)
     if not configured:
         return []
     current_scope = _core._mcp_registry_scope()
@@ -633,7 +700,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     registered and failed servers are omitted."""
     if not _core._ensure_mcp_sdk():
         return {}
-    enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
+    with _owner_secret_scope():
+        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()

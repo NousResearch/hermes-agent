@@ -123,7 +123,17 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def forget_file_state() -> None:
+            # File tools key their read stamps / writer claims by the per-turn task_id (cron:
+            # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
+            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            from tools.file_tools import clear_file_ops_cache
+            for owner in getattr(self, "_process_owner_task_ids", ()):
+                if owner and owner != task_id:
+                    clear_file_ops_cache(owner)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+                     release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:

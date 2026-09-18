@@ -632,6 +632,12 @@ class CLICommandsMixin:
         # --all / --force: classic full restore, overwriting user edits too.
         restore_all = any(a.lower() in ("--all", "--force") for a in args)
         args = [a for a in args if a.lower() not in ("--all", "--force")]
+        if reason := mgr.unsupported_backend_reason():  # CLI: no session key, the "default" container
+            # Container-backed session: any host checkpoint listed here belongs to another tree,
+            # so diff/restore are refused; the list stays visible for local administration.
+            print(f"  {reason}")
+            if args:
+                return
         if not args:
             # No checkpoints for this dir → cross-project view (writes may sit under the session cwd).
             checkpoints = mgr.list_checkpoints(cwd)
@@ -758,6 +764,8 @@ class CLICommandsMixin:
             "  (Plain /diff still works — it uses git directly.)"))
         if mgr is None:
             return
+        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+            return print(f"  {reason}")
         result = mgr.session_diff(cwd)
         if not result.get("success"):
             return print(f"  {result.get('error', 'Could not generate diff')}")
@@ -1772,12 +1780,17 @@ class CLICommandsMixin:
         if action == "remove":
             removed = result.get("removed_job", {})
             return print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
+        job = result["job"]
+        if action == "run" and job.get("execution_skipped"):
+            # A refused run-now (claim lost, paused, gone) must not read as accepted.
+            return print(f"(x_x) Did not run job: {job['name']} ({job_id})\n  {job['execution_skipped']}")
         verb = {"pause": "Paused", "resume": "Resumed", "run": "Triggered"}[action]
-        print(f"(^_^)b {verb} job: {result['job']['name']} ({job_id})")
+        print(f"(^_^)b {verb} job: {job['name']} ({job_id})")
         if action == "resume":
-            print(f"  Next run: {result['job'].get('next_run_at')}")
+            print(f"  Next run: {job.get('next_run_at')}")
         elif action == "run":
-            print("  It will run on the next scheduler tick.")
+            from hermes_cli.cron import _run_outcome
+            print(f"  {_run_outcome(job)}")
 
     # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):

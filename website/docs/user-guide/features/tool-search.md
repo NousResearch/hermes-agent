@@ -179,7 +179,10 @@ need the sign-in.
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
 is dispatched as its own gateway request, one after another; local deferred
-tools stay one entry per `tool_call`. Approvals settle per entry before
+tools stay one entry per `tool_call`. A multi-entry batch that names a local
+tool is rejected with a correction that restates the valid shape using the
+caller's own first entry, and a `calls` value emitted as a JSON string is
+parsed like the array form. Approvals settle per entry before
 dispatch, and a `/stop` between entries leaves the unstarted ones unsent
 (their slots report `INTERRUPTED`).
 

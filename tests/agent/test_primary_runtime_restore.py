@@ -206,7 +206,8 @@ class TestRestorePrimaryRuntime:
         with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
-        assert emitted == []
+        # The runtime change re-probes compression feasibility (a diagnostic, not a restore label).
+        assert [m for m in emitted if "restored" in str(m).lower() or "fallback" in str(m).lower()] == []
 
     def test_restore_retry_preserves_fallback_identity_after_partial_failure(self):
         agent = _make_agent(

@@ -106,7 +106,7 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
-        "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
+        "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
         "bot_title": meta("bot_title", ""),
@@ -288,8 +288,8 @@ def _config_profile_scope(profile: Optional[str]):
 _TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
-        ("docker", "Docker",
-         "Run commands in an isolated Docker container with a persistent workspace."),
+        ("docker", "Docker / Podman",
+         "Run commands in an isolated Docker or Podman container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),

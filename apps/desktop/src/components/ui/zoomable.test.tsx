@@ -14,7 +14,7 @@ describe('Zoomable', () => {
     )
 
     expect(screen.queryByTestId('overlay')).toBeNull()
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
     expect(screen.getByTestId('overlay')).toBeTruthy()
   })
 
@@ -25,7 +25,7 @@ describe('Zoomable', () => {
       </Zoomable>
     )
 
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open diagram' }))
 
     const dialog = screen.getByRole('dialog')
     const body = dialog.firstElementChild

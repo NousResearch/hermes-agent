@@ -276,6 +276,13 @@ recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
 protected messages, boundary alignment, summaries, and anchors can add tokens.
 
+The lowered trigger is a durable ceiling on the compressor, so window corrections for the
+same model (a provider-reported limit, a grown local window) keep it. Whenever the main
+runtime changes — `/model`, fallback activation, or the restore back to the primary — the
+auxiliary model is re-probed immediately: the trigger is clamped again before the first
+compaction on the new window, or restored to the main model's own value when the
+auxiliary model now fits.
+
 ### Per-model threshold overrides
 
 `compression.model_thresholds` lets you trigger compaction at different points

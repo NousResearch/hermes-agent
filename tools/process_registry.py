@@ -295,19 +295,36 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
 _scope_degraded_warned = False
 
 
-def _warn_scope_degraded_once(detail: str) -> None:
+class RestartSafeScopeUnavailable(RuntimeError):
+    """A ``require_restart_safe_scope=True`` child could not get its transient scope.
+
+    Host-level (no user D-Bus / no ``systemd-run``), never a property of the
+    child being launched: callers that keep per-job retry budgets must not
+    charge it (a kanban card parked ``blocked`` for an unreachable bus, #114720).
+    """
+
+
+def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
     """Warn once per process: the condition is host-level and the probe verdict
     is cached, so this would otherwise fire on every cron dispatch."""
     global _scope_degraded_warned
     if _scope_degraded_warned:
         return
     _scope_degraded_warned = True
-    logger.warning(
-        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
-        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
-        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
-        detail,
-    )
+    logger.warning("%s; %s", detail, consequence)
+
+
+_CRON_DEGRADED_CONSEQUENCE = (
+    "cron children are dispatched as direct external subprocesses without restart-safe "
+    "cgroup isolation (killed if the gateway restarts mid-job). Set "
+    "cron.require_restart_safe_scope=true in config.yaml to fail closed instead."
+)
+_UNIT_DEGRADED_CONSEQUENCE = (
+    "workers are spawned unmanaged inside this systemd unit's cgroup and will be KILLED when the "
+    "unit exits (Type=oneshot dispatch timers lose every worker within a second). Give the unit's "
+    "user a session bus (`loginctl enable-linger <user>`) so workers get their own scope, or set "
+    "KillMode=process on the unit."
+)
 
 
 class GatewayChildDispatch(NamedTuple):
@@ -348,6 +365,7 @@ def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
 
 def restart_safe_gateway_child_argv(
     command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+    outlives_parent: bool = False,
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
@@ -355,20 +373,38 @@ def restart_safe_gateway_child_argv(
     cgroup, so children that must survive it run in a transient user scope.
     Hosts with no user systemd session (containers, LXCs without linger) cannot
     create one; hard-failing there is a silent cron outage, so callers state the
-    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
-    workers), ``False`` degrades to a direct external subprocess with a
-    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
+    policy: ``require_restart_safe_scope=True`` raises
+    :class:`RestartSafeScopeUnavailable` (kanban's long-lived workers), ``False``
+    degrades to a direct external subprocess with a once-per-process warning
+    (cron, behind ``cron.require_restart_safe_scope``).
+
+    ``outlives_parent=True`` (fire-and-forget kanban workers): any *other*
+    systemd unit — a ``Type=oneshot`` dispatch timer, an operator's sequencer
+    service — tears its cgroup down when it exits, so the child is scope-wrapped
+    there too (#113612). Whether that unit actually kills its children
+    (``KillMode``, lifetime) is not knowable here, so without a user bus it
+    degrades with a loud warning instead of refusing: a long-lived
+    ``Type=simple`` sequencer without linger keeps working. A cron job blocks its
+    caller until it finishes and never needs this.
     """
     if not _IS_LINUX:
         return GatewayChildDispatch("in_process", command)
-    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+    if not os.environ.get("INVOCATION_ID"):
+        return GatewayChildDispatch("in_process", command)
+    supervised_gateway = _is_supervised_gateway_process()
+    if not supervised_gateway and not outlives_parent:
         return GatewayChildDispatch("in_process", command)
 
     def _degrade(detail: str) -> GatewayChildDispatch:
-        if require_restart_safe_scope:
-            # Stored as the cron execution's error and shown on the job row: name the remedy.
-            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
-        _warn_scope_degraded_once(detail)
+        if supervised_gateway:
+            if require_restart_safe_scope:
+                # Stored as the cron execution's error and shown on the job row: name the remedy.
+                raise RestartSafeScopeUnavailable(
+                    f"cannot create restart-safe systemd scope for gateway child: {detail}"
+                )
+            _warn_scope_degraded_once(f"managed gateway: {detail}", consequence=_CRON_DEGRADED_CONSEQUENCE)
+        else:
+            _warn_scope_degraded_once(f"systemd unit dispatch: {detail}", consequence=_UNIT_DEGRADED_CONSEQUENCE)
         return GatewayChildDispatch("degraded", command)
 
     if not _systemd_run_user_scope_available():

@@ -223,14 +223,16 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False, title_source: str = "user") -> None:
+                    copy_fields=(), compensate: bool = False, title_source: str = "user",
+                    user_id: str | None = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
-    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land."""
+    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
+    login: the child is a Desktop session too, and the row only records identity at insert."""
     db.create_session(new_key, source=source, model=_resolve_model(), model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name)
+                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
@@ -267,7 +269,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            compensate=True, title_source="derived")
+                            compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -1040,7 +1042,10 @@ def _(rid, params: dict) -> dict:
     """Set/clear ``hidden`` (leaves the default list, stays resumable by its owner) on a session + lineage:
     LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
     hidden = is_truthy_value(params.get("hidden", True))
-    session, err = _sess_nowait(params, rid)
+    # Quiet live lookup: a stored id that is not in memory is this method's expected second tier, not a
+    # rejection — _sess_nowait would log "session-scoped RPC rejected … not in memory" for a request that is
+    # then fulfilled from the profile db, burying the real stale-runtime-id signal under sweep noise.
+    session = _sessions.get(str(params.get("session_id") or ""))
     with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
@@ -1053,7 +1058,7 @@ def _(rid, params: dict) -> dict:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
-                    return err
+                    return _err(rid, 4001, "session not found")
                 db.set_session_hidden(key, hidden)
             return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:
@@ -2003,7 +2008,8 @@ def _(rid, params: dict, session: dict) -> dict:
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             copy_fields=_BRANCH_COPY_FIELDS,
-                            title_source="user" if params.get("name") else "derived")
+                            title_source="user" if params.get("name") else "derived",
+                            user_id=_session_auth_user_id(session))
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:
@@ -2160,6 +2166,8 @@ def _legacy_spawn_tree_entry(p, session_dir_name: str) -> dict | None:
     raw = {}
     with contextlib.suppress(Exception):
         raw = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raw = {}
     subagents = raw.get("subagents") or []
     return {"path": str(p), "session_id": raw.get("session_id") or session_dir_name,
             "finished_at": raw.get("finished_at") or stat.st_mtime, "started_at": raw.get("started_at"),
@@ -2198,6 +2206,8 @@ def _(rid, params: dict) -> dict:
         payload = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return _err(rid, 5000, f"spawn_tree.load failed: {exc}")
+    if not isinstance(payload, dict):
+        return _err(rid, 5000, "spawn_tree.load failed: snapshot is not a JSON object")
     return _ok(rid, payload)
 
 

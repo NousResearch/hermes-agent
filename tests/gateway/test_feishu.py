@@ -335,6 +335,7 @@ class TestAdapterModule(unittest.TestCase):
 
         fake_client = _FakeWSClient()
         fake_adapter = SimpleNamespace(
+            _loop=None,
             _ws_thread_loop=None,
             _ws_reconnect_nonce=2,
             _ws_reconnect_interval=3,
@@ -344,6 +345,7 @@ class TestAdapterModule(unittest.TestCase):
         fake_client_module = ModuleType("lark_oapi.ws.client")
         fake_client_module.loop = None
         fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_client_module.Client = type("Client", (), {"_receive_message_loop": lambda self: None})
         fake_ws_module = ModuleType("lark_oapi.ws")
         fake_ws_module.client = fake_client_module
         fake_root_module = ModuleType("lark_oapi")
@@ -726,12 +728,15 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_media",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n[Attachment: spec.pdf]")
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, ["/tmp/feishu-image.png", "/tmp/spec.pdf"])
         self.assertEqual(media_types, ["image/png", "application/pdf"])
+        self.assertEqual(media_text_inlined, [False, False])
         adapter._download_feishu_image.assert_awaited_once_with(
             message_id="om_post_media",
             image_key="img_123",
@@ -759,7 +764,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_audio",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         # Lark "audio" msg_type is a native voice recording (the fixture is
@@ -769,6 +776,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(msg_type.value, "voice")
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
+        self.assertEqual(media_text_inlined, [False])
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -1021,6 +1029,57 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(first.message_id, "om_2")
         self.assertEqual(first.source.message_id, first.message_id)
 
+    @patch.dict(
+        os.environ,
+        {
+            "HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES": "8",
+            "HERMES_FEISHU_TEXT_BATCH_MAX_CHARS": "4000",
+        },
+        clear=False,
+    )
+    def test_text_batch_preserves_later_message_attachments(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _run() -> None:
+            await adapter._enqueue_text_event(
+                MessageEvent(text="first", message_type=MessageType.TEXT, source=source)
+            )
+            await adapter._enqueue_text_event(
+                MessageEvent(
+                    text="second",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    media_urls=["/cache/second.md"],
+                    media_types=["text/markdown"],
+                    media_text_inlined=[True],
+                )
+            )
+            await adapter._flush_text_batch_now(adapter._text_batch_key(source_event))
+
+        source_event = MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.text, "first\nsecond")
+        self.assertEqual(event.media_urls, ["/cache/second.md"])
+        self.assertEqual(event.media_types, ["text/markdown"])
+        self.assertEqual(event.media_text_inlined, [True])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
@@ -1052,6 +1111,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p1",
                         media_urls=["/tmp/a.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[False],
                     )
                 )
                 await adapter._dispatch_inbound_event(
@@ -1062,6 +1122,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p2",
                         media_urls=["/tmp/b.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[True],
                     )
                 )
                 pending = list(adapter._pending_media_batch_tasks.values())
@@ -1073,6 +1134,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
+        self.assertEqual(event.media_text_inlined, [False, True])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
 
@@ -2178,6 +2240,31 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         self.assertEqual(result.text_content, "@Alice hello")
 
 
+class TestFeishuPostFileParsing(unittest.TestCase):
+    def test_collects_valid_top_level_files_and_dedupes_inline_refs(self):
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        result = parse_feishu_post_payload({
+            "title": "",
+            "content": [[
+                {"tag": "text", "text": "Review these"},
+                {"tag": "file", "file_key": "file_1", "file_name": "first.md"},
+            ]],
+            "files": [
+                {"file_key": "file_1", "file_name": "first.md", "is_folder": False},
+                {"file_key": "file_2", "file_name": "second.txt", "is_folder": False},
+                {"file_key": "folder_1", "file_name": "folder", "is_folder": True},
+                {"file_name": "missing-key.md", "is_folder": False},
+            ],
+        })
+
+        self.assertEqual([ref.file_key for ref in result.media_refs], ["file_1", "file_2"])
+        self.assertEqual(
+            result.text_content,
+            "Review these[Attachment: first.md]\n[Attachment: second.txt]",
+        )
+
+
 class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
     def test_text_elements_keep_markdown_characters_and_style_wrappers(self):
         """Inbound post text reaches the model verbatim (no backslash escapes) while the
@@ -2283,7 +2370,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         return adapter
 
-    def test_returns_five_tuple_with_mentions(self):
+    def test_returns_six_tuple_with_mentions(self):
         adapter = self._build_adapter()
         message = SimpleNamespace(
             content=json.dumps({"text": "@_user_1 hello"}),
@@ -2298,10 +2385,11 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, mentions = asyncio.run(
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")
+        self.assertEqual(media_text_inlined, [])
         self.assertEqual(len(mentions), 1)
         self.assertEqual(mentions[0].open_id, "ou_alice")
 
@@ -2324,6 +2412,47 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
+
+
+    def test_post_caption_is_preserved_when_text_attachment_is_inlined(self):
+        adapter = self._build_adapter()
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/cache/notes.md"], ["text/markdown"])
+        )
+        adapter._maybe_extract_text_document = AsyncMock(
+            return_value="[Content of notes.md]:\nattachment body"
+        )
+        message = SimpleNamespace(
+            content=json.dumps({
+                "title": "",
+                "content": [[{"tag": "text", "text": "Please review"}]],
+                "files": [{"file_key": "file_1", "file_name": "notes.md", "is_folder": False}],
+            }),
+            message_type="post",
+            message_id="m-post-file",
+            mentions=[],
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data={},
+            message=message,
+            sender_id=SimpleNamespace(open_id="ou_alice", user_id=None, union_id=None),
+            chat_type="p2p",
+            message_id="m-post-file",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(
+            event.text,
+            "Please review\n[Attachment: notes.md]\n\n[Content of notes.md]:\nattachment body",
+        )
+        self.assertEqual(event.media_urls, ["/cache/notes.md"])
+        self.assertEqual(event.media_text_inlined, [True])
 
 
     def test_non_command_message_with_mentions_injects_hint(self):

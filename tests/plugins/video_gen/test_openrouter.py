@@ -117,6 +117,8 @@ def test_generate_submits_polls_and_downloads_from_configured_origin(monkeypatch
     assert [g[0] for g in session.gets] == ["https://openrouter.ai/api/v1/videos/job-1"] * 2
     assert saved[0][0] == "https://openrouter.ai/api/v1/videos/job-1/content"
     assert saved[0][1]["headers"]["Authorization"] == "Bearer sk-or-test" and saved[0][1]["require_video_content_type"]
+    # Operator-configured origin: a LAN relay must not be refused as SSRF on the first hop.
+    assert saved[0][1]["trusted_origin"] is True
 
 
 def test_generate_rejects_local_image_paths_before_spending(monkeypatch):

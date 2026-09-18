@@ -133,21 +133,38 @@ def _pairing_sig():
     """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
     shared signal (a pairing request moves nothing in gateway_state.json)."""
-    home = _watcher_home()
-    roots = [home / "pairing", home / "platforms" / "pairing"]
-    from hermes_constants import named_profile_is_live
-
-    with contextlib.suppress(OSError):
-        for profile_dir in (home / "profiles").iterdir():
-            if named_profile_is_live(profile_dir):
-                roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
     entries = []
-    for root in roots:
+    for root in _pairing_roots(_watcher_home()):
         with contextlib.suppress(OSError):
             # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
             entries += [
                 e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
     return _newest_mtime_ns(entries)
+
+
+# Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness
+# probe costs ~14 stats per profile; on the 2 s tick that was the watcher's share of the idle
+# profile-tree burn (#114041 §2/§3). The profile SET only moves when a dir is added or removed —
+# which bumps the parent's mtime — while a marker/tombstone landing inside one is caught by the TTL.
+_PAIRING_ROOTS_TTL_S = 30.0
+_pairing_roots_cache: tuple[Path, int | None, float, list] | None = None
+
+
+def _pairing_roots(home: Path) -> list:
+    global _pairing_roots_cache
+    profiles_dir = home / "profiles"
+    dir_mtime, now = _watcher_mtime_ns(profiles_dir), time.monotonic()
+    cached = _pairing_roots_cache
+    if cached is not None and cached[0] == home and cached[1] == dir_mtime and now - cached[2] < _PAIRING_ROOTS_TTL_S:
+        return cached[3]
+    from hermes_constants import named_profile_is_live
+    roots = [home / "pairing", home / "platforms" / "pairing"]
+    with contextlib.suppress(OSError):
+        for profile_dir in profiles_dir.iterdir():
+            if named_profile_is_live(profile_dir):
+                roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
+    _pairing_roots_cache = (home, dir_mtime, now, roots)
+    return roots
 
 
 # Newest outbox-envelope mtime EVER seen (monotone): a drain empties the outbox,

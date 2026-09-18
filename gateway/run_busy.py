@@ -377,13 +377,20 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
+        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
+        # head slot. Every other media follow-up — voice, audio, video, document — is an
+        # independent message and takes its own FIFO turn like text does; merging on *any*
+        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
+        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+        merge_types = {
+            getattr(existing, "message_type", None),
+            getattr(event, "message_type", None),
+        }
+        if (
+            same_security_context
+            and MessageType.PHOTO in merge_types
+            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,

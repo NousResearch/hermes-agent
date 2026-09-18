@@ -38,7 +38,8 @@ DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
-# and call kanban_block/kanban_complete before max_runtime_seconds kills it.
+# and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
+# before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 # A healthy worker is still alive for a while after kanban_complete /
@@ -183,6 +184,16 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# Windows has no ``waitpid(-1)``: a child's exit code is only recoverable
+# through a live handle, so ``_default_spawn`` parks each worker's ``Popen``
+# here (Windows only) and ``reap_worker_zombies`` polls it. Entry: ``pid -> Popen``.
+_live_worker_procs: "dict[int, subprocess.Popen]" = {}
+
+
+def _wait_status_from_returncode(returncode: int) -> int:
+    """Encode a ``Popen.returncode`` in the wait-status layout the registry stores."""
+    return (int(returncode) & 0xFF) << 8
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status; duplicate pids overwrite (latest wins)."""
@@ -211,37 +222,51 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
+    # Bit-level POSIX wait-status decode instead of os.WIFEXITED/WEXITSTATUS/
+    # WIFSIGNALED/WTERMSIG: those helpers do not exist on Windows, where the
+    # registry is fed by reap_worker_zombies' Popen poll. Low 7 bits = signal
+    # (0 = normal exit, 0x7F = stopped), bits 8-15 = exit code.
+    raw = int(raw)
+    signal_number = raw & 0x7F
+    if signal_number == 0:
+        code = (raw >> 8) & 0xFF
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
+    if signal_number != 0x7F:
+        return ("signaled", signal_number)
     return ("unknown", None)
 
 
 def reap_worker_zombies() -> "list[int]":
-    """Reap all zombie children without blocking; returns reaped PIDs. No-op on Windows."""
+    """Reap exited workers without blocking; returns reaped PIDs. POSIX reaps
+    every child via ``waitpid(-1)``; Windows polls the ``Popen`` handles
+    parked by ``_default_spawn`` (the only way to learn a child's exit code
+    there), so the rate-limit sentinel exit is classified on both hosts."""
     reaped: "list[int]" = []
-    if os.name != "nt":
-        try:
-            while True:
-                try:
-                    pid, status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if pid == 0:
-                    break
-                _record_worker_exit(pid, status)
-                reaped.append(pid)
-        except Exception:
-            pass
+    if _kb._IS_WINDOWS:
+        for pid, proc in list(_live_worker_procs.items()):
+            returncode = proc.poll()
+            if returncode is None:
+                continue
+            _record_worker_exit(pid, _wait_status_from_returncode(returncode))
+            _live_worker_procs.pop(pid, None)
+            reaped.append(pid)
+        return reaped
+    try:
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            _record_worker_exit(pid, status)
+            reaped.append(pid)
+    except Exception:
+        pass
     return reaped
 
 
@@ -896,14 +921,17 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
 
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
-    # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the work itself succeeded and only the
+    # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
     # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
-    "worker exited cleanly (rc=0) without calling "
-    "kanban_complete or kanban_block — protocol violation. "
+    # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
+    # last output (``_worker_final_output``, up to 400 chars) is appended after it — a longer preamble
+    # truncates away the worker's explanation, which is the part the board and the retry worker need.
+    "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
+    "or kanban_request_review — protocol violation. "
     "If the prior run already did the work, verify it and "
-    "report the result via kanban_complete; a run that ends "
-    "without a terminal kanban call counts as failed no "
+    "report it via kanban_complete (or kanban_request_review); "
+    "a run without a terminal kanban call counts as failed no "
     "matter what it did."
 )
 
@@ -1227,6 +1255,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    infrastructure: bool = False,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1239,6 +1268,12 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``infrastructure=True``: the host refused the spawn (no restart-safe scope,
+    #114720) — nothing about the card ran, so the run and event are recorded
+    with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
+    the breaker never trips; the card stays retryable and
+    :func:`check_respawn_guard` spaces the retries.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1255,7 +1290,7 @@ def _record_task_failure(
             if release_claim
             else ("review" if row["status"] == "review" else "ready")
         )
-        failures = int(row["consecutive_failures"]) + 1
+        failures = int(row["consecutive_failures"]) + (0 if infrastructure else 1)
 
         # Per-task override wins over caller-supplied and default thresholds.
         task_override = _kb._row_get(row, "max_retries")
@@ -1264,7 +1299,7 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        if not (force_trip or failures >= effective_limit):
+        if infrastructure or not (force_trip or failures >= effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
@@ -1282,15 +1317,13 @@ def _record_task_failure(
                 )
             # Timeout/crash path's caller already emitted its own event.
             if end_run:
+                detail = {"failures": failures, "retry_status": retry_status}
+                if infrastructure:
+                    detail["infrastructure"] = True
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error,
-                    metadata={"failures": failures, "retry_status": retry_status},
+                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
-                _kb._append_event(
-                    conn, task_id, outcome,
-                    {"error": error, "failures": failures, "retry_status": retry_status},
-                    run_id=run_id,
-                )
+                _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
 
         # Spawn path (release_claim) is still running and also clears claim
@@ -1368,6 +1401,8 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
+    refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1392,13 +1427,21 @@ def check_respawn_guard(
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
+    #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
+    #    condition is not the card's, so it retries forever, spaced, and never
+    #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
-        "SELECT outcome, ended_at FROM task_runs "
+        "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
+    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
+        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
+            ended_at = latest_run["ended_at"]
+            if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+                return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1529,17 +1572,33 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         kanban:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
-    Returns ``None`` when the key is unset (upstream behavior: any existing
-    profile is claimable). A set value is fail-closed: an empty list claims
-    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
+    Returns ``None`` only when the key is absent from the user config (upstream
+    behavior: any existing profile is claimable). A present value is
+    fail-closed: an empty list, ``null`` or a bare ``dispatch_profiles:`` claims
+    nothing. The user layer is read without the ``DEFAULT_CONFIG`` merge (whose
+    ``None`` placeholder would make the key look present in every home), and a
+    config read that raises also claims nothing — a corrupt config on a shared
+    board must never widen this home's claim scope silently (#113620).
     """
     try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
-    except Exception:
+        from hermes_cli.config_effective import load_user_config_effective
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
+            "this home claims no cards until the config is readable",
+            type(exc).__name__, exc,
+        )
+        return frozenset()
+    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None
-    if raw is None:
-        return None
+    raw = kanban["dispatch_profiles"]
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        _kb._log.warning(
+            "kanban: kanban.dispatch_profiles is present but empty — this home "
+            "claims no cards; omit the key to allow any existing profile"
+        )
+        return frozenset()
     names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
     allowed = set()
     for n in names:
@@ -1548,6 +1607,26 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         except ValueError:
             continue
     return frozenset(allowed)
+
+
+def dispatch_profile_allowlist_summary() -> str:
+    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
+
+    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
+    can see what a home believes it may claim (#113620): ``any`` (key absent),
+    the sorted allowed names, or ``none (fail-closed: ...)``.
+    """
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+    except Exception as exc:
+        return f"none (fail-closed: profiles unavailable: {exc})"
+    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
+    if allowlist is None:
+        return "any"
+    if allowlist:
+        return ", ".join(sorted(allowlist))
+    return ("none (fail-closed: kanban.dispatch_profiles is present but names no valid "
+            "profile, or the config could not be read — omit the key to allow any)")
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
@@ -1909,9 +1988,17 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from tools.process_registry import RestartSafeScopeUnavailable
+
+        # The host refused the spawn (no restart-safe scope): nothing about the
+        # card ran, so it must not spend the card's retry budget (#114720).
+        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        if infrastructure:
+            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            infrastructure=infrastructure,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -1990,8 +2077,8 @@ def _tick_spawn_budget(
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
-    # per-tick budget: "running" tasks stay running until the worker calls
-    # kanban_complete/kanban_block or the TTL reclaims them.
+    # per-tick budget: "running" tasks stay running until the worker makes a terminal
+    # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
     running_count = 0
     spawn_budget: Optional[int] = None
     if max_spawn is not None or max_in_progress is not None:
@@ -2043,15 +2130,36 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
-    """Mirrors the review loop's own gate so human-pulled control-plane lanes
-    don't tax ready throughput; assumes spawnable when profiles are unimportable."""
+def _any_spawnable_review(
+    conn: sqlite3.Connection,
+    review_rows: list[sqlite3.Row],
+    *,
+    per_profile_cap: Optional[int] = None,
+    per_profile_running: Optional[dict[str, int]] = None,
+) -> bool:
+    """Mirror review dispatch gates before reserving ready-lane capacity.
+
+    Unavailable profile metadata retains the historic fail-open behavior. A
+    review row that :func:`_dispatch_lane_task` would refuse this tick — its
+    assignee already at the per-profile cap, or respawn-guarded — cannot
+    consume the reservation, so it must not withhold capacity from an
+    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
-    if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+    running = per_profile_running or {}
+    for row in review_rows:
+        assignee = row["assignee"]
+        if not assignee:
+            continue
+        if profile_exists is not None and not profile_exists(assignee):
+            continue
+        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+            continue
+        if check_respawn_guard(conn, row["id"], lane="review") is None:
+            return True
+    return False
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2107,15 +2215,10 @@ def _dispatch_once_locked(
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
-    # Review-lane reservation: the ready loop runs first and would otherwise
-    # consume the ENTIRE shared budget, starving reviews under a sustained ready
-    # backlog. When spawnable review work exists and there is any budget, hold
-    # one slot back.
-    ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(review_rows):
-        ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
+    # Resolved BEFORE the review reservation so the reservation can see which
+    # review rows the lane loop would refuse this tick.
     per_profile_cap = max_in_progress_per_profile if (
         # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
         # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
@@ -2132,6 +2235,16 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Review-lane reservation: the ready loop runs first and would otherwise
+    # consume the ENTIRE shared budget, starving reviews under a sustained ready
+    # backlog. When spawnable review work exists and there is any budget, hold
+    # one slot back.
+    ready_budget = spawn_budget
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
+        conn, review_rows,
+        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+    ):
+        ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
@@ -2480,10 +2593,15 @@ def _open_worker_log(task: Task, board: Optional[str]):
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
-    """Wrap a managed-gateway worker in the shared restart-safe scope.
+    """Wrap a systemd-hosted dispatcher's worker in the shared restart-safe scope.
 
-    Kanban workers are long-lived agentic runs, so they never take cron's
-    degraded mode: ``require_restart_safe_scope=True`` makes the helper raise.
+    Kanban workers are long-lived agentic runs that outlive the dispatcher
+    tick, so they never take cron's degraded mode under the managed gateway:
+    ``require_restart_safe_scope=True`` makes the helper raise
+    ``RestartSafeScopeUnavailable`` there (an infrastructure spawn failure the
+    dispatcher does not charge to the card). Under any other systemd unit
+    (``Type=oneshot`` dispatch timers, #113612) ``outlives_parent=True`` gets the
+    worker its own scope so the unit's cgroup teardown cannot kill it.
     """
     from tools.process_registry import restart_safe_gateway_child_argv
 
@@ -2495,6 +2613,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
             command,
             unit_suffix=f"kanban-{task.id}-run-missing",
             require_restart_safe_scope=True,
+            outlives_parent=True,
         )
         if dispatch.mode != "in_process":
             raise RuntimeError(
@@ -2507,6 +2626,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
         command,
         unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
         require_restart_safe_scope=True,
+        outlives_parent=True,
     ).argv
 
 
@@ -2649,6 +2769,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         )
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
+    if _kb._IS_WINDOWS:
+        _live_worker_procs[proc.pid] = proc
     return proc.pid
 
 

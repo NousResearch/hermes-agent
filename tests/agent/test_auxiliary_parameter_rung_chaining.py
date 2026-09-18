@@ -68,6 +68,19 @@ def test_primary_rungs_chain_in_provider_order_and_strip_each_field_once():
     assert _is_reasoning_field_rejection(_Bad400("Extra inputs are not permitted, field: 'reasoning'"))
 
 
+def test_reasoning_effort_none_unsupported_reversed_wording():
+    """Relays that put the adjective last (``reasoning_effort 'none' unsupported; use ...``) fire the
+    strip-and-retry rung like the forward wordings do; route gating that merely names a thinking
+    model, or an adjective-only "unsupported" far from any reasoning field, does not."""
+    assert _is_reasoning_field_rejection(
+        _Bad400("Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh")
+    )
+    assert not _is_reasoning_field_rejection(
+        _Bad400("The model kimi-k2-thinking is not supported when using this account")
+    )
+    assert not _is_reasoning_field_rejection(_Bad400("reasoning models: tool_choice 'required' is unsupported"))
+
+
 def test_fallback_candidate_recovers_from_rejected_temperature():
     client = _rejecting_client("temperature")
     resp = _call_fallback_candidate_sync(

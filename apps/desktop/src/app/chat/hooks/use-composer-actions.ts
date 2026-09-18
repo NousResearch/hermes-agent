@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
-import { pasteSizeLabel } from '@/app/chat/composer/large-paste'
+import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
@@ -623,7 +623,8 @@ export function useComposerActions({
           label: `${copy.pastedContent} (${pasteSizeLabel(text)})`,
           detail: contextPath(savedPath, currentCwd),
           refText: `@file:${formatRefValue(savedPath)}`,
-          path: savedPath
+          path: savedPath,
+          titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
         })
 
         return true

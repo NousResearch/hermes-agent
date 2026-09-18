@@ -562,6 +562,8 @@ _DESCRIPTION_HEAD = (
     "\"file written\" may be wrong. For external side effects (uploads, remote writes, publishing), require a "
     "verifiable handle (URL, ID, absolute path) and verify it yourself before telling the user the operation "
     "succeeded.\n"
+    "- Children cannot close tracked work: a child asked to close it returns findings instead; "
+    "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."

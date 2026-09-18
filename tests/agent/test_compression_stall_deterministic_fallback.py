@@ -4,7 +4,8 @@ After one stall the host records a stall-class backoff (``_consecutive_timeout_f
 next attempt stalls again, "continuing without compression" would re-enter the same silent route every
 turn, so the stall retry ladder ends with a deterministic rung: the worker is re-run with the summary LLM
 skipped and compress() commits its static fallback summary through the ordinary lease/fence pipeline.
-A first stall keeps today's behaviour (backoff, LLM retry after it lapses). A pinned fallback route whose
+A first stall keeps today's behaviour (backoff, LLM retry after it lapses) unless the request is already
+above the model's context window — then nothing can be sent unchanged and the rung runs at once (#114594). A pinned fallback route whose
 summary call fails still commits under the default ``abort_on_summary_failure=false`` — that must not be
 logged as a recovery (#112387 review caveat).
 """
@@ -174,3 +175,22 @@ def test_fence_level_retry_ladder_is_unchanged_without_a_prior_timeout():
         )
     assert msgs is original and prompt == "degraded-prompt"
     assert len(attempts) == 1
+
+
+def test_over_window_request_commits_the_deterministic_fallback_on_the_first_stall(tmp_path, fast_timeouts):
+    """A request above the model's context window cannot be sent unchanged, so waiting for a SECOND stall
+    (which on the messaging gateway never comes — the first one auto-reset the session) is a dead end:
+    the deterministic rung runs on the first stall and the transcript is committed (#114594)."""
+    agent = _make_agent(tmp_path, "C")
+    compressor = agent.context_compressor
+    compressor.context_length = 64_000
+    calls = []
+    live = _transcript()
+    with patch("agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls)), \
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+        out, _ = agent._compress_context(live, "sys", approx_tokens=70_000)
+
+    assert calls == ["primary"], "the deterministic rung makes no second summary LLM call"
+    assert out is not live and len(out) < len(live)
+    assert len(_summary_rows(out)) == 1, "the over-window request got a committed deterministic handoff"
+    assert getattr(agent, "_last_compression_timed_out", None) is not True

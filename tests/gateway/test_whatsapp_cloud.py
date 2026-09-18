@@ -873,6 +873,30 @@ class TestInboundMediaDispatch:
         # File still available in media_urls for the agent's other tools
         assert len(event.media_urls) == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, tmp_path, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        adapter = _make_adapter(app_secret="key")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(side_effect=[
+            MagicMock(status_code=200, json=MagicMock(return_value={
+                "url": "https://lookaside.fbsbx.com/whatsapp/m/doc", "mime_type": "text/plain"})),
+            MagicMock(status_code=200, content=content),
+        ])
+        raw_message = {
+            "from": "1555", "id": "wamid.doc2", "timestamp": "0", "type": "document",
+            "document": {"id": "media_doc_abc", "mime_type": "text/plain", "filename": "notes.txt"},
+        }
+        from gateway.platforms import whatsapp_cloud as wac
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            event = await adapter._build_message_event_from_cloud(
+                raw_message, {"1555": "U"}, {"phone_number_id": "1"})
+
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
+
 
 # ---------------------------------------------------------------------------
 # Group-shaped message guard

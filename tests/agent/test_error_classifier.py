@@ -891,6 +891,24 @@ class TestClassifyApiError:
         assert result.should_fallback is False
         assert result.should_compress is False
 
+    def test_reasoning_field_rejection_is_reasoning_mandatory(self):
+        """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
+        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
+        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
+        model-id segment (kimi-k2-thinking) stays route gating."""
+        for msg in (
+            "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
+            "Unrecognized request argument supplied: reasoning_effort",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+        gated = classify_api_error(
+            MockAPIError("The model kimi-k2-thinking is not supported when using this account", status_code=400),
+            provider="custom", model="kimi-k2-thinking",
+        )
+        assert gated.reason != FailoverReason.reasoning_mandatory
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

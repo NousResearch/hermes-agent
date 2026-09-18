@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
+from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
@@ -258,8 +259,15 @@ class MCPServerTransportMixin:
         command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
+        # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
+        # paths against the daemon's launch dir, not the session workspace. Explicit config always
+        # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
+        stdio_cwd = config.get("cwd")
+        if stdio_cwd is None:
+            stdio_cwd = _runtime_cwd.resolve_context_cwd() or None
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=config.get("cwd"),
+            command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;

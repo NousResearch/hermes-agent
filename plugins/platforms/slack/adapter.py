@@ -4506,13 +4506,13 @@ class SlackAdapter(BasePlatformAdapter):
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
         # Thread-root media is delivered ahead of the trigger message's own files.
-        media_urls, media_types, text = await self._collect_inbound_media(
+        media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, channel_context=channel_context)
+            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4532,7 +4532,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        channel_context: Optional[str]) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str]) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4569,6 +4569,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
@@ -4690,12 +4691,14 @@ class SlackAdapter(BasePlatformAdapter):
     async def _collect_inbound_media(
         self, event: dict, channel_id: str, team_id: str, text: str,
         thread_root_media_urls: List[str], thread_root_media_types: List[str],
-    ) -> Tuple[List[str], List[str], str]:
-        """Download/cache ``event["files"]`` → ``(media_urls, media_types, text)``; root images
-        lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind UTF-8
-        decode — PDF/zip headers decode). Failures are prepended as an attachment notice."""
+    ) -> Tuple[List[str], List[str], List[bool], str]:
+        """Download/cache ``event["files"]`` → ``(media_urls, media_types, media_text_inlined, text)``;
+        root images lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind
+        UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. Failures are
+        prepended as an attachment notice."""
         media_urls = list(thread_root_media_urls)
         media_types = list(thread_root_media_types)
+        media_text_inlined: List[bool] = [False] * len(media_urls)
         notices: List[str] = []
         for f in event.get("files", []):
             if f.get("file_access") == "check_file_info":
@@ -4714,6 +4717,7 @@ class SlackAdapter(BasePlatformAdapter):
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)
                 media_types.append(media_type)
+                media_text_inlined.append(bool(injection))
                 if injection:
                     text = f"{injection}\n\n{text}" if text else injection
             except Exception as e:  # pragma: no cover - defensive logging
@@ -4723,7 +4727,7 @@ class SlackAdapter(BasePlatformAdapter):
         if notices:
             notice_block = "[Slack attachment notice]\n" + "\n".join(f"- {n}" for n in notices)
             text = f"{notice_block}\n\n{text}" if text else notice_block
-        return media_urls, media_types, text
+        return media_urls, media_types, media_text_inlined, text
 
     # ----- Approval button support (Block Kit) -----
 

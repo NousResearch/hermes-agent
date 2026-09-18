@@ -99,6 +99,62 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
+describe('a redial of the active route', () => {
+  it('is not cancelled by a prune that runs while it is dialing', async () => {
+    // Editing the connection you are viewing defers the redial until its lease drops, then
+    // disposes the entry and re-activates the same scope asynchronously. While that is in flight
+    // the entry is gone from the map, so the pruner's safety net sees an active scope with no
+    // entry and calls setActive(primary) — which bumps the activation epoch and turns the redial's
+    // own applyActive(epoch) into a no-op. The window then sits on the primary backend and the
+    // redial is discarded silently.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+    const release = await retainGatewayForAgent('homelab', 'writer')
+
+    disposeSecondariesForConnection('homelab', { redial: true })
+
+    let openDial = () => {}
+
+    const dialing = new Promise<void>(resolve => {
+      openDial = resolve
+    })
+
+    gatewayMocks.connect.mockImplementationOnce(async () => dialing)
+
+    release() // drains the pending redial: dispose, evict, re-activate
+    pruneSecondaryGateways(new Set()) // the steal, while the redial is still suspended
+    openDial()
+
+    await vi.waitFor(() => {
+      expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
+    })
+  })
+
+  it('survives a prune when the edit redials immediately (no lease to drain)', async () => {
+    // Same window, sibling entry point: an unleased active scope is disposed and re-activated
+    // straight from disposeSecondariesForConnection instead of the drain.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+
+    disposeSecondariesForConnection('homelab', { redial: true }) // dispose, evict, re-activate
+    pruneSecondaryGateways(new Set()) // the steal, while the redial is still suspended
+
+    await vi.waitFor(() => {
+      expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
+    })
+  })
+})
+
 describe('disposeSecondariesForConnection', () => {
   it('keeps the previous source socket alive when another source becomes foreground', async () => {
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>

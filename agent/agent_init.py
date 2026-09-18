@@ -857,18 +857,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
-        # Use the provider's real env var name (alibaba → DASHSCOPE_API_KEY).
-        _env_hint = f"{_explicit.upper()}_API_KEY"
-        with suppress(Exception):
-            from hermes_cli.auth import PROVIDER_REGISTRY
-            _pcfg = PROVIDER_REGISTRY.get(_explicit)
-            if _pcfg and _pcfg.api_key_env_vars:
-                _env_hint = _pcfg.api_key_env_vars[0]
-        raise RuntimeError(
-            f"Provider '{_explicit}' is set in config.yaml but no API key "
-            f"was found. Set the {_env_hint} environment "
-            f"variable, or switch to a different provider with `hermes model`."
-        )
+        from agent.auxiliary_unavailable import missing_provider_credentials_message
+        raise RuntimeError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector
     _sel = profile_cli_selector()
     raise RuntimeError(

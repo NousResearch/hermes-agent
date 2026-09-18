@@ -10,12 +10,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_has_identity,
@@ -647,13 +647,18 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
         return False
 
 
-# In-process skill-count cache. ``rglob("SKILL.md")`` walks every skill's sub-trees; the
-# default profile alone has ~270 skills and ``list_profiles`` counts EVERY profile (16+), so
-# an uncached scan costs ~6s — enough for the desktop's per-request calls to time out and
-# the sidebar to render "全部智能体 0". Keyed by skills dir, invalidated when the tree
-# signature changes (skill add/remove) or after a short TTL (deep edits).
+# In-process skill-count cache. Counting walks every skill's sub-tree (~4 fs calls per
+# skill); ``list_profiles`` counts EVERY profile, and its two remaining Desktop callers
+# (``GET /api/profiles``, ``profiles.list``) are POLLED every few seconds. Keyed by skills
+# dir; a walk is repeated only when the tree signature changes (skill add/remove) or after
+# the TTL (deep edits). Polled callers never walk: ``lazy_skill_count`` serves the last known
+# value and refreshes stale entries on a background thread, at most once per recheck window
+# per profile — the TTL is decoupled from the poll rate (#114041).
 _SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
-_SKILL_COUNT_TTL_SECONDS = 30.0
+_SKILL_COUNT_TTL_SECONDS = 600.0
+_SKILL_COUNT_RECHECK_SECONDS = 60.0
+_SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
+_SKILL_COUNT_LOCK = threading.Lock()
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -676,8 +681,19 @@ def _skills_dir_signature(skills_dir: Path) -> float:
     return sig
 
 
+def _walk_skill_count(skills_dir: Path) -> int:
+    """One ``os.walk`` over the skills tree (prunes ``.git``/``node_modules``/support dirs
+    instead of statting them). Best-effort: a subtree that vanishes mid-walk (a concurrent
+    skill install/update) is skipped, never raised — ``os.walk`` (``onerror=None``) swallows
+    scandir errors itself, so one profile's churn cannot abort the whole enumeration."""
+    from agent.skill_utils import iter_skill_index_files
+    return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
+
+
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature)."""
+    """Count installed skills in a profile (cached by skills-dir signature + TTL). Walks
+    synchronously when stale — detail surfaces (``hermes profile info``, ``profiles.describe``)
+    want the fresh number; polled lists go through :func:`_cached_skill_count`."""
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
@@ -687,9 +703,27 @@ def _count_skills(profile_dir: Path) -> int:
     cached = _SKILL_COUNT_CACHE.get(key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = sum(1 for md in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(md))
+    count = _walk_skill_count(skills_dir)
     _SKILL_COUNT_CACHE[key] = (signature, now, count)
     return count
+
+
+def _cached_skill_count(profile_dir: Path) -> int:
+    """Last known skill count with ZERO skill-tree I/O on the calling thread. A never-counted
+    or aged entry schedules one background :func:`_count_skills` per profile per recheck
+    window (which itself re-walks only on signature change / TTL); the next poll picks the
+    result up. ``0`` until the first refresh lands."""
+    key = str(profile_dir / "skills")
+    now = time.time()
+    with _SKILL_COUNT_LOCK:
+        due = _SKILL_COUNT_NEXT_CHECK.get(key, 0.0) <= now
+        if due:
+            _SKILL_COUNT_NEXT_CHECK[key] = now + _SKILL_COUNT_RECHECK_SECONDS
+    if due:
+        threading.Thread(target=_count_skills, args=(profile_dir,),
+                         name="hermes-skill-count", daemon=True).start()
+    cached = _SKILL_COUNT_CACHE.get(key)
+    return cached[2] if cached is not None else 0
 
 
 # profile.yaml — per-profile metadata (description, role, etc.)
@@ -764,7 +798,8 @@ def set_profile_display_name(profile_name: str, display_name: str) -> str:
 
 # CRUD operations
 
-def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Optional[str] = None) -> ProfileInfo:
+def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Optional[str] = None,
+                  lazy_skill_count: bool = False) -> ProfileInfo:
     """Build one :class:`ProfileInfo` from a profile directory."""
     model, provider = _read_config_model(path)
     dist_name, dist_version, dist_source = _read_distribution_meta(path)
@@ -775,27 +810,34 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     gateway_running = _check_gateway_running(path)
     if not is_default:
         gateway_running = gateway_running or _served_by_running_multiplexer(name)
+    skill_count = _cached_skill_count(path) if lazy_skill_count else _count_skills(path)
     return ProfileInfo(
         name=name, path=path, is_default=is_default, gateway_running=gateway_running, model=model,
-        provider=provider, has_env=(path / ".env").exists(), skill_count=_count_skills(path),
+        provider=provider, has_env=(path / ".env").exists(), skill_count=skill_count,
         alias_path=alias_path, alias_name=alias_name, distribution_name=dist_name,
         distribution_version=dist_version, distribution_source=dist_source,
         **meta,
     )
 
 
-def list_profiles() -> List[ProfileInfo]:
-    """Return info for all profiles, including the default."""
+def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
+    """Return info for all profiles, including the default.
+
+    ``lazy_skill_count=True`` is for POLLED callers (``GET /api/profiles``, ``profiles.list``):
+    ``skill_count`` is the last known value, refreshed off-request, so the request never walks
+    a skill tree (#114041). Default ``False`` counts synchronously (CLI, detail views)."""
     profiles = []
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
-        profiles.append(_profile_info("default", default_home, is_default=True))
+        profiles.append(_profile_info("default", default_home, is_default=True,
+                                      lazy_skill_count=lazy_skill_count))
     named = _iter_named_profile_dirs()
     if named:
         alias_map = build_alias_map()  # ONCE, not per profile (was the dominant cost)
         for entry in named:
             alias_name = alias_map.get(normalize_profile_name(entry.name))
-            profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name))
+            profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name,
+                                          lazy_skill_count=lazy_skill_count))
     return profiles
 
 
@@ -874,10 +916,53 @@ def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
     return done
 
 
+def _junction_target(path: str) -> Optional[str]:
+    """Target of an NTFS directory junction, else ``None``. A junction is a reparse point, not a
+    symlink: ``os.path.islink()`` is False and ``shutil.copytree(symlinks=True)`` descends into it."""
+    if os.name != "nt":
+        return None
+    try:
+        if os.lstat(path).st_reparse_tag != stat.IO_REPARSE_TAG_MOUNT_POINT:
+            return None
+        target = os.readlink(path)
+    except OSError:
+        return None
+    # readlink hands back the substitute name; CreateJunction rejects the ``\\?\`` spelling.
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\" + target[7:]
+    return target[4:] if target.startswith("\\\\?\\") else target
+
+
+def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:
+    """``shutil.copytree(symlinks=True)`` that re-creates NTFS junctions as junctions instead of
+    traversing them. A ``skills/foo`` junction into a ``skills.external_dirs`` root copied as a
+    physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
+    A junction whose target is gone is skipped with a warning, never a crash."""
+    junctions: Dict[str, str] = {}
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        ignored = set(ignore(directory, names))
+        for name in names:
+            target = _junction_target(os.path.join(directory, name))
+            if target is not None:
+                junctions[os.path.join(directory, name)] = target
+                ignored.add(name)
+        return ignored
+
+    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=dirs_exist_ok, ignore=_ignore)
+    if junctions:
+        import _winapi  # Windows-only stdlib module; only reachable once a junction was seen
+    for link, target in junctions.items():
+        try:
+            _winapi.CreateJunction(target, os.path.join(dst, os.path.relpath(link, src)))
+        except OSError as exc:
+            logger.warning("clone: skipped junction %s -> %s (%s)", link, target, exc)
+
+
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
-    shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -919,10 +1004,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(
-            source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True,
-            ignore=_non_exportable_entries,
-        )
+        _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     if sync_imports:
@@ -1571,9 +1653,9 @@ def _stop_gateway_process(profile_dir: Path) -> None:
 
 # Active profile (sticky default)
 
-def get_active_profile() -> str:
-    """Read the sticky active profile name."""
-    path = _get_active_profile_path()
+def get_active_profile(root: Path | None = None) -> str:
+    """Read the sticky active profile name (of *root*, default: this process's Hermes root)."""
+    path = root / "active_profile" if root is not None else _get_active_profile_path()
     try:
         return path.read_text(encoding="utf-8").strip() or "default"
     except (UnicodeDecodeError, OSError):
@@ -1963,6 +2045,17 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
 # Profile env resolution (called from _apply_profile_override)
 
+def profile_root_for_env_home(env_home: str, default_root: Path) -> Path:
+    """Hermes root named by an exported ``HERMES_HOME``: the grandparent of a profile-shaped value
+    (``<root>/profiles/<name>``, mirrors ``get_default_hermes_root()``), the value itself otherwise,
+    *default_root* when unset. Pure: callers pass any process's env, not only ``os.environ``."""
+    env_home = env_home.strip()
+    if not env_home:
+        return default_root
+    env_path = Path(env_home)
+    return env_path.parent.parent if env_path.parent.name == "profiles" else env_path
+
+
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a HERMES_HOME path string. Called early in the CLI entry
     point, before hermes modules are imported, to set HERMES_HOME.
@@ -1974,14 +2067,7 @@ def resolve_profile_env(profile_name: str) -> str:
     (junction-transparent); only the spelling is preserved.
     """
     canon = _canon_valid(profile_name)
-    env_home = os.environ.get("HERMES_HOME", "").strip()
-    if env_home:
-        env_path = Path(env_home)
-        # A profile-shaped env value means the root is the grandparent (mirrors
-        # get_default_hermes_root()).
-        root = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    else:
-        root = _get_default_hermes_home()
+    root = profile_root_for_env_home(os.environ.get("HERMES_HOME", ""), _get_default_hermes_home())
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon

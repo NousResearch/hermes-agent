@@ -696,9 +696,15 @@ class GatewaySlashCommandsMixin(
         tokens = event.get_command_args().strip().split()
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
         arg = " ".join(tok for tok in tokens if tok.lower() not in ("--all", "--force"))
+        # Container-backed session: host checkpoints belong to another tree, so a restore is
+        # refused; the bare listing stays visible, prefixed with the reason (same as the CLI).
+        reason = mgr.unsupported_backend_reason()
+        if reason and arg:
+            return reason
         checkpoints = mgr.list_checkpoints(cwd)
         if not arg:
-            return format_checkpoint_list(checkpoints, cwd)
+            listing = format_checkpoint_list(checkpoints, cwd)
+            return f"{reason}\n{listing}" if reason else listing
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
@@ -736,6 +742,8 @@ class GatewaySlashCommandsMixin(
             mgr = self._checkpoint_manager()
             if mgr is None:
                 return t("gateway.diff.not_enabled")
+            if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+                return reason
             result = await asyncio.to_thread(mgr.session_diff, cwd)
         else:
             from tools.working_diff import collect_working_diff

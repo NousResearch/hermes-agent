@@ -268,6 +268,16 @@ This way, 90% of your usage is free (local), and only the hard tasks hit the pai
 
 ## Troubleshooting
 
+### "provider 'ollama' has no endpoint configured"
+
+`hermes chat --provider ollama` (or `vllm`) stops with this error when no endpoint is configured for that alias anywhere — no `providers.ollama.base_url`, no `model.base_url`. Hermes refuses to send the request rather than fall back to OpenRouter with a cloud key (`OPENROUTER_API_KEY` / `OPENAI_API_KEY`) that happens to be set. Add the endpoint:
+
+```yaml
+providers:
+  ollama:
+    base_url: "http://localhost:11434/v1"
+```
+
 ### "Connection refused" on startup
 
 Ollama isn't running. Start it:

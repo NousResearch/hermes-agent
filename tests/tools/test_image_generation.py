@@ -466,6 +466,13 @@ class TestExtractHttpStatus:
 class TestManagedGatewayErrorTranslation:
     """4xx from the Nous managed gateway should be translated to a user-actionable message."""
 
+    @pytest.fixture(autouse=True)
+    def _fal_client_stub(self, image_tool, monkeypatch):
+        # These tests drive a mocked managed client; the module-global loader
+        # must not demand the optional fal extra (a version-pinned metadata
+        # check under lazy installs) on the way there.
+        monkeypatch.setattr(image_tool, "fal_client", object())
+
     def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock

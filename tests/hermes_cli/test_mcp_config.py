@@ -303,6 +303,35 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
+        """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: [])
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp_test(_make_args(name="ink")) == 1
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
+        assert "not found in config" in capsys.readouterr().out
+
+    def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
+        """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.main import cmd_mcp
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp(_make_args(name="ink", mcp_action="test")) == 1
+        assert cmd_mcp(_make_args(name="doesnotexist", mcp_action="test")) == 3
+        assert cmd_mcp(_make_args(mcp_action="list")) is None
+
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio

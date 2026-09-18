@@ -1294,10 +1294,11 @@ class SessionMessagesMixin:
             "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
             (session_id, platform_message_id)) is not None
 
-    def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when *session* is a branch, delegate, or tool child of its parent. Markers only count when they
-        point at ``parent_session_id``: compression copies ``model_config`` onto the continuation, so
-        presence-only matching would misclassify it (same binding as ``_NON_CONTINUATION_CHILD_FILTER_SQL``)."""
+    def _is_explicit_fork_child_row(self, session: Dict[str, Any], *, include_reset: bool = False) -> bool:
+        """True when *session* is a branch, delegate, or tool child of its parent (``include_reset``: also a
+        reset fork). Markers only count when they point at ``parent_session_id``: compression copies
+        ``model_config`` onto the continuation, so presence-only matching would misclassify it (same binding
+        as ``_NON_CONTINUATION_CHILD_FILTER_SQL``)."""
         if session.get("source") == "tool":
             return True
         cfg = session.get("model_config")
@@ -1309,6 +1310,8 @@ class SessionMessagesMixin:
         if not isinstance(cfg, dict):
             return False
         markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
+        if include_reset:
+            markers += (cfg.get("_reset_from"),)
         parent_id = session.get("parent_session_id")
         return parent_id in markers if parent_id else any(m is not None for m in markers)
 

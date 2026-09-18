@@ -584,6 +584,13 @@ def handle_content_policy_refusal(
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
     if not _refusal_text:
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
+    # Anthropic stop_reason=refusal carries its reason on stop_details (category + optional explanation),
+    # not in a content block — without it a classifier halt reads as "(no text)" (#113689).
+    _stop_details = (getattr(_refusal_result, "provider_data", None) or {}).get("stop_details")
+    if not _refusal_text and isinstance(_stop_details, dict):
+        _refusal_text = str(_stop_details.get("explanation") or "").strip() or (
+            f"provider refusal category: {_stop_details['category']}" if _stop_details.get("category") else ""
+        )
 
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
@@ -603,9 +610,13 @@ def handle_content_policy_refusal(
 
     agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
+    # native_stop_reason tells an Anthropic classifier refusal (``refusal``) from a Bedrock guardrail
+    # block (``end_turn``); both arrive here as content_filter.
     logger.warning(
-        "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s refusal=%s",
+        "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
+        "native_stop_reason=%s stop_details=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
+        getattr(response, "stop_reason", None) or "n/a", _stop_details or "n/a",
         _refusal_log or "(no text)",
     )
     agent._emit_diagnostic_status("⚠️ The model declined to respond to this request (safety refusal).")

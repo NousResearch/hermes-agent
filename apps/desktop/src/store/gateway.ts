@@ -195,6 +195,8 @@ interface GatewayRegistryState {
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
+  /** Scopes whose re-activation after a connection redial has not landed yet. */
+  reactivatingScopes?: Set<string>
   /** Routed prompt sockets held until their terminal turn event arrives. */
   turnLeases: Map<string, () => void>
   /** Debounced releases so an immediate chained turn can reuse its lease. */
@@ -217,6 +219,7 @@ function createRegistryState(): GatewayRegistryState {
     secondaries: new Map<string, Secondary>(),
     reauthFailures: new Map(),
     openedSecondaryScopes: new Set<string>(),
+    reactivatingScopes: new Set<string>(),
     turnLeases: new Map<string, () => void>(),
     turnLeaseReleaseTimers: new Map<string, ReturnType<typeof setTimeout>>(),
     // The active gateway instance, exposed for inline message-stream
@@ -261,6 +264,8 @@ const g = gatewayState()
 // Dev HMR can hand a newer module an older state-container shape. Keep the
 // generation ledger lazy so an already-open socket still survives the update.
 const openedSecondaryScopes = (): Set<string> => (g.openedSecondaryScopes ??= new Set<string>())
+// Dev-HMR states predate this field, so read it through the same lazy accessor pattern.
+const reactivatingScopes = (): Set<string> => (g.reactivatingScopes ??= new Set<string>())
 
 // Re-exported as a stable binding: the atom instance lives in `g`, so every hot
 // reload of this module hands back the SAME atom subscribers are already wired
@@ -1250,14 +1255,33 @@ function drainPendingConnectionRedial(entry: Secondary): boolean {
   const wasActive = g.activeKey === entry.scope
   disposeSecondary(entry)
   g.secondaries.delete(entry.scope)
-
-  const reopen = wasActive
-    ? ensureGatewayForAgent(entry.connectionId, entry.profile)
-    : openGatewayForAgent(entry.connectionId, entry.profile)
-
-  void reopen.catch(() => undefined)
+  reopenAfterRedial(entry, wasActive)
 
   return true
+}
+
+// Re-open a redialed scope after its entry left the map. An active scope's
+// re-activation is asynchronous, and until it lands
+// restoreActiveToPrimaryIfEvicted sees an active scope with no entry, calls
+// setActive(primary) and bumps the activation epoch — which turns this redial's
+// own applyActive(epoch) into a no-op. The window would then sit on the primary
+// backend with the redial silently discarded, after nothing more than an edit
+// to the connection being viewed. Mark the scope for the pruner while the
+// re-activation is in flight; the finally clears it on both outcomes so a
+// redial that never lands still falls back.
+function reopenAfterRedial(entry: Secondary, wasActive: boolean): void {
+  if (!wasActive) {
+    void openGatewayForAgent(entry.connectionId, entry.profile).catch(() => undefined)
+
+    return
+  }
+
+  reactivatingScopes().add(entry.scope)
+  void ensureGatewayForAgent(entry.connectionId, entry.profile)
+    .catch(() => undefined)
+    .finally(() => {
+      reactivatingScopes().delete(entry.scope)
+    })
 }
 
 /**
@@ -1969,7 +1993,14 @@ function disposeSecondary(entry: Secondary): void {
 // (closeSecondaryGateways in use-gateway-boot) left activeKey pointing at an
 // evicted registry scope and every call silently hit the primary backend.
 function restoreActiveToPrimaryIfEvicted(): void {
-  if (g.activeKey !== g.primaryProfile && !g.secondaries.has(g.activeKey)) {
+  if (
+    g.activeKey !== g.primaryProfile &&
+    !g.secondaries.has(g.activeKey) &&
+    // A redial evicts the entry and re-activates the same scope moments later; taking the
+    // activation in between cancels it through the epoch. The redial's own finally always clears
+    // this, so a failed redial still falls back to the primary.
+    !reactivatingScopes().has(g.activeKey)
+  ) {
     setActive(g.primaryProfile)
   }
 }
@@ -2184,11 +2215,7 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
     g.secondaries.delete(key)
 
     if (opts.redial) {
-      const reopen = wasActive
-        ? ensureGatewayForAgent(entry.connectionId, entry.profile)
-        : openGatewayForAgent(entry.connectionId, entry.profile)
-
-      void reopen.catch(() => undefined)
+      reopenAfterRedial(entry, wasActive)
     }
   }
 

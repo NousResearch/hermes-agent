@@ -614,6 +614,7 @@ def _invoke_agent(
         run_kwargs["task_id"] = session["session_key"]
     if display_kind and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
+    if display_metadata and "persist_user_display_metadata" in run_params:
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author

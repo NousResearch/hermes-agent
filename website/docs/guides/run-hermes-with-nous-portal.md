@@ -172,7 +172,7 @@ The cron job runs unattended, calls the model + web search + summarization all t
 
 ## Profiles and multi-user setups
 
-If you use [Hermes profiles](/user-guide/profiles) (e.g. a separate config per project), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically.
+If you use [Hermes profiles](/user-guide/profiles) (e.g. a separate config per project), each profile is an independent credential island: a profile that has never signed in to the Portal fails closed instead of adopting another profile's session. Sign in once per profile with `hermes -p <name> portal` — when a shared Portal session already exists on the machine it offers to import it without a browser round-trip, and from then on the shared token store keeps that profile's token current. See [Profile setup](/integrations/nous-portal#profile-setup).
 
 For team setups where multiple humans share a machine, each human has their own Portal account → each home directory holds its own `~/.hermes/auth.json` → no token sharing across users. This is the right boundary.
 

@@ -422,7 +422,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
 from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
-    _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
+    _LLAMACPP_ALIASES, _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, find_custom_provider_identity,
@@ -680,17 +680,10 @@ _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
 
 
 def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
-    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec. On AuthError: re-raise for an explicit
-    request; for "auto" (auto-detected but credentials stale/revoked) log and return None so the
-    ladder falls through to env-var providers (e.g. OpenRouter)."""
+    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
+    stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
-    try:
-        creds = spec.resolve()
-    except AuthError:
-        if requested_provider != "auto":
-            raise
-        logger.info("%s; falling through to next provider.", spec.failure_msg)
-        return None
+    creds = spec.resolve()
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),
@@ -776,6 +769,37 @@ def _raise_if_provider_disabled(requested_provider: str) -> None:
                          f"(providers.{requested_provider}.enabled: false)")
 
 
+def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_base_url: Optional[str]) -> None:
+    """A local-server alias (``ollama``, ``vllm`` — anything ``auth.resolve_provider`` maps to
+    ``custom`` without a rung of its own) with NO endpoint configured anywhere would otherwise walk
+    the whole ladder to the OpenRouter fallback and spend an unrelated cloud key there (#113703).
+    Keyed on the ABSENCE of an endpoint, not on the alias name: ``/model <direct-alias>`` resolves
+    the alias label with the alias endpoint as ``explicit_base_url`` and must keep working, which
+    is why the name-keyed version was reverted (e9a54c48f2 / a9fabe43c4). Endpoint sources:
+    explicit call base_url, ``CUSTOM_BASE_URL``, a trusted ``model.base_url``, or a
+    ``providers.<alias>`` block carrying a ``base_url``. ``OPENROUTER_BASE_URL`` is never the
+    alias endpoint, and an explicit api_key does not lift the guard — that key was meant for the
+    alias's own server. ``llamacpp`` fails fast on its own managed-server rung."""
+    requested_norm = (requested_provider or "").strip().lower()
+    if (requested_norm in ("", "custom") or requested_norm in _LLAMACPP_ALIASES
+            or not _resolves_to_custom(requested_norm)):
+        return
+    if str(explicit_base_url or "").strip() or get_secret_str("CUSTOM_BASE_URL", "").strip():
+        return
+    model_cfg = _get_model_config()
+    if _config_base_url_trustworthy_for_bare_custom(str(model_cfg.get("base_url") or ""), _cfg_provider(model_cfg)):
+        return
+    if str((_get_named_custom_provider(requested_provider) or {}).get("base_url") or "").strip():
+        return
+    raise AuthError(
+        f"provider '{requested_provider}' has no endpoint configured, so the request is not sent anywhere "
+        f"(it would otherwise fall back to OpenRouter). Set providers.{requested_norm}.base_url or "
+        "model.base_url in config.yaml.",
+        provider=requested_provider,
+        code="missing_base_url",
+    )
+
+
 def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
     """Vertex AI (OAuth2). The credential *path* (GOOGLE_APPLICATION_CREDENTIALS) must never be
     treated as a static API key; a short-lived token is minted per call, and mid-session expiry is
@@ -848,13 +872,15 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
       5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
-      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError and logs) → minimax-oauth
+      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
+         keyless fallback as ``auth_error``) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
+    _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     return runtime
@@ -898,8 +924,17 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                     target_model=target_model)
     yield _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    swallowed_auth_error = None
     if provider in _OAUTH_RUNTIME_PROVIDERS:
-        yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        try:
+            yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        except AuthError as exc:
+            # Auto-detected login with stale/revoked/benched credentials: fall through to the env-var
+            # providers, but keep the error so a keyless fallback can still say what is wrong.
+            if requested_provider != "auto":
+                raise
+            logger.info("%s; falling through to next provider.", _OAUTH_RUNTIME_PROVIDERS[provider].failure_msg)
+            swallowed_auth_error = exc
     if provider == "minimax-oauth":
         yield _minimax_oauth_runtime(provider, requested_provider)
     if _is_external_process_provider(provider):
@@ -911,7 +946,10 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
-    yield _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    if swallowed_auth_error is not None and not fallback.get("api_key"):
+        fallback["auth_error"] = swallowed_auth_error
+    yield fallback
 
 
 def format_runtime_provider_error(error: Exception) -> str:

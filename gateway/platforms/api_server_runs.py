@@ -128,6 +128,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    self._shutdown_interrupted_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -180,6 +181,18 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         except Exception:
             logger.exception("[api_server] failed to persist idempotent run status %s", run_id)
     return current
+
+
+def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
+    """Publish the shutdown outcome before cooperative interruption can race teardown."""
+    for run_id in run_ids:
+        self._shutdown_interrupted_run_ids.add(run_id)
+        self._set_run_status(
+            run_id,
+            "interrupted",
+            error="Gateway shutdown interrupted the run.",
+            last_event="run.interrupted",
+        )
 
 
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):
@@ -392,7 +405,7 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -414,6 +427,71 @@ async def _resolve_live_session_id(self, session_id: str) -> str:
     except Exception:
         logger.debug("/v1/runs live-session resolve failed for %s", session_id, exc_info=True)
         return session_id
+
+
+async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                notification_category: str = "result", _api_server) -> None:
+    """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
+
+    The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
+    the shared listener authenticates with that profile's own ``API_SERVER_KEY`` — which a
+    route-only profile legitimately does not have — while an unprefixed self-post would resume
+    the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
+    inside the owner profile's runtime scope (the session DB, model resolution and tool policy
+    all follow the ambient scope), with ``profile`` naming the profile the caller proved owns
+    the session — never derived here, so a missing proof cannot silently become the default.
+    Raises on failure so the caller can rewind its cursor: a draining gateway fails at once
+    (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
+    backoff the HTTP self-post uses for a 429.
+    """
+    from gateway.wake import _RETRY_DELAYS_SECONDS
+    profile = (profile or "").strip()
+    if not profile:
+        raise ValueError("run_internal_session_turn requires the owning profile")
+    token = _api_server._api_request_profile.set(profile)
+    attempts = 1 + len(_RETRY_DELAYS_SECONDS)
+    last_err: Optional[BaseException] = None
+    try:
+        for attempt in range(attempts):
+            if attempt:
+                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+            if self._draining_response() is not None:
+                raise RuntimeError(
+                    f"internal wake refused for session {session_id}: the gateway is draining")
+            # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
+            if self._concurrency_limited_response() is not None:
+                last_err = RuntimeError(
+                    "internal wake deferred: the API server is at its concurrent-run cap")
+                logger.warning("%s; attempt %d/%d", last_err, attempt + 1, attempts)
+                continue
+            # #98619/#13437: adopt the live continuation tip first, the same canonical
+            # resolution the HTTP self-post consumes — a compressed origin must be woken on the
+            # transcript that is actually live, never the retired parent slice.
+            resolved = await _resolve_live_session_id(self, session_id)
+            session, err = await self._get_existing_session_or_404(resolved)
+            if err is not None or not session:
+                raise RuntimeError(
+                    f"internal wake target session {resolved!r} is not in the active profile store")
+            history = await self._conversation_history_for_session(resolved)
+            # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
+            # alias for the virtual model applies to the wake turn too.
+            route, overrides, err = self._select_request_route(
+                {"model": self._model_name}, session_id=resolved, gateway_session_key=None,
+                model_alias=self._model_name)
+            if err is not None:
+                raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
+            await self._run_agent(
+                user_message=text, conversation_history=history, session_id=resolved,
+                gateway_session_key=None, **overrides, route=route, requested_runtime={},
+                route_source="global", session_history_delivery="1",
+                notification_category=notification_category,
+            )
+            return
+        raise RuntimeError(
+            f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
+    finally:
+        if token is not None:
+            _api_server._api_request_profile.reset(token)
 
 
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -492,7 +570,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # An explicit or chained session owns its routing key and is never rebound to the header.
     _declared_selected = not session_id and bool(gateway_session_key)
     selected_session_id = session_id or (
-        self._declared_conversation_session(gateway_session_key) if _declared_selected else None)
+        await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
+        if _declared_selected else None)
     # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
     # history loads from it, the turn writes to it, and a detached delivery row persisted to it
     # is what the next same-id run consumes below.
@@ -652,11 +731,20 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
+        if run_id in self._shutdown_interrupted_run_ids:
+            status = "interrupted"
+            fields = {"error": "Gateway shutdown interrupted the run."}
+            extra = {}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
 
     try:
+        # Shutdown landed between admission and the task's first tick: nothing to
+        # interrupt yet, and starting a turn now would outlive the gateway.
+        if run_id in self._shutdown_interrupted_run_ids:
+            _finish("interrupted")
+            return
         self._set_run_status(run_id, "running")
         if run_id in self._stopping_run_ids:
             _finish("cancelled")

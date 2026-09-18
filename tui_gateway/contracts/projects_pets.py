@@ -273,6 +273,7 @@ class ProjectTreeNode(Result):
     totalCostUsd: float = 0.0
     repos: list[ProjectTreeRepo] = Field(default_factory=list)
     previewSessions: list[ProjectTreeSession] = Field(default_factory=list)
+    sessionIds: list[str] = Field(default_factory=list)
 
 
 class ProjectsTreeParams(ProfileParams):

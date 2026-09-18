@@ -237,7 +237,9 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                     if model:
                         merged[key] = DirectAlias(
                             model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
-                            base_url=_clean(value.get("base_url")))
+                            base_url=_clean(value.get("base_url", "")),
+                            api_key=_clean(value.get("api_key", "")),
+                            key_env=_clean(value.get("key_env", "")))
                 elif isinstance(value, str) and value.strip():
                     val = value.strip()
                     provider, model = val.split("/", 1) if "/" in val else (current_provider, val)
@@ -1364,8 +1366,17 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         st.api_key, st.base_url = st.current_api_key, st.current_base_url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:
+        # A URL-bearing LOCAL direct alias (ollama, vllm — labels that resolve to `custom`)
+        # supplies its endpoint HERE as well as in _apply_direct_alias_endpoint: the resolver
+        # refuses such an alias with no endpoint configured anywhere, and this alias does have
+        # one. A built-in label (anthropic, openai, …) must NOT get the alias URL: its resolver
+        # would pair the vendor key with the foreign host, and _apply_direct_alias_endpoint then
+        # sees a same-origin credential and keeps it (#28660).
+        from hermes_cli.runtime_provider import _resolves_to_custom
+        da = DIRECT_ALIASES.get(st.resolved_alias) if st.resolved_alias else None
+        alias_url = da.base_url if da is not None and _resolves_to_custom(st.target_provider) else None
         try:
-            st.resolve_runtime(requested=st.target_provider)
+            st.resolve_runtime(requested=st.target_provider, explicit_base_url=alias_url or None)
         except Exception as e:
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "

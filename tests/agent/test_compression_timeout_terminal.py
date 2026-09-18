@@ -123,6 +123,8 @@ def test_pre_api_compression_timeout_is_typed_terminal():
     agent.context_compressor.protect_first_n = 0
     agent.context_compressor.protect_last_n = 0
     agent.context_compressor._threshold_tokens = 1
+    # The typed terminal is the over-window outcome; a request that fits its window is sent uncompressed.
+    agent.context_compressor._resolved_context_length = 1
     agent.context_compressor.should_compress = MagicMock(return_value=True)
     agent.context_compressor.should_compress_info = MagicMock(
         return_value=(True, None)

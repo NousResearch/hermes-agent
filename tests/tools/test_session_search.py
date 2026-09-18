@@ -491,6 +491,35 @@ class TestReadShape:
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
 
+    def test_read_caps_oversized_message_content(self, db):
+        # #114344: a huge archived tool result stored as a message must not come
+        # back whole on the read shape - discovery/scroll already cap (#69334).
+        db.create_session("s_huge", source="cli")
+        db.append_message("s_huge", role="user", content="run it")
+        db.append_message("s_huge", role="assistant", content="x" * 80_000)
+        db.append_message("s_huge", role="user", content="thanks")
+        db._conn.commit()
+        result = json.loads(session_search(session_id="s_huge", db=db))
+        assert result["mode"] == "read"
+        assert result["truncated"] is False  # 3 messages, count-wise it all fits
+        big = next(m for m in result["messages"] if m.get("content_truncated"))
+        assert len(big["content"]) <= 2001  # read cap (2000) plus ellipsis
+        assert big["original_content_chars"] == 80_000
+        assert sum(len(m.get("content") or "") for m in result["messages"]) < 5_000
+
+    def test_title_match_entry_caps_content_like_fts_hits(self, db):
+        """A session-title match is a discovery entry: bookends 1200, window 4000, same as FTS hits."""
+        db.create_session("s_titled", source="cli")
+        db.set_session_title("s_titled", "quasar ledger reconciliation")
+        db.append_message("s_titled", role="user", content="reconcile the quasar ledger")
+        db.append_message("s_titled", role="tool", content="y" * 80_000)
+        db.end_session("s_titled", "cli_exit")
+        result = json.loads(session_search(query="quasar ledger reconciliation", db=db, detail="full"))
+        entry = next(r for r in result["results"] if r["matched_role"] == "session_title")
+        shaped = entry["bookend_start"] + entry["messages"] + entry["bookend_end"]
+        big = [m for m in shaped if m.get("original_content_chars") == 80_000]
+        assert big and all(m["content_truncated"] and len(m["content"]) <= 4001 for m in big)
+
 
 # =========================================================================
 # Session links — the value the agent writes to point the user at a session

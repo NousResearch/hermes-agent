@@ -53,11 +53,11 @@ class _Http(Exception):
         self.status_code = status_code
 
 
-def _nonretryable(status, message, provider="openrouter", model="gpt-5-turbo"):
+def _nonretryable(status, message, provider="openrouter", model="gpt-5-turbo", agent=None):
     error = _Http(status, message)
     classified = classify_api_error(error, provider=provider, model=model)
     return nonretryable_client_error_result(
-        _Agent(), error, classified, status_code=status, api_kwargs=None, api_messages=[], messages=[],
+        agent or _Agent(), error, classified, status_code=status, api_kwargs=None, api_messages=[], messages=[],
         conversation_history=None, api_call_count=1, approx_tokens=10, provider=provider,
         base_url="https://openrouter.ai/api/v1", model=model,
     )
@@ -78,6 +78,33 @@ def test_api_key_rejection_chat_text_names_the_fix_and_the_provider_label():
     assert "hermes setup" in text and "OpenRouter" in text
     assert "Provider said:" in text  # raw detail demoted to a trailing line
     assert text.index("hermes setup") < text.index("Provider said:")
+
+
+def test_oauth_rejection_chat_text_names_the_provider_slug_and_the_failing_profile(tmp_path, monkeypatch):
+    """A revoked Codex grant must send the user to THAT profile's own sign-in (profiles are
+    islands, 93889b770da) and put the provider slug in the text the goal judge reads (#114012)."""
+    profile_home = tmp_path / ".hermes" / "profiles" / "codex"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    hints = []
+
+    class _Recorder(_Agent):
+        def _vprint(self, msg, **_kw):
+            hints.append(msg)
+
+    result = _nonretryable(
+        401, "HTTP 401: Encountered invalidated oauth token for user, failing request (code: token_revoked)",
+        provider="openai-codex", model="gpt-5.6-sol", agent=_Recorder(),
+    )
+    text = result["final_response"]
+    assert "`hermes -p codex auth add openai-codex --type oauth`" in text
+    assert "<provider>" not in text
+    assert "token_revoked" in text  # the raw error survives for the judge to quote
+    # The CLI 💡 hint names the same command; it no longer sends the user to a bare `hermes auth`.
+    cli_hint = "\n".join(hints)
+    assert "`hermes -p codex auth add openai-codex --type oauth`" in cli_hint, cli_hint
+    assert "`hermes auth`" not in cli_hint, cli_hint
 
 
 def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():

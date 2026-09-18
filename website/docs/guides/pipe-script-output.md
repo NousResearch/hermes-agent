@@ -186,8 +186,22 @@ msg_id=$(hermes send --to discord:#ops --json "build started" \
 **Usually no.** For any bot-token platform — Telegram, Discord, Slack,
 Signal, SMS, WhatsApp Cloud API, and most others — `hermes send` calls
 the platform's REST endpoint directly using credentials from
-`~/.hermes/.env` and `~/.hermes/config.yaml`. It's a standalone subprocess
+`~/.hermes/.env` and `~/.hermes/config.yaml` (or the equivalent files under
+your resolved Hermes home — `%LOCALAPPDATA%\hermes` on Windows, or the profile
+directory when `HERMES_HOME` / `-p` is set). It's a standalone subprocess
 that exits as soon as the message is delivered.
+
+If a platform reports `not configured`, the error lists the exact files it
+read and what each one held, e.g.
+`Looked in: C:\Users\me\AppData\Local\hermes\.env (no DISCORD_BOT_TOKEN),
+C:\Users\me\AppData\Local\hermes\config.yaml (no platforms.discord block),
+environment (DISCORD_BOT_TOKEN unset), external secret sources (none configured)`.
+When a gateway started from the same home has that platform connected, the
+token only exists in the gateway's process environment — add it to that home's
+`.env` so `hermes send` can use it. When your shell is scoped to a profile home
+(`HERMES_HOME=<root>/profiles/<name>`) but the connected gateway runs from the
+default root, the error says so — the gateway never read the profile's `.env`,
+and `hermes send --list` points at the root's `channel_directory.json`.
 
 A live gateway is only required for **plugin platforms** that rely on a
 persistent adapter connection (for example, a custom plugin that keeps

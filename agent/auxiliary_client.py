@@ -24,7 +24,12 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from agent.error_classifier import _BILLING_PATTERNS, _OVERLOADED_PATTERNS
+from agent.error_classifier import (
+    _BILLING_PATTERNS,
+    _OVERLOADED_PATTERNS,
+    UNSUPPORTED_PARAM_MARKERS,
+    is_reasoning_field_rejection,
+)
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -116,8 +121,8 @@ from agent.auxiliary_health import (
     fallback_candidate_unavailable_reason,
 )
 from agent.auxiliary_unavailable import (
-    AuxiliaryClientUnavailable, clear_nous_credential_failure, nous_credential_failure_detail,
-    record_nous_credential_failure)
+    AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
+    nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -1364,9 +1369,11 @@ class _CodexCompletionsAdapter:
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
+            _responses_tools,
             _wire_model_identity,
             classify_responses_route,
         )
+        from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
@@ -1375,6 +1382,33 @@ class _CodexCompletionsAdapter:
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
         is_github = route.is_github_responses
+        tools = kwargs.get("tools")
+        if tools:
+            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
+            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
+            # in place and would strip the caller's tool registry.
+            try:
+                import copy as _copy
+                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
+                tools = _copy.deepcopy(list(tools))
+                tools, _ = strip_pattern_and_format(tools)
+                tools, _ = strip_slash_enum(tools)
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
+        # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
+        # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
+        # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
+        # where the main loop worked (#114260). The alias map is request-local: it rides on the payload
+        # (``_wire_aliases``, popped in ``create()``), never on the instance — aux adapters are shared.
+        wire_tools, wire_aliases = _alias_wire_tools(
+            _responses_tools(tools),
+            {"provider": getattr(self._client, "_hermes_aux_effective_provider", "") or None, "base_url": host},
+            is_xai,
+        )
+        renamed = {original: alias for alias, original in wire_aliases.items()}
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
@@ -1384,8 +1418,15 @@ class _CodexCompletionsAdapter:
             content = msg.get("content") or ""
             if msg.get("role", "user") == "system":
                 instructions = content if isinstance(content, str) else str(content)
-            else:
-                replay_messages.append(msg)
+                continue
+            # Replayed history names each tool the way THIS request declares it.
+            if renamed and msg.get("tool_calls"):
+                msg = {**msg, "tool_calls": [
+                    {**tc, "function": {**tc["function"], "name": renamed[tc["function"]["name"]]}}
+                    if isinstance(tc, dict) and (tc.get("function") or {}).get("name") in renamed else tc
+                    for tc in msg["tool_calls"]
+                ]}
+            replay_messages.append(msg)
         # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
         # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
@@ -1432,33 +1473,10 @@ class _CodexCompletionsAdapter:
                 )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
-        tools = kwargs.get("tools")
-        if tools:
-            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
-            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
-            # in place and would strip the caller's tool registry.
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
-                tools = _copy.deepcopy(list(tools))
-                tools, _ = strip_pattern_and_format(tools)
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
-            converted = []
-            for t in tools:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                name = fn.get("name")
-                if name:
-                    converted.append({
-                        "type": "function", "name": name, "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
-                    })
-            if converted:
-                resp_kwargs["tools"] = converted
+        if wire_tools:
+            resp_kwargs["tools"] = wire_tools
+        if wire_aliases:
+            resp_kwargs["_wire_aliases"] = wire_aliases
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1501,6 +1519,7 @@ class _CodexCompletionsAdapter:
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
+        wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
@@ -1529,6 +1548,10 @@ class _CodexCompletionsAdapter:
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
+            for tc in tool_calls_raw or ():
+                if tc.function.name in wire_aliases:
+                    tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc
@@ -3222,16 +3245,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     if not param_lower:
         return False
     err_lower = str(exc).lower()
-    # Bedrock Converse rejects sampling params for reasoning-first models with the contraction
-    # ("This model doesn't support the temperature field", xAI Grok) and inference-profile Claude
-    # with "`temperature` is deprecated for this model" (#111043).
-    return param_lower in err_lower and _contains_any(err_lower, (
-        "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
-        "doesn't support", "is deprecated for this model",
-        "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
-        # Strict pydantic-validated gateways (Fireworks) name the unknown field this way (#109774).
-        "extra inputs are not permitted",
-    ))
+    return param_lower in err_lower and _contains_any(err_lower, UNSUPPORTED_PARAM_MARKERS)
 
 
 def _is_structured_output_rejection(exc: Exception) -> bool:
@@ -3285,19 +3299,7 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
-    if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
-        return False
-    # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
-    # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
-    # provider-fallback rung) and not the adjective in "... not supported with reasoning models".
-    return _REASONING_FIELD_TOKEN.search(str(exc).lower()) is not None
-
-
-# Reasoning wire-field names (the ``_PROFILE_REASONING_KEYS`` controls minus ``verbosity``), longest first.
-_REASONING_FIELD_TOKEN = re.compile(
-    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
-    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
-)
+    return is_reasoning_field_rejection(str(exc))
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
@@ -6391,10 +6393,19 @@ def _merge_aux_extra_body(
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
+    caller_disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
+    if caller_disabled:
+        # The caller's thinking-off beats ``auxiliary.<task>.reasoning_effort`` (folded into
+        # ``extra_body.reasoning`` by _get_task_extra_body). Dropped BEFORE the profile merge so a
+        # profile that projects disabled reasoning onto its own wire (custom: top-level
+        # ``reasoning_effort=none``) never ships beside a task-level ``reasoning.effort`` — strict
+        # gateways 400 on the contradiction (#114020) — while a profile whose disabled shape IS
+        # ``extra_body.reasoning`` (OpenRouter) still lands it below.
+        merged_extra.pop("reasoning", None)
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if reasoning_config.get("enabled") is False:
+        if caller_disabled:
             merged_extra["reasoning"] = {"enabled": False}
         else:
             # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
@@ -7039,10 +7050,8 @@ def _resolve_call_client(
                     task, _explicit)
                 if fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
-                    raise AuxiliaryClientUnavailable(nous_detail or (
-                        f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `hermes model`."))
+                    raise AuxiliaryClientUnavailable(
+                        nous_detail or missing_provider_credentials_message(_explicit))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
@@ -7389,15 +7398,18 @@ def _ladder_credential_rungs(
 
 def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
-    failed_model: Optional[str], failure_scope: Any,
+    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
     capacity error): remaining configured entries (task chain, then main chain on auto) before the
-    discovery chain."""
+    discovery chain. ``task_chain_only`` (explicit-provider auth error) stops at the task chain —
+    the user never opted that task into discovery or the main model."""
     reason = "fallback candidate unavailable"
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
         failed_base_url=route.base_info, failure_scope=failure_scope)
+    if task_chain_only:
+        return fb
     if fb[0] is None and is_auto:
         fb = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
@@ -7414,7 +7426,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
     response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors only fall back in auto mode."""
+    regardless of user intent. Auth errors from an explicit provider may only use the task's
+    own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7426,7 +7439,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
     is_capacity_error = any(
         predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
-    if reason is None or not (is_auto or is_capacity_error):
+    task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
+    has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
+    explicit_auth_with_task_chain = (
+        reason == "auth error" and not is_auto and has_task_fallback_chain
+    )
+    if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
@@ -7465,7 +7483,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-    elif fb_client is None:
+    elif fb_client is None and not explicit_auth_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
@@ -7485,7 +7503,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         if fb_resp is not None:
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-            task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
+            task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
+            task_chain_only=explicit_auth_with_task_chain)
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator

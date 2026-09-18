@@ -83,6 +83,11 @@ You can verify MCP in a few ways:
 - ask Hermes what tools it has available
 - use `/reload-mcp` after config changes
 - check logs if the server failed to connect
+- run `hermes mcp test <server>` from a shell — it connects, lists the
+  discovered tools, and exits `0` on a completed connect, `1` when the
+  connection fails, and `3` when the server is not in your config (`2` is
+  argparse's usage error), so health probes and cron watchdogs can branch on
+  `$?` instead of parsing the output
 
 A practical test prompt:
 

@@ -92,15 +92,19 @@ def save_url_video(
     max_bytes: int = 200 * 1024 * 1024,
     headers: Optional[Dict[str, str]] = None,
     require_video_content_type: bool = False,
+    trusted_origin: bool = False,
 ) -> Path:
     """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/videos/``;
-    raises on network / HTTP / oversize / empty errors so callers can fall back to the URL."""
+    raises on network / HTTP / oversize / empty errors so callers can fall back to the URL.
+    ``trusted_origin`` is only for URLs built from the operator's configured provider
+    ``base_url`` (see ``provider_media.save_url``)."""
     return provider_media.save_url(
         "videos", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=256 * 1024, content_types=_URL_VIDEO_CONTENT_TYPES,
         url_extensions=("mp4", "webm", "mov", "mkv"), default_extension="mp4",
         label="Video", empty_error="Video at {url} was empty (0 bytes).",
         headers=headers, require_known_content_type=require_video_content_type,
+        trusted_origin=trusted_origin,
     )
 
 

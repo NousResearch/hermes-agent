@@ -169,7 +169,7 @@ hermes cron add "Daily AI news summary" "every day at 9am" \
 
 ## Profiles 与多用户配置
 
-如果你使用 [Hermes profiles](/user-guide/profiles)（例如每个项目单独一套配置），Portal refresh token 会通过共享 token 存储自动在所有 profiles 之间共享。在任意 profile 上登录一次，其余 profiles 会自动获取。
+如果你使用 [Hermes profiles](/user-guide/profiles)（例如每个项目单独一套配置），每个 profile 都是独立的凭证孤岛：从未登录过 Portal 的 profile 会直接失败，而不会采用其他 profile 的会话。请在每个 profile 上用 `hermes -p <name> portal` 登录一次——如果机器上已有共享的 Portal 会话，它会提示导入且无需再走浏览器流程；此后共享 token 存储会让该 profile 的令牌保持最新。参见 [Profile 配置](/integrations/nous-portal#profile-setup)。
 
 对于多人共用一台机器的团队场景，每个人有自己的 Portal 账号 → 每个 home 目录保存各自的 `~/.hermes/auth.json` → 用户之间不共享 token。这是正确的边界划分。
 

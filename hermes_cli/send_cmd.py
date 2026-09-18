@@ -111,7 +111,13 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+        home, root = get_hermes_home(), get_default_hermes_root()
+        print(f"channel discovery can populate {home / 'channel_directory.json'}.")
+        # A gateway started from the default root writes that root's directory, never this profile's.
+        if hermes_home_key(root) != hermes_home_key(home) and (root / "channel_directory.json").exists():
+            print(f"A gateway running from {root} already has {root / 'channel_directory.json'}; "
+                  f"this shell is scoped to profile home {home}, which has none.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
@@ -132,7 +138,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate the credential environment from ``~/.hermes/.env`` AND bridge top-level ``config.yaml``
+    """Populate the credential environment from ``<HERMES_HOME>/.env`` AND bridge top-level ``config.yaml``
     keys into it so the gateway config loader sees platform credentials and home channels.
 
     The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
@@ -236,13 +242,16 @@ _SEND_ARGUMENTS = (
 
 def register_send_subparser(subparsers) -> argparse.ArgumentParser:
     """Create the ``send`` subparser and return it."""
+    from hermes_constants import get_hermes_home
+    hermes_home = get_hermes_home()
     parser = subparsers.add_parser(
         "send",
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
             "Pipe text from any shell script to any messaging platform Hermes "
             "is already configured for. Reuses the gateway's platform "
-            "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
+            f"credentials ({hermes_home / '.env'} + "
+            f"{hermes_home / 'config.yaml'}) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
             "platforms like Telegram/Discord/Slack/Signal."
         ),

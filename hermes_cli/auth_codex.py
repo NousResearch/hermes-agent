@@ -31,11 +31,17 @@ if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
 
-_MISSING_ACCESS_TOKEN_MSG = (
-    "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.")
-_MISSING_REFRESH_TOKEN_MSG = (
-    "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.")
-_NO_CREDENTIALS_MSG = "No Codex credentials stored. Run `hermes auth` to authenticate."
+# ``{relogin}`` is filled at raise time with the profile-aware sign-in command: a bare
+# ``hermes auth`` from a named profile re-signs the ROOT store (93889b770da, #114012).
+_MISSING_ACCESS_TOKEN_MSG = "Codex auth is missing access_token. Run `{relogin}` to re-authenticate."
+_MISSING_REFRESH_TOKEN_MSG = "Codex auth is missing refresh_token. Run `{relogin}` to re-authenticate."
+_NO_CREDENTIALS_MSG = "No Codex credentials stored. Run `{relogin}` to authenticate."
+
+
+def _codex_relogin_command() -> str:
+    from agent.turn_failure_copy import oauth_relogin_command
+
+    return oauth_relogin_command("openai-codex")
 
 
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
@@ -87,17 +93,19 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     auth_store = _load_auth_store_maybe_locked(_lock)
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
+        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing", relogin=True)
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise _codex_err(
-            "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
+            f"Codex auth state is missing tokens. Run `{_codex_relogin_command()}` to re-authenticate.",
             "codex_auth_invalid_shape", relogin=True)
     if not _nonempty_str(tokens.get("access_token")):
-        raise _codex_err(_MISSING_ACCESS_TOKEN_MSG, "codex_auth_missing_access_token", relogin=True)
+        raise _codex_err(_MISSING_ACCESS_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_access_token", relogin=True)
     if not _nonempty_str(tokens.get("refresh_token")):
-        raise _codex_err(
-            _MISSING_REFRESH_TOKEN_MSG, "codex_auth_missing_refresh_token", relogin=True)
+        raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_refresh_token", relogin=True)
     return {"tokens": tokens, "last_refresh": state.get("last_refresh")}
 
 
@@ -243,13 +251,41 @@ def _ssl_interop_hint(exc: BaseException) -> str:
     )
 
 
+def _is_transient_transport_error(exc: BaseException) -> bool:
+    """True when *exc* is transport-level (connection/TLS/socket) and safe to retry.
+
+    httpx raises ``httpx.TransportError`` subclasses wrapping the original ``ssl``/``socket``
+    error as ``__cause__``, so both spellings count. Anything else (decode errors, bugs) is
+    not a network blip and must surface immediately.
+    """
+    err: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while err is not None and id(err) not in seen:
+        if isinstance(err, (httpx.TransportError, OSError)):
+            return True
+        seen.add(id(err))
+        err = err.__cause__
+    return False
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
-    """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
-    try:
-        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
-            return client.post(url, **kwargs)
-    except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+    """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``.
+
+    A transient transport blip (a dropped connection mid-flow) is retried twice with a small
+    linear backoff before failing: losing the token exchange to a single SSL EOF wastes a
+    device-code approval the user already completed in the browser (#114610).
+    """
+    attempt, attempts = 1, 3
+    while True:
+        try:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise _codex_err(
+                    f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+            time.sleep(attempt)
+            attempt += 1
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -311,7 +347,7 @@ def _codex_refresh_failure_error(response: "httpx.Response") -> AuthError:
             "Codex refresh token was already consumed by another client "
             "(e.g. Codex CLI or VS Code extension). "
             "Run `codex` in your terminal to generate fresh tokens, "
-            "then run `hermes auth` to re-authenticate.")
+            f"then run `{_codex_relogin_command()}` to re-authenticate.")
     # A 401/403 from the token endpoint always means the refresh token is invalid/expired —
     # force relogin even if the body error code wasn't one of the known strings.
     relogin_required = (
@@ -326,8 +362,8 @@ def refresh_codex_oauth_pure(
     from hermes_cli.auth import _nonempty_str, _utc_now_z
     del access_token  # Access token is only used by callers to decide whether to refresh.
     if not _nonempty_str(refresh_token):
-        raise _codex_err(
-            _MISSING_REFRESH_TOKEN_MSG, "codex_auth_missing_refresh_token", relogin=True)
+        raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
         headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
@@ -481,7 +517,8 @@ def resolve_codex_runtime_credentials(
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
         if read_error is not None:
             raise read_error
-        raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
+        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing", relogin=True)
     tokens = dict(data["tokens"])
     access_token = _stripped(tokens.get("access_token"))
     refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
@@ -765,10 +802,12 @@ def _codex_poll_authorization_code(
     issuer: str, *, device_auth_id: str, user_code: str, poll_interval: int) -> Dict[str, Any]:
     """Step 3 of the Codex device flow: poll until sign-in completes (403/404 = still pending)."""
     max_wait = 15 * 60  # 15 minutes
+    max_consecutive_blips = 6  # survives transient drops, still fails fast on a dead network
     start = time.monotonic()
     code_resp = None
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+            consecutive_blips = 0
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
                 try:
@@ -777,9 +816,19 @@ def _codex_poll_authorization_code(
                         json={"device_auth_id": device_auth_id, "user_code": user_code},
                         headers={"Content-Type": "application/json"})
                 except Exception as exc:
-                    raise _codex_err(
-                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
-                        "device_code_poll_error") from exc
+                    if not _is_transient_transport_error(exc):
+                        raise _codex_err(
+                            f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    consecutive_blips += 1
+                    if consecutive_blips >= max_consecutive_blips:
+                        raise _codex_err(
+                            f"Device auth polling request failed after {consecutive_blips} consecutive"
+                            f" transport errors: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    print("Transient network error while waiting for sign-in; retrying...")
+                    continue
+                consecutive_blips = 0
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break

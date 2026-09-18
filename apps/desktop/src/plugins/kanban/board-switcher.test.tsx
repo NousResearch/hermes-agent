@@ -1,10 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Test harness supplies the host's locale registration, as plugin loading does.
+// eslint-disable-next-line no-restricted-imports
+import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
 import type * as KanbanApi from './api'
 import { $boardSlug } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { KANBAN_LOCALES } from './i18n'
 
 vi.mock('./api', async importOriginal => ({
   ...(await importOriginal<typeof KanbanApi>()),
@@ -14,8 +19,15 @@ vi.mock('./api', async importOriginal => ({
   }))
 }))
 
+let disposeLocales: () => void = () => undefined
+
+beforeEach(() => {
+  disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
+})
+
 afterEach(() => {
   cleanup()
+  disposeLocales()
   $boardSlug.set('')
 })
 
@@ -35,5 +47,20 @@ describe('board switcher', () => {
     mount()
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
+  })
+
+  // The trigger is projected into the Kanban page header as the board's own name, so it
+  // must announce itself as a control: a visible "Board" label, a "Board: …"
+  // accessible name, and a "Switch board" tooltip on hover.
+  it('identifies the current board switcher as a control', async () => {
+    mount()
+
+    const trigger = await screen.findByRole('button', { name: 'Board: Shipping' })
+
+    expect(trigger.textContent).toContain('Board')
+
+    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
+
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Switch board')
   })
 })

@@ -216,6 +216,9 @@ class StreamFallbackMixin:
             retry_delay = self._fallback_flood_retry_delay(result)
             if attempt or retry_delay is None:
                 break  # non-flood error, long flood wait, or second failure
+            raw = getattr(result, "raw_response", None)
+            if isinstance(raw, dict) and raw.get("partial_overflow"):
+                break  # split head already on screen: re-sending the whole content duplicates it
             logger.debug(retry_log, retry_delay)
             await asyncio.sleep(retry_delay)
         return result

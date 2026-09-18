@@ -48,9 +48,12 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     ref = ref.strip()
     lower = ref.lower()
     if lower.startswith(("http://", "https://")):
-        import requests
+        from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-        resp = requests.get(ref, timeout=60)
+        if not is_safe_url(ref):
+            raise ValueError(f"Image reference URL failed the SSRF safety check: {ref}")
+        with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client:
+            resp = client.get(ref)
         resp.raise_for_status()
         name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
         return resp.content, name

@@ -405,6 +405,8 @@ def test_overview_drops_session_rows_but_keeps_counts_and_previews():
 
     assert project["sessionCount"] == 4
     assert len(project["previewSessions"]) == 3
+    # The claimed-id set stays complete in overview mode; it is the renderer's ONE owner.
+    assert sorted(project["sessionIds"]) == sorted(s["id"] for s in sessions)
     # Lanes carry structure + counts but no rows in overview mode.
     assert all(g["sessions"] == [] for repo in project["repos"] for g in repo["groups"])
     assert project["repos"][0]["sessionCount"] == 4

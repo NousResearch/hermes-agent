@@ -182,7 +182,10 @@ def _build_child_system_prompt(
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    # The goal is the child's first user turn (see ``_ChildRun.await_child``).
+    # Keeping it out of the system prompt avoids sending OAuth Anthropic the
+    # same task in both roles, while preserving the normal user-turn contract.
+    parts = ["You are a focused subagent working on a specific delegated task."]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():

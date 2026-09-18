@@ -1675,6 +1675,7 @@ class CLICommandsMixin:
         result = _cron_api(action="list")
         jobs = result.get("jobs", []) if result.get("success") else []
         if jobs:
+            from hermes_cli.cron import _next_run_row
             _pr("  Current Jobs:", "  " + "-" * 63)
             for job in jobs:
                 print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
@@ -1682,7 +1683,9 @@ class CLICommandsMixin:
                     print(f"      Skills: {', '.join(job['skills'])}")
                 print(f"      {job.get('prompt_preview', '')}")
                 if job.get("next_run_at"):
-                    print(f"      Next: {job['next_run_at']}")
+                    # A stamp parked past the scheduler grace must not read as upcoming (#114309).
+                    label, value = _next_run_row(job)
+                    print(f"      {'Next' if label == 'Next run' else label}: {value}")
                 print()
         else:
             print("  No scheduled jobs. Use '/cron add' to create one.")
@@ -1693,13 +1696,14 @@ class CLICommandsMixin:
         jobs = result.get("jobs", []) if result.get("success") else []
         if not jobs:
             return print("(._.) No scheduled jobs.")
+        from hermes_cli.cron import _next_run_row
         print()
         _pr("Scheduled Jobs:", "-" * 80)
         for job in jobs:
             _pr(f"  ID: {job['job_id']}", f"  Name: {job['name']}",
                 f"  State: {job.get('state', '?')}",
                 f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})",
-                f"  Next run: {job.get('next_run_at', 'N/A')}")
+                "  %s: %s" % _next_run_row(job) if job.get("next_run_at") else "  Next run: N/A")
             if job.get("skills"):
                 print(f"  Skills: {', '.join(job['skills'])}")
             print(f"  Prompt: {job.get('prompt_preview', '')}")

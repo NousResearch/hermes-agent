@@ -646,6 +646,35 @@ class TestStatusSurfacesDeadScheduler:
         assert "Scheduler last ticked" not in status_out  # no heartbeat file → nothing to date
         assert "Next run:" in list_out and "Overdue:" not in list_out
 
+    def test_slash_cron_and_list_flag_overdue_but_not_paused(self, tmp_cron_dir, capsys):
+        # The in-chat `/cron` overview and `/cron list` (classic CLI + Ink TUI forward to the
+        # same handler) read the same rows; a 7h-past stamp must not read as an upcoming run,
+        # while a paused job keeps its plain label — pausing is why it did not fire.
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        stale = create_job(prompt="Hourly", schedule="every 60m")
+        paused = create_job(prompt="Parked", schedule="every 60m")
+        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        self._park_next_run(stale["id"], when)
+        self._park_next_run(paused["id"], when)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(paused["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command("/cron")
+        overview_out = capsys.readouterr().out
+        _Host()._handle_cron_command("/cron list --all")
+        list_out = capsys.readouterr().out
+
+        for out in (overview_out, list_out):
+            assert out.count("Overdue:") == 1 and "7h ago" in out
+        assert "Next" not in overview_out  # the overview lists enabled jobs only
+        assert list_out.count("Next run:") == 1  # only the paused job's stamp stays plain
+        assert list_out.index("Overdue:") < list_out.index("Next run:")
+
 
 class TestSlashCronRunSkipped:
     """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another

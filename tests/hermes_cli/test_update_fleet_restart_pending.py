@@ -813,3 +813,65 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
 
     assert capsys.readouterr().err == ""
     assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
+# ── Empty-inventory marker: a pull that recorded no gateway owes nothing (#115311) ──
+
+def _write_marker_with_inventory(expected_sha, runtimes):
+    marker = update_cmd_fleet._fleet_restart_pending_marker_path()
+    marker.write_text(
+        f"started=0\npid=1\nexpected_sha={expected_sha}\n"
+        f"inventory={json.dumps({'version': 1, 'runtimes': runtimes})}\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
+def test_empty_inventory_does_not_arm_marker():
+    """A pre-update plan with zero runtimes must never arm the marker: on a no-gateway
+    (Desktop-hosted) install every later update would otherwise hit the unbeatable
+    'Fleet restart incomplete' exit 1 (#115311)."""
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40, runtimes=[])
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_empty_inventory_marker_discharged_without_fleet_probe(monkeypatch):
+    """A pre-fix marker recording an empty inventory is discharged at read time too — nothing
+    owes a restart, and no fleet probe is consulted (there is nothing to prove recovered)."""
+    marker = _write_marker_with_inventory("e" * 40, [])
+
+    seen = {"probe": False}
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: seen.__setitem__("probe", True) or [],
+    )
+
+    assert update_cmd_fleet._marker_only_restart_obsolete() is True
+    assert not marker.exists()
+    assert seen["probe"] is False
+
+
+def test_pending_fleet_restart_cleared_instead_of_exit_1(monkeypatch, tmp_path):
+    """Repro: an already-up-to-date host carrying an empty-inventory marker must exit 0 with
+    no restart run — not print 'Fleet restart incomplete' and exit 1 (#115311)."""
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+    marker = _write_marker_with_inventory("abc123", [])
+
+    seen = {"ran": False}
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "abc123")
+    monkeypatch.setattr(
+        update_cmd,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_run_pending_fleet_restart",
+        lambda: seen.__setitem__("ran", True) or True,
+    )
+
+    hermes_main.cmd_update(args)
+
+    assert seen["ran"] is False
+    assert not marker.exists()

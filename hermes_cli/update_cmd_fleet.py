@@ -53,6 +53,11 @@ def _fleet_restart_pending_marker_path() -> Path:
 
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
     """Drop the pull→restart obligation breadcrumb. Never raises."""
+    if runtimes == []:
+        # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
+        # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
+        # a no-gateway host would then fail every later ``hermes update`` (#115311).
+        return
     from hermes_cli.update_cmd import _m
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
@@ -198,7 +203,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    Historical receipts cannot narrow this obligation. Two shapes are kept strictly
+    apart (#115311): a valid inventory that owes NO gateway restart is discharged here —
+    there is nothing to recover — while an inventory that OWES restarts stays fail-closed
+    until the fleet provably serves the pulled SHA. Legacy, malformed or unsupported
+    inventories stay fail-closed too; absence of an inventory cannot prove recovery.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -214,7 +223,7 @@ def _marker_only_restart_obsolete() -> bool:
         if not isinstance(inventory, dict) or inventory.get("version") != 1:
             return False
         runtimes = inventory.get("runtimes")
-        if not isinstance(runtimes, list) or not runtimes:
+        if not isinstance(runtimes, list):
             return False
         owed = set()
         for runtime in runtimes:
@@ -230,6 +239,12 @@ def _marker_only_restart_obsolete() -> bool:
             owed.add(("gateway", profile))
     except (OSError, UnicodeError, ValueError):
         return False
+    if not owed:
+        # A pull that recorded no gateway runtime owes no restart; clearing avoids the
+        # stuck "Fleet restart incomplete" loop on Desktop-hosted (no-service) installs.
+        _clear_fleet_restart_pending_marker()
+        logger.debug("Fleet-restart-pending marker discharged: no gateway obligation recorded")
+        return True
     if not expected_sha:
         return False
     checkout_sha = _current_checkout_sha()

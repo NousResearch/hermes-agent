@@ -376,13 +376,9 @@ function SidebarSessionRowImpl({
         // steal the other's gesture. Over the sidebar only the reorder has a
         // target (the session drop denies: side chrome hosts no main tile);
         // over the tree only the session drop does (no sortable row there).
-        // Whichever one the release lands on is the one that commits.
-        //
-        // Only the POINTER activator reaches the shell. The full handle
-        // (role/tabIndex + dnd-kit's keyboard activator) lives on the grabber:
-        // spread here it made every focused row control a keyboard drag
-        // activator, and an armed KeyboardSensor eats Space/Enter window-wide
-        // (#83617: the rename dialog swallowed spaces).
+        // Whichever one the release lands on is the one that commits. Pointer
+        // activator only; the full handle stays on the grabber (see
+        // useSortableBindings).
         onPointerDown={event => {
           // The grabber already carries these same listeners, and the ⋯
           // cluster keeps its own gestures.

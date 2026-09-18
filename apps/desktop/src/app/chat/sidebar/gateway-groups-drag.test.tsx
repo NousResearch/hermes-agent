@@ -18,9 +18,7 @@ import { ChatSidebar } from './index'
 // up/down. The grab handle only reveals itself on hover, so the visible
 // affordance is the header itself: a POINTER press on the label must arm the
 // dnd sortable (the lead handle already did). Only the pointer activator lives
-// on the header, though — the keyboard activator stays on the grabber, or
-// Space on the ⋯ button would arm a reorder and swallow the next Space in the
-// rename dialog (#83617).
+// on the header; the keyboard activator stays on the grabber (#83617).
 
 const noop = () => {}
 

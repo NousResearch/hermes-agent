@@ -30,8 +30,8 @@ except ImportError:
         last_prompt_tokens: int = 0
         last_completion_tokens: int = 0
         last_total_tokens: int = 0
-        threshold_tokens: int = 35000
-        context_length: int = 200000
+        threshold_tokens: int = 400000
+        context_length: int = 1000000
         compression_count: int = 0
         protect_first_n: int = 1
         protect_last_n: int = 8
@@ -119,12 +119,33 @@ class JitContextEngine(ContextEngine):
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
-        self.threshold_tokens = 35000
-        self.context_length = 200000
+        self.context_length = 1000000
+        self.threshold_tokens = 32000
+        self._init_threshold_from_config()
         self.compression_count = 0
         self.protect_first_n = 1
         self.protect_last_n = 8
         self.emit_automatic_compaction_status = False
+
+    def _init_threshold_from_config(self) -> None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+            comp_cfg = cfg.get("compression", {}) if isinstance(cfg, dict) else {}
+            custom = comp_cfg.get("threshold_tokens")
+            if custom and int(custom) > 0:
+                self.threshold_tokens = int(custom)
+            else:
+                ratio = float(comp_cfg.get("threshold", 0.4))
+                calc = int(self.context_length * ratio)
+                self.threshold_tokens = min(32000, calc) if calc > 0 else 32000
+        except Exception:
+            self.threshold_tokens = 32000
+
+    def update_model(self, model: str = "", context_length: int = 0, **kwargs: Any) -> None:
+        if context_length and context_length > 0:
+            self.context_length = context_length
+        self._init_threshold_from_config()
 
     @property
     def name(self) -> str:

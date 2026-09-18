@@ -2379,7 +2379,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     @staticmethod
     def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
-        """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""
+        """Raise-only small-context threshold floor: models under 512K trigger at >= 75% for default 0.50,
+        but preserve explicit user thresholds < 0.50 (e.g. 0.40)."""
+        if threshold_percent < 0.50:
+            return threshold_percent
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
@@ -2388,31 +2391,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _compute_threshold_tokens(
         context_length: int, threshold_percent: float, max_tokens: int | None = None,
     ) -> int:
-        """Compute the compaction trigger in tokens from the effective input budget.
-        Base is ``(context_length - max_tokens) * threshold_percent`` floored at MINIMUM_CONTEXT_LENGTH;
-        when the floor binds it is capped at 85% of the budget so small windows can still fire.
+        """Compute the compaction trigger in tokens from input tokens (not output tokens).
 
-        The base value is ``effective_input_budget * threshold_percent``, floored at
-        ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress prematurely at 50%. BUT that floor
-        degenerates at small windows: for a model whose ``context_length`` is at/below the minimum (e.g. a
-        64K local model), ``max(0.5*64000, 64000) == 64000`` makes the threshold equal the ENTIRE window —
-        auto-compression can never fire because the provider rejects the request before usage reaches 100%
-        (#14690).
-        The provider reserves ``max_tokens`` of output space out of the same window, so the usable INPUT
-        budget is ``context_length - max_tokens``. With a large ``max_tokens`` (e.g. 65536 on a custom
-        provider) the input budget is materially smaller than the raw window, and a threshold based on the
-        full window lets the session hit a provider 400 before compaction fires (#43547). The percentage and
-        the degenerate-window check below both operate on the effective input budget. ``max_tokens=None``
-        (provider default) conservatively assumes no reservation (full window).
+        User intent: compression at threshold_percent of input tokens (context_length),
+        without deducting output reservation.
         """
-        effective_window = context_length - (max_tokens or 0)
+        effective_window = context_length
         if effective_window <= 0:
-            effective_window = context_length
+            return MINIMUM_CONTEXT_LENGTH
         pct_value = int(effective_window * threshold_percent)
+        if threshold_percent < 0.50:
+            return max(1, min(pct_value, effective_window - 1))
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
-        # The floor must not consume output headroom: cap at 85% when it is the binding term. Near-minimum windows
-        # otherwise trigger at ~98%, and providers that silently clip over-window prompts (ollama) never raise the
-        # overflow backstop, so the session wedges. An explicit threshold_percent above 85% is user intent; not capped.
         trigger_cap = int(effective_window * ContextCompressor._MIN_CTX_TRIGGER_RATIO)
         if effective_window > 0 and floored > pct_value and floored > trigger_cap:
             floored = max(pct_value, trigger_cap)

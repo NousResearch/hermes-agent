@@ -82,3 +82,72 @@ class TestBackgroundGuidanceRecipes:
 
     def test_quoted_ampersand_not_flagged(self):
         assert _foreground_background_guidance('git commit -m "a & b"') is None
+
+    def test_inspection_of_uvicorn_is_not_server_start(self):
+        """`ps aux | grep uvicorn` inspects; the server word is only a grep
+        operand, so the command must not be nudged to background mode."""
+        assert _foreground_background_guidance("ps aux | grep uvicorn | grep -v grep | head -3") is None
+        assert _foreground_background_guidance(
+            "journalctl --user -u app-server -n 5 | grep uvicorn"
+        ) is None
+        assert _foreground_background_guidance(
+            "kill 4158132 && sleep 2 && ps aux | grep uvicorn | grep -v grep | wc -l"
+        ) is None
+
+    def test_real_python_uvicorn_start_still_flagged(self):
+        assert _foreground_background_guidance(
+            "cd ~/proj && .venv/bin/python -m uvicorn src.server.main:app --port 8000"
+        ) is not None
+        # `timeout <N>` bounds the process — a smoke/restart test, not a
+        # long-lived foreground server.
+        assert _foreground_background_guidance(
+            "cd ~/proj && timeout 15 .venv/bin/python -m uvicorn src.server.main:app --port 8001"
+        ) is None
+
+    def test_timeout_bounded_server_start_not_flagged(self):
+        """A `timeout <N>` wrapper makes the command bounded, so even a server
+        start cannot occupy the foreground forever."""
+        assert _foreground_background_guidance(
+            "systemctl --user stop app-webui.service 2>/dev/null; sleep 2; cd ~/proj && timeout 15 .venv/bin/python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8001"
+        ) is None
+        assert _foreground_background_guidance(
+            "cd ~/proj && MOCK=1 timeout 8 .venv/bin/python -m uvicorn src.server.main:app --host 127.0.0.1 --port 8011"
+        ) is None
+        assert _foreground_background_guidance("timeout 60s npm run dev") is None
+        # unbounded still flagged
+        assert _foreground_background_guidance("npm run dev") is not None
+
+    def test_vite_build_is_not_server_start(self):
+        """`vite build` is a one-shot build, not a long-lived dev server.
+        Bare `vite` / `vite dev` are dev servers and stay flagged."""
+        assert _foreground_background_guidance(
+            "cd ~/proj/web && npx vite build 2>&1"
+        ) is None
+        assert _foreground_background_guidance("npx vite build") is None
+        assert _foreground_background_guidance("vite") is not None
+        assert _foreground_background_guidance(
+            "cd ~/proj && npx vite dev"
+        ) is not None
+
+    def test_npm_docker_starts_still_flagged(self):
+        assert _foreground_background_guidance("cd ~/proj && npm run dev") is not None
+        assert _foreground_background_guidance("docker compose up") is not None
+
+    def test_detached_docker_compose_up_is_not_server_start(self):
+        """`docker compose up -d|--detach` returns immediately (daemon-owned),
+        so the command line itself is NOT a long-lived foreground process."""
+        assert _foreground_background_guidance("docker compose up -d") is None
+        assert _foreground_background_guidance("docker compose up --detach") is None
+        assert _foreground_background_guidance("docker compose up -d --force-recreate tei-reranker") is None
+        assert _foreground_background_guidance(
+            'cd ~/app && docker compose down 2>&1 && echo "=====UP=====" && docker compose up -d 2>&1'
+        ) is None
+        assert _foreground_background_guidance(
+            "cd ~/app && docker compose up -d 2>&1 | tail -5 && sleep 15 && docker compose ps"
+        ) is None
+        # bare `up` (no detach) still keeps the foreground attached — guard stays
+        assert _foreground_background_guidance(
+            "cd ~/app && docker compose down && docker compose up"
+        ) is not None
+        # inspection with `up` as a grep operand is not a compose start either
+        assert _foreground_background_guidance("docker ps | grep up") is None

@@ -12,11 +12,41 @@ from __future__ import annotations
 import re
 
 # Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
-# VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
+# VAR=... assignments, ``env``, a ``cd <path> &&`` / ``source <path> &&`` prologue link,
+# a ``timeout <N>`` wrapper and a path prefix are allowed. Narrow on purpose: unmatched = visible.
+#
+# A prologue link (``cd``/``source``) is inert only when its path is a plain, substitution-free
+# token: quoting or ``$(...)``/backticks mean the argument is evaluated by the shell, so such a
+# link is NOT provably inert and stays visible (fail-closed). The same regex drives the scanner's
+# skip-ahead so the link's ``&&`` is not counted as a list operator.
+_INERT_PROLOGUE_LINK_RE = re.compile(
+    r"(?:cd|source)\s+(?:[^$;|&'=\"`\n()]|\\\s)+(?:\s*&&\s*)",
+    re.IGNORECASE,
+)
+
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"^\s*"
+    # Env assignments may appear both before and between prologue links
+    # (e.g. `cd x && source activate && PYTHONPATH=src python`).
+    r"(?:(?:[A-Z_][A-Z0-9_]*=\S+\s+)?(?:" + _INERT_PROLOGUE_LINK_RE.pattern + r")?)*"
+    r"(?:[A-Z_][A-Z0-9_]*=\S+\s+)*"
+    r"(?:env\s+)?"
+    # ``timeout <N> python...`` defers but does not reinterpret the body;
+    # the interpreter is still the consumer, so the body stays inert.
+    r"(?:timeout\s+\d+(?:s|m|h|d)?\s+)*"
+    r"(?:~?[A-Za-z0-9_./-]+/)?"
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
+
+# A shell interpreter somewhere on the opener/pipeline means body data may flow to a shell
+# (e.g. `cat <<'EOF' | bash` executes the body). When the opener is compound (`|`/`&&`/`&`),
+# presence of any such consumer keeps the whole opener fail-closed (body stays visible).
+# Python/osascript bodies are program text for that interpreter and are never handed to a
+# shell as its stdin by the interpreter, so they may be masked even in compound openers.
+_SHELL_CONSUMER_RE = re.compile(
+    r"(?<![-\w.])(?:bash|sh|zsh|dash|ksh|eval|ssh)\b",
+    re.IGNORECASE,
+)
 
 
 def _span_end(command: str, cursor: int, closer: str) -> int:
@@ -110,6 +140,19 @@ def _scan_heredoc_command_unit(command: str, start: int):
     specs = []
     unknown_operator = False
     has_list_operator = False
+    # A leading `cd <path> && ...` / `source <path> && ...` prologue only
+    # sets up the context; its `&&` is not an imperative list operator, so
+    # skip it (repeatedly) before scanning the real command. This keeps the
+    # extremely common agent spelling `cd ~/x && python - <<'EOF'` maskable
+    # by the consumer check below, while a bare `&` or `;` as a SEPARATOR
+    # still counts. Anything that is not a plain, substitution-free prologue
+    # link (quoted path, $(...)) fails closed: the link is not consumed and
+    # `&&` remains a list op.
+    while True:
+        link = _INERT_PROLOGUE_LINK_RE.match(command, cursor)
+        if link is None:
+            break
+        cursor = link.end()
     while cursor < len(command):
         char = command[cursor]
         if char == "\n" and (comment or quote is None):
@@ -187,10 +230,18 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 return command  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
-        if all(quoted for _delimiter, _strip_tabs, quoted in specs) and not has_list_operator:
+        if all(quoted for _delimiter, _strip_tabs, quoted in specs):
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
             if (not any(m in masked_opener for m in ("$(", "`", "<(", ">("))
-                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)):
+                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)
+                    and not (has_list_operator and _SHELL_CONSUMER_RE.search(masked_opener))):
+                # Single-command opener, or a compound opener whose consumers
+                # are program interpreters (python/osascript): the quoted body
+                # is inert data for that interpreter regardless of the pipes
+                # and links it is attached to (`python3 - <<'EOF' 2>&1 |
+                # grep -v X`, `build && python3 - <<'EOF'`). Compound openers
+                # WITH a shell consumer on the line (`cat <<'EOF' | bash`)
+                # stay fail-closed: the body data may flow to the shell.
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

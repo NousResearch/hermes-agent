@@ -802,3 +802,13 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+def test_grep_substitution_not_malformed():
+    """`sed -n "$(grep -n 'x' f | cut -d: -f1)"` puts a grep word inside a
+    double-quoted command substitution whose operand span cannot be located;
+    the command is well-formed and must not hardline as malformed."""
+    cmd = 'sed -n "$(grep -n "target" f.txt | cut -d: -f1)" f.txt'
+    is_hl, desc = detect_hardline_command(cmd)
+    assert not is_hl, f"expected not hardline for {cmd!r} (got: {desc})"
+    assert desc is None

@@ -1317,6 +1317,67 @@ class TestAnthropicStreamCallbacks:
         assert "eager_input_streaming" not in seen_tools[0][0]
         assert seen_tools[1][0]["eager_input_streaming"] is False
 
+    def test_stream_parse_error_detected_for_every_jiter_wording(self):
+        """A malformed tool-JSON stream must be recognised regardless of jiter's wording.
+
+        #107830 gated the buffered-tool-input retry on two literal parser sentences, but the
+        wording depends on where the model's malformed JSON first breaks the grammar: the
+        reported case emitted "expected value", while an unquoted-key-separator payload from the
+        same call site emits "expected `:`" and was NOT recognised — so the turn silently lost
+        the one retry that recovers it. The invariant is the ORIGIN (the SDK's streaming
+        accumulator), not the sentence, so these are raised from that module's frame.
+        """
+        from run_agent import AIAgent
+        import anthropic.lib.streaming._messages as sdk_stream
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+
+        def raise_from_sdk_accumulator(payload: bytes) -> ValueError:
+            """Run jiter inside the SDK module so the traceback matches production."""
+            source = ("def _probe():\n"
+                      "    from jiter import from_json\n"
+                      f"    return from_json({payload!r}, partial_mode=True)\n")
+            exec(compile(source, sdk_stream.__file__, "exec"), sdk_stream.__dict__)
+            try:
+                sdk_stream._probe()
+            except ValueError as exc:
+                return exc
+            raise AssertionError(f"{payload!r} unexpectedly parsed")
+
+        # Malformed tool-arg payloads jiter rejects with DIFFERENT wordings (partial_mode=True,
+        # the mode the SDK uses). Truncation is deliberately absent: partial mode tolerates every
+        # truncation shape, so anything raising here is genuinely malformed JSON.
+        for payload in [
+            b'{"names": cronjob_manage}',   # expected value        (the #107830 report)
+            b'{"a" 1}',                     # expected `:`
+            b'{"a":1,"b""b":2}',            # expected `:`          (duplicated key fragment)
+            b'{"a":"\\x"}',                 # invalid escape
+            b'{"a":01}',                    # invalid number
+            b'{1:2}',                       # key must be a string
+        ]:
+            error = raise_from_sdk_accumulator(payload)
+            assert agent._is_provider_stream_parse_error(error), f"{payload!r} -> {error}"
+
+        # A genuine local bug must stay local, or a real Hermes bug is retried at the provider.
+        for local_bug in [
+            "unsupported operand type(s) for +: 'int' and 'str'",
+            "invalid literal for int() with base 10: 'abc'",
+            "Missing credentials for provider anthropic",
+        ]:
+            assert not agent._is_provider_stream_parse_error(ValueError(local_bug)), local_bug
+
+        # Non-Anthropic routes keep their historical handling.
+        agent.api_mode = "chat_completions"
+        assert not agent._is_provider_stream_parse_error(raise_from_sdk_accumulator(b'{"a" 1}'))
+
     def test_anthropic_partial_tool_names_do_not_survive_into_next_attempt(self):
         """A tool name from an attempt that died before any text is attempt-local: when the
         retry streams plain text and then drops, the partial stub must not blame ``old_tool``

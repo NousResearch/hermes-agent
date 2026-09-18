@@ -14,6 +14,35 @@ from agent.redact import redact_sensitive_text
 # frame (wire trouble, not local validation). Read by ``AIAgent._is_provider_stream_parse_error``.
 PROVIDER_STREAM_PARSE_MARKERS = ("expected ident at line", "expected value at line")
 
+# The SDK accumulates streamed tool-call JSON with ``jiter.from_json(..., partial_mode=True)`` in
+# ``anthropic/lib/streaming/_messages.py`` and lets the raw parser ValueError escape. Which WORDING
+# jiter picks depends on where the model's malformed JSON first violates the grammar, so the marker
+# list above is a sample of one bug, not the bug: an unquoted value gives "expected value" (#107830),
+# while a dropped or duplicated key separator in the same stream gives "expected `:`", and jiter also
+# emits "invalid escape", "invalid number" and "key must be a string". Matching prose therefore fixes
+# one symptom per wording and silently misses the rest, losing the retry that actually recovers these
+# streams (``buffer_anthropic_tool_input``).
+#
+# The origin is the invariant: nothing but the SDK's streaming accumulator raises at that call site,
+# so identify the frame instead of the sentence. This also cannot be spoofed by an unrelated local
+# ValueError that happens to quote a parser position.
+_ANTHROPIC_STREAM_MODULE = "anthropic/lib/streaming"
+
+
+def raised_in_anthropic_stream_accumulator(error: BaseException) -> bool:
+    """True when ``error`` escaped the Anthropic SDK's streamed-JSON accumulator."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        tb = current.__traceback__
+        while tb is not None:
+            if _ANTHROPIC_STREAM_MODULE in tb.tb_frame.f_code.co_filename.replace("\\", "/"):
+                return True
+            tb = tb.tb_next
+        current = current.__cause__ or current.__context__
+    return False
+
 
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.
 _NETWORK_RESOLUTION_MARKERS = (

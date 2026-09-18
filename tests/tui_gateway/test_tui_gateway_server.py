@@ -1178,6 +1178,24 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_write_json_unserializable_payload_becomes_error_frame(monkeypatch, caplog):
+    """The stdio twin of the WS guard (#92506): an unserializable result must reach the Ink TUI /
+    stdio bridge as a JSON-RPC error frame with the original id plus a log line, not kill the pool
+    worker silently while the client waits forever."""
+    import datetime
+    import logging
+
+    out = _ChunkyStdout()
+    monkeypatch.setattr(server, "_real_stdout", out)
+    with caplog.at_level(logging.ERROR, logger="tui_gateway.transport"):
+        assert server.write_json({"jsonrpc": "2.0", "id": "profiles",
+                                  "result": {"created": datetime.datetime(2026, 8, 22)}}) is True
+    frame = json.loads("".join(out.parts))
+    assert frame["id"] == "profiles" and frame["error"]["code"] == -32603
+    assert "datetime" in frame["error"]["message"]
+    assert "frame serialization failed" in caplog.text
+
+
 def test_write_json_drops_detached_ws_frames(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
@@ -3760,7 +3778,7 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(
@@ -3821,7 +3839,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
@@ -3906,6 +3924,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured["agent_db"] = session_db
+        captured["agent_cwd"] = kwargs.get("cwd_override")
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
@@ -3913,7 +3932,11 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server,
+        "_set_session_context",
+        lambda target, cwd=None: captured.setdefault("context_cwd", cwd) or [],
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -3944,6 +3967,8 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         assert "error" not in resp
         sid = resp["result"]["session_id"]
         assert captured["agent_db"] is profile_db
+        assert captured["context_cwd"] == str(profile_cwd)
+        assert captured["agent_cwd"] == str(profile_cwd)
         assert server._sessions[sid]["cwd"] == str(profile_cwd)
         assert resp["result"]["info"]["cwd"] == str(profile_cwd)
         assert "launch_update" not in captured
@@ -4612,7 +4637,7 @@ def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
     def fake_init_session(sid, key, agent, history, **kwargs):
         monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
 
-    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda key, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_init_session", fake_init_session)
     monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *args: False)
@@ -7112,7 +7137,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -11275,7 +11300,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -11315,7 +11340,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -12483,6 +12508,24 @@ def test_inflight_snapshot_carries_arrival_order_offsets():
     assert snapshot["correction_offsets"] == [len("Moving."), len("Moving.Still.")]
 
 
+def test_turn_admission_carries_synthetic_display_metadata_into_inflight_snapshot(monkeypatch):
+    """A reconnect must retain the typed synthetic user bubble (#112144)."""
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    agent = Mock()
+    session = {"agent": agent, "attached_images": [], "history_lock": threading.RLock()}
+    display_metadata = {"display_text": "Finished syncing the workspace"}
+
+    assert server._admit_prompt_turn(
+        "sid", session, "process completed", None, None, "process_complete", display_metadata,
+    ) == ([], agent)
+
+    snapshot = server._inflight_snapshot(session)
+
+    assert snapshot is not None
+    assert snapshot["display_kind"] == "process_complete"
+    assert snapshot["display_metadata"] == {"display_text": "Finished syncing the workspace"}
+
+
 def test_inflight_snapshot_omits_offsets_when_not_fully_recorded():
     """A pre-upgrade in-memory turn may carry corrections without offsets.
 
@@ -12740,7 +12783,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -12833,7 +12876,7 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
         return _is_model_switch_marker(entry)
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -12932,7 +12975,7 @@ def test_prompt_submit_merges_on_personality_pivot_marker(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -13043,7 +13086,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -13153,7 +13196,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -13317,7 +13360,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -13417,7 +13460,7 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -13706,7 +13749,7 @@ def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
     calls = {"interrupted": False, "started": False}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
 
         def start(self):
@@ -13777,7 +13820,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -13847,7 +13890,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -13919,7 +13962,7 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -13985,7 +14028,7 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -14061,7 +14104,7 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -14145,7 +14188,7 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     calls = {"run_prompt": 0}
 
     class _FakeThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
             threads.append(self)
 
@@ -15894,6 +15937,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
+        seen["agent_cwd"] = k.get("cwd_override")
         return FakeAgent()
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
@@ -15927,6 +15971,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # not just the row. Otherwise its own flushes (and a later compression
         # rotation) land on the launch db, splitting the lineage again.
         assert isinstance(seen.get("agent_session_db"), ProfileDB)
+        assert seen.get("agent_cwd") == str(tmp_path)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
@@ -15964,8 +16009,9 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             seen["messages"] = list(messages)
 
-        def set_session_title(self, key, title):
+        def set_auto_title(self, key, title, *, source):
             seen["title"] = title
+            seen["title_source"] = source
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -16008,6 +16054,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
+    assert seen.get("title_source") == "derived"
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -16396,6 +16443,10 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def set_session_title(self, _key, _title):
             return True
 
+        def set_auto_title(self, _key, _title, *, source="llm"):
+            seen["title_source"] = source
+            return True
+
         def get_session(self, key):
             return {"id": key, "cwd": str(tmp_path)}
 
@@ -16450,6 +16501,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
+        assert seen.get("title_source") == "derived"
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -16783,7 +16835,7 @@ def test_model_options_refresh_allows_custom_provider_probes(monkeypatch):
 class _ImmediateThread:
     """Runs the target callable synchronously so assertions can follow."""
 
-    def __init__(self, target=None, daemon=None):
+    def __init__(self, target=None, daemon=None, **_thread_options):
         self._target = target
 
     def start(self):
@@ -18439,7 +18491,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
         def start(self):
             self._target()
@@ -18507,7 +18559,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
             return {"final_response": "ok", "messages": []}
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
         def start(self):
             self._target()
@@ -19668,7 +19720,9 @@ def test_start_agent_build_passes_session_model_override(
         captured.update(kwargs)
         return types.SimpleNamespace(model="claude-sonnet-4.6")
 
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server, "_set_session_context", lambda target, cwd=None: []
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -20932,7 +20986,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -20962,6 +21016,7 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
 
 def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
     """The trim boundary must not retain the just-pruned history snapshots."""
+    import contextlib
     observed = {}
     cleanup_order = []
 
@@ -20975,7 +21030,7 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -21018,6 +21073,10 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
             "reset_hermes_home_override",
             lambda _token: cleanup_order.append("reset_home"),
         )
+        # This test observes the worker's history-release scope, not the
+        # separate notification-policy and post-turn scopes (covered elsewhere).
+        monkeypatch.setattr(server, "_session_profile_runtime_scope",
+                            lambda _session: contextlib.nullcontext())
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _inspect_trim_frame)
 
         resp = server.handle_request(
@@ -21201,6 +21260,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
@@ -21355,7 +21415,7 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -21475,7 +21535,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_thread_options):
             self._target = target
 
         def start(self):
@@ -21773,12 +21833,11 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         assert sess["history"][1]["content"] == "reply 1"
-        # Durable active transcript matches the cut (archive_dropped keeps
-        # inactive rows; get_messages_as_conversation returns active only).
+        # Durable active transcript matches the cut plus the prompt just sent, which is durable at
+        # submit (#111868) — before the turn runs (archive_dropped keeps inactive rows;
+        # get_messages_as_conversation returns active only).
         active = db.get_messages_as_conversation(session_key)
-        assert len(active) == 2
-        assert active[0]["content"] == "first"
-        assert active[1]["content"] == "reply 1"
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second"]
         # Heal stamps for subsequent rewinds when memory lined up with DB.
         assert sess["history"][0].get("_row_id") is not None
     finally:
@@ -22181,7 +22240,8 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)
-        assert [m["content"] for m in active] == ["first", "reply 1"]
+        # The cut, plus the prompt just sent (durable at submit, #111868).
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]
         # And the second response rebinds again: one surviving user turn.
         survivors2 = resp2["result"].get("survivor_user_row_ids")
         assert isinstance(survivors2, list) and len(survivors2) == 1

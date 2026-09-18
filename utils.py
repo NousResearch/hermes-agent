@@ -240,7 +240,12 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     also fsyncs the parent so the rename itself is durable. The temp file is removed on any
     failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A profile delete leaves a tombstone beside its removed home.  Background
+    # writers may retain that home in a context variable, so a plain mkdir here
+    # would resurrect the profile before the write can fail.
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -423,7 +428,9 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -467,7 +474,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 

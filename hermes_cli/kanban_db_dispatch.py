@@ -295,20 +295,52 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def _worker_alive(pid: Optional[int], started_at: Optional[int]) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the start-time
-    fingerprint recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated
-    process can own the number, so bare existence is never enough to extend a claim or to signal.
-    A legacy row without a fingerprint keeps the existence answer: killing it is the pre-fingerprint
-    behaviour and the row is rewritten with a fingerprint on its next spawn."""
-    return _kb._pid_alive(pid) and not _pid_recycled(pid, started_at)
+# ``worker_started_at`` value for a spawn whose fingerprint could not be captured. Distinct from the
+# NULL legacy row (pre-fingerprint spawn): such a worker is held (its claim is never released beside
+# the live PID) but NEVER signalled — missing process identity is refusal, not permission (#99558).
+UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
 
-def _pid_recycled(pid: Optional[int], started_at: Optional[int]) -> bool:
+def _process_fingerprint(pid: int) -> Optional[str]:
+    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
+    time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
+    survives a reboot could match an unrelated process with the same PID and the same tick value;
+    ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
+    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
+    from gateway.drain_control import current_instantiation_epoch
+    from gateway.status import get_process_start_time
+    start = get_process_start_time(int(pid))
+    if start is None:
+        return None
+    return f"{current_instantiation_epoch()}|{start}"
+
+
+def _worker_alive(pid: Optional[int], started_at) -> bool:
+    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
+    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
+    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
+    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
+    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
+    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
+    refuses to signal it."""
+    if not _kb._pid_alive(pid):
+        return False
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        return True
+    return not _pid_recycled(pid, started_at)
+
+
+def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never recycled."""
+    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
+    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
+    boot witness was added) compares the start time only."""
     if started_at is None or not pid:
         return False
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        return True
+    if isinstance(started_at, str) and "|" in started_at:
+        return _process_fingerprint(int(pid)) != started_at
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
@@ -350,11 +382,14 @@ def _terminate_reclaimed_worker(
     claim_lock: Optional[str],
     *,
     signal_fn=None,
-    started_at: Optional[int] = None,
+    started_at=None,
 ) -> dict[str, Any]:
     """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
     fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True)."""
+    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
+    UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
+    it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
+    spawning a duplicate beside it."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -370,6 +405,11 @@ def _terminate_reclaimed_worker(
 
     kill = _kill_fn(signal_fn)
     if kill is None:
+        return info
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
+        info["signal_refused"] = True
+        info["terminated"] = not _kb._pid_alive(pid)
         return info
     if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
         info["terminated"] = True
@@ -429,9 +469,11 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
 
 
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
-    pid, fingerprint = int(row["worker_pid"]), int(row["worker_started_at"])
+    pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
     if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
         return
+    if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+        return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
     alive = _worker_alive(pid, fingerprint)
     termination = None
     if alive:
@@ -463,8 +505,8 @@ def _worker_survived_termination(termination: dict) -> bool:
     through to the normal release path since we cannot manage that worker anyway.
     """
     return bool(
-        termination.get("termination_attempted")
-        and termination.get("host_local")
+        termination.get("host_local")
+        and (termination.get("termination_attempted") or termination.get("signal_refused"))
         and not termination.get("terminated")
     )
 
@@ -576,6 +618,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
+        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+            # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
+            # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
+            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
+                             "identity; not signalled", tid, pid)
+            continue
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
         # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
         # mismatch) is never signalled: the worker is already gone.
@@ -594,7 +642,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -696,7 +744,7 @@ def detect_stale_running(
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -761,7 +809,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         with _kb.write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
@@ -915,6 +963,44 @@ _ROUTE_FAILURE_ERROR = (
 )
 
 
+_EXIT_SUMMARY_MARKER = "Resume this session with:"
+# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
+_LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
+_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+
+
+def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
+    """Best-effort read of a dead worker's last printed text, for the board diagnostic.
+
+    A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
+    (``_default_spawn``), so when it exits without a terminal board call the
+    reason is usually sitting there: the model's own explanation of why it could
+    not comply (#88603), or the rendered provider error (#46593). The reap used to
+    discard it in favour of a canned message on every retry. Trims the CLI exit
+    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
+    on a missing/empty log.
+
+    ``board`` must come from the dispatching tick: ambient current-board resolution
+    is wrong for every board but the one the dispatcher thread happens to call
+    "current", so the log would silently not be found.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+    if cut != -1:
+        raw = raw[:cut]
+    lines = []
+    for ln in raw.splitlines():
+        ln = _LOG_CHROME.sub("", ln).strip()
+        if ln and not ln.startswith(_LOG_NOISE_PREFIXES):
+            lines.append(ln)
+    return " ".join(lines)[-400:]
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -940,10 +1026,31 @@ class _DeadWorker:
 
 
 def _classify_dead_worker(
+    pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    last_heartbeat_at: Optional[int] = None, elapsed: Optional[float] = None,
+) -> _DeadWorker:
+    """Map a dead worker's reaped exit status to its reclaim bookkeeping.
+
+    A clean exit or a crash carries the worker's own last output (``worker_output``
+    in the event payload, appended to the error text) so the board and the retry
+    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
+    """
+    dead = _classify_dead_worker_exit(
+        pid, claimer, last_heartbeat_at=last_heartbeat_at, elapsed=elapsed,
+    )
+    if task_id and not dead.rate_limited:
+        worker_output = _worker_final_output(task_id, board=board)
+        if worker_output:
+            dead.error_text += f" Worker's last output: {worker_output!r}"
+            dead.event_payload["worker_output"] = worker_output
+    return dead
+
+
+def _classify_dead_worker_exit(
     pid: int, claimer: Optional[str], *,
     last_heartbeat_at: Optional[int] = None, elapsed: Optional[float] = None,
 ) -> _DeadWorker:
-    """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
+    """Exit status -> reclaim bookkeeping, before the worker's own words are folded in."""
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
         if (
@@ -1040,7 +1147,7 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
+def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     # Reap first: a child that exited between the previous tick's reap and this
     # classification would otherwise be seen as a registry miss (``unknown``)
@@ -1082,14 +1189,14 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             last_heartbeat_at = hb_row["last_heartbeat_at"] if hb_row is not None else None
             elapsed = time.time() - (started_at or 0)
             dead = _classify_dead_worker(
-                pid, row["claim_lock"],
+                pid, row["claim_lock"], task_id=row["id"], board=board,
                 last_heartbeat_at=last_heartbeat_at, elapsed=elapsed,
             )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, row["id"], pid, row["claim_lock"]),
@@ -1215,7 +1322,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -1225,7 +1332,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
-    sweep = _reclaim_dead_workers(conn)
+    sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1317,7 +1424,7 @@ def _record_task_failure(
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error, task_id),
@@ -1345,7 +1452,7 @@ def _record_task_failure(
         # state; the timeout/crash path already did.
         conn.execute(
             "UPDATE tasks SET status = 'blocked', "
-            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",
@@ -1379,11 +1486,12 @@ def _record_task_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + its start-time fingerprint, and emit a ``spawned`` event
-    carrying them. The fingerprint is what lets every later liveness/kill decision tell OUR worker
-    from a process that recycled the PID after a reboot."""
-    from gateway.status import get_process_start_time
-    started_at = get_process_start_time(int(pid))
+    """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
+    emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
+    decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
+    persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
+    whose bare-PID kill authority a new spawn must not inherit."""
+    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
         conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                      (int(pid), started_at, task_id))
@@ -1422,9 +1530,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
+    handoff event followed the comment: the named profile must work on that
+    PR). The review lane skips the last two: they are the *inputs* to a review
+    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
+    passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1491,15 +1601,47 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
+    #    reviewer changes_requested, review reopen) names the profile that must
+    #    now work on THAT PR — a closer or the implementer finishing it, not a
+    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
+    #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+            continue
+        events = conn.execute(
+            # Strictly after: a same-second tie stays guarded (fail closed).
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
+            (task_id, int(c["created_at"] or 0)),
+        ).fetchall()
+        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        return "active_pr"
 
     return None
+
+
+def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
+    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
+    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
+    --reclaim``), an unassign, or the dispatcher's own
+    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
+    the very implementer that opened the PR. Events without ``from`` (written
+    before it was recorded) are not trusted as handoffs — fail closed."""
+    if kind != "assigned":
+        return True
+    data = _kb._json_or(payload, {})
+    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
+        return False
+    to = data.get("assignee")
+    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -1968,6 +2110,7 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     # ``reap_worker_zombies`` moved into ``_reclaim_dead_workers`` (right before
@@ -1978,7 +2121,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
@@ -2109,7 +2252,7 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
@@ -2475,11 +2618,8 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
-    if task.goal_mode:
-        # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
-        # Without -Q the worker gets one turn, prints text, exits rc=0, and the
-        # dispatcher records a protocol violation.
-        cmd.append("-Q")
+    # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
+    # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd
 
 

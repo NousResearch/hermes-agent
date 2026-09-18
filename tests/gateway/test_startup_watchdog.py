@@ -87,7 +87,6 @@ class TestContracts:
 
 
 
-
 class TestConfigResolution:
     def test_default_timeout(self):
         assert resolve_startup_watchdog_timeout() == sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S

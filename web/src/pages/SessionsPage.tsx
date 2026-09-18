@@ -1471,13 +1471,13 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast("Session renamed", "success");
+        showToast(t.sessions.sessionRenamed, "success");
         loadStats();
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(t.sessions.failedToRename, "error");
       }
     },
-    [rowProfile, showToast, loadStats],
+    [rowProfile, showToast, loadStats, t.sessions.sessionRenamed, t.sessions.failedToRename],
   );
 
   const handleExport = useCallback(

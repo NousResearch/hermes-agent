@@ -2003,9 +2003,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                       size="sm"
                       ghost
                       onClick={() => navigate("/system")}
-                      aria-label="Check server status"
+                      aria-label={t.chat?.checkServerStatus}
                     >
-                      Check server status
+                      {t.chat?.checkServerStatus}
                     </Button>
                   )}
                 </div>
@@ -2048,9 +2048,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   <Button
                     outlined
                     onClick={() => navigate("/logs")}
-                    aria-label="Open logs"
+                    aria-label={t.chat?.openLogs}
                   >
-                    Open logs
+                    {t.chat?.openLogs}
                   </Button>
                 )}                </div>
               </div>

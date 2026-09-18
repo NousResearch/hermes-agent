@@ -89,6 +89,98 @@ class _RecordingDB:
         return []
 
 
+class _ProbeDB:
+    """Probe-side store stub for the idle gate (goals SessionDB cache)."""
+
+    def __init__(self, pending):
+        self._pending = pending
+
+    def has_pending_handoffs(self):
+        return self._pending
+
+
+@pytest.mark.asyncio
+async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
+    """Idle profiles must not pay the scope entry (config/secret re-parse) every tick.
+
+    The gate probes the profile's store off-loop; only a store WITH a pending handoff gets
+    its scope entered by the tick. Both directions are the contract: no work → no scope
+    entry; work present → scope entered and the store polled. The startup reclaim is
+    exempt (once per boot, and it must also see 'running' leftovers)."""
+    scopes = [
+        (None, None),
+        ("bala", Path("/h/profiles/bala")),
+        ("medicina", Path("/h/profiles/medicina")),
+    ]
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: scopes)
+
+    from hermes_cli import goals
+
+    entered = []
+
+    class _SpyScope:
+        def __init__(self, home):
+            self.home = home
+
+        async def __aenter__(self):
+            entered.append(self.home)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+
+    homes = [h for _n, h in scopes[1:]]
+
+    async def _run_once(pending_by_home):
+        monkeypatch.setattr(
+            goals, "_DB_CACHE",
+            {str(h): _ProbeDB(pending_by_home[h]) for h in homes})
+        entered.clear()
+        db = _RecordingDB()
+        states = iter([True, False])
+
+        class _Running:
+            def __bool__(_self):
+                try:
+                    return next(states)
+                except StopIteration:
+                    return False
+
+        fake = types.SimpleNamespace()
+        fake._session_db = db
+        fake._running = _Running()
+        fake._run_in_executor_with_context = asyncio.to_thread
+
+        async def _process_handoff(row, profile_name=None):
+            return None
+
+        fake._process_handoff = _process_handoff
+        coro = run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+        await asyncio.wait_for(coro, timeout=5)
+        return db
+
+    # Idle: nothing pending anywhere → the tick skips both named scopes (only the
+    # startup reclaim enters them, once each); the unscoped root poll still runs.
+    db = await _run_once({h: False for h in homes})
+    assert entered == homes, (
+        f"only the startup reclaim may enter idle profile scopes; got {entered}")
+    assert db.polls == 1, "only the root store is polled when no profile has work"
+
+    # Work in one profile → the tick enters THAT profile's scope (reclaim + tick),
+    # while the still-idle profile is entered only by the reclaim.
+    db = await _run_once({homes[0]: True, homes[1]: False})
+    assert entered == [homes[0], homes[1], homes[0]], (
+        f"tick must enter exactly the profile with pending work; got {entered}")
+    assert db.polls == 2, "root + the busy profile are polled"
+
+
 @pytest.mark.asyncio
 async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
     """Each non-root home is polled INSIDE ``_profile_runtime_scope``.

@@ -109,7 +109,11 @@ represented execution rows appear only when explicitly expanded. Empty text
 continuations must not introduce paragraph gaps. Keep inline approvals beside
 the conversation and let genuine content scroll normally; do not inject padding
 or write scroll offsets to pin the decision. Preview this order with delayed
-start and completion events, not pre-created tool rows.
+start and completion events, not pre-created tool rows. Final approval removal
+retires both the painted card and its measured layout footprint; restoring tool
+rows must not insert their full height before the outgoing stack can settle.
+No completion callback may clear the measurement of a newly arrived card.
+Reduced motion settles immediately without retaining empty clearance.
 
 ## Window glass
 

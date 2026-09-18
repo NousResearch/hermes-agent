@@ -182,6 +182,63 @@ describe('speaker labels', () => {
     expect(chat.groupSpeakerLabel('builder')).toBe('builder')
   })
 
+  it('resolve member keys through the owner meta and qualify same-named twins', async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    const local = { connectionId: 'local', connectionLabel: 'This device', name: 'reviewer', sourceScoped: true }
+    const spark = { connectionId: 'spark', connectionLabel: 'Spark', name: 'reviewer', remoteSource: true, sourceScoped: true }
+
+    data.$lastRoster.set([local, spark])
+    data.$botMeta.set({})
+
+    // Two untitled `reviewer`s resolve to the same label — qualify both.
+    expect(chat.groupSpeakerLabel('local::reviewer')).toBe('Reviewer · This device')
+    expect(chat.groupSpeakerLabel('spark::reviewer')).toBe('Reviewer · Spark')
+
+    // A route-keyed title (how botMetaKey persists it) resolves for its
+    // owner only, and the twins stop colliding.
+    data.$botMeta.set({ 'spark::reviewer': { title: 'Beta' } })
+
+    expect(chat.groupSpeakerLabel('spark::reviewer')).toBe('Beta')
+    expect(chat.groupSpeakerLabel('local::reviewer')).toBe('Reviewer')
+
+    // A raw-name caller (legacy rooms, the round prompt) reaches the same
+    // route-keyed title when exactly one roster row carries the name.
+    data.$lastRoster.set([{ connectionId: 'local', name: 'research', sourceScoped: true }])
+    data.$botMeta.set({ 'local::research': { title: 'Radar' } })
+
+    expect(chat.groupSpeakerLabel('research')).toBe('Radar')
+  })
+
+  it('qualifies twins per room and never renders a raw key when the roster row is missing', async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    const local = { connectionId: 'local', connectionLabel: 'This device', name: 'reviewer', sourceScoped: true }
+    const spark = { connectionId: 'spark', connectionLabel: 'Spark', name: 'reviewer', remoteSource: true, sourceScoped: true }
+    data.$lastRoster.set([local, spark])
+    data.$botMeta.set({})
+
+    // #94869 acceptance 3: the room seats only the local reviewer, so it
+    // reads plain "Reviewer" however many other connections expose one.
+    chat.updateGroupChat('Core', room => ({ ...room, members: [{ connectionId: 'local', name: 'reviewer', remoteSource: true, sourceScoped: true }] }), { sync: false })
+
+    expect(chat.groupSpeakerLabel('local::reviewer', 'Core')).toBe('Reviewer')
+    expect(chat.groupSpeakerLabel('local::reviewer')).toBe('Reviewer · This device')
+
+    // Cold start (Bots pane not mounted yet) / owning connection removed:
+    // no roster row for the key — degrade to the profile name, not the key.
+    data.$lastRoster.set([])
+
+    expect(chat.groupSpeakerLabel('local::reviewer')).toBe('reviewer')
+    expect(chat.groupSpeakerLabel('spark::default')).toBe('Hermes')
+
+    data.$botMeta.set({ 'spark::reviewer': { title: 'Beta' } })
+
+    expect(chat.groupSpeakerLabel('spark::reviewer')).toBe('Beta')
+  })
+
   it("never borrow a remote row's display_name for a local speaker", async () => {
     const { chat } = await loadRoom()
     const data = await import('./data')

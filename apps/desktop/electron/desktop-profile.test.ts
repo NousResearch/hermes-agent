@@ -121,23 +121,25 @@ test('an explicit default survives last-used profile writes and app restarts, is
     a.afterProfileRequest(
       'remote-work',
       { method: 'PATCH', path: '/api/profiles/work', body: { new_name: 'ignored' } },
-      { ok: false }
+      { ok: false },
+      'remote'
     )
     assert.deepEqual(a.getDefault(), route)
     a.afterProfileRequest(
       'remote-work',
       { method: 'PATCH', path: '/api/profiles/work', body: { new_name: 'renamed' } },
-      { ok: true }
+      { ok: true },
+      'remote'
     )
     assert.deepEqual(a.getDefault(), { ...route, profile: 'renamed' })
-    a.afterProfileRequest('remote-work', { method: 'DELETE', path: '/api/profiles/renamed' }, { ok: true })
+    a.afterProfileRequest('remote-work', { method: 'DELETE', path: '/api/profiles/renamed' }, { ok: true }, 'remote')
     assert.equal(a.getDefault(), null)
     a.setDefault(route)
-    a.profileChanged('another-source', 'work', 'renamed')
+    a.profileChanged('another-source', 'work', 'renamed', 'remote')
     assert.deepEqual(a.getDefault(), route)
-    a.profileChanged(route.connectionId, route.profile, 'renamed')
+    a.profileChanged(route.connectionId, route.profile, 'renamed', 'remote')
     assert.deepEqual(a.getDefault(), { ...route, profile: 'renamed' })
-    a.profileChanged(route.connectionId, 'renamed', null)
+    a.profileChanged(route.connectionId, 'renamed', null, 'remote')
     assert.equal(a.getDefault(), null)
     a.setDefault(route)
     a.connectionRemoved(route.connectionId)
@@ -146,3 +148,55 @@ test('an explicit default survives last-used profile writes and app restarts, is
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test.each([null, 'local'])(
+  'successful local profile changes through %s retarget the saved startup profile',
+  connectionId => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-change-'))
+    const target = path.join(root, 'active-profile.json')
+    const preferences = createDesktopProfilePreferences(target)
+
+    try {
+      const defaultRoute = { connectionId: 'remote-work', profile: 'local-old' }
+      preferences.setDefault(defaultRoute)
+      preferences.remember('local-old')
+      preferences.afterProfileRequest(
+        connectionId,
+        { method: 'DELETE', path: '/api/profiles/local-old' },
+        { ok: false },
+        'local'
+      )
+      assert.equal(preferences.readActive(), 'local-old')
+
+      preferences.afterProfileRequest(
+        'remote-work',
+        { method: 'DELETE', path: '/api/profiles/local-old' },
+        { ok: true },
+        'remote'
+      )
+      assert.equal(preferences.readActive(), 'local-old')
+      preferences.setDefault(defaultRoute)
+
+      preferences.afterProfileRequest(
+        connectionId,
+        { method: 'PATCH', path: '/api/profiles/local-old', body: { new_name: 'local-new' } },
+        { ok: true },
+        'local'
+      )
+      const restarted = createDesktopProfilePreferences(target)
+      assert.equal(restarted.readActive(), 'local-new')
+      assert.deepEqual(restarted.getDefault(), defaultRoute)
+
+      restarted.afterProfileRequest(
+        connectionId,
+        { method: 'DELETE', path: '/api/profiles/local-new' },
+        { ok: true },
+        'local'
+      )
+      assert.equal(createDesktopProfilePreferences(target).readActive(), 'default')
+      assert.deepEqual(restarted.getDefault(), defaultRoute)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+)

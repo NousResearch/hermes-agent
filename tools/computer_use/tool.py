@@ -19,7 +19,7 @@ import uuid
 from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
@@ -227,6 +227,37 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
+@contextlib.contextmanager
+def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
+    """Hold a live backend through dispatch, retrying admission but never an action.
+
+    A display/mode change or release can retire a backend before lock lookup or
+    while a caller waits. Revalidate AFTER acquiring its profile-scoped call
+    lock; teardown needs that same lock. Never wait under the global cache lock.
+    """
+    from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+
+    sid = _scoped_sid(session_id)
+    while True:
+        backend = _get_backend(session_id=session_id)
+        with _backend_lock:
+            if _backends.get(sid) is not backend:
+                continue
+            call_lock = _backend_call_locks[sid]
+        with call_lock:
+            with _backend_lock:
+                if (_backends.get(sid) is not backend
+                        or _backend_call_locks.get(sid) is not call_lock):
+                    continue
+                # A queued call can outlive a display/config change even when
+                # no other caller has replaced the cached backend yet.
+                if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
+                        or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                    continue
+            yield backend
+            return
+
+
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
@@ -316,16 +347,17 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     for scope in scopes:
         if (err := _request_approval(scope, args)) is not None:
             return err
+    # Acquire separately so startup errors retain the install hint; the stack
+    # releases the admitted call lock on every dispatch return or exception.
+    call = contextlib.ExitStack()
     try:
-        backend = _get_backend(session_id=session_id)
+        backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})
     try:
-        with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
-        with call_lock:
+        with call:
             # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
             # seconds, and a human may have taken over meanwhile. A result produced after such a flip is
             # discarded too — it may picture what they typed.

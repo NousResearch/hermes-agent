@@ -22,8 +22,12 @@ _SETENC = b"\x02\x00\x00\x02" + b"\x00\x00\x00\x07" + b"\xff\xff\xff\x21"  # Set
 
 @pytest.fixture(autouse=True)
 def _fresh_lease():
+    from tools.computer_use import tool
+
+    tool.reset_backend_for_tests()
     lease._reset_for_tests()
     yield
+    tool.reset_backend_for_tests()
     lease._reset_for_tests()
 
 
@@ -84,7 +88,7 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     their keystrokes captured by an action admitted before they did."""
     from tools.computer_use import tool
 
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
 
     def _dispatch_then_takeover(backend, action, args, **_):
         lease.acquire("human")  # a whole take-over / hand-back cycle inside the driver call:
@@ -102,7 +106,7 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     not only after. Do not patch _dispatch — a recording backend must never be called."""
     from tools.computer_use import tool
 
-    class Rec:
+    class Rec(tool._NoopBackend):
         def __init__(self):
             self.calls = []
 
@@ -111,7 +115,7 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
             return json.dumps({"ok": True, "action": "click"})
 
     rec = Rec()
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": rec)
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: rec)
 
     def _approval_cycles_the_lease(scope, args, session_id=""):
         lease.acquire("human")

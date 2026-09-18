@@ -9,17 +9,20 @@ import json
 import pytest
 
 from tools.bot_desktop import lease
+from tools.computer_use import tool
 from tools.computer_use.backend import ActionResult, CaptureResult
 
 
 @pytest.fixture(autouse=True)
 def _fresh_lease():
+    tool.reset_backend_for_tests()
     lease._reset_for_tests()
     yield
+    tool.reset_backend_for_tests()
     lease._reset_for_tests()
 
 
-class _TakeoverBackend:
+class _TakeoverBackend(tool._NoopBackend):
     """Driver whose capture returns while a take-over / hand-back cycle happened underneath it."""
     _last_target = None
     _last_app = None
@@ -45,9 +48,7 @@ def _spy_sinks(monkeypatch, tool):
 
 @pytest.mark.parametrize("args", [{"action": "capture"}, {"action": "click", "coordinate": [1, 1], "capture_after": True}])
 def test_frame_captured_across_a_takeover_is_dropped_before_any_sink(monkeypatch, args):
-    from tools.computer_use import tool
-
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": _TakeoverBackend())
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: _TakeoverBackend())
     monkeypatch.setattr(tool, "_request_approval", lambda *a, **k: None)
     leaked = _spy_sinks(monkeypatch, tool)
     res = json.loads(tool.handle_computer_use(args))

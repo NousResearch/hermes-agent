@@ -118,6 +118,22 @@ class TestAPIServerAdapterWorkCount:
 
         agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
+    @pytest.mark.asyncio
+    async def test_shutdown_begin_marks_api_runs_before_drain(self):
+        runner, _adapter = make_restart_runner()
+        api = MagicMock()
+        api.mark_shutdown_requested.return_value = 1
+        runner.adapters = {Platform.API_SERVER: api}
+        runner._clear_plugin_message_injector = MagicMock()
+        runner._cancel_secondary_profile_reconnect_tasks = AsyncMock()
+        runner._notify_active_sessions_of_shutdown = AsyncMock()
+        runner._stop_systemd_watchdog = AsyncMock()
+        runner._stop_hosted_room_worker = AsyncMock(return_value=True)
+
+        await runner._stop_begin_teardown(runner._StopContext(deferred_count=lambda: 0))
+
+        api.mark_shutdown_requested.assert_called_once_with()
+
 
 class TestDrainWaitsForApiWork:
 
@@ -603,5 +619,4 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
-
 

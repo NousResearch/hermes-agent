@@ -221,6 +221,14 @@ class GatewayShutdownMixin:
             logger.debug("Failed interrupting api_server runs during shutdown: %s", exc)
             return 0
 
+    def _mark_api_runs_shutdown_requested(self) -> int:
+        """Persist the shutdown boundary on API runs before the drain can await."""
+        try:
+            return self._api_server_hook("mark_shutdown_requested")
+        except Exception as exc:
+            logger.debug("Failed marking api_server runs as shutdown-requested: %s", exc)
+            return 0
+
     def _active_deferred_agent_worker_count(self) -> int:
         """Executor workers that outlived their gateway turn (e.g. a timed-out hygiene compression)."""
         workers = getattr(self, "_deferred_agent_workers", None)
@@ -1644,6 +1652,7 @@ class GatewayShutdownMixin:
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        self._mark_api_runs_shutdown_requested()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):

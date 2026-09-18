@@ -1221,6 +1221,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
         return interrupted
 
+    def mark_shutdown_requested(self) -> int:
+        """Persist the gateway drain start on every nonterminal API run."""
+        return _api_runs._mark_shutdown_requested(self)
+
     @staticmethod
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""

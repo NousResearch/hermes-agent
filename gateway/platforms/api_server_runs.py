@@ -128,6 +128,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    self._run_shutdown_requested_at: Optional[float] = None
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -167,19 +168,40 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
     current.update({"object": "hermes.run", "run_id": run_id, "status": status, "updated_at": now})
     current.setdefault("created_at", fields.pop("created_at", now))
     current.update(fields)
+    shutdown_requested_at = getattr(self, "_run_shutdown_requested_at", None)
+    if shutdown_requested_at is not None and status not in TERMINAL_STATUSES:
+        current.setdefault("shutdown_requested_at", shutdown_requested_at)
     if status != "waiting_for_approval":
         current.pop("approval", None)
     self._run_statuses[run_id] = current
     should_persist = (
         status != previous_status
         or status in TERMINAL_STATUSES
-        or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
+        or bool(field_names & {
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
         except Exception:
             logger.exception("[api_server] failed to persist idempotent run status %s", run_id)
     return current
+
+
+def _mark_shutdown_requested(self) -> int:
+    """Persist when gateway shutdown began without changing the run state vocabulary."""
+    shutdown_requested_at = getattr(self, "_run_shutdown_requested_at", None)
+    if shutdown_requested_at is None:
+        shutdown_requested_at = time.time()
+        self._run_shutdown_requested_at = shutdown_requested_at
+    marked = 0
+    for run_id, current in list(self._run_statuses.items()):
+        if current.get("status") in TERMINAL_STATUSES or "shutdown_requested_at" in current:
+            continue
+        self._set_run_status(
+            run_id, str(current.get("status") or "running"),
+            shutdown_requested_at=shutdown_requested_at)
+        marked += 1
+    return marked
 
 
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):

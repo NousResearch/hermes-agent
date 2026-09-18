@@ -543,6 +543,24 @@ def is_terminal_job(job: Dict[str, Any]) -> bool:
     return job.get("state") in {"completed", "error"}
 
 
+def _oneshot_repeat_limit_reached(job: Dict[str, Any]) -> bool:
+    """True when a finite one-shot has already claimed its last dispatch.
+
+    ``claim_dispatch`` increments ``repeat.completed`` before the run, so an
+    in-flight or pending-re-enabled one-shot can be non-terminal
+    (``state=scheduled``) while the budget is already spent. A leftover or
+    late run-now stamp on that record makes the next tick's ``manual_due``
+    skip the event drain and hit ``_oneshot_dispatch_limit_reached``, which
+    deletes the record and any 202-accepted batch.
+    """
+    if (job.get("schedule") or {}).get("kind") != "once":
+        return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    completed = repeat.get("completed", 0)
+    return times is not None and times > 0 and completed >= times
+
+
 def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
     """True for a recurring job stuck in ``state=error`` (set ONLY when ``compute_next_run()`` fails
     for a cron/interval job: croniter missing, malformed schedule). Such a job still has future
@@ -2198,7 +2216,24 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             f"Cannot run: job '{name}' is {job.get('state')} (terminal). "
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'.")
-    manual_run_at = _hermes_now().isoformat()
+    now = _hermes_now()
+    # Pending re-enable leaves a budget-exhausted one-shot scheduled so the
+    # 202 batch can drain. A run-now in that window is the same class as a
+    # terminal trigger: refuse it (resume --run-now). In-flight leftover
+    # stamps are still accepted here and dropped at mark_job_run.
+    if _oneshot_repeat_limit_reached(job):
+        in_flight = _claim_is_live(
+            job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS
+        ) or _claim_is_live(
+            job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()
+        )
+        if not in_flight:
+            name = job.get("name", job_id)
+            raise ValueError(
+                f"Cannot run: job '{name}' is completed (terminal). "
+                f"Create a new occurrence with 'hermes cron resume {name} "
+                "--run-now' or '--at <ISO-8601>'.")
+    manual_run_at = now.isoformat()
     return update_job(job["id"], {
         "enabled": True,
         "state": "scheduled",
@@ -2528,10 +2563,14 @@ def mark_job_run(
                 _complete_event_run_if_exhausted(job)
             if is_terminal_job(job):
                 retired_this_completion = True
-        if leftover_manual_at and retired_this_completion:
-            # Do not resurrect a record this completion just retired. Pending
-            # re-enable above still drains a 202-accepted batch. Drop the
-            # leftover run-now (base parity) — it cannot fire on a terminal job.
+        # Occurrence-free + pending leaves a finite one-shot non-terminal
+        # with completed >= times so the batch can drain. Treat that as
+        # retired for leftover purposes: restoring the stamp makes the next
+        # tick's manual_due skip the event rerun and the dispatch-limit
+        # guard deletes the record and the accepted batch.
+        if leftover_manual_at and (
+            retired_this_completion or _oneshot_repeat_limit_reached(job)
+        ):
             logger.info(
                 "Job '%s': dropping leftover run-now; this completion retired the record",
                 job.get("name") or job.get("id"),

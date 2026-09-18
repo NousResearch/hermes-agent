@@ -2947,6 +2947,24 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
 
+def test_history_to_messages_strips_legacy_discord_triggering_note():
+    # Rows written before the gateway persisted the authored text carry the model-facing
+    # routing note in user ``content``; this projection heals them for TUI/web resume
+    # (the desktop hydration strip is the same rule). Reply pointer and assistant rows are kept.
+    from gateway.run_inbound import discord_triggering_note
+
+    note = discord_triggering_note("123")
+    history = [
+        {"role": "user", "content": f"{note}\n\n[Replying to: hi]\nwhat is up"},
+        {"role": "assistant", "content": f"echo: {note}"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "[Replying to: hi]\nwhat is up"},
+        {"role": "assistant", "text": f"echo: {note}"},
+    ]
+
+
 def test_history_to_messages_hides_gateway_system_markers():
     # Model-switch / personality notices are persisted as role=user [System: …]
     # rows so strict providers accept them mid-history, but they are model-facing

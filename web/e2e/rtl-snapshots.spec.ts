@@ -82,6 +82,43 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
   "/api/dashboard/themes": stubJson([]),
   "/api/profiles": stubJson([]),
   "/api/analytics": stubJson([]),
+  // AuxiliaryModelsResponse shape; an empty object crashes ModelSettingsPanel
+  // reading aux.main.provider (aux?.main is undefined, .provider throws).
+  "/api/model/auxiliary": stubJson({
+    tasks: [],
+    main: { provider: "stub-provider", model: "stub-model" },
+  }),
+  // MoaConfigResponse shape — truthy-but-empty ({}) crashes the MoA summary
+  // row reading moa.reference_models.length.
+  "/api/model/moa": stubJson({
+    default_preset: "balanced",
+    active_preset: "balanced",
+    presets: {},
+    reference_models: [],
+    aggregator: { provider: "stub-provider", model: "stub-model" },
+    reference_temperature: 0.7,
+    aggregator_temperature: 0.7,
+    reference_timeout: null,
+    degraded_reference_policy: "silent",
+    enabled: false,
+  }),
+  // Flattened ModelsAnalyticsResponse shape (models + totals + period_days);
+  // an empty object here crashes ModelsPage reading data.totals.distinct_models.
+  "/api/analytics/models": stubJson({
+    models: [],
+    totals: {
+      distinct_models: 0,
+      total_input: 0,
+      total_output: 0,
+      total_cache_read: 0,
+      total_reasoning: 0,
+      total_estimated_cost: 0,
+      total_actual_cost: 0,
+      total_sessions: 0,
+      total_api_calls: 0,
+    },
+    period_days: 7,
+  }),
   "/api/skills": stubJson([]),
   "/api/model/options": stubJson([]),
   "/api/messaging/platforms": stubJson({ platforms: [] }),
@@ -107,7 +144,7 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
  * Install route interception for the given page. Runs BEFORE any app script
  * (routes apply to subsequent requests), so boot-time fetches are covered.
  */
-async function stubBackend(page: Page): Promise<void> {
+export async function stubBackend(page: Page): Promise<void> {
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
     const stub = API_STUBS[url.pathname] ?? API_DEFAULT;
@@ -134,7 +171,7 @@ async function stubBackend(page: Page): Promise<void> {
 }
 
 /** Seed locale + font BEFORE any app script runs (init scripts run first). */
-async function seedPersian(page: Page): Promise<void> {
+export async function seedPersian(page: Page): Promise<void> {
   await page.addInitScript(() => {
     window.localStorage.setItem("hermes-locale", "fa");
     window.localStorage.setItem("hermes-dashboard-font", "vazirmatn");
@@ -142,7 +179,7 @@ async function seedPersian(page: Page): Promise<void> {
 }
 
 /** Hard assertions that the RTL contract actually holds before snapshotting. */
-async function assertRtlBoot(page: Page): Promise<void> {
+export async function assertRtlBoot(page: Page): Promise<void> {
   await expect(page.locator("html")).toHaveAttribute("dir", /rtl/i);
   await expect(page.locator("html")).toHaveAttribute("lang", /fa/i);
   // Force the Persian webfont to load NOW (not lazily during the screenshot)

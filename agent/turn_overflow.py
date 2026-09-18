@@ -159,9 +159,12 @@ class _Recovery(OverflowVerdict):
 
         agent = self.agent
         before = self.messages
+        # force=True: same path as /compress. Auto-compress otherwise no-ops a
+        # short fat transcript (protect_last_n keeps every row) and the 413
+        # handler reports "Cannot compress further" with nothing summarized.
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
-            task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
+            task_id=self.effective_task_id, bypass_cooldown=True, force=True, trigger="overflow",
         )
         if self.messages is before:
             deferred = None

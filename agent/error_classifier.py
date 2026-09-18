@@ -126,6 +126,32 @@ _UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
 # scoped on purpose: other providers' billing codes on a 403 stay auth failures.
 _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 
+# Per-model free allowance (aggregator 402). Sibling named models on the same
+# key still work; this is not wallet death. Do not bench the credential pool.
+_FREE_MODEL_QUOTA_CODES = frozenset({
+    "free_quota_exhausted",
+    "err_free_used",
+})
+_FREE_MODEL_QUOTA_PATTERNS = (
+    "free_quota_exhausted",
+    "err_free_used",
+    "allowance is used up",
+)
+
+# Named-free prompt cap (aggregator 400). This is a free-lane size gate,
+# not the model context window. Compact stays over the cap and burns
+# minutes; hop to a catch that is not Orca-free-capped.
+_FREE_PROMPT_CAP_CODES = frozenset({
+    "free_rate_limited",
+    "err_free_prompt_cap",
+})
+_FREE_PROMPT_CAP_PATTERNS = (
+    "longer than the free tier",
+    "free-tier cap",
+    "err_free_prompt_cap",
+    "free_prompt_cap",
+)
+
 # Structured codes meaning the account cannot serve paid traffic.
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
@@ -458,6 +484,7 @@ _R = FailoverReason
 
 _V_BILLING = _v(_R.billing, retryable=False, **_ROTATE_FALLBACK)
 _V_RATE_LIMIT = _v(_R.rate_limit, **_ROTATE_FALLBACK)
+_V_UPSTREAM_RATE_LIMIT = _v(_R.upstream_rate_limit, should_fallback=True)
 _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
@@ -635,9 +662,11 @@ _MESSAGE_TAIL_RULES = (
 _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("resource_exhausted", "throttled", "rate_limit_exceeded"),
                     _v(_R.rate_limit, should_rotate_credential=True)),
+    **dict.fromkeys(_FREE_MODEL_QUOTA_CODES, _V_UPSTREAM_RATE_LIMIT),
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
     **dict.fromkeys(("model_not_found", "model_not_available", "invalid_model"), _V_MODEL_NOT_FOUND),
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
+    **dict.fromkeys(_FREE_PROMPT_CAP_CODES, _V_UPSTREAM_RATE_LIMIT),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
@@ -903,7 +932,7 @@ def _by_message(c: _Ctx) -> Optional[Verdict]:
     if head is not None:
         return head
     usage_limit = any(p in c.msg for p in _USAGE_LIMIT_PATTERNS)
-    return _classify_402(c.msg, dict) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
+    return _classify_402(c) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
 
 
 def _by_transport(c: _Ctx) -> Optional[Verdict]:
@@ -1083,12 +1112,50 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
-def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
-    """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing."""
-    transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
-        p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+def _classify_413(c: _Ctx) -> Verdict:
+    """HTTP 413 is entity-too-large unless the body is a token *rate* wall.
+
+    Status handlers run before ``_by_error_code``, so a 413 whose structured
+    code is ``rate_limit_exceeded`` (Groq ITPM, similar TPM walls) used to
+    skip the rate-limit verdict and enter compress-until-death. Compression
+    cannot satisfy tokens-per-minute; backoff + fallback can.
+    """
+    code_verdict = _ERROR_CODE_VERDICTS.get(c.code)
+    if code_verdict is not None and code_verdict.get("reason") == _R.rate_limit:
+        return _V_RATE_LIMIT
+    if any(p in c.msg for p in _RATE_LIMIT_PATTERNS):
+        return _V_RATE_LIMIT
+    return _V_PAYLOAD_TOO_LARGE
+
+
+def _is_free_model_quota(c: _Ctx) -> bool:
+    """True when this 402 is one model's free allowance, not the wallet."""
+    if c.code in _FREE_MODEL_QUOTA_CODES:
+        return True
+    metadata = _error_obj(c.body).get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("reason") or "").lower() in _FREE_MODEL_QUOTA_CODES:
+        return True
+    return any(p in c.msg for p in _FREE_MODEL_QUOTA_PATTERNS)
+
+
+def _is_free_prompt_cap(c: _Ctx) -> bool:
+    """True when this 400 is a named-free prompt-size cap, not a bad request."""
+    if c.code in _FREE_PROMPT_CAP_CODES:
+        return True
+    metadata = _error_obj(c.body).get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("reason") or "").lower() in _FREE_PROMPT_CAP_CODES:
+        return True
+    return any(p in c.msg for p in _FREE_PROMPT_CAP_PATTERNS)
+
+
+def _classify_402(c: _Ctx) -> Verdict:
+    """Disambiguate 402: per-model free allowance vs periodic quota vs wallet."""
+    if _is_free_model_quota(c):
+        return _V_UPSTREAM_RATE_LIMIT
+    transient = any(p in c.msg for p in _USAGE_LIMIT_PATTERNS) and any(
+        p in c.msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
     )
-    return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
+    return _V_RATE_LIMIT if transient else _V_BILLING
 
 
 def _has_large_inline_image(content: Any) -> bool:
@@ -1141,6 +1208,12 @@ def _classify_400(c: _Ctx) -> Verdict:
     # rotate. Before request-validation, whose "not supported" wording would abort as format_error (#71970).
     if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER in msg:
         return _V_MODEL_ENTITLEMENT
+    # Free-tier prompt cap: hop off this free lane. Must precede format_error
+    # so a fat listing thread does not compact for minutes on a cap compress
+    # cannot beat. Sibling Orca named-free models share the cap — do not
+    # put them on fallback_providers.
+    if _is_free_prompt_cap(c):
+        return _V_UPSTREAM_RATE_LIMIT
     # Invalid encrypted reasoning replay blob (OpenAI Responses); before
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
@@ -1211,10 +1284,9 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
-    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
-    422: lambda c: _classify_image_tool_422(c),
-    429: _status_429, 500: _status_5xx, 502: _status_5xx,
+    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: _classify_402,
+    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: _classify_413,
+    422: lambda c: _classify_image_tool_422(c),    429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
 }

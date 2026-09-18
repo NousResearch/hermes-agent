@@ -228,6 +228,20 @@ def find_docker() -> Optional[str]:
     return found
 
 
+def docker_runtime_name(executable: str) -> str:
+    """User-facing runtime name (``"Podman"`` / ``"Docker"``) for the CLI at *executable*, so
+    diagnostics and pickers name the runtime actually in use."""
+    return "Podman" if "podman" in os.path.basename(executable).lower() else "Docker"
+
+
+def docker_runtime_start_hint(executable: str) -> str:
+    """How to bring the runtime at *executable* back up, for a "not reachable" message. Docker has
+    a daemon to start; Podman is daemonless (outside Linux it runs inside a VM)."""
+    if docker_runtime_name(executable) != "Podman":
+        return "start Docker and retry"
+    return "run `podman machine start` and retry"
+
+
 # Security flags applied to every container. The container is the security
 # boundary; all caps are dropped and the minimum added back:
 #   DAC_OVERRIDE  - root can write to bind-mounted dirs owned by the host user
@@ -399,7 +413,7 @@ def _ensure_docker_available() -> None:
             "or known install locations. Install Docker Desktop and ensure the CLI is available.",
             error="Docker executable not found in PATH or known install locations. "
                   "Install Docker and ensure the 'docker' command is available.",
-            hint="Install Docker (or fix PATH) and retry, or switch terminal.backend to 'local'.")
+            hint="Install Docker (or fix PATH) and retry, or run `hermes setup terminal` to switch to Local.")
     try:
         result = run_capture([docker_exe, "version"], timeout=5)
     except FileNotFoundError:
@@ -413,8 +427,8 @@ def _ensure_docker_available() -> None:
             "Docker backend selected but '%s version' timed out. The Docker daemon may not be running.",
             docker_exe, exc_info=True,
             error="Docker daemon is not responding. Ensure Docker is running and try again.",
-            hint="Start the Docker daemon (e.g. `systemctl start docker` or "
-                 "launch Docker Desktop), then retry the same command.")
+            hint="Start Docker (e.g. `systemctl start docker` or launch Docker Desktop), then retry — "
+                 "or run `hermes setup terminal` to switch to Local.")
     except Exception:
         logger.error("Unexpected error while checking Docker availability.", exc_info=True)
         raise
@@ -423,8 +437,8 @@ def _ensure_docker_available() -> None:
             "Docker backend selected but '%s version' failed (exit code %d, stderr=%s)",
             docker_exe, result.returncode, result.stderr.strip(),
             error="Docker command is available but 'docker version' failed. Check your Docker installation.",
-            hint="The Docker daemon may be down or the current user lacks "
-                 "permission (docker group). Fix and retry.")
+            hint="Start Docker, or add your user to the docker group, then retry — "
+                 "or run `hermes setup terminal` to switch to Local.")
 
 
 def _name_only_env_args(names) -> list[str]:
@@ -486,6 +500,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
@@ -687,6 +702,10 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted)
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+        # The host directory actually bound at /workspace, if any. Readers that
+        # only hold the env instance (cwd remapping on live envs) use it to
+        # recognize a session workspace registered as a raw host path.
+        self.host_cwd = host_cwd_abs if bind_host_cwd else None
         mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
 
         writable_args: list[str] = []
@@ -917,6 +936,7 @@ class DockerEnvironment(BaseEnvironment):
             return False
 
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
+        self._mark_recreated()
         return True
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:

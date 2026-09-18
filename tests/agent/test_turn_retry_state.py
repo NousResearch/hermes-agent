@@ -18,6 +18,8 @@ EXPECTED_FIELDS = {
     "anthropic_auth_retry_attempted",
     "nous_auth_retry_attempted",
     "nous_paid_entitlement_refresh_attempted",
+    "welcome_model_switch_attempted",
+    "welcome_route_heal_attempted",
     "copilot_auth_retry_attempted",
     "copilot_stale_cred_retry_attempted",
     "vertex_auth_retry_attempted",

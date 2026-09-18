@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from agent.retry_utils import parse_retry_after_seconds
+from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
     _validate_bundle_rel_path,
@@ -65,6 +67,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     # Wall-clock budget for a full catalog walk: 50k+ skills, sequential
     # (~250 requests each under timeout=30), so unbounded it blocks for minutes.
     CATALOG_WALK_BUDGET_SECONDS = 12
+    ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
     _query_terms = staticmethod(_query_terms)
@@ -131,7 +135,14 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if parsed is None:
             return None
         slug, expected_owner = parsed
-        data = self._coerce_skill_payload(self._get_json(f"{self.BASE_URL}/skills/{slug}"))
+        # ClawHub answers a slug claimed by several owners with 409
+        # AMBIGUOUS_SKILL_SLUG; the ?owner= query picks ours (#104117).
+        data = self._coerce_skill_payload(
+            self._get_json(
+                f"{self.BASE_URL}/skills/{slug}",
+                params={"owner": expected_owner} if expected_owner else None,
+            )
+        )
         if not isinstance(data, dict) or not self._owner_matches(expected_owner, data):
             return None
         return slug, data
@@ -208,7 +219,11 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if not raw:
             return None
         had_at = raw.startswith("@")
-        parts = [part for part in raw.removeprefix("@").removeprefix("clawhub/").split("/") if part]
+        stripped = raw.removeprefix("@").removeprefix("clawhub/")
+        if stripped.startswith("@"):  # clawhub/@owner/slug — @ surfaces after the prefix
+            had_at = True
+            stripped = stripped.removeprefix("@")
+        parts = [part for part in stripped.split("/") if part]
         if len(parts) == 1:
             owner, slug = None, parts[0]
         elif (len(parts) == 2 and had_at) or (len(parts) == 3 and parts[1].lower() == "skills"):
@@ -224,17 +239,22 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if detail is None:
             return None
         slug, skill_data = detail
-        latest_version = self._resolve_latest_version(slug, skill_data)
+        # Keep the requested identity even when the detail payload omits its owner.
+        owner = self._parse_identifier(identifier)[1] or self._owner_from_payload(skill_data)
+        owner_params = {"owner": owner} if owner else None
+        latest_version = self._resolve_latest_version(slug, skill_data, owner=owner)
         if not latest_version:
             logger.warning("ClawHub fetch failed for %s: could not resolve latest version", slug)
             return None
 
         # Primary: ZIP bundle from /download. Fallback: version metadata with
         # inline/raw content (files may sit under version_data["version"]).
-        files = self._download_zip(slug, latest_version)
+        files = self._download_zip(slug, latest_version, owner=owner)
         if "SKILL.md" not in files:
-            version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
-            if isinstance(version_data, dict):
+            version_data = self._get_json(
+                f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}", params=owner_params,
+            )
+            if isinstance(version_data, dict) and self._owner_matches(owner, version_data):
                 files = self._extract_files(version_data) or files
                 nested = version_data.get("version", {})
                 if "SKILL.md" not in files and isinstance(nested, dict):
@@ -244,14 +264,20 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                 "ClawHub fetch for %s resolved version %s but could not retrieve file content", slug, latest_version,
             )
             return None
-        return SkillBundle(name=slug, files=files, source="clawhub", identifier=slug, trust_level="community")
+        return SkillBundle(name=slug, files=files, source="clawhub",
+                           identifier=f"@{owner}/{slug}" if owner else slug, trust_level="community")
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         detail = self._skill_detail(identifier)
         if detail is None:
             return None
         slug, data = detail
-        return self._item_to_meta({**data, "slug": data.get("slug") or slug})
+        meta = self._item_to_meta({**data, "slug": data.get("slug") or slug})
+        owner = self._parse_identifier(identifier)[1] or self._owner_from_payload(data)
+        if meta is not None and owner:
+            meta.identifier = f"@{owner}/{slug}"
+            meta.extra["owner"] = owner
+        return meta
 
     def _search_catalog(self, query: str, limit: int = 10) -> List[SkillMeta]:
         cache_key = f"clawhub_search_catalog_v1_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
@@ -314,7 +340,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             _cache_metas(cache_key, results)
         return results
 
-    def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any]) -> Optional[str]:
+    def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any],
+                                owner: Optional[str] = None) -> Optional[str]:
         latest, tags = skill_data.get("latestVersion"), skill_data.get("tags")
         version = _first_str(
             latest.get("version") if isinstance(latest, dict) else None,
@@ -322,7 +349,10 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         )
         if version:
             return version
-        vd = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions")
+        vd = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions",
+                            params={"owner": owner} if owner else None)
+        if isinstance(vd, dict):
+            vd = vd.get("items")
         return _first_str(vd[0].get("version")) if isinstance(vd, list) and vd and isinstance(vd[0], dict) else None
 
     def _fetch_owner_handle(self, slug: str) -> Optional[str]:
@@ -348,10 +378,9 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                         return None
                     return self._owner_from_payload(self._coerce_skill_payload(raw))
                 if resp.status_code == 429:
-                    try:
-                        delay = float(resp.headers.get("Retry-After") or delay)
-                    except (TypeError, ValueError):
-                        pass
+                    retry_after = parse_retry_after_seconds(resp.headers)
+                    if retry_after is not None:
+                        delay = retry_after
                     reason = "HTTP 429"
                 elif 500 <= resp.status_code < 600:
                     reason = f"HTTP {resp.status_code}"
@@ -364,10 +393,15 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             time.sleep(delay)
         return None
 
-    def enrich_owners(self, skills: List[SkillMeta], max_workers: int = 30) -> int:
+    def enrich_owners(self, skills: List[SkillMeta], max_workers: int = 30,
+                      budget_seconds: Optional[float] = None) -> int:
         """Batch-fetch owner handles for ClawHub skills missing ``extra["owner"]``
-        (in-place; returns the number enriched). For the offline index builder:
-        the full 50k catalog takes ~5–10 min at 30 workers.
+        (in-place; returns the number enriched).
+
+        ``budget_seconds`` makes this best-effort: the detail API answers in ~2s, so the
+        full catalog (78k+ skills) needs well over an hour at 30 workers — unbounded, it
+        was the phase that pushed the index build past its CI timeout for two months.
+        Skills left un-enriched simply ship without a "View source" owner link.
 
         Safety rails: aborts after 50 consecutive failures (systemic outage),
         per-request 429 backoff, progress log every 1000 skills.
@@ -377,6 +411,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             return 0
         enriched = consecutive_failures = processed = 0
         max_consecutive_failures = 50
+        deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -384,6 +419,13 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             for future in as_completed(futures):
                 meta = futures[future]
                 processed += 1
+                if deadline is not None and time.monotonic() > deadline:
+                    logger.warning("ClawHub owner enrichment: budget of %.0fs exhausted after %d/%d "
+                                   "(%d enriched) — shipping the rest without owner handles.",
+                                   budget_seconds, processed, len(needs_enrichment), enriched)
+                    for f in futures:
+                        f.cancel()
+                    break
                 try:
                     handle = future.result()
                 except Exception:
@@ -428,30 +470,73 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     files[fname] = content
         return files
 
-    def _download_zip(self, slug: str, version: str) -> Dict[str, str]:
-        """Download the skill ZIP from /download and extract its text files."""
+    def _download_zip(self, slug: str, version: str, owner: Optional[str] = None) -> Dict[str, str]:
+        """Download the skill ZIP from /download (bounded, streamed) and extract its text files."""
         import io
         import zipfile
 
         files: Dict[str, str] = {}
+        params = {"slug": slug, "version": version}
+        if owner:
+            params["owner"] = owner
         max_retries = 3
         for attempt in range(max_retries):
+            retry_after_delay: Optional[int] = None
             try:
-                resp = httpx.get(f"{self.BASE_URL}/download", params={"slug": slug, "version": version},
-                                 timeout=30, follow_redirects=True)
-                if resp.status_code == 429:
-                    try:
-                        retry_after = min(int(resp.headers.get("retry-after", "5")), 15)  # Cap wait time
-                    except (ValueError, TypeError):
-                        retry_after = 5
-                    logger.debug("ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
-                                 slug, retry_after, attempt + 1, max_retries)
-                    time.sleep(retry_after)
+                with _guarded_http_stream(
+                    f"{self.BASE_URL}/download",
+                    params=params,
+                    timeout=30,
+                ) as resp:
+                    if resp is None:
+                        return files
+                    if resp.status_code == 429:
+                        parsed = parse_retry_after_seconds(resp.headers)
+                        retry_after = min(int(5 if parsed is None else parsed), 15)  # Cap wait time
+                        logger.debug(
+                            "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                            slug, retry_after, attempt + 1, max_retries,
+                        )
+                        retry_after_delay = retry_after
+                    else:
+                        if resp.status_code != 200:
+                            logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                            return files
+
+                        content_length = resp.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except (ValueError, TypeError):
+                                declared_size = 0
+                            if declared_size > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: %d bytes",
+                                    slug, version, declared_size,
+                                )
+                                return files
+
+                        archive = io.BytesIO()
+                        total = 0
+                        for chunk in resp.iter_bytes(chunk_size=self.ZIP_DOWNLOAD_CHUNK_BYTES):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: exceeded %d bytes",
+                                    slug, version, self.ZIP_DOWNLOAD_MAX_BYTES,
+                                )
+                                return files
+                            archive.write(chunk)
+                        archive.seek(0)
+
+                if retry_after_delay is not None:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after_delay)
                     continue
-                if resp.status_code != 200:
-                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
-                    return files
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+
+                with zipfile.ZipFile(archive) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue

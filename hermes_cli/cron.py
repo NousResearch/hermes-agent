@@ -40,14 +40,9 @@ def _active_cron_provider_name() -> str:
 
 
 def _builtin_gateway_liveness() -> Optional[bool]:
-    """Tri-state liveness of the builtin cron scheduler's trigger (None = unknown).
+    """Tri-state scheduler readiness (None = probe failed).
 
-    The builtin ticker only runs inside the gateway process, so a scheduled job with no live
-    gateway can never fire; non-builtin providers fire jobs without the gateway.
-
-    Chronos) fire through their own machinery and are deliberately exempt — a missing gateway process means
-    nothing for them, so they report active. ``None`` = probe failed; callers must not claim either way. See
-    #87033.
+    Local gateways use process liveness; served satellites also require their own fresh heartbeat. External providers use their own machinery and are exempt.
     """
     try:
         if _active_cron_provider_name() != "builtin":
@@ -61,26 +56,23 @@ def _builtin_gateway_liveness() -> Optional[bool]:
                 return True
         from hermes_cli.gateway import (
             find_gateway_pids, named_profile_served_by_running_multiplexer)
-        # Satellite profile: no local gateway.pid, but the default multiplexer ticks its store.
-        return bool(find_gateway_pids()) or named_profile_served_by_running_multiplexer()
+        if find_gateway_pids():
+            return True
+        if not named_profile_served_by_running_multiplexer():
+            return False
+        # List/create and status require a fresh heartbeat from the satellite's own store.
+        from cron.jobs import get_ticker_heartbeat_age
+        return _ticker_age_is_fresh(get_ticker_heartbeat_age())
     except Exception:
         return None
 
 
 def _warn_if_gateway_not_running() -> None:
-    """Warn that scheduled jobs won't fire unless the gateway is running (the #1 cron report).
-
-    False is the only warn-worthy liveness state (None = unknown).
-
-    The cron ticker only runs inside the gateway (``_start_cron_ticker`` in gateway/run.py); there is no
-    standalone cron daemon. Without a running gateway, ``next_run_at`` passes but jobs never fire and
-    ``last_run_at`` stays null — the most common cron support report (#51038). Surfacing this at create/list
-    time, when the user is right there, prevents it.
-    """
+    """Warn at create/list time when the scheduler is not ready; stay silent on an unknown probe result."""
     if _builtin_gateway_liveness() is not False:
         return
-    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-    print(color("     Start it with: hermes gateway install\n"
+    print(color("  ⚠  Scheduler is not ready: no gateway or no fresh profile heartbeat.", Colors.YELLOW))
+    print(color("     If no gateway is running: hermes gateway install\n"
                 "                    sudo hermes gateway install --system  # Linux servers\n"
                 "     Check status:  hermes cron status", Colors.DIM))
 
@@ -100,6 +92,10 @@ def _format_lateness(seconds: float) -> str:
     return " ".join(f"{n}{unit}" for n, unit in parts if n) or "0m"
 
 
+def _dispatch_kind_label(kind) -> Optional[str]:
+    return {"catch_up": "catch-up after missed fire", "late": "late"}.get(kind)
+
+
 def _dispatch_display(dispatch: dict) -> Optional[str]:
     """One-line scheduled-vs-actual dispatch summary; None when the stamp is malformed.
 
@@ -116,7 +112,7 @@ def _dispatch_display(dispatch: dict) -> Optional[str]:
     lateness = _format_lateness(dispatch.get("lateness_seconds", 0))
     if kind == "on_time":
         return color(f"on time (scheduled {scheduled})", Colors.DIM)
-    label = "catch-up after missed fire" if kind == "catch_up" else "late"
+    label = _dispatch_kind_label(kind) or "late"
     return (color(f"⚠ {label}: ", Colors.YELLOW) + f"scheduled {scheduled}, ran {actual} "
             + color(f"({lateness} late)", Colors.YELLOW))
 
@@ -167,9 +163,12 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
+    if last_status == "delivery_queued":
+        return color("finished; delivery is still in progress", Colors.YELLOW)
     if last_status == "delivery_failed":
         # Agent succeeded but the result never reached the user — not green; last_error is None.
-        return color(f"delivery_failed: {job.get('last_delivery_error') or '?'}", Colors.YELLOW)
+        return color(f"ran, but the result was not delivered ({_short_reason(job.get('last_delivery_error'))}). "
+                     f"{_delivery_fix_hint(job)}", Colors.YELLOW)
     display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
     streak = int(job.get("failure_streak") or 0)
     if streak >= 2:
@@ -213,11 +212,32 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     ] + [(label, value) for label, value in optional if value]
 
 
+def _short_reason(text: Any, limit: int = 120) -> str:
+    """First line of an adapter/error blob, whitespace-collapsed and capped, or 'no details'."""
+    first = str(text or "").strip().splitlines()
+    reason = " ".join(first[0].split()) if first else ""
+    return (reason[: limit - 1] + "…") if len(reason) > limit else (reason or "no details")
+
+
+def _delivery_fix_hint(job: Dict[str, Any]) -> str:
+    return (f"Check the target with `hermes cron status` or change it with "
+            f"`hermes cron edit {job.get('id', '<id>')} --deliver <target>`.")
+
+
+def _missed_fire_issue(job: Dict[str, Any], fire_err: Dict[str, Any]) -> str:
+    return (f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}. "
+            "The messaging gateway was unreachable. Run `hermes gateway restart`, then "
+            f"`hermes cron run {job.get('id', '<id>')}` to run it now.")
+
+
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
+    if queued := job.get("last_delivery_queued"):
+        lines.append(f"Delivery still in progress (the result was handed off but not confirmed yet): {queued}")
     if job.get("last_delivery_error"):
-        lines.append(f"{color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
+        lines.append(f"{color('⚠ The result was not delivered:', Colors.YELLOW)} "
+                     f"{_short_reason(job['last_delivery_error'])}. {_delivery_fix_hint(job)}")
     # A live adapter acked the last send but returned no message_id / raw_response
     # (Slack/Matrix/Mattermost shape): accepted as delivered, but say so here.
     if unverified := job.get("last_delivery_unverified"):
@@ -225,8 +245,7 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
                      f"{_unverified_targets(unverified)} without message_id/raw_response")
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
-        lines.append(f"{color('⚠ Missed scheduled fire:', Colors.RED)} "
-                     f"{fire_err.get('at', '?')}  {fire_err['detail']}")
+        lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
     return lines
 
 
@@ -266,7 +285,8 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
             print(f"    {record['error']}")
 
 
-_INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "closed": Colors.GREEN}
+_INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "resolved": Colors.GREEN,
+                          "closed": Colors.DIM}
 
 
 def cron_incidents(args) -> int:
@@ -323,7 +343,12 @@ _FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFIL
                        "persists, restart the gateway to recover scheduling.")
 
 
-def _print_ticker_health(pids: list) -> None:
+def _ticker_age_is_fresh(age: Optional[float]) -> bool:
+    from cron.jobs import TICKER_INTERVAL_SECONDS
+    return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
+
+
+def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
     The ticker THREAD can die silently or stay alive while every tick fails, so check both
@@ -331,10 +356,8 @@ def _print_ticker_health(pids: list) -> None:
     """
     # See #32612, #32895.
     from cron.jobs import (
-        get_ticker_heartbeat_age, get_ticker_last_error, get_ticker_success_age,
-        TICKER_INTERVAL_SECONDS)
+        get_ticker_heartbeat_age, get_ticker_last_error, get_ticker_success_age)
     from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
-    STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # ~3 missed iterations + slack (200s @ 60s)
     hb_age = get_ticker_heartbeat_age()
     ok_age = get_ticker_success_age()
     pid_line = f"  PID: {', '.join(map(str, pids))}" if pids else None
@@ -349,12 +372,12 @@ def _print_ticker_health(pids: list) -> None:
         _warn("⚠ Gateway is running but the cron ticker has not reported a heartbeat.")
         print("  Cron jobs will NOT fire until the ticker writes its first heartbeat.\n"
               "  If the gateway just started, wait ~60s and re-run `hermes cron status`.\n"
-              "  If heartbeat never appears, restart: hermes gateway restart")
-    elif hb_age > STALE_AFTER:  # ticker thread is gone
+              f"  If heartbeat never appears, restart: {restart_command}")
+    elif not _ticker_age_is_fresh(hb_age):  # ticker thread is gone
         _warn("⚠ Gateway is running but the cron ticker looks STALLED — "
               f"no heartbeat for {int(hb_age)}s (expected every ~60s).")
-        print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-    elif ok_age is not None and ok_age > STALE_AFTER:  # loop alive but every tick fails
+        print(f"  Cron jobs may NOT be firing. Restart: {restart_command}")
+    elif ok_age is not None and not _ticker_age_is_fresh(ok_age):  # loop alive but every tick fails
         _warn("⚠ Gateway and cron ticker are running, but no tick has "
               f"succeeded in {int(ok_age)}s — ticks may be failing.")
         last_error = get_ticker_last_error()
@@ -380,7 +403,8 @@ def _print_ticker_health(pids: list) -> None:
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+    from hermes_cli.profiles import get_active_profile_name
     print()
 
     provider = _active_cron_provider_name()
@@ -394,6 +418,7 @@ def cron_status():
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
+        served_by_multiplexer = False
         if not pids:
             # The pid scan transiently misses a live gateway right after a restart; the runtime
             # lock proves the process is alive. Declare "not running" only when both agree.
@@ -405,15 +430,31 @@ def cron_status():
                 gateway_alive_via_lock = is_gateway_runtime_lock_active()
                 lock_pid = get_running_pid() if gateway_alive_via_lock else None
                 pids = [lock_pid] if lock_pid else pids
-        if pids or gateway_alive_via_lock:
-            _print_ticker_health(pids)
+            # Multiplexer identity does not establish the active profile's ticker health.
+            if not gateway_alive_via_lock:
+                served_by_multiplexer = named_profile_served_by_running_multiplexer()
+        if pids or gateway_alive_via_lock or served_by_multiplexer:
+            if served_by_multiplexer:
+                print("  Scheduler host: default-profile multiplexer")
+                _print_ticker_health([], restart_command="hermes --profile default gateway restart")
+            else:
+                _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-            print("\n  To enable automatic execution:\n"
+            active = get_active_profile_name()
+            print("\n  To enable automatic execution for this profile:\n"
                   "    hermes gateway install    # Install as a user service\n"
-                  "    sudo hermes gateway install --system  "
-                  "# Linux servers: boot-time system service\n"
-                  "    hermes gateway            # Or run in foreground")
+                  "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"
+                  "    hermes gateway run        # Or run in foreground")
+            if active not in ("default", "custom"):
+                print("\n  Alternatives for this named profile:\n"
+                      "    Keep the Desktop app open with this profile included in its scheduler and the machine awake, or\n"
+                      "    configure a running default gateway to tick this profile:\n"
+                      "      hermes --profile default config set gateway.multiplex_profiles true\n"
+                      "      hermes --profile default gateway restart\n"
+                      "    To migrate existing per-profile services with preflight checks:\n"
+                      "      hermes --profile default gateway migrate --multiplex\n"
+                      "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
     _print_active_jobs_summary(list_jobs(include_disabled=False))
@@ -434,12 +475,11 @@ def _print_active_jobs_summary(jobs) -> None:
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]
     if late:
         print()
-        print(color(f"  ⚠ {len(late)} job(s) last fired late (missed-fire catch-up):",
-                    Colors.YELLOW))
+        print(color(f"  ⚠ {len(late)} job(s) last fired late:", Colors.YELLOW))
         for j in late:
             d = j["last_dispatch"]
             late_by = _format_lateness(d.get("lateness_seconds", 0))
-            print(f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: "
+            print(f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: {_dispatch_kind_label(d.get('kind'))}, "
                   f"scheduled {d.get('scheduled_at', '?')}, ran {d.get('dispatched_at', '?')} "
                   + color(f"({late_by} late)", Colors.YELLOW))
 
@@ -458,7 +498,7 @@ def _script_health_issue(script: str) -> Optional[str]:
     try:
         path.relative_to(scripts_dir)
     except ValueError:
-        return f"script resolves outside HERMES_HOME/scripts: {script!r}"
+        return f"script resolves outside {scripts_dir}: {script!r}"
     if not path.exists():
         return f"script not found: {path}"
     if not path.is_file():
@@ -491,13 +531,23 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed"}:
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
-        issues.append(f"last delivery failed: {delivery_err}")
+        issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
+                      f"{_delivery_fix_hint(job)}")
     if unverified := job.get("last_delivery_unverified"):
         issues.append("last delivery unverified (adapter acked without evidence): "
                       + _unverified_targets(unverified))
+    # Dispatch records measure lateness, not whether the scheduler process was running.
+    if isinstance(dispatch := job.get("last_dispatch"), dict):
+        if label := _dispatch_kind_label(dispatch.get("kind")):
+            issues.append(f"last fire was {label} (scheduled {dispatch.get('scheduled_at', '?')}, "
+                          f"{_format_lateness(dispatch.get('lateness_seconds', 0))} late). "
+                          "This warning clears at the next on-time fire.")
+    if isinstance(fire_err := job.get("last_fire_error"), dict) and fire_err.get("detail"):
+        # The handoff error survives next_run_at advancing beyond the failed dispatch.
+        issues.append(_missed_fire_issue(job, fire_err))
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
         issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"
@@ -532,7 +582,7 @@ def cron_doctor() -> int:
         for issue in issues:
             print(f"    - {issue}")
     print()
-    print(color("Next: fix the listed job config, then run `hermes cron doctor` again.", Colors.DIM))
+    print(color("Review the findings above, then run `hermes cron doctor` again.", Colors.DIM))
     return 1
 
 
@@ -571,7 +621,10 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
+           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -580,7 +633,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print("  Created PAUSED — resume to schedule, or explicitly run now.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 
@@ -755,7 +811,8 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
-    "remove": lambda a: _job_action("remove", a.job_id, "Removed")}
+    "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
+    "resnap": lambda a: _cron_resnap(a)}
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
 _CRON_SUBCOMMANDS["add"] = _CRON_SUBCOMMANDS["create"]
 _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remove"]
@@ -768,5 +825,35 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
     sys.exit(1)
+
+
+def _cron_resnap(args) -> int:
+    """Handle `hermes cron resnap [job_id] [--all]`."""
+    if bool(getattr(args, "all", False)):
+        result = _cron_api(action="resnap", all=True)
+        if not result.get("success"):
+            print(color(f"Failed to resnap: {result.get('error', 'unknown error')}", Colors.RED))
+            return 1
+        updated = result.get("updated_jobs", [])
+        print(color(f"Resnapped {len(updated)} unpinned job(s) to the current global resolution.", Colors.GREEN))
+        for job in updated:
+            print(f"  • {job.get('name', job.get('job_id'))} ({job.get('job_id')})")
+        if not updated:
+            print("  (no unpinned agent jobs found — nothing to refresh)")
+        return 0
+
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        print(color("resnap requires either a <job_id> or --all.", Colors.RED))
+        print("Usage: hermes cron resnap <job_id> | hermes cron resnap --all")
+        return 1
+    result = _cron_api(action="resnap", job_id=job_id)
+    if not result.get("success"):
+        print(color(f"Failed to resnap job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job", {})
+    print(color(f"Resnapped job: {job.get('name', job_id)} ({job.get('job_id', job_id)})", Colors.GREEN))
+    print("  Adopted the current global inference resolution; the job remains unpinned and will track future global changes.")
+    return 0

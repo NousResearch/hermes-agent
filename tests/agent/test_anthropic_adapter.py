@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import build_anthropic_client, build_anthropic_bedrock_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.anthropic_endpoints import _is_azure_anthropic_endpoint
+from agent.credential_pool import PooledCredential
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
 from agent.transports import get_transport
 
@@ -83,9 +84,9 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14"
-            }
+            assert kwargs["default_headers"]["anthropic-beta"] == "interleaved-thinking-2025-05-14"
+            # bearer-only construction omits x-api-key so an env ANTHROPIC_API_KEY never rides along
+            assert kwargs["default_headers"]["X-Api-Key"] is mock_sdk.Omit.return_value
 
 
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
@@ -272,10 +273,9 @@ class TestResolveAnthropicToken:
         # returns nothing, mirroring a Hermes-PKCE-only setup.
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        pool_entry = SimpleNamespace(
-            auth_type="oauth",
-            access_token="pool-oauth-token",
-        )
+        pool_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "oauth", "access_token": "pool-oauth-token",
+        })
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([pool_entry], []),
         )
@@ -330,7 +330,9 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
-        api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
+        api_key_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "api_key", "access_token": "sk-pool-apikey",
+        })
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: ([api_key_entry], []),
         )
@@ -351,7 +353,9 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         captured = {}
-        pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
+        pool_entry = PooledCredential.from_dict("anthropic", {
+            "auth_type": "oauth", "access_token": "pool-oauth-token",
+        })
 
         def _available_entries(**kwargs):
             captured.update(kwargs)
@@ -1199,8 +1203,9 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert "Hello" in result[0]["content"]
-        assert "World" in result[0]["content"]
+        # Each turn stays its own text block (never joined into one string), so the first turn's
+        # bytes match what a later request replays standalone and the cache prefix survives.
+        assert result[0]["content"] == [{"type": "text", "text": "Hello"}, {"type": "text", "text": "World"}]
 
     def test_preserves_proper_alternation(self):
         messages = [

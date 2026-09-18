@@ -1,6 +1,8 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
 
+import pytest
+
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     _EXTRA_KNOWN_ROOT_KEYS,
@@ -109,6 +111,47 @@ class TestVoiceSubmitModeValidation:
             and "draft" in issue.hint
             for issue in issues
         )
+
+
+def _has_tz_database() -> bool:
+    try:
+        import zoneinfo
+        zoneinfo.ZoneInfo("UTC")
+        return True
+    except Exception:
+        return False
+
+
+def _tz_issues(config):
+    return [i for i in validate_config_structure(config) if "timezone" in i.message]
+
+
+class TestTimezoneValidation:
+    """An invalid ``timezone`` silently puts the agent clock and every cron
+    schedule on server-local time (hermes_time._get_zoneinfo falls back with
+    one log warning). validate_config_structure must report it (#111725)."""
+
+    @pytest.mark.skipif(not _has_tz_database(), reason="no tz database in this interpreter")
+    def test_invalid_or_non_string_zone_is_an_error(self):
+        [issue] = _tz_issues({"timezone": "Asia/Tokio", "model": {"provider": "nous"}})
+        assert issue.severity == "error"
+        assert "Asia/Tokio" in issue.message
+        assert "IANA" in issue.hint and "HERMES_TIMEZONE" in issue.hint
+        [issue] = _tz_issues({"timezone": 9, "model": {"provider": "nous"}})
+        assert issue.severity == "error" and "string" in issue.message
+
+    def test_valid_blank_missing_or_unverifiable_zone_is_silent(self, monkeypatch):
+        for cfg in ({"timezone": "Asia/Tokyo"}, {}, {"timezone": ""}, {"timezone": "   "}, {"timezone": None}):
+            assert _tz_issues({**cfg, "model": {"provider": "nous"}}) == []
+        # Bare Windows without tzdata: ZoneInfo cannot load anything, including UTC.
+        # A name that cannot be checked must not be flagged.
+        import zoneinfo
+
+        def no_db(_key):
+            raise zoneinfo.ZoneInfoNotFoundError("no tz database")
+
+        monkeypatch.setattr(zoneinfo, "ZoneInfo", no_db)
+        assert _tz_issues({"timezone": "Asia/Tokio", "model": {"provider": "nous"}}) == []
 
 
 class TestUnknownTopLevelKeys:

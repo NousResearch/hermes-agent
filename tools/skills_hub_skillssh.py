@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
 from tools.skills_hub_models import (
-    SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json,
+    SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -123,8 +123,15 @@ class SkillsShSource(SkillSource):
         if cached is not None:
             return cached[:limit] if limit > 0 else cached
 
+        # Every hop goes through the hub's guarded GET: the index is a root of trust
+        # that may redirect, and its <loc> entries are remote-party-controlled — a
+        # hostile index could point a sitemap at an internal address.
+        def _xml(url: str, timeout: int) -> Optional[str]:
+            resp = hub()._guarded_http_get(url, timeout=timeout, headers=self._SITEMAP_HEADERS)
+            return resp.text if resp is not None and resp.status_code == 200 else None
+
         # Step 1: sitemap index -> per-skill sitemap URLs.
-        index_xml = _get_text(self.SITEMAP_INDEX_URL, follow_redirects=True, headers=self._SITEMAP_HEADERS)
+        index_xml = _xml(self.SITEMAP_INDEX_URL, 20)
         skill_sitemap_urls = [m.group(1).strip() for m in self._SITEMAP_LOC_RE.finditer(index_xml or "")
                               if "sitemap-skills" in m.group(1)]
         if not skill_sitemap_urls:
@@ -133,7 +140,7 @@ class SkillsShSource(SkillSource):
         # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap.
         seen, results = set(), []
         for sitemap_url in skill_sitemap_urls:
-            xml = _get_text(sitemap_url, timeout=30, follow_redirects=True, headers=self._SITEMAP_HEADERS)
+            xml = _xml(sitemap_url, 30)
             for loc_match in self._SITEMAP_LOC_RE.finditer(xml or ""):
                 m = self._SITEMAP_SKILL_RE.match(loc_match.group(1).strip())
                 if not m:

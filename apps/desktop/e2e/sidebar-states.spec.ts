@@ -21,7 +21,7 @@ import {
   restartMockServer,
   SIDEBAR_CROSS_TEXTS,
   SIDEBAR_TEXTS,
-} from './mock-server'
+} from '../../../tests-js/scripts/mock-server'
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'

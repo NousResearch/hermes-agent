@@ -27,7 +27,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig,
 } from './fixtures'
-import { startMockServer } from './mock-server'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')

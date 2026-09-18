@@ -227,7 +227,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     monkeypatch.setattr(
         gateway_cli,
         "_graceful_restart_via_sigusr1",
-        lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+        lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
     )
     monkeypatch.setattr(
         gateway_cli,
@@ -343,7 +343,7 @@ class TestEscalateWedgedGateway:
             lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: True
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is True
@@ -375,7 +375,7 @@ class TestEscalateWedgedGateway:
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
-            lambda pid, timeout: waits.append(timeout) or False,
+            lambda pid, timeout, **_: waits.append(timeout) or False,
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is False
@@ -387,7 +387,7 @@ class TestEscalateWedgedGateway:
 
         monkeypatch.setattr(gateway_cli, "terminate_pid", raise_gone)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: True
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is True
@@ -402,7 +402,7 @@ class TestEscalateWedgedGateway:
 
         monkeypatch.setattr(gateway_cli, "terminate_pid", term)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout: False
+            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: False
         )
 
         assert gateway_cli._escalate_wedged_gateway(4242) is False
@@ -442,7 +442,7 @@ class TestLaunchdRestartWedgedIntegration:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+            lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
         )
         # KeepAlive revival observed instantly — avoids the real 15s poll
         # (mocked subprocess.run returns empty stdout, so the PID probe
@@ -609,7 +609,7 @@ class TestLoopTickWitness:
             monkeypatch.setattr(
                 gateway_cli,
                 "_graceful_restart_via_sigusr1",
-                lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+                lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
             )
             monkeypatch.setattr(
                 gateway_cli,

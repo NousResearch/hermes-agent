@@ -183,7 +183,8 @@ class TestCronDoctor:
         assert "Cron doctor found 3 issue(s)" in out
         assert job["id"] in out
         assert "last run failed: Provider returned error" in out
-        assert "last delivery failed: telegram timeout" in out
+        assert "was not delivered (telegram timeout)" in out
+        assert "hermes cron edit" in out
         assert "script not found" in out
 
     def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
@@ -216,7 +217,8 @@ class TestCronDoctor:
 
         out = capsys.readouterr().out
         assert rc == 1
-        assert "last delivery failed: telegram timeout" in out
+        assert "was not delivered (telegram timeout)" in out
+        assert "hermes cron edit" in out
         assert "last run failed" not in out
         assert "unknown error" not in out
 
@@ -272,7 +274,7 @@ class TestCronListStatusRendering:
 
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
-        assert "delivery_failed" in last_run_line
+        assert "was not delivered" in last_run_line
         assert "telegram timeout" in last_run_line, (
             "the delivery detail lives in last_delivery_error, not last_error"
         )
@@ -292,7 +294,7 @@ class TestCronListStatusRendering:
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
         assert f"{cron_cli.Colors.GREEN}ok" in last_run_line
-        assert "delivery_failed" not in last_run_line
+        assert "not delivered" not in last_run_line
 
 
 class TestGatewayNotRunningWarning:
@@ -308,7 +310,7 @@ class TestGatewayNotRunningWarning:
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "Scheduler is not ready" in out
 
 
 class TestExternalCronProviderStatus:
@@ -367,7 +369,7 @@ class TestExternalCronProviderStatus:
         )
         out = capsys.readouterr().out
         assert "Created job" in out
-        assert "Gateway is not running" not in out
+        assert "Scheduler is not ready" not in out
 
 
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
@@ -391,7 +393,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     cron_cli.cron_list()
 
     out = capsys.readouterr().out
-    assert "Gateway is not running" in out
+    assert "Scheduler is not ready" in out
     assert "Nightly docs" in out
 
 
@@ -586,3 +588,24 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestSlashCronRunSkipped:
+    """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another
+    run is the same shape) must print the refusal, never ``Triggered … next scheduler tick``."""
+
+    def test_refused_run_prints_reason_not_triggered(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="local")
+        jobs = load_jobs()
+        jobs[0]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command(f"/cron run {job['id']}")
+        out = capsys.readouterr().out
+        assert "Job is paused/disabled; resume it before running." in out
+        assert "Triggered" not in out and "next scheduler tick" not in out

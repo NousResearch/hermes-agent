@@ -1881,6 +1881,33 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         assert any("head -c" in c for c in calls)
 
 
+    def test_unscannable_executed_script_names_the_reason(self, monkeypatch, tmp_path):
+        """A script the command EXECUTES that the guard cannot scan (here a live SQLite database)
+        still fails closed, but the error names that reason instead of claiming a lifecycle
+        command the model then rewords and retries in a loop (#113944)."""
+        import tools.terminal_tool as tt
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        db = tmp_path / "state.db"
+        conn = connect_tracked(db)
+
+        class _LocalEnv:
+            env = {}
+            cwd = str(tmp_path)
+            def execute(self, command, **kwargs):
+                return {"output": "", "returncode": 1}
+
+        self._patch_env(monkeypatch, _LocalEnv(), inside_gateway=True)
+        try:
+            result = json.loads(tt.terminal_tool(command=f"bash {db}"))
+        finally:
+            conn.close()
+
+        assert result["exit_code"] == 1
+        assert "could not scan" in result["error"] and "SQLite" in result["error"]
+        assert "cannot restart, stop, or uninstall" not in result["error"]
+
+
 class TestCronCreateLifecycleBlockExtra:
     """Additional cron create lifecycle guard coverage."""
 

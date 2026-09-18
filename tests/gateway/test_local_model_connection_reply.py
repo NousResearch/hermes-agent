@@ -21,8 +21,8 @@ class TestGatewayConnectionErrorReply:
         for text in samples:
             assert _looks_like_gateway_provider_error(text), text
             reply = _gateway_provider_error_reply(text)
-            assert "not responding" in reply.lower(), text
             assert "not running or is unreachable" in reply, text
+            assert "/retry" in reply, text
 
     def test_broad_connection_phrases_still_map_once_classified(self):
         """Reply selector keeps the full phrase set; the gate does not."""
@@ -55,9 +55,17 @@ class TestGatewayConnectionErrorReply:
         assert not _GATEWAY_CONNECTION_ERROR_RE.search("Provider authentication failed")
 
     def test_auth_and_rate_limit_preserved(self):
-        assert "authentication" in _gateway_provider_error_reply(
-            "provider authentication failed"
-        ).lower()
+        auth_reply = _gateway_provider_error_reply("provider authentication failed")
+        assert "sign-in" in auth_reply.lower() and "/login" in auth_reply
         assert "rate-limiting" in _gateway_provider_error_reply(
             "rate limited after 3 retries"
         ).lower()
+
+    def test_every_reply_names_a_slash_command_and_no_jargon(self):
+        """Each shaped reply must give the chat user something they can run; 'provider' and
+        'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
+        from gateway.run import _PROVIDER_ERROR_REPLIES
+        replies = [reply for _, reply in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
+        for reply in replies:
+            assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
+            assert "provider" not in reply.lower(), reply

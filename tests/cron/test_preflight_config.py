@@ -13,7 +13,7 @@ delivery platform — must be blocked BEFORE any agent machinery is constructed:
 proceeds to resolution and fails loudly every tick).
 
 Related precedent: #27948 (fail-loud for hidden tools — same fail-before-run
-spirit, different check) and #44585 (drift guard: skip-run-no-spend shape).
+spirit, different check).
 """
 
 import json
@@ -159,7 +159,7 @@ class TestMissingProviderKeyBlocks:
             f"expected exactly one alert across two ticks, got {len(deliveries)}: "
             f"{deliveries!r}"
         )
-        assert "blocked" in deliveries[0].lower()
+        assert "did not run" in deliveries[0].lower()
 
     def test_fallback_chain_rescues_missing_primary_key(self, tmp_path):
         """A configured fallback chain means a missing primary key does NOT

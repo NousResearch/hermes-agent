@@ -540,21 +540,28 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
     for plugins_root, source in _dashboard_plugin_search_dirs():
-        if not plugins_root.is_dir():
+        try:
+            if not plugins_root.is_dir():
+                continue
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError as exc:
+            _log.warning("Skipping unreadable dashboard plugin root %s: %s", plugins_root, exc)
             continue
-        with os.scandir(plugins_root) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
         for child in children:
             manifest_file = child / "dashboard" / "manifest.json"
-            if not child.is_dir() or not manifest_file.exists():
-                continue
             try:
+                if not child.is_dir() or not manifest_file.exists():
+                    continue
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
                 seen_names.add(name)
                 plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+            except OSError as exc:
+                _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
+                continue
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue
@@ -634,6 +641,11 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     return False, ""
 
 
+def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) -> str:
+    """enabled / disabled / inactive for a plugin's name+key alias set (disabled wins)."""
+    return "disabled" if aliases & disabled_set else "enabled" if aliases & enabled_set else "inactive"
+
+
 def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + provider picker metadata.
 
@@ -662,6 +674,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -671,16 +685,15 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
 
+    # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = resolved_removed_entries()
+
     for name, version, description, source, dir_str, key in _discover_all_plugins():
         # Both the path-derived key (nested category plugins) and the bare manifest name
         # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
         aliases = {name, key} if key else {name}
-        if aliases & disabled_set:
-            runtime_status = "disabled"
-        elif aliases & enabled_set:
-            runtime_status = "enabled"
-        else:
-            runtime_status = "inactive"
+        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
@@ -708,6 +721,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}

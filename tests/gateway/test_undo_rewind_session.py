@@ -144,3 +144,40 @@ def test_rewind_fails_closed_when_new_turn_lands_after_id_snapshot(
         ("a3-from-other-process", 1),
     ]
     sibling.close()
+
+
+@pytest.mark.asyncio
+async def test_undo_evicts_cached_agent_under_profile_namespaced_key():
+    """/undo must evict under the key the cache is keyed by. On a multiplexed gateway that is
+    ``agent:<profile>:…``; a bare ``build_session_key(source)`` yields ``agent:main:…``, the
+    eviction misses and the next turn reuses an agent still holding the undone turns."""
+    from gateway.platforms.base import Platform, SessionSource
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+
+    class _Entry:
+        session_id = "sid"
+        last_prompt_tokens = 0
+
+    class _Store:
+        async def get_or_create_session(self, source):
+            return _Entry()
+
+        async def rewind_session(self, sid, n):
+            return {"target_text": "q3", "turns_undone": 1, "rewound_count": 2}
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", user_id="u1")
+    source.profile = "work"
+    evicted = []
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.session_store = _Store()
+    runner._async_session_store = _Store()
+    runner._async_session_store._store = runner.session_store
+    runner._evict_cached_agent = evicted.append
+    runner._session_key_for_source = lambda s: build_session_key(s, profile=s.profile)
+
+    await runner._handle_undo_command(MessageEvent(text="/undo", message_type=MessageType.TEXT, source=source))
+
+    assert evicted == ["agent:work:telegram:dm:123"]

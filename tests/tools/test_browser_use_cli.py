@@ -64,6 +64,22 @@ def _fake_managed_chromium(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _fake_supervisor_registry(monkeypatch):
+    """browser_exec attaches the vault supervisor to the resolved CDP endpoint; the fake endpoint above is
+    not a real browser, so record the attach instead of opening a WebSocket (15 s start timeout)."""
+    from tools import browser_supervisor
+
+    attached = []
+
+    class _Registry:
+        def get_or_start(self, task_id, cdp_url, **kw):
+            attached.append((task_id, cdp_url))
+
+    monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", _Registry())
+    return attached
+
+
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path.
 
@@ -84,7 +100,7 @@ def _fake_cli(tmp_path, body):
         )
         return str(cmd)
     script = tmp_path / "browser-use"
-    script.write_text("#!/bin/sh\n" + body)
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script)
 
@@ -308,6 +324,40 @@ class TestToolSurfaceSwap:
         )
         names = {t["function"]["name"] for t in defs}
         assert "browser_exec" in names
+
+
+class TestVaultSupervisorAttach:
+    def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
+        """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
+        default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "browser-use"}})
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
+
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="t-vault"))
+
+        assert result["success"] is True
+        assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
+
+
+class TestVaultEgressRedaction:
+    def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
+        """A browser_exec page read must not return a vault-filled value to model history."""
+        from agent import redact
+
+        secret = "vault-filled-password-112693"
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        redact.register_vault_redaction_value(secret)
+        try:
+            result = json.loads(bu_cli.browser_exec("print(1)"))
+        finally:
+            redact.clear_vault_redaction_values()
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert secret not in serialized
+        assert serialized.count("«redacted-vault-secret»") == 2
 
 
 class TestFindCli:
@@ -600,6 +650,42 @@ class TestBackendCdpResolution:
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+
+    def test_picker_managed_selection_resolves_gateway_provider(self, monkeypatch):
+        """``cloud_provider: nous`` (the `hermes tools` managed row) must resolve through the
+        provider: the picker never writes the legacy ``use_gateway`` flag, and the direct-API
+        branch leaves browser_exec with no CDP endpoint at all (#108310)."""
+        import tools.browser_tool as bt  # noqa: F401 — imported for parity with sibling tests
+
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/managed"},
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "nous"})
+        env = {}
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/managed"
+
+    def test_legacy_use_gateway_flag_still_resolves_gateway_provider(self, monkeypatch):
+        """Regression guard for the pre-picker shape of the same selection."""
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/legacy"},
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"use_gateway": True})
+        env = {}
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/legacy"
 
 
 class TestOwnTabPreamble:
@@ -1124,7 +1210,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() is None
 
@@ -1210,7 +1296,7 @@ class TestInstallCli:
             'target="$UV_TOOL_BIN_DIR/browser-use"\n'
             'echo "#!/bin/sh" > "$target"\n'
             '/bin/chmod +x "$target"\n'
-        )
+        , encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         ok, msg, bin_dir = self._run_fake_uv_install(
             tmp_path, monkeypatch, uv, restore_find_cli=True
@@ -1240,7 +1326,7 @@ class TestInstallCli:
     )
     def test_failed_install_surfaces_stderr_tail(self, tmp_path, monkeypatch):
         uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n')
+        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         ok, msg, _bin = self._run_fake_uv_install(tmp_path, monkeypatch, uv)
         assert ok is False
@@ -1498,3 +1584,53 @@ class TestLightpandaStatusLine:
         out = self._status(monkeypatch, used=False, reason="cloud provider Browserbase is selected")
         assert "NOT in use" in out
         assert "Browserbase" in out
+
+
+class TestTimeoutProcessGroupKill:
+    """#106244: on timeout the whole CLI process group must die. A pipe-holding
+    grandchild (browser_harness daemon / Chrome helper) otherwise keeps communicate()
+    blocked forever, and the wedged call's activity heartbeat pins the session at
+    "now" in the sidebar indefinitely."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
+        """A grandchild that outlives the direct child and holds the inherited stdout
+        pipe must not keep browser_exec blocked past the timeout (it wedged permanently
+        before the group kill)."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        pid_file = tmp_path / "grandchild.pid"
+        cli = _fake_cli(tmp_path, (
+            "cat > /dev/null\n"
+            "sleep 60 &\n"
+            "echo $! > \"" + str(pid_file) + "\"\n"
+            "sleep 60\n"
+        ))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        start = time.time()
+        result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=bu_cli._MIN_TIMEOUT_S))
+        elapsed = time.time() - start
+
+        assert "timed out" in result["error"]
+        # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
+        assert elapsed < 30
+        # The pipe-holding grandchild died with the group instead of leaking.
+        pid = int(pid_file.read_text().strip())
+        time.sleep(0.5)
+        with pytest.raises(OSError):
+            os.kill(pid, 0)
+
+    def test_post_kill_drain_is_bounded(self, monkeypatch):
+        """If even the post-kill drain misses its deadline, give up instead of wedging."""
+
+        class _StuckProc:
+            pid = 424243
+            returncode = None
+
+            def communicate(self, input=None, timeout=None):
+                raise subprocess.TimeoutExpired("browser-use", timeout)
+
+        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: _StuckProc())
+        monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
+        with pytest.raises(subprocess.TimeoutExpired):
+            bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)

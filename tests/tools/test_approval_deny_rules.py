@@ -6,6 +6,7 @@ making it the user-editable counterpart to the code-shipped hardline floor.
 """
 
 import os
+import shlex
 
 import pytest
 
@@ -57,6 +58,113 @@ class TestMatchUserDenyRule:
         """Deobfuscation variants from the detector also feed deny matching."""
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
+
+
+def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
+    """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
+    commands = [
+        "sudo -n id -u", "/usr/bin/sudo -n id -u", "./sudo -n id -u",
+        '"/usr/bin/su"do -n id -u', r"/usr/bin/sud\o -n id -u",
+        "FOO=bar /usr/bin/sudo -n id -u", "env sudo -n id -u",
+        "/usr/bin/env -i FOO=bar /usr/bin/sudo -n id -u",
+        "env -u FOO -- /usr/bin/sudo -n id -u",
+        "env -C /tmp /usr/bin/sudo -n id -u",
+        "command -p /usr/bin/sudo -n id -u", "exec -a label /usr/bin/sudo -n id -u",
+        "nohup /usr/bin/sudo -n id -u", "nice -n 5 /usr/bin/sudo -n id -u",
+        "timeout 5 /usr/bin/sudo -n id -u",
+        "setsid -f /usr/bin/sudo -n id -u", "time -p /usr/bin/sudo -n id -u",
+        "stdbuf --output L /usr/bin/sudo -n id -u",
+        "ionice --class 2 /usr/bin/sudo -n id -u",
+        "chrt --fifo 20 /usr/bin/sudo -n id -u",
+        "taskset --cpu-list 0 /usr/bin/sudo -n id -u",
+        "chroot --userspec root:root /srv /usr/bin/sudo -n id -u",
+        "true && /usr/bin/sudo -n id -u; echo ok",
+        "echo ok | /usr/bin/sudo -n id -u", "(/usr/bin/sudo -n id -u)",
+        'echo "$(/usr/bin/sudo -n id -u)"',
+        "bash -lc 'env -i /usr/bin/sudo -n id -u'",
+        "env -S '/usr/bin/sudo -n id -u'",
+        "env -S /usr/bin/sudo -n id -u",
+        "env --split-string=/usr/bin/sudo -n id -u",
+        "env -S \"bash -c '/usr/bin/sudo -n id -u'\"",
+        "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
+        "printf SAFE", "env -S printf SAFE", "env -Sprintf SAFE",
+        "env --split-string=printf SAFE", "env -S 'printf' SAFE",
+        r"env -S 'printf\_SAFE'", r"env -S 'printf\_SAFE\c ignored'",
+        "env -S 'printf SAFE # ignored'", "env -S 'printf # ignored' SAFE",
+        "env -a marker printf SAFE", "env --argv0 marker printf SAFE",
+        "env --argv0=marker printf SAFE", "env -amarker printf SAFE",
+        r"env -a marker -S 'printf\_SAFE'",
+        "env -S '\"printf\"\\_SAFE'", "env -S \"'printf' SAFE\"",
+        r"env -S 'printf\_\_SAFE'", r"env -S 'printf\c ignored' SAFE",
+        "2>/tmp/log FOO=bar /usr/bin/sudo -n id -u",
+        "if true; then /usr/bin/sudo -n id -u; fi",
+    ]
+    for mode, yolo in (("manual", False), ("off", False), ("manual", True)):
+        deny_config(["sudo *", "printf SAFE"], mode=mode)
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", yolo)
+        for command in commands:
+            assert approval_floors._match_user_deny_rule(command), command
+            for guard in (mod.check_dangerous_command, mod.check_all_command_guards):
+                result = guard(command, "local")
+                assert result.get("user_deny") is True, (mode, yolo, command, result)
+                assert result["approved"] is False
+
+
+def test_deny_projection_preserves_data_and_path_rules(deny_config):
+    """Project only executable positions; retain spelling-sensitive argument data."""
+    deny_config(["/usr/bin/sudo -n id -u"])
+    assert approval_floors._match_user_deny_rule("env /usr/bin/sudo -n id -u; true")
+    assert approval_floors._match_user_deny_rule("/opt/bin/sudo -n id -u") is None
+    deny_config(["sudo", "sudo *", "git status"])
+    for command in (
+        'echo "sudo -n id -u"', "printf 'ok && sudo -n id -u'",
+        'printf "%s" "$(printf safe) sudo -n id -u"',
+        "command -v sudo", "command -V sudo", "command -pv sudo",
+        "env -u sudo printf ok", "exec -a sudo printf ok",
+        "env -a sudo printf ok", "env --argv0 sudo printf ok",
+        r"env -S 'printf %s\_sudo\_-n\_id'",
+        "env -S 'printf %s \"sudo\\_-n\\_id\"'",
+        r"env -S 'printf ok\c bash -c sudo'",
+        "env -S 'printf ok # bash -c sudo'",
+        r"env -S 'printf %s \${IGNORED}'",
+        "ionice --pid sudo", "chrt --pid sudo", "taskset --pid 1 sudo",
+        "echo 'first\nsudo -n id -u'", "echo ok # ; sudo -n id -u",
+        "env -S 'printf %s; sudo -n id'",
+        "env -S 'printf %s' 'sudo -n id'",
+        "env -S 'printf %s' '$(sudo -n id)'",
+        "echo ok # ; bash -c '/usr/bin/sudo -n id'",
+        "echo ok # unmatched '\n printf ok",
+        "printf '%s' '# ; bash -c sudo'",
+        "git log --grep='git status'", r'printf "%s" "a\"; sudo -n id -u"',
+    ):
+        assert approval_floors._match_user_deny_rule(command) is None, command
+    for command in ("env git status; echo ok", "(git status)", "git\tstatus # comment",
+                    "env -S git status", "env -S 'git' status", "env -Sgit status",
+                    "env --split-string=git status"):
+        assert approval_floors._match_user_deny_rule(command) == "git status", command
+    assert approval_floors._match_user_deny_rule('env git st""atus') == "git status"
+    deny_config(['printf "a  b"'])
+    assert approval_floors._match_user_deny_rule('env printf "a  b"')
+    assert approval_floors._match_user_deny_rule('env printf "a b"') is None
+    # The argv projection must retain GNU escapes as data, not shell syntax.
+    from tools.approval_detection import _split_env_string
+
+    for literal, expected in (
+        (r'a\_b', ['a', 'b']), (r'"a\_b"', ['a b']),
+        (r"'a\_b'", [r'a\_b']), (r'a\cb ignored', ['a']),
+        ('a # ignored', ['a']), ('a#b', ['a#b']), (r'\#a', ['#a']),
+        (r'\${NAME}', ['${NAME}']), ("'${NAME}'", ['${NAME}']),
+        (r"'a\'b'", ["a'b"]), (r"'a\\b'", [r'a\b']),
+        (r'a\"b', ['a"b']), ('"" a', ['', 'a']),
+        *((rf'a\{key}b', ['a' + value + 'b'])
+          for key, value in {'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v'}.items()),
+    ):
+        assert _split_env_string(literal) == expected, literal
+        command = 'env -S ' + shlex.quote('printf %s ' + literal)
+        deny_config(['sudo *'])
+        assert approval_floors._match_user_deny_rule(command) is None, command
+    for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
+        assert _split_env_string(unresolved) is None
 
 
 class TestDenyBeatsYolo:

@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
             **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
             "request_overrides": dict(rp.get("request_overrides") or {}),
-            "max_tokens": rp.get("max_output_tokens"), "args": list(rp.get("args") or []), "routed": True,
+            "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
         logger.debug("background-review aux routing failed (%s); using main model", e)
@@ -612,11 +613,33 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
 
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
+    if data.get("staged"):
+        # The fork's own review summary is never published back, so an unattended-review
+        # consolidation proposal must surface here or it is silently lost (#105921).
+        return [data["message"]] if data.get("proposal_staged") and data.get("message") else []
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
+    if is_skill and "results" in data:
+        # The requested operations are not evidence of applied writes (approval
+        # and atomic rollback can leave all of them unapplied).
+        verbs = {"create": "created", "patch": "patched", "edit": "rewritten",
+                 "write_file": "written", "remove_file": "removed", "delete": "deleted"}
+        results = data.get("results")
+        if not data.get("operations_applied") or not isinstance(results, list):
+            return []
+        lines = []
+        for result in results:
+            if not isinstance(result, dict) or result.get("success") is not True:
+                continue
+            verb = verbs.get(result.get("action"))
+            if verb and result.get("name"):
+                path = f" ({result['file_path']})" if result.get("file_path") else ""
+                lines.append(f"Skill '{result['name']}' {verb}{path}")
+        return lines
     lower = message.lower()
-    if not verbose and ("created" in lower or "updated" in lower or (is_skill and "patched" in lower)):
+    if not verbose and ("created" in lower or "updated" in lower or
+                        (is_skill and any(word in lower for word in ("patched", "deleted", "written")))):
         return [message]
     if not is_skill and not target:
         return []
@@ -767,6 +790,30 @@ def _same_model_parity_kwargs(agent: Any) -> Dict[str, Any]:
     return kwargs
 
 
+def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> None:
+    """One-shot user-visible notice: ``auxiliary.background_review.reasoning_effort`` is IGNORED on
+    the same-model path (#104116). The fork inherits the parent's ``reasoning_config`` verbatim so
+    its request bytes keep the parent's prompt-cache prefix (#30532: a diverged ``thinking`` field
+    on the fork-birth request re-created a large share of the cache); the no-op used to be silent,
+    so a user who set the key saw no feedback at all. Gated on the parent so a nudge-per-turn
+    session warns once, not per fork."""
+    effort = str(_background_review_task_config(task_cfg).get("reasoning_effort") or "").strip()
+    if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
+        return
+    agent._warned_bg_review_reasoning_effort = True
+    message = (
+        f"⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review "
+        "runs on the main model: the fork inherits the conversation's reasoning effort to keep the "
+        "parent's prompt-cache prefix (see memory docs, same-model review reasoning). Route the "
+        "review elsewhere via auxiliary.background_review.provider/model to use a different effort."
+    )
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
+    logger.warning("%s", message)
+
+
 def _detach_fork_compression(review_agent: Any) -> None:
     """Detached in-memory compaction for a fork sharing the parent's session_id. Disabling
     compression (the old guard against compacting the parent's live session) removed the only
@@ -798,7 +845,27 @@ def _detach_fork_compression(review_agent: Any) -> None:
         review_agent._review_defer_compaction_before_first_response = True
 
 
-def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int) -> Dict[str, Any]:
+def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """``reasoning_config`` for a ROUTED fork from ``auxiliary.background_review.reasoning_effort``
+    (#94825). The routed branch never inherits the parent's effort (its vocabulary may be invalid for
+    the routed provider), but an explicit per-task pin is the user's choice for THAT model and must
+    win over provider defaults, as every other aux task already does via ``_get_task_extra_body``.
+    None = unset (provider default); an unknown level warns and falls through to the default."""
+    effort = _background_review_task_config(task_cfg).get("reasoning_effort")
+    if effort is None or effort == "":
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    parsed = parse_reasoning_effort(effort)
+    if parsed is None:
+        logger.warning(
+            "auxiliary.background_review.reasoning_effort %r is not a valid level (none, %s) — using "
+            "the routed provider's default", effort, ", ".join(VALID_REASONING_EFFORTS),
+        )
+    return parsed
+
+
+def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int,
+                      task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """AIAgent constructor kwargs for the review fork. skip_memory=True: an external memory plugin
     scoped to the parent's session_id would leak the harness prompt into the user's real memory
     namespace; built-in MEMORY.md/USER.md state is re-bound by the caller. Toolsets match the
@@ -819,7 +886,26 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+    elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
+        kwargs["reasoning_config"] = routed_cfg
     return kwargs
+
+
+# Above any live registry generation: _publish_tool_snapshot refuses an older-generation rebuild,
+# so the compaction-boundary refresh_agent_mcp_tools(content_aware=True) cannot rebuild the fork's
+# tools[] from the live registry and drop the inherited provider/plugin tools (#103579).
+_FROZEN_TOOL_SNAPSHOT_GENERATION = 2_147_483_647
+
+
+def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
+    """Same-model fork: advertise the parent's exact tools[] (its last outbound payload — an
+    empty list included) so the request prefix matches byte-for-byte, then freeze the snapshot
+    generation. Dispatch stays behind the review whitelist; advertising is not permission."""
+    # getattr: /btw and review callers build bare object.__new__ agents in tests without ``tools``.
+    review_agent.tools = copy.deepcopy(getattr(agent, "tools", None) or [])
+    review_agent.valid_tool_names = {tool["function"]["name"] for tool in review_agent.tools}
+    review_agent._tool_snapshot_generation = _FROZEN_TOOL_SNAPSHOT_GENERATION
+
 
 
 def build_cache_parity_fork(
@@ -838,7 +924,12 @@ def build_cache_parity_fork(
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
     _routed = bool(_rt.get("routed"))
-    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
+    # A configured effort is dropped on the same-model path (cache parity) — say so once, visible,
+    # instead of leaving the set-but-ignored key invisible (#104116). Routed forks honor it
+    # (_routed_reasoning_config).
+    if not _routed and write_origin == "background_review":
+        _warn_ignored_reasoning_effort(agent, task_cfg)
+    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
@@ -851,7 +942,7 @@ def build_cache_parity_fork(
     # finalize the parent's still-active session row. suppress_status_output: fork status/warning
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
-    review_agent._session_json_enabled = review_agent._end_session_on_close = False
+    review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
@@ -867,6 +958,23 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        # Cache-scope parity (#109964): the fork shares the parent's physical session_id and
+        # byte-identical prefix, but is _persist_disabled (declared scope fails closed) and
+        # _session_db=None (lineage walk skipped) — so BOTH cache-identity resolvers keyed it
+        # into a different bucket than the gateway parent, costing one cold ~full-context
+        # request per review. Inherit the parent's ALREADY-RESOLVED scope once, here: no DB
+        # access from the fork, persistence stays fully detached, and both consumers (the
+        # affinity header via set_affinity_scope and the body prompt_cache_key via
+        # cache_scope_id) resolve the parent's bucket together. Routed (different-model)
+        # forks do NOT inherit: their prefix is cache-cold anyway.
+        inherited_scope = resolve_prompt_cache_scope_safe(agent)
+        if inherited_scope:
+            review_agent._inherited_cache_scope = inherited_scope
+        # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
+        # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
+        # rotation the review's usage was attributed to a different conversation than its parent.
+        review_agent._cached_conversation_root = agent._conversation_root_id()
+        _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
@@ -914,14 +1022,17 @@ def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None
                     agent._active_children.remove(review_agent)
 
 
-def _review_tool_whitelist(review_agent: Any, task_cfg: Optional[Dict[str, Any]]) -> Tuple[set, set]:
+def _review_tool_whitelist(
+    review_agent: Any, task_cfg: Optional[Dict[str, Any]], review_memory: bool = False,
+) -> Tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
     from model_tools import get_tool_definitions
-    # Gate the built-in memory tool on the profile's memory flags so a memory-disabled profile
-    # is never contaminated by the review LLM.
+    # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
+    # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
+    # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on else ["skills"]
+    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
@@ -972,25 +1083,34 @@ def _release_fork_clients(review_agent: Any) -> None:
 
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
-    review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState,
+    review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
+    explicit: bool = False,
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
-    so the caller's error path still sees usage and the fork to clean up."""
-    st.review_agent, _rt, _routed = build_cache_parity_fork(agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
+    keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
+    attended, so the unattended-only memory delete gate leaves the full operation set available."""
+    st.review_agent, _rt, _routed = build_cache_parity_fork(
+        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
-    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg)
+    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
+    # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
+    # tell the model that memory is available, or it will burn iterations on denied calls.
+    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
+    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
             "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills, and "
-            "memory for notes." + deny_extra + " Do not retry {tool_name}."
+            "skill_manage(action='patch'|...) to change skills"
+            + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
     with suppress(Exception):
@@ -1002,7 +1122,7 @@ def _run_review_fork(
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(
-                    prompt + "\n\nYou can only call memory and skill "
+                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
@@ -1036,6 +1156,7 @@ def _publish_review_summary(agent: Any, actions: List[str]) -> None:
 def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
+    review_memory: bool = False, explicit: bool = False,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1070,7 +1191,7 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st)
+            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1127,11 +1248,14 @@ def spawn_background_review_thread(
     agent: Any, messages_snapshot: List[Dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
+    explicit: bool = False,
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
     ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
     to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
-    ``auxiliary.background_review`` block; when omitted it is read once here."""
+    ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
+    (/refine) propagates to the fork's write origin so user-requested reviews keep the full
+    memory operation set."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
@@ -1144,7 +1268,9 @@ def spawn_background_review_thread(
         )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
-        _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run)
+        _run_review_in_thread(
+            agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
+            review_memory=review_memory, explicit=explicit)
 
     return _target, prompt
 

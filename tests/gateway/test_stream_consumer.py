@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS, THINK_TAG_NAMES
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer_think import StreamThinkFilterMixin
+from hermes_cli import cli_stream_mixin
 
 
 def test_stream_send_metadata_carries_original_reply_anchor():
@@ -930,6 +933,22 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate(f"<{tag}>hidden reasoning</{tag}>Visible answer")
         assert c._accumulated == "Visible answer"
         assert "hidden reasoning" not in c._accumulated
+
+    def test_tag_lists_are_the_scrubbers(self):
+        """One owner: CLI and gateway stream filters bind the scrubber's tag tuples, not copies."""
+        assert StreamThinkFilterMixin._OPEN_THINK_TAGS is THINK_OPEN_TAGS
+        assert StreamThinkFilterMixin._CLOSE_THINK_TAGS is THINK_CLOSE_TAGS
+        assert cli_stream_mixin._OPEN_TAGS is THINK_OPEN_TAGS
+        assert cli_stream_mixin._CLOSE_TAGS is THINK_CLOSE_TAGS
+
+    @pytest.mark.parametrize("name", THINK_TAG_NAMES)
+    def test_every_scrubber_tag_is_filtered_when_streamed(self, name):
+        """A tag added to the shared list is automatically hidden by the gateway stream filter."""
+        c = _make_consumer()
+        for chunk in (f"<{name}>", "hidden", f"</{name}>", "visible"):
+            c._filter_and_accumulate(chunk)
+        c._flush_think_buffer()
+        assert c._accumulated == "visible"
 
     def test_prose_mention_not_stripped(self):
         """<think> mentioned mid-line in prose should NOT trigger filtering."""

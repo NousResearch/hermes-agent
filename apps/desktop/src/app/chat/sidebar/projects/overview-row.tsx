@@ -1,11 +1,15 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $sidebarShowAllSessions } from '@/store/layout'
+import { fetchProjectSessions, projectProfile } from '@/store/projects'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -20,14 +24,17 @@ import {
   SidebarRowShell
 } from '../chrome'
 
-import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import { expandedProjectSessions, latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
-import type { SidebarProjectTree } from './workspace-groups'
+import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
+// Auto-discovered repos (git lanes Desktop found by scanning disk, not rows in
+// projects.db) get the `repo` glyph so a glance tells explicit projects
+// (`folder-library`) apart from incidental disk/session findings.
+export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -38,7 +45,10 @@ export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon
+        name={icon || (isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
+        size={SIDEBAR_LEAD_ICON_SIZE}
+      />
     </SidebarRowLeadGlyph>
   )
 }
@@ -71,6 +81,13 @@ interface ProjectOverviewRowProps {
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
+  /** What the project tree drops (pins, filter misses, just-deleted rows) —
+   *  the same predicate `previewSessions` was built with, so a "Show all"
+   *  hydration can't resurrect them. */
+  isSessionHidden?: (session: SessionInfo) => boolean
+  /** How many of the backend's `sessionCount` that predicate hides, so
+   *  "Show all N" promises only rows the view will actually render. */
+  hiddenSessionCount?: number
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -86,6 +103,8 @@ export function ProjectOverviewRow({
   renderRows,
   activeProjectId,
   previewSessions,
+  isSessionHidden,
+  hiddenSessionCount = 0,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -99,8 +118,38 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
-  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+  const showAllSessions = useStore($sidebarShowAllSessions)
+  // The tree payload previews only the most-recent few sessions per project
+  // (kept light on purpose); "Show all" hydrates THIS project's lanes on demand
+  // rather than widening every project's preview window.
+  const [expanded, setExpanded] = useState<SidebarProjectTree | null>(null)
+  const [expanding, setExpanding] = useState(false)
+  const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
+  const fetched = (previewSessions ?? []).slice(0, limit)
+  const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
+  // The hydrated lanes come straight from the backend, so — like the drill-in
+  // (index.tsx) — they haven't been through the tree's exclusion filter yet.
+  const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded
+  const preview = renderRows ? (visible ? expandedProjectSessions(recent, visible) : recent) : []
+  const total = project.sessionCount - hiddenSessionCount
+  const hiddenCount = total - preview.length
+  const offerShowAll = !showAllSessions && !expanded && preview.length > 0 && hiddenCount > 0
+
+  const showAll = () => {
+    // All-profiles view has no single backend to ask for one project's lanes;
+    // drilling in is the reach there.
+    if (!projectProfile()) {
+      onEnter?.(project.id)
+
+      return
+    }
+
+    setExpanding(true)
+    fetchProjectSessions(project.id, { supersedable: false })
+      .then(tree => void (tree && setExpanded(tree)))
+      .catch(() => onEnter?.(project.id))
+      .finally(() => setExpanding(false))
+  }
 
   const lead = reorderable ? (
     <SidebarRowGrab
@@ -113,6 +162,22 @@ export function ProjectOverviewRow({
     </SidebarRowGrab>
   ) : (
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
+  )
+
+  const labelLink = (
+    <SidebarRowLink
+      // The glyph is aria-hidden and the tooltip only speaks on hover, so the
+      // link's own name carries the auto cue — screen readers get it too.
+      aria-label={
+        project.isAuto
+          ? `${s.projects.enter(project.label)} (${s.projects.autoDiscovered})`
+          : s.projects.enter(project.label)
+      }
+      labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+      onClick={() => onEnter?.(project.id)}
+    >
+      {project.label}
+    </SidebarRowLink>
   )
 
   const shell = (
@@ -155,15 +220,7 @@ export function ProjectOverviewRow({
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
-      label={
-        <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
-          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-          onClick={() => onEnter?.(project.id)}
-        >
-          {project.label}
-        </SidebarRowLink>
-      }
+      label={project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
       lead={lead}
       // The label is grab surface too, not just the lead's grabber — same
       // listeners, minus the controls that keep their own gestures. A project
@@ -201,7 +258,29 @@ export function ProjectOverviewRow({
           {shell}
         </ProjectContextMenu>
       )}
-      {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
+      {open && preview.length > 0 && (
+        <SidebarRowNest>
+          {renderRows?.(preview)}
+          {offerShowAll && (
+            <SidebarRowShell>
+              <SidebarRowBody
+                className="group/more w-full text-(--ui-text-tertiary) hover:text-foreground"
+                disabled={expanding}
+                onClick={showAll}
+              >
+                <SidebarRowLead>
+                  <SidebarRowLeadGlyph>
+                    <Codicon name="ellipsis" size={SIDEBAR_LEAD_ICON_SIZE} />
+                  </SidebarRowLeadGlyph>
+                </SidebarRowLead>
+                <SidebarRowLabel className="text-xs underline-offset-4 group-hover/more:underline">
+                  {s.projects.showAllCount(total)}
+                </SidebarRowLabel>
+              </SidebarRowBody>
+            </SidebarRowShell>
+          )}
+        </SidebarRowNest>
+      )}
     </div>
   )
 }

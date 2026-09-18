@@ -28,11 +28,11 @@ class TestProcessSchemaDiet(unittest.TestCase):
         self.assertIn("last 200", props["offset"]["description"])
 
     def test_enum_is_the_verb_source(self):
+        from tools.process_registry import _SESSION_ACTIONS
         props = PROCESS_SCHEMA["parameters"]["properties"]
-        self.assertEqual(
-            props["action"]["enum"],
-            ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
-        )
+        # The enum is the single list of verbs: every session-scoped handler is offered, plus the two
+        # non-session verbs dispatched by name in _handle_process.
+        self.assertEqual(set(props["action"]["enum"]), set(_SESSION_ACTIONS) | {"list", "handoff"})
         # No redundant description on the enum param.
         self.assertNotIn("description", props["action"])
 

@@ -62,6 +62,7 @@ def test_live_relay_forwards_sender_to_canonical_authority(tmp_path, monkeypatch
 
     home = tmp_path / ".hermes"
     (home / "profiles" / "ops").mkdir(parents=True)
+    (home / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(home))
     submitted = []
     receipt = {"status": "queued", "delivery_id": "a" * 32, "admission_id": "admission"}

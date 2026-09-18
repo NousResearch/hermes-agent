@@ -442,17 +442,44 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
     return None
 
 
-def resolve_anthropic_token() -> Optional[str]:
-    """Resolve an Anthropic token from all sources in priority order (see module docstring)."""
+def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
+    """Return *token* unless the pool holds an active cooldown for it on *model*.
+
+    Only model-aware callers (the API-call paths) are gated: diagnostics that
+    resolve a token without a model (usage display, model discovery) keep it.
+    """
+    if not token or not model:
+        return token or None
+    try:
+        from agent.credential_pool import load_pool
+        if load_pool("anthropic").token_is_blocked(token, model=model):
+            return None
+    except Exception:
+        # Credential discovery must remain available when the pool store is
+        # unavailable or malformed.
+        logger.debug("Failed to check Anthropic model cooldown", exc_info=True)
+    return token
+
+
+def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
+    """Resolve an Anthropic token from all sources in priority order (see module docstring).
+
+    With *model*, a token the credential pool has benched for that model resolves to ``None``
+    instead of being handed straight back to the caller that just saw it rate-limited."""
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
+        return _available_anthropic_token(
+            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
+        )
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
-        return api_key
+        return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
-    return _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds())
+    return _available_anthropic_token(
+        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
+        model,
+    )
 
 
 def run_oauth_setup_token() -> Optional[str]:
@@ -477,17 +504,6 @@ def run_oauth_setup_token() -> Optional[str]:
 
 def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
-
-
-def _root_hermes_oauth_file() -> Optional[Path]:
-    """Global-root ``.anthropic_oauth.json`` inside a named profile (None in classic mode); used to commit a
-    rotation of a grant the profile borrowed via the pool's root fallback."""
-    try:
-        from hermes_constants import get_default_hermes_root
-        root = get_default_hermes_root()
-        return None if root.resolve(strict=False) == get_hermes_home().resolve(strict=False) else root / ".anthropic_oauth.json"
-    except Exception:
-        return None
 
 
 def _generate_pkce() -> tuple:
@@ -559,14 +575,13 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 
 
 def _write_hermes_oauth_credentials(
-    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int], *, target: Optional[Path] = None
+    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int],
 ) -> None:
-    """Commit refreshed hermes_pkce tokens to ~/.hermes/.anthropic_oauth.json (``CredentialPersistError`` on failure).
-    ``target`` lets a named profile commit a grant it BORROWED from the global root back to the ROOT singleton
-    instead of forking a copy under its own HERMES_HOME; without this write-through the next ``load_pool()``
-    re-seeds the stale (consumed) pair from the file over the rotated pool entry."""
+    """Commit refreshed hermes_pkce tokens to ``<HERMES_HOME>/.anthropic_oauth.json`` (``CredentialPersistError``
+    on failure); without it the next ``load_pool()`` re-seeds the stale (consumed) pair from the file over the
+    rotated pool entry."""
     _commit_private_json(
-        target if target is not None else _get_hermes_oauth_file(),
+        _get_hermes_oauth_file(),
         {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
         "Hermes OAuth credentials",
     )

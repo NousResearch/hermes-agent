@@ -117,7 +117,9 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
     try:
         db.create_session(session_id="scratch", source="cli")
         db.set_session_title("scratch", "Scratch")
-        assert mailbox.find_canonical_live_owner(tmp_path) is None  # no Bot Chat
+        # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
+        # first delivery (create-if-missing), so discovery reports an empty tip, not None.
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
         db.create_session(session_id="chat", source="cli")
         db.set_session_title("chat", "Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)

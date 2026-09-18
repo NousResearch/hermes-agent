@@ -4,6 +4,11 @@ The multiplexer used to enumerate ``profiles/`` once at boot; these pin the runt
 profile created afterwards is served, a deleted one is torn down and unrouted, a served profile whose
 config/.env changed (bot token added after create) gets its adapters, and none of it touches the other
 profiles' live adapters. The cron ticker's live enumerator is covered in ``tests/cron``.
+
+The runner is set up the way ``run_bootstrap.start_gateway`` leaves it: the boot set reserved through
+``process_ownership`` and frozen into ``config._runtime_profile_homes``. The reconcile must diff the
+LIVE ``profiles/`` against that reservation and grow/shrink it — a reconcile that reads the snapshot
+back as "what exists" can never see a new profile (the regression these tests used to pass through).
 """
 import asyncio
 import json
@@ -39,6 +44,7 @@ def _runner(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.session_authorities = None  # adapters-only runner: no per-profile session authority
     runner._running = True
     runner._primary_profile_name = "default"
     runner.adapters = {}
@@ -66,6 +72,28 @@ def _runner(tmp_path, monkeypatch):
     return runner, home
 
 
+def _boot(runner, home):
+    """What ``start_gateway`` does before the runner exists: reserve every profile that exists now and
+    freeze that set as the reservation the process owns."""
+    from gateway.run import _multiplex_profile_homes
+    from gateway.runtime_ownership import process_ownership
+    boot_set = _multiplex_profile_homes(runner.config)
+    process_ownership.reserve([h for _n, h in boot_set])
+    runner.config._runtime_profile_homes = tuple(boot_set)
+
+
+@pytest.fixture(autouse=True)
+def _release_reservations():
+    from gateway.runtime_ownership import process_ownership
+    yield
+    for reserved in process_ownership.homes:
+        process_ownership.release(reserved)
+
+
+def _reserved_names(runner):
+    return sorted(name for name, _home in runner.config._runtime_profile_homes)
+
+
 def _mkprofile(home, name, env=""):
     d = home / "profiles" / name
     d.mkdir(parents=True, exist_ok=True)
@@ -83,15 +111,20 @@ async def test_created_then_credentialed_profile_is_served_without_restart(tmp_p
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
         assert _served_record(home) == ["default", "alpha"]
 
-        # 1. Created while running, no token yet: served (routes/prefixes/cron), zero adapters.
+        # 1. Created while running, no token yet: served (routes/prefixes/cron), zero adapters, and the
+        #    reservation grew to include it (the next restart's reserve, the served set, the cron ticker).
         gamma_dir = _mkprofile(home, "gamma")
         result = await runner.reconcile_served_profiles()
         assert result["added"] == ["gamma"]
         assert _served_record(home) == ["default", "alpha", "gamma"]
+        assert _reserved_names(runner) == ["alpha", "default", "gamma"]
+        from gateway.runtime_ownership import process_ownership
+        assert process_ownership.owns(gamma_dir)
         assert "gamma" in runner.pairing_stores
         assert Platform.DISCORD not in runner._profile_adapters.get("gamma", {})
 
@@ -103,7 +136,7 @@ async def test_created_then_credentialed_profile_is_served_without_restart(tmp_p
 
         # 3. A no-op rescan and the whole sequence never touched alpha's live adapter.
         assert await runner.reconcile_served_profiles() == {
-            "added": [], "removed": [], "rescanned": [], "reason": "request",
+            "added": [], "removed": [], "rescanned": [], "parked": [], "reason": "request",
             "served_profiles": ["default", "alpha", "gamma"],
         }
         assert runner._profile_adapters["alpha"][Platform.DISCORD] is alpha_adapter
@@ -118,6 +151,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
         gamma_adapter = runner._profile_adapters["gamma"][Platform.DISCORD]
@@ -138,6 +172,10 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     assert reconnect.cancelled()
     assert evicted == ["agent:gamma:discord:dm:1"]
     assert _served_record(home) == ["default", "alpha"]
+    # The reservation shrank with it: the next restart must not reserve a home that is gone.
+    assert _reserved_names(runner) == ["alpha", "default"]
+    from gateway.runtime_ownership import process_ownership
+    assert not process_ownership.owns(gamma_dir)
     assert runner._profile_adapters["alpha"][Platform.DISCORD] is alpha_adapter
     assert alpha_adapter.disconnected is False
 
@@ -157,6 +195,7 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
 
     runner._start_one_profile_adapters = _start
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         _mkprofile(home, "dupe", "DISCORD_BOT_TOKEN=shared\n")
         await runner.reconcile_served_profiles()

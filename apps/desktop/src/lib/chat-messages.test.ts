@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { toolResultRecord } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
@@ -13,6 +14,7 @@ import {
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
+  restorePendingClarifyToolCall,
   sealOpenToolParts,
   stripPendingClarifyProjectionForCache,
   toChatMessages,
@@ -783,7 +785,7 @@ describe('upsertToolPart', () => {
     const [part] = parts
 
     expect(part?.type).toBe('tool-call')
-    expect(part && 'result' in part ? part.result : undefined).toMatchObject({
+    expect(part && 'result' in part ? toolResultRecord(part) : undefined).toMatchObject({
       inline_diff: '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
     })
   })
@@ -845,10 +847,9 @@ describe('upsertToolPart', () => {
       'complete'
     )
 
-    const completedResult =
-      completed[0] && 'result' in completed[0] ? (completed[0].result as Record<string, unknown>) : {}
+    const completedResult = completed[0] && 'result' in completed[0] ? toolResultRecord(completed[0]) : {}
 
-    const clearedResult = cleared[0] && 'result' in cleared[0] ? (cleared[0].result as Record<string, unknown>) : {}
+    const clearedResult = cleared[0] && 'result' in cleared[0] ? toolResultRecord(cleared[0]) : {}
 
     expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
     expect(clearedResult.todos).toEqual([])
@@ -902,13 +903,7 @@ describe('upsertToolPart', () => {
 
     const contexts = webParts.map(part => String((part.args as Record<string, unknown>)?.context || ''))
 
-    const summaries = webParts.map(part => {
-      if (!('result' in part) || !part.result || typeof part.result !== 'object') {
-        return ''
-      }
-
-      return String((part.result as Record<string, unknown>).summary || '')
-    })
+    const summaries = webParts.map(part => String(toolResultRecord(part).summary || ''))
 
     expect(webParts).toHaveLength(2)
     expect(contexts).toEqual(['tokyo weather', 'reykjavik weather'])
@@ -974,7 +969,7 @@ describe('upsertToolPart', () => {
     expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
       context: 'auckland weather today and tomorrow forecast'
     })
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
+    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
       summary: 'Did 5 searches in 1.1s'
     })
   })
@@ -1043,7 +1038,7 @@ describe('upsertToolPart', () => {
 
     expect(webParts).toHaveLength(1)
     expect(webParts[0].toolCallId).toBe('search-asuncion')
-    expect(webParts[0].result).toMatchObject({ summary: 'Did 5 searches in 1.1s' })
+    expect(toolResultRecord(webParts[0])).toMatchObject({ summary: 'Did 5 searches in 1.1s' })
   })
 
   it('matches id-less live starts with later identified progress updates', () => {
@@ -1142,10 +1137,7 @@ describe('upsertToolPart', () => {
       .map(part => ({
         id: part.toolCallId,
         query: String((part.args as Record<string, unknown>)?.query || ''),
-        summary:
-          part.result && typeof part.result === 'object'
-            ? String((part.result as Record<string, unknown>).summary || '')
-            : ''
+        summary: String(toolResultRecord(part).summary || '')
       }))
 
     expect(webParts).toEqual([
@@ -1189,7 +1181,7 @@ describe('upsertToolPart', () => {
     const [part] = completed
 
     expect(part?.type).toBe('tool-call')
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
+    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
@@ -1438,12 +1430,74 @@ describe('sealOpenToolParts', () => {
       ...over
     }) as ChatMessage
 
+  it('a sealed clarify never becomes the fallback row for a new, uncorrelated clarify request', () => {
+    // Turn 1 blocked on a clarify, the user stopped it; settle sealed the call
+    // (no result). A later turn raises a *different* clarify whose request id
+    // and question match nothing on the transcript.
+    const stopped = sealOpenToolParts([
+      assistantWithParts(
+        upsertToolPart(
+          [],
+          { tool_id: 'old-provider-id', name: 'clarify', args: { question: 'Old question?', choices: ['A', 'B'] } },
+          'running',
+          1
+        ),
+        { id: 'old-turn', pending: false }
+      )
+    ])
+
+    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+
+    const restored = restorePendingClarifyToolCall(
+      messages,
+      { id: 'new-request-id', name: 'clarify', args: { question: 'New question?', choices: ['C', 'D'] } },
+      3
+    )
+
+    expect(restored.streamId).not.toBe('old-turn')
+    const oldTurn = restored.messages.find(message => message.id === 'old-turn')
+    expect(oldTurn?.pending).not.toBe(true)
+
+    const newQuestion = restored.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolCallId === 'new-request-id')
+
+    expect(newQuestion).toBeDefined()
+  })
+
+  it('a sealed clarify is still re-armed when the resume request genuinely correlates to it', () => {
+    const stopped = sealOpenToolParts([
+      assistantWithParts(
+        upsertToolPart(
+          [],
+          { tool_id: 'provider-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+          'running',
+          1
+        ),
+        { id: 'turn', pending: false }
+      )
+    ])
+
+    const restored = restorePendingClarifyToolCall(
+      stopped,
+      { id: 'request-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+      2
+    )
+
+    expect(restored.streamId).toBe('turn')
+    expect(restored.messages[0].pending).toBe(true)
+    expect(restored.messages).toHaveLength(1)
+    // The seal comes off so the row renders as the live question again.
+    expect(restored.messages[0].parts[0].completedAt).toBeUndefined()
+  })
+
   it('seals open tool-call parts in settled assistant messages', () => {
     const messages = [assistantWithParts([toolPart()])]
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).toHaveProperty('result')
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
   it('leaves already-completed tool parts untouched', () => {
@@ -1470,7 +1524,8 @@ describe('sealOpenToolParts', () => {
     const next = sealOpenToolParts(messages)
 
     expect(next[0].parts[0]).toBe(text)
-    expect(next[0].parts[1]).toHaveProperty('result')
+    expect(next[0].parts[1]).not.toHaveProperty('result')
+    expect(next[0].parts[1].completedAt).toBeDefined()
   })
 
   it('returns the same array reference when nothing needs sealing', () => {

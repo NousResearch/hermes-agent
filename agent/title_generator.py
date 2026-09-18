@@ -7,16 +7,32 @@ and neither replaces a name the user typed."""
 
 import json
 import logging
+import os
 import re
 import threading
+import time
+import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
+
+# In-flight stage-2 upgrade threads. They bill their aux usage to the session from a daemon thread,
+# so a process that reads the ledger right before exit (``-z --usage-file``) must be able to join
+# them (bounded) instead of racing the write (#112848).
+_UPGRADE_THREADS: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
+
+
+def wait_for_title_upgrades(timeout: float = 10.0) -> None:
+    """Bounded join of the auto-title threads still running; never raises."""
+    deadline = time.monotonic() + timeout
+    for thread in list(_UPGRADE_THREADS):
+        thread.join(max(0.0, deadline - time.monotonic()))
 
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
@@ -39,6 +55,29 @@ MAX_DERIVED_TITLE_CHARS = 48
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
 
+# The example titles shown to the model in the prompt, and the echo-guard
+# set: when the opening message carries little topical signal, a small model
+# sometimes takes the cheapest schema-valid answer and parrots one of these
+# back verbatim — most visibly "Fix login button on mobile" naming sessions
+# that have nothing to do with a login button. The prompt's example lines are
+# rendered from these constants so the guard set and the prompt cannot drift
+# apart. Port of QwenLM/qwen-code#9709.
+_PROMPT_GOOD_EXAMPLES = (
+    "Fix login button on mobile",
+    "Postgres connection pool exhaustion",
+    "Friendly greeting",
+)
+_PROMPT_VAGUE_EXAMPLE = "Code changes"
+
+# "Friendly greeting" is deliberately NOT in the reject set: the prompt
+# instructs the model to produce it for bare greetings, so it is a legitimate
+# output, not an echo failure. The too-vague example is rejected too — a model
+# repeating the counter-example says nothing about the session, and the
+# derived title the guard falls back to is strictly more informative.
+_EXAMPLE_ECHO_REJECT = frozenset(
+    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
+) | {_PROMPT_VAGUE_EXAMPLE.lower()}
+
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
@@ -51,10 +90,8 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
     "__LANGUAGE_RULE__\n"
-    'Good: {"title": "Fix login button on mobile"}\n'
-    'Good: {"title": "Postgres connection pool exhaustion"}\n'
-    'Good: {"title": "Friendly greeting"}\n'
-    'Too vague: {"title": "Code changes"}\n'
+    + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
+    + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
     'Too long: {"title": "Investigate and fix the issue where the login button '
     'does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
@@ -229,6 +266,18 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
     _safe_callback(title_callback, (title, source), "%s callback failed", label)
 
 
+def _is_prompt_example_echo(title: str) -> bool:
+    """Return True when *title* is one of the prompt's own example titles.
+
+    Comparison is case-insensitive after stripping any leading/trailing run of
+    non-letter/non-digit characters, so bracket/quote wrappers cannot bypass
+    the guard — while ``_clean_title`` keeps brackets for real titles like
+    "(WIP) Fix build". Unicode-aware so full-width wrappers are covered too.
+    """
+    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
+    return normalized in _EXAMPLE_ECHO_REJECT
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -284,6 +333,17 @@ def generate_title(
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            return None
+        # Example-echo guard: a title that parrots one of the prompt's own
+        # examples back verbatim says nothing about the session — reject it so
+        # the instant derived title (a slice of the user's actual words)
+        # survives instead. Exact match after wrapper-stripping, deliberately
+        # not fuzzy, so a genuinely topical title that merely resembles an
+        # example still passes. Wrappers are stripped for the comparison only
+        # ("(Fix login button on mobile)" is the same canned echo as the bare
+        # example). Port of QwenLM/qwen-code#9709.
+        if title is not None and _is_prompt_example_echo(title):
+            logger.debug("Rejecting prompt-example echo title: %r", title)
             return None
         return title
     except Exception as e:
@@ -422,6 +482,29 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
         return False
 
 
+def _kanban_task_title() -> Optional[str]:
+    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere
+    (including delegate_task children of the worker, which inherit the env var but are not the card)."""
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id or not is_dispatcher_owned_worker_context():
+        return None
+    try:
+        from hermes_cli import kanban_db, kanban_db_connect
+        from hermes_state import SessionDB
+        with kanban_db_connect.connect_closing() as conn:
+            task = kanban_db.get_task(conn, task_id)
+        title = " ".join((task.title or "").split()) if task is not None else ""
+        # Cards have no length cap; the title store rejects past MAX_TITLE_LENGTH (and the ``#N``
+        # retry suffix needs room), which would leave the worker nameless.
+        cap = SessionDB.MAX_TITLE_LENGTH - 4
+        if len(title) > cap:
+            title = title[: cap - 1].rstrip() + "…"
+    except Exception:
+        logger.debug("Kanban task %s unreadable; naming the session after its id", task_id, exc_info=True)
+        title = ""
+    return title or f"Kanban task {task_id}"
+
+
 def maybe_auto_title(
     session_db,
     session_id: str,
@@ -438,16 +521,33 @@ def maybe_auto_title(
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)) or not is_titleable_user_message(user_message):
+    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+        return
+    kanban_title = _kanban_task_title()
+    if kanban_title:
+        # The card already carries a human-written name; an auxiliary model call per spawned worker
+        # only competes with the worker for capacity (#111166). Final (``llm``) authority: nothing
+        # upgrades it later, and a manual ``/title`` still wins inside ``set_auto_title``.
+        with suppress(Exception):
+            persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm")
+            if persisted:
+                _notify_title(title_callback, persisted, "llm", "Kanban task title")
+        return
+    if not is_titleable_user_message(user_message):
         return
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
-    threading.Thread(
-        target=auto_title_session,
+    # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
+    # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
+    # profile under multiplex, titling X's session with the default profile's model and billing its key.
+    from agent.memory_provider import spawn_context_thread
+    upgrade = spawn_context_thread(
+        auto_title_session, name="auto-title",
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
-        daemon=True,
-        name="auto-title",
-    ).start()
+        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
+                    runtime_validator=runtime_validator),
+    )
+    _UPGRADE_THREADS.add(upgrade)
+    upgrade.start()

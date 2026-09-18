@@ -35,10 +35,14 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
         "_finish_turn": noop, "_clear_inflight_turn": noop,
+        # Hosted room member sessions drop their bot_room slot at turn end (#106847); a canonical chat is not one.
+        "_release_hosted_room_turn_slot": noop,
         "_retire_turn_marker": lambda *args: retired.append(args),
         "_emit_settled_session_info": noop,
         "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),
         "_reopen_routed_session_row": noop,
+        # Every dispatch binds the session's own row before the turn writes (#111999).
+        "_ensure_session_db_row": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],

@@ -195,7 +195,8 @@ def _chmod_quiet(path: Path, mode: int) -> None:
 
 def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions (0o700 parent) where supported."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     _chmod_quiet(path.parent, 0o700)
     # mkstemp's 0o600 temp + atomic rename never exposes the token at process umask.
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), create_mode=0o600)
@@ -237,16 +238,20 @@ def install_deps() -> bool:
         return True
     print("Installing Google Chat dependencies...")
     try:
-        from hermes_cli.tools_config import _pip_install
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
 
-        result = _pip_install(["--quiet"] + missing)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or "install failed").strip()[:300])
+        # lazy_deps honors HERMES_LAZY_INSTALL_TARGET on sealed hosted images;
+        # _pip_install always writes the venv and Permission-denied there.
+        _lazy_ensure("platform.google_chat", prompt=False)
         remaining = _missing_required_packages()
         if remaining:
             raise RuntimeError("dependencies remain stale after install: " + " ".join(remaining))
         print("Dependencies installed.")
         return True
+    except FeatureUnavailable as exc:
+        print(f"ERROR: Failed to install dependencies: {exc.reason}")
+        print("Run `hermes setup` to repair the managed installation, then retry.")
+        return False
     except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
         print("Run `hermes setup` to repair the managed installation, then retry.")

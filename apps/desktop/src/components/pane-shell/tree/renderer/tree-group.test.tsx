@@ -53,10 +53,89 @@ afterEach(() => {
   root = null
   container = null
   disposePane = null
+  globalThis.document.querySelectorAll('[data-titlebar-cluster]').forEach(element => element.remove())
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 describe('TreeGroup', () => {
+  // Titlebar geometry (#112964): tabs sharing the native titlebar band are all
+  // `no-drag`, so once the list overflows they can cover every draggable pixel.
+  // A window must keep a drag target that no tab can occupy — a fixed-width
+  // handle OUTSIDE the scrolling tablist. When the tabs instead drop below the
+  // window controls, the free band above them stays the (flexible) handle.
+  describe('top-edge window drag handle', () => {
+    const paneIds = ['terminal', 'terminal-2', 'terminal-3', 'terminal-4', 'terminal-5']
+
+    function mountCrowdedStrip(titlebarWidth: number) {
+      const disposers = paneIds.map(id =>
+        registry.register({
+          area: 'panes',
+          data: { placement: 'main' },
+          id,
+          render: () => <div>{id}</div>,
+          title: id
+        })
+      )
+
+      disposePane = () => disposers.forEach(dispose => dispose())
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        }
+      )
+      // jsdom has no layout: give usePanelTitlebar real chrome rects so it
+      // picks the tabs-in-titlebar layout (wide) or below-controls (narrow).
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.matches('[data-titlebar-cluster="left"]')) {
+          return { left: 0, right: 100 } as DOMRect
+        }
+
+        if (this.matches('[data-titlebar-cluster="right"]')) {
+          return { left: titlebarWidth - 100, right: titlebarWidth } as DOMRect
+        }
+
+        return { left: 0, right: titlebarWidth, width: titlebarWidth } as DOMRect
+      })
+      const leftControls = globalThis.document.createElement('div')
+      leftControls.dataset.titlebarCluster = 'left'
+      const rightControls = globalThis.document.createElement('div')
+      rightControls.dataset.titlebarCluster = 'right'
+      globalThis.document.body.append(leftControls, rightControls)
+
+      render(<TreeGroup leftEdge node={{ ...terminalGroup(false), panes: paneIds }} rightEdge topEdge />)
+
+      const zone = container!.querySelector<HTMLElement>('[data-tree-group]')!
+      expect(zone.querySelectorAll('[data-tree-tab]').length).toBe(paneIds.length)
+
+      return {
+        handles: [...zone.querySelectorAll<HTMLElement>('[data-window-drag-handle]')],
+        strip: zone.querySelector<HTMLElement>('[data-zone-tabstrip]')!
+      }
+    }
+
+    it('keeps a fixed drag handle outside the tablist when tabs share the titlebar', () => {
+      const { handles, strip } = mountCrowdedStrip(800)
+      const fixed = handles.filter(handle => !handle.closest('[role="tablist"]') && handle.style.width !== '')
+
+      expect(fixed.length).toBeGreaterThan(0)
+      expect(fixed[0]!.className).toContain('shrink-0')
+      // The strip itself still spans the band, so the handle is ADDITIONAL to it.
+      expect(strip.className).toContain('flex-1')
+    })
+
+    it('leaves the whole free band draggable when tabs drop below the controls', () => {
+      const { handles, strip } = mountCrowdedStrip(300)
+
+      expect(strip.className).toContain('bottom-0')
+      expect(handles.some(handle => handle.className.includes('flex-1') && handle.style.width === '')).toBe(true)
+    })
+  })
+
   it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {
     disposePane = registry.register({
       area: 'panes',

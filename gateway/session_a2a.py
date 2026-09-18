@@ -25,7 +25,7 @@ def build_forward_policy(params, config, *, private_secrets):
 
 
 def is_forward_policy(policy):
-    if policy.source != 'a2a' or policy.platform != 'a2a':
+    if policy is None or policy.source != 'a2a' or policy.platform != 'a2a':
         return False
     try:
         request = json.loads(policy.request_json)
@@ -34,6 +34,14 @@ def is_forward_policy(policy):
                 and all(isinstance(value, str) for value in identity))
     except (ValueError, KeyError, TypeError):
         return False
+
+
+def forward_author(policy):
+    """The authenticated peer wrote a forwarded turn, not the local principal hosting it."""
+    if not is_forward_policy(policy):
+        return None
+    peer = json.loads(policy.request_json)['a2a_identity'][2]
+    return {'id': peer, 'name': peer, 'is_bot': True}
 
 
 def storage_source(db, source, session_id, fallback):

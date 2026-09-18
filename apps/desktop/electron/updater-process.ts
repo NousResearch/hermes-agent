@@ -2,12 +2,13 @@ import { spawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
+import { resolveVenvDir } from './venv-blocker-scan'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 /** File prerequisites only: dependency recovery must remain reachable through update. */
 export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
   const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
-  const required = [path.join(updateRoot, 'venv', 'Scripts', 'python.exe')]
+  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
 
   // Pre-reorg flat scripts remain supported; damaged modern trees do not.
   if (existsSync(maintainedDir)) {
@@ -355,6 +356,20 @@ export interface UpdaterHandoffOutcome {
 export interface ObserveUpdaterHandoffDeps {
   setTimeoutFn?: (callback: () => void, ms: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+}
+
+/**
+ * User-facing copy for a hand-off that did not take (spawn error or early exit).
+ * The lead sentence is plain: nothing changed and Hermes keeps running. The raw
+ * outcome message (exit code / signal / spawn error) stays on a trailing
+ * "Details:" line for logs and support.
+ */
+export function describeUpdaterHandoffFailure(outcome: Pick<UpdaterHandoffOutcome, 'message'>): string {
+  const lead =
+    "The updater couldn't start, so nothing was changed and Hermes keeps running as before. " +
+    'Try again; if it keeps failing, open the logs and send them to support.'
+
+  return outcome.message ? `${lead}\n\nDetails: ${outcome.message}` : lead
 }
 
 /**

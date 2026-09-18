@@ -86,7 +86,7 @@ def test_pin_multiple_ids_one_missing(monkeypatch, capsys):
     code, out = _run(monkeypatch, capsys, ["pin", "aaa", "nope", "bbb"], db)
     assert ("aaa111", True) in db.pin_calls
     assert ("bbb222", True) in db.pin_calls
-    assert "Session 'nope' not found." in out
+    assert "No session 'nope'" in out and "hermes sessions list" in out
     assert code == 1
 
 

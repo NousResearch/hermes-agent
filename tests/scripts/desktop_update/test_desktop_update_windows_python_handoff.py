@@ -113,6 +113,16 @@ def test_update_no_longer_invokes_the_hermes_exe_shim() -> None:
     )
 
 
+def test_handoff_resolves_uv_default_dotvenv_before_building_python_and_shim_paths() -> None:
+    source = _read()
+
+    assert "function Resolve-HermesVenvDir" in source
+    assert 'Join-Path $Root ".venv"' in source
+    assert "$VenvDir = Resolve-HermesVenvDir $InstallRoot" in source
+    assert 'Join-Path $VenvDir "Scripts\\python.exe"' in source
+    assert 'Join-Path $VenvDir "Scripts\\hermes.exe"' in source
+
+
 def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
     source = _read()
     relaunch = re.search(

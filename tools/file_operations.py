@@ -1518,6 +1518,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        # A caller-supplied pre_content (e.g. patch_replace, which already computes and
+        # returns its own diff+boundary note) already has a structural signal — do not
+        # duplicate it below. Only the direct write_file entrypoint, which never had the
+        # prior content in hand, is missing one.
+        caller_supplied_pre_content = pre_content is not None
         has_bom, pre_content, original_ending = self._probe_write_target(path, pre_content, want_pre)
         if ext == ".json":
             refused = _refuse_introduced_json_constant(path, content, pre_content)
@@ -1551,10 +1556,32 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         lsp_diagnostics: Optional[str] = None
         if lint_result.success or lint_result.skipped:
             lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
+        # write_file has no structural check of model-authored content against the file's own
+        # prior content — unlike patch_replace, whose diff+boundary note give the caller a
+        # concrete way to notice a bad edit. When the pre-edit content happens to already be in
+        # hand (probed above for lint/LSP, not re-fetched here), surface a compact change-size
+        # summary so an unexpectedly large rewrite of an existing file is visible rather than
+        # silent — information only, no auto-fix or content change.
+        rewrite_warning: Optional[str] = None
+        if not caller_supplied_pre_content and pre_content:
+            import difflib
+            pre_lines = pre_content.splitlines()
+            post_lines = content.splitlines()
+            diff_lines = list(difflib.unified_diff(pre_lines, post_lines, lineterm=""))
+            changed = sum(1 for line in diff_lines if line.startswith(("+", "-"))
+                          and not line.startswith(("+++", "---")))
+            if changed and changed >= max(10, len(pre_lines) // 4):
+                rewrite_warning = (
+                    f"write_file replaced an existing file with no structural check against its "
+                    f"prior content: ~{changed} of {len(pre_lines)} previous lines differ. If this "
+                    "was meant to be a small edit, re-read the file to confirm the rewrite is "
+                    "correct — a hand-retyped file has no diff/fuzzy-match safety net."
+                )
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
-            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
+            lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics,
+            warning=rewrite_warning)
 
     # --- PATCH (replace mode) -----------------------------------------------
 
@@ -1620,7 +1647,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         from tools.fuzzy_match import fuzzy_find_and_replace
         correction_notes = []
-        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
+        new_content, match_count, strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all, correction_notes=correction_notes)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
@@ -1636,10 +1663,24 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
         lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
+        # Only "exact" guarantees the spliced span equals old_string's literal boundaries;
+        # every other strategy computes an approximate line-window and can shift the edit by
+        # a line (observed: a duplicated closing delimiter/brace landing just outside the
+        # intended region). Post-write byte-identity verification above cannot catch this —
+        # it only confirms the intended new_content landed, not that new_content itself was
+        # correctly bounded. Surface which strategy fired so the caller can weigh the diff
+        # against its own intent rather than assuming an exact splice.
+        boundary_note = (
+            f"Non-exact match (strategy: {strategy}). The edit span was located approximately, "
+            "not matched to old_string's literal boundaries — review the diff below to confirm "
+            "the change landed exactly where intended (a shifted boundary can duplicate or drop "
+            "a line just outside the edited region)."
+            if strategy != "exact" else None
+        )
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
-            note="\n".join(correction_notes) or None,
+            note="\n".join(n for n in (*correction_notes, boundary_note) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics,
             _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])

@@ -1,13 +1,13 @@
 name: jev
 repo: https://github.com/ourines/hermes-jev
-sha: 591bf074158ecc85c992b5ed76f7eda0592a6d9a
+sha: 28a4ea390f80d97fcdc8c20d6b630dfe2de645de
 subdir: ""
 description: "Explicit Jev decision sidekick via TypeSafe or Cloudflare; advisory judgments, no automatic tool gating."
 maintainer: ourines
 tier: community
 category: tools
 requires_hermes: ">=0.21.3"
-docs_url: https://github.com/ourines/hermes-jev/blob/591bf074158ecc85c992b5ed76f7eda0592a6d9a/README.md
+docs_url: https://github.com/ourines/hermes-jev/blob/28a4ea390f80d97fcdc8c20d6b630dfe2de645de/README.md
 version: "0.1.2"
 platforms: []
 capabilities:

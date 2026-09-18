@@ -114,12 +114,14 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     _create_v2_state(db_path)
     db = SessionDB(db_path=db_path)
 
-    def deny_topic_rebuild_drop(action, arg1, arg2, db_name, trigger):
-        if action == sqlite3.SQLITE_DROP_TABLE and arg1 and arg1.startswith("telegram_dm_topic"):
+    def deny_topic_rebuild_rename(action, arg1, arg2, db_name, trigger):
+        # Fail the rebuild's LAST statement, after the legacy table is already dropped: only a
+        # transactional rebuild still has the rows at that point.
+        if action == sqlite3.SQLITE_ALTER_TABLE and arg2 == "telegram_dm_topic_mode_new":
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
-    db._conn.set_authorizer(deny_topic_rebuild_drop)
+    db._conn.set_authorizer(deny_topic_rebuild_rename)
     try:
         # The guarded read degrades to "off" instead of raising...
         assert not db.is_telegram_topic_mode_enabled(
@@ -128,8 +130,8 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     finally:
         db._conn.set_authorizer(None)
 
-    # ...and the interrupted rebuild rolled back completely (a stranded *_new or a dropped original
-    # would make the retry below read as off, and the version stamp rolled back with it).
+    # ...and the interrupted rebuild rolled back completely: the dropped original is back
+    # (otherwise the retry below builds an empty v3 table and reads as off) and so is the version stamp.
     assert db.get_meta("telegram_dm_topic_schema_version") == "2"
     # Idempotent under retry (the _execute_write contract): the next clean
     # read heals and keeps the legacy rows.

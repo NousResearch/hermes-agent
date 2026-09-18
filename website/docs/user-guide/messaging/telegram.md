@@ -685,13 +685,13 @@ Each topic gets its own conversation session, history, and context — completel
 ### Configuration
 
 :::caution Prerequisites
-Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+Before adding topics to your config, the bot owner must **enable Threaded Mode** for the bot in **@BotFather**:
 
-1. Open your private chat with the Hermes bot in Telegram
-2. Tap the bot's name at the top to open chat info
-3. Enable **Topics** (the toggle to turn the chat into a forum)
+1. Open the BotFather **Mini App** (search `botfather` in Telegram, then tap **Open** on the search result — the classic `/mybots` text menu does not expose this setting)
+2. Go to **My bots → your bot → Bot Settings → Threads Settings**
+3. Turn on **Threaded Mode**
 
-Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+There is no "Topics" toggle in the DM chat itself — a bot DM is not a group, so the group-forum toggle described in some older guides does not apply here. Without Threaded Mode, Hermes will log `The chat is not a forum` on startup and skip topic creation. See [Prerequisites](#prerequisites) below for the same steps with more detail.
 :::
 
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:

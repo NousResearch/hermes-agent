@@ -165,7 +165,7 @@ class TestMetaPassthrough:
         assert data == {"result": "done"}
 
     def test_meta_with_structured_content(self, _patch_mcp_server):
-        """With usable text, structuredContent is suppressed but _meta rides."""
+        """Non-verbatim text keeps structuredContent; _meta still rides."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -178,6 +178,7 @@ class TestMetaPassthrough:
         data = json.loads(handler({}))
         assert data == {
             "result": "txt",
+            "structuredContent": {"ok": True},
             "_meta": {"com.example/k": "v"},
         }
 
@@ -220,11 +221,12 @@ class TestReservedMetaKeyPredicate:
 
 
 class TestContentStructuredArbitration:
-    """content and structuredContent are alternatives — never both.
+    """Only the spec's verbatim dual-emit is deduplicated (kimi-code#3234, narrowed).
 
-    Ported from MoonshotAI/kimi-code#3234: spec-following servers render
-    their data into content (verbatim dual-emit or a faithful human
-    reorganisation), so forwarding both sent the same information twice.
+    content being the serialized JSON of structuredContent is a deterministic
+    duplicate, so the structured copy is dropped. Any other usable text keeps
+    structuredContent alongside it (#115430): servers that return a status
+    summary in content were losing their only machine-readable result.
     """
 
     def test_dual_emit_suppresses_structured(self, _patch_mcp_server):
@@ -241,8 +243,24 @@ class TestContentStructuredArbitration:
         data = json.loads(handler({}))
         assert data == {"result": json.dumps(payload)}
 
-    def test_prose_summary_suppresses_structured(self, _patch_mcp_server):
-        """Lossy prose summaries also win — no heuristic is attempted."""
+    def test_dual_emit_key_order_insensitive(self, _patch_mcp_server):
+        """A server's serializer may order keys differently than json.dumps; the
+        dual-emit check parses the text, so re-ordered verbatim JSON still dedupes."""
+        session = _patch_mcp_server
+        payload = {"a": 1, "b": 2}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock('{"b": 2, "a": 1}')],
+                structuredContent=payload,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {"result": '{"b": 2, "a": 1}'}
+
+    def test_prose_summary_keeps_structured(self, _patch_mcp_server):
+        """Summary-style content no longer suppresses structuredContent (#115430):
+        the structured payload rides alongside — it may be the only machine-readable result."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -252,7 +270,30 @@ class TestContentStructuredArbitration:
         )
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
-        assert data == {"result": "3 item(s) found"}
+        assert data == {
+            "result": "3 item(s) found",
+            "structuredContent": {"items": [1, 2, 3]},
+        }
+
+    def test_summary_plus_data_keeps_structured(self, _patch_mcp_server):
+        """#115430 reproducer shape: a status summary in content with the real data
+        (the jid needed by follow-up calls) only in structuredContent."""
+        session = _patch_mcp_server
+        structured = {
+            "data": [{"jid": "12345@s.whatsapp.net", "name": "Contact"}],
+            "pagination": {"offset": 0, "limit": 1},
+        }
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("Retrieved 1 chats (offset 0, limit 1)")],
+                structuredContent=structured,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == "Retrieved 1 chats (offset 0, limit 1)"
+        assert data["structuredContent"] == structured
+        assert data["structuredContent"]["data"][0]["jid"] == "12345@s.whatsapp.net"
 
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""

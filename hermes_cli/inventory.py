@@ -186,12 +186,14 @@ def build_model_options_payload(
     """Shared API-server/dashboard/TUI payload. Normal open probes only the current custom provider so
     offline saved endpoints don't block the picker; explicit refresh probes all and busts the cache."""
     refresh = bool(refresh)
-    payload = build_models_payload(
-        ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
-        picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
-        refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
-    )
+    from hermes_cli.models_cache_policy import manual_catalog_refresh
+    with manual_catalog_refresh():
+        payload = build_models_payload(
+            ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
+            picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
+            capabilities=True, featured=True,
+            refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
+        )
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)

@@ -160,6 +160,7 @@ import {
   useBackgroundSync
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useGatewayScopeRefresh } from './hooks/use-gateway-scope-refresh'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
@@ -632,25 +633,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Swapping the live gateway to another source or profile must re-pull that
   // source's model/config/profile state. Two sources commonly both expose a
   // `default` profile, so profile alone is not a sufficient identity.
-  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const lastGatewayScopeRef = useRef(gatewayScope)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (gatewayScope === lastGatewayScopeRef.current) {
-      return
-    }
-
-    lastGatewayScopeRef.current = gatewayScope
-    // Force: the new source/profile pair has its own defaults, so reseed the
-    // selector even if the composer already shows values from the previous
-    // backend. These refreshes carry intent tokens so an in-flight picker
-    // click still wins.
-    void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
+  useGatewayScopeRefresh(activeConnectionId, activeGatewayProfile, force => {
+    void refreshCurrentModel(force)
+    void refreshHermesConfig(force)
     void refreshActiveProfile()
     resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+  })
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that

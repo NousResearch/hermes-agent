@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
 import { $hudMode } from '@/store/hud'
+import { $pickerStyle, DEFAULT_PICKER_STYLE, PICKER_STYLES } from '@/store/picker-style'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'
@@ -58,6 +59,7 @@ async function expectShortcutTooltip(label: string, shortcut: string) {
 
 afterEach(() => {
   cleanup()
+  $pickerStyle.set(DEFAULT_PICKER_STYLE)
   $hudMode.set(false)
 })
 
@@ -222,4 +224,15 @@ describe('wake-word ear visibility', () => {
     const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
+})
+
+// The preference controls visibility; compact layout still has the final say.
+it.each(PICKER_STYLES)('keeps reasoning reachable in %s and respects compact layout', style => {
+  $pickerStyle.set(style)
+  const model = { ...state.model, supportsReasoning: true, reasoningMenuContent: <div>Options</div> }
+  const rendered = renderControls({ state: { ...state, model } })
+  expect(Boolean(screen.queryByTestId('reasoning-pill'))).toBe(style === 'split' || style === 'separated')
+  rendered.unmount()
+  renderControls({ state: { ...state, model }, compactModelPill: true })
+  expect(screen.queryByTestId('reasoning-pill')).toBeNull()
 })

@@ -72,6 +72,9 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
         assert "not alive" not in (run["error"] or "")
         assert task.status == "ready"
         assert task.consecutive_failures == (1 if failure_counted else 0)
+        # The decoded rc lands in the run row so quota (75) vs crash stays tellable after
+        # the fact even though the worker_output tail is trimmed (#113611).
+        assert kb._json_dict(run["metadata"]).get("exit_code") == rc
         if rc == 0:
             assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
             assert kbd._protocol_violation_streak(conn, tid) == 1
@@ -98,6 +101,35 @@ def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
         assert kb.get_task(conn, tid).status == "ready"
         kb.recompute_ready(conn, failure_limit=10)
         assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_plain_budget_trip_still_auto_recovers(kanban_home):
+    """A unified-budget trip carries no ``sticky`` marker, so the two recovery paths on main
+    survive: raising the dispatcher ``failure_limit`` past the counter promotes the card, and
+    ``assign_task`` to a fresh profile (counter reset by design) promotes it too."""
+    with kbc.connect() as conn:
+        tids = [kb.create_task(conn, title=t, assignee="a") for t in ("raise-limit", "reassign")]
+        for tid in tids:
+            for i in range(2):
+                kbd._record_task_failure(
+                    conn, tid, error=f"boom{i}", outcome="crashed", failure_limit=2,
+                    release_claim=False, end_run=False,
+                )
+            assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.recompute_ready(conn, failure_limit=2) == 0
+
+        assert kb.recompute_ready(conn, failure_limit=5) == 2
+        assert kb.get_task(conn, tids[0]).status == "ready"
+
+        for i in range(2):
+            kbd._record_task_failure(
+                conn, tids[1], error=f"again{i}", outcome="crashed", failure_limit=2,
+                release_claim=False, end_run=False,
+            )
+        assert kb.get_task(conn, tids[1]).status == "blocked"
+        kb.assign_task(conn, tids[1], "other-profile")
+        assert kb.recompute_ready(conn, failure_limit=2) == 1
+        assert kb.get_task(conn, tids[1]).status == "ready"
 
 
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):

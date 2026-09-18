@@ -2064,12 +2064,14 @@ def _synthesize_ended_run(
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
     block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip that exhausted the clean-exit protocol-violation budget. The
-    violation budget is a run-history streak independent of
-    ``consecutive_failures``, so ``recompute_ready``'s counter check cannot see
-    it — without this the trip is promoted back to ``ready`` in the same tick and
-    the card respawns forever. A plain (unified-budget) ``gave_up`` is judged by
-    the counter, and a task with no such event at all (direct DB edit) auto-recovers.
+    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
+    protocol-violation budget or a systemic same-error wave. Those trip on a
+    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
+    counter check cannot see them — without this the trip is promoted back to
+    ``ready`` in the same tick and the card respawns forever. A plain
+    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
+    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
+    releases it; a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2084,15 +2086,7 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
         "ORDER BY id DESC LIMIT 1", (task_id, task_id),
     ).fetchone()
-    if not trip:
-        return False
-    verdict = _json_dict(trip["payload"])
-    # The breaker's own verdict: a violation-streak trip, or a trip whose limit
-    # was not the caller's ``failure_limit`` (systemic same-error crashes trip at 1).
-    return "protocol_violation_limit" in verdict or (
-        "effective_limit" in verdict
-        and int(verdict.get("failures") or 0) >= int(verdict["effective_limit"])
-    )
+    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
 
 
 def _latest_event(

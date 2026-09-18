@@ -1229,6 +1229,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
+            extra = {"pid": pid, "claimer": claimer}
+            if is_systemic:
+                # Trips at 1, below any ``failure_limit``: hold it for an operator.
+                extra["sticky"] = True
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
@@ -1236,7 +1240,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer},
+                event_payload_extra=extra,
             )
         if tripped:
             auto_blocked.append(tid)
@@ -1405,6 +1409,10 @@ def _record_task_failure(
                     "retry_status": retry_status,
                 },
             )
+        if force_trip:
+            # The caller applied its own bounded policy, so the counter cannot
+            # judge this block: ``recompute_ready`` holds it for an operator.
+            payload["sticky"] = True
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)

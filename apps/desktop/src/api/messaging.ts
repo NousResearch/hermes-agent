@@ -56,9 +56,11 @@ export function testMessagingPlatform(
 
 export interface TeamsPlaygroundTestResponse {
   callback_url?: null | string
+  command?: null | string
   message: string
   ok: boolean
   test_url?: null | string
+  ui_url?: null | string
 }
 
 export function testTeamsPlayground(profile?: null | string): Promise<TeamsPlaygroundTestResponse> {

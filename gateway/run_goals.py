@@ -15,6 +15,7 @@ from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
+from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -44,6 +45,46 @@ class GatewayGoalsMixin:
             return int(goals_cfg.get("max_turns", 20) or 20)
         except Exception:
             return 20
+
+    def _auto_start_goals_enabled(self) -> bool:
+        """Whether normal external gateway messages should become standing goals.
+
+        The setting lives in the top-level config because ``GatewayConfig`` does
+        not model the generic goals block. Keep the default off: automatic Ralph
+        loops have a material token and control-flow cost.
+        """
+        try:
+            from hermes_cli.config import load_config
+
+            goals_cfg = (load_config() or {}).get("goals") or {}
+            return is_truthy_value(goals_cfg.get("auto_start"), default=False)
+        except Exception:
+            return False
+
+    async def _auto_start_goal_for_inbound_event(self, event: "MessageEvent") -> None:
+        """Replace the session goal for an ordinary external user message.
+
+        This deliberately runs after command dispatch and FIFO rescue. Commands
+        retain their own semantics and continuation/heartbeat events must never
+        reset the goal they are advancing.
+        """
+        if (
+            not self._auto_start_goals_enabled()
+            or bool(getattr(event, "internal", False))
+            or event.get_command()
+        ):
+            return
+        goal = (getattr(event, "text", "") or "").strip()
+        if not goal:
+            return
+        mgr, _session_entry = await self._get_goal_manager_for_event(event)
+        if mgr is None:
+            return
+        try:
+            await self._run_in_executor_with_context(lambda: mgr.set(goal))
+        except Exception as exc:
+            # Failing to persist an optional goal must not reject the user's turn.
+            logger.debug("automatic goal start failed: %s", exc)
 
     async def _warm_goals_session_db(self, label: str) -> None:
         """Warm the goals SessionDB cache off-loop (best-effort): a cold cache runs the state.db

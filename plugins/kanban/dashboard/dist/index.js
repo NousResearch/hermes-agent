@@ -3096,6 +3096,28 @@
     return "";
   }
 
+  // Small muted "model" chip shown next to the assignee badge on cards.
+  // model_override/provider_override are only ever non-null when the user
+  // (or dispatcher) explicitly set an override, so we never guess at the
+  // profile's inherited default here -- when both are unset the chip is
+  // simply omitted rather than risk showing a stale/incorrect value.
+  function cardModelChipLabel(t) {
+    if (!t.model_override) return null;
+    return t.provider_override
+      ? `${t.provider_override} · ${t.model_override}`
+      : t.model_override;
+  }
+
+  function cardAssigneeTooltip(t) {
+    let tip = `Assigned to Hermes profile @${t.assignee}`;
+    if (t.model_override) {
+      tip += t.provider_override
+        ? `. Model override: ${t.provider_override} / ${t.model_override}`
+        : `. Model override: ${t.model_override}`;
+    }
+    return tip;
+  }
+
   function TaskCard(props) {
     const { t: i18n } = useI18n();
     const t = props.task;
@@ -3232,12 +3254,16 @@
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
-                            title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)
+                            title: cardAssigneeTooltip(t) }, "@", t.assignee)
               : h("span", { className: "hermes-kanban-unassigned",
                             title: needsAssignee
                               ? tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.")
                               : "No profile assigned." },
                   tx(i18n, "unassigned", "unassigned")),
+            cardModelChipLabel(t)
+              ? h("span", { className: "hermes-kanban-model-chip",
+                            title: cardAssigneeTooltip(t) }, cardModelChipLabel(t))
+              : null,
             t.comment_count > 0
               ? h("span", { className: "hermes-kanban-count",
                             title: `${t.comment_count} comment${t.comment_count === 1 ? "" : "s"} on this task` }, "💬 ", t.comment_count)

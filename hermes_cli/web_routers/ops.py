@@ -39,6 +39,7 @@ router = APIRouter()
 _discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_cli.web_server_memory")
 _gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
+_own_profile_scope = late("_own_profile_scope", "hermes_cli.web_server_profiles")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
@@ -306,22 +307,26 @@ async def list_credential_pool():
     from hermes_cli.auth import read_credential_pool
 
     def _run():
-        providers = []
-        # read_credential_pool(None) lists every provider with pooled entries;
-        # load_pool() gives the rich PooledCredential objects per provider.
-        for provider_id in sorted(read_credential_pool().keys()):
-            try:
-                pool = load_pool(provider_id)
-            except Exception:
-                _log.exception("load_pool(%s) failed", provider_id)
-                continue
-            entries = pool.entries()
-            if entries:
-                providers.append({
-                    "provider": provider_id,
-                    "entries": [_pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)],
-                })
-        return {"providers": providers}
+        # Own-profile scope: load_pool() seeds each provider from THIS profile's env
+        # (OPENCODE_GO_BASE_URL & co.). Unscoped on a fail-closed multiplexed dashboard every
+        # provider raises and the pool page silently reports an empty pool.
+        with _own_profile_scope():
+            providers = []
+            # read_credential_pool(None) lists every provider with pooled entries;
+            # load_pool() gives the rich PooledCredential objects per provider.
+            for provider_id in sorted(read_credential_pool().keys()):
+                try:
+                    pool = load_pool(provider_id)
+                except Exception:
+                    _log.exception("load_pool(%s) failed", provider_id)
+                    continue
+                entries = pool.entries()
+                if entries:
+                    providers.append({
+                        "provider": provider_id,
+                        "entries": [_pool_entry_summary(e, i) for i, e in enumerate(entries, start=1)],
+                    })
+            return {"providers": providers}
 
     return await asyncio.to_thread(_run)
 
@@ -342,7 +347,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
 
-    def _run():
+    def _impl():
         try:
             pool = load_pool(provider)
             label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
@@ -381,6 +386,13 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
             _log.exception("POST /api/credentials/pool failed")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    def _run():
+        # Own-profile scope: load_pool() re-seeds this provider from THIS profile's env
+        # (OPENCODE_GO_BASE_URL & co.) — unscoped on a fail-closed multiplexed dashboard the seed
+        # raises and adding a key 400s with an internal scoping error.
+        with _own_profile_scope():
+            return _impl()
+
     return await asyncio.to_thread(_run)
 
 
@@ -403,7 +415,7 @@ async def remove_credential_pool_entry(provider: str, index: int):
 
     provider = (provider or "").strip().lower()
 
-    def _run():
+    def _impl():
         try:
             pool = load_pool(provider)
             removed = pool.remove_index(index)
@@ -433,6 +445,13 @@ async def remove_credential_pool_entry(provider: str, index: int):
                     _log.exception("suppress_credential_source failed")
         return {"ok": True, "provider": provider, "count": len(pool.entries()), "cleaned": cleaned, "hints": hints}
 
+    def _run():
+        # Own-profile scope: load_pool() seeds from THIS profile's env and the removal steps clean
+        # env-backed sources — unscoped on a fail-closed multiplexed dashboard both raise, so a
+        # removal 400s (and, worse, resurrects on the next refresh).
+        with _own_profile_scope():
+            return _impl()
+
     return await asyncio.to_thread(_run)
 
 
@@ -446,15 +465,19 @@ _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 @router.get("/api/memory")
 async def get_memory_status():
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
-        cfg = load_config()
-        mem = cfg.get("memory")
-        active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
-        mem_dir = get_hermes_home() / "memories"
-        files = {}  # sizes so the UI can show what a reset would erase
-        for fname, key in _MEMORY_FILES:
-            path = mem_dir / fname
-            files[key] = path.stat().st_size if path.exists() else 0
-        return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
+        # Own-profile scope: provider discovery reads each provider's own env/schema (MEM0_MODE,
+        # SUPERMEMORY_BASE_URL, ...), which raises unscoped on a fail-closed multiplexed dashboard
+        # — the page then shows every non-built-in provider as unavailable.
+        with _own_profile_scope():
+            cfg = load_config()
+            mem = cfg.get("memory")
+            active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
+            mem_dir = get_hermes_home() / "memories"
+            files = {}  # sizes so the UI can show what a reset would erase
+            for fname, key in _MEMORY_FILES:
+                path = mem_dir / fname
+                files[key] = path.stat().st_size if path.exists() else 0
+            return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
 
     return await asyncio.to_thread(_run)
 

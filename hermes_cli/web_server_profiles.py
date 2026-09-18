@@ -276,6 +276,21 @@ def _config_profile_scope(profile: Optional[str]):
             reset_secret_scope(token)
 
 
+def _own_profile_scope():
+    """The *serving* profile's config + secret scope for one dashboard request
+    (``_config_profile_scope(None)``: no home override, and the frozen-launch-env scope once
+    this process is fail-closed for multi-profile hosting).
+
+    Every dashboard route that reads the serving profile's config or credentials must run inside
+    this or ``_profile_scope(<named>)`` (which nests it). After any ``?profile=<other>`` request
+    flips the process, an unscoped ``get_secret`` raises ``UnscopedSecretError`` — and the read
+    endpoints that assemble the cron platform list, the memory-provider state, the plugins hub,
+    the Portal features and the model defaults are fail-soft (``except Exception: _log.exception``),
+    so the raise does not 500: it silently drops every credential-derived part of the payload.
+    """
+    return _config_profile_scope(None)
+
+
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
 # tools/terminal_tool.py::_create_environment and the terminal.backend enum.
 

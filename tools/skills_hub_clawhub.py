@@ -67,6 +67,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     # Wall-clock budget for a full catalog walk: 50k+ skills, sequential
     # (~250 requests each under timeout=30), so unbounded it blocks for minutes.
     CATALOG_WALK_BUDGET_SECONDS = 12
+    # Consecutive failed fetches of one catalog page before the walk gives up as partial.
+    CATALOG_PAGE_RETRIES = 5
     ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
     ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -301,9 +303,9 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         cache — a walk cut by ``max_items``, the wall-clock budget, or a
         failed page fetch would poison it with a partial slice.
 
-        ``_get_json`` returns ``None`` on timeout/non-200. That is not catalog
-        exhaustion: retry the same cursor instead of treating an empty/non-dict
-        payload as the last page.
+        ``_get_json`` returns ``None`` on timeout/non-200. That is a hole in the
+        walk, not catalog exhaustion: the same cursor is retried a few times
+        before the walk gives up (partial, uncached).
         """
         cache_key = "clawhub_catalog_v1"
         cached = _cached_metas(cache_key)
@@ -319,30 +321,23 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         deadline = time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS if max_items > 0 else None
         partial = False
         fetch_failures = 0
-        max_fetch_failures = 5
         for _ in range(750):
             if deadline is not None and time.monotonic() > deadline:
                 partial = True
                 break
             params: Dict[str, Any] = {"limit": 200, "cursor": cursor} if cursor else {"limit": 200}
             data = self._get_json(f"{self.BASE_URL}/skills", timeout=30, params=params)
-            items = data.get("items") if isinstance(data, dict) else None
-            next_cursor = data.get("nextCursor") if isinstance(data, dict) else None
-            page_ok = isinstance(data, dict) and isinstance(items, list)
-            # Empty items that still advertise a cursor are the same class of
-            # hole as None: not a terminal page.
-            retry_same_cursor = (not page_ok) or (
-                page_ok and not items and isinstance(next_cursor, str) and bool(next_cursor)
-            )
-            if retry_same_cursor:
+            if data is None:
                 fetch_failures += 1
-                if fetch_failures >= max_fetch_failures:
+                if fetch_failures >= self.CATALOG_PAGE_RETRIES:
                     partial = True
                     break
-                time.sleep(min(2 ** fetch_failures, 8))
+                # Interactive browse stays inside its 12 s budget; the index builder backs off.
+                time.sleep(0.5 if deadline is not None else min(2 ** fetch_failures, 8))
                 continue
             fetch_failures = 0
-            if not items:
+            items = data.get("items", []) if isinstance(data, dict) else []
+            if not isinstance(items, list) or not items:
                 break
             for item in items:
                 slug = item.get("slug")
@@ -351,8 +346,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     meta = self._item_to_meta(item)
                     if meta:
                         results.append(meta)
-            cursor = next_cursor if isinstance(next_cursor, str) and next_cursor else None
-            if not cursor:
+            cursor = data.get("nextCursor") if isinstance(data, dict) else None
+            if not isinstance(cursor, str) or not cursor:
                 break
             if max_items > 0 and len(results) >= max_items:
                 partial = True

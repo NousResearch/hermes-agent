@@ -445,10 +445,11 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
         if returncode != 0:
             error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
             _bt.logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": error_msg, "returncode": returncode}
         if command not in _bt._EMPTY_OK_COMMANDS:
             _bt.logger.warning("browser '%s' returned empty output (rc=0)", command)
-            return {"success": False, "error": f"Browser command '{command}' returned no output"}
+            return {"success": False, "error": f"Browser command '{command}' returned no output",
+                    "returncode": returncode}
         return {"success": True, "data": {}}
 
     try:
@@ -462,7 +463,8 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
             if recovered_path and Path(recovered_path).exists():
                 _bt.logger.info("browser 'screenshot' recovered file from non-JSON output: %s", recovered_path)
                 return {"success": True, "data": {"path": recovered_path, "raw": raw}}
-        return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}"}
+        return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}",
+                "returncode": returncode}
 
     # Empty snapshot content is a common sign of daemon/CDP issues.
     if command == "snapshot" and parsed.get("success"):
@@ -471,6 +473,30 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
             _bt.logger.warning("snapshot returned empty content. Possible stale daemon or CDP connection issue. "
                                "returncode=%s", returncode)
     return parsed
+
+
+def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """True when a finished (non-timeout) command failure is protocol-level — the local
+    agent-browser backend dying — rather than a page-level error: a nonzero CLI exit (101 =
+    daemon/session failure on a stale session) or empty/non-JSON output from a stale daemon.
+    These poison the cached session record (#115184): without a suspect/evict here, every
+    later call reuses the record and fails until manual recycling. Parsed-JSON failures carry
+    no ``returncode`` (the backend answered; the page said no), and non-local sessions
+    (cloud/CDP/real-profile/Lightpanda — the LP fallback owns its engine) never qualify."""
+    feats = session_info.get("features") or {}
+    if not feats.get("local") or feats.get("lightpanda") or feats.get("real_profile"):
+        return False
+    if session_info.get("cdp_url") or session_info.get("bb_session_id"):
+        return False
+    if result.get("success"):
+        return False
+    rc = result.get("returncode")
+    if rc is None:
+        return False
+    if rc != 0:
+        return True
+    err = str(result.get("error") or "")
+    return "returned no output" in err or "Non-JSON output" in err
 
 
 def _browser_command_preflight() -> Dict[str, Any]:
@@ -569,36 +595,50 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
-    try:
-        session_info = _get_session_info(task_id)
-    except Exception as e:
-        _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-        return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # Cleanup stops the supervisor before closing the backend; keep it stopped.
-    if command != "close" and session_info.get("cdp_url"):
-        _cdp._ensure_cdp_supervisor(task_id)
+    for attempt in range(2):
+        try:
+            session_info = _get_session_info(task_id)
+        except Exception as e:
+            _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+            return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+        # Cleanup stops the supervisor before closing the backend; keep it stopped.
+        if command != "close" and session_info.get("cdp_url"):
+            _cdp._ensure_cdp_supervisor(task_id)
 
-    # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
-    # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
-    # Engine injection keys off the resolved session backend, not global provider
-    # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
-    engine = _engine_override or _cloud._get_browser_engine()
-    if session_info.get("cdp_url"):
-        backend_args = ["--cdp", session_info["cdp_url"]]
-    else:
-        backend_args = ["--session", session_info["session_name"]]
-        if _cloud._is_headed_mode():
-            backend_args.append("--headed")
-        if engine != "auto" and not _bt._is_camofox_mode():
-            backend_args += ["--engine", engine]
+        # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
+        # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
+        # Engine injection keys off the resolved session backend, not global provider
+        # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
+        engine = _engine_override or _cloud._get_browser_engine()
+        if session_info.get("cdp_url"):
+            backend_args = ["--cdp", session_info["cdp_url"]]
+        else:
+            backend_args = ["--session", session_info["session_name"]]
+            if _cloud._is_headed_mode():
+                backend_args.append("--headed")
+            if engine != "auto" and not _bt._is_camofox_mode():
+                backend_args += ["--engine", engine]
 
-    cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
+        cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
 
-    try:
-        result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
-    except Exception as e:
-        _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
-        result = {"success": False, "error": str(e)}
+        try:
+            result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+        except Exception as e:
+            _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
+            result = {"success": False, "error": str(e)}
+
+        # #115184: a protocol-level local-backend failure (exit 101 on a stale session,
+        # empty/non-JSON output from a dead daemon) poisons the cached session record.
+        # Same recovery split as a command timeout — mark suspect; dead daemon evicts now —
+        # then retry once on the replacement session before giving the caller the failure.
+        if attempt == 0 and _is_recoverable_local_backend_failure(session_info, result):
+            _bt.logger.warning("browser '%s' failed at the backend level (task=%s, rc=%s): %s — recycling the "
+                               "session and retrying once", command, task_id, result.get("returncode"),
+                               str(result.get("error"))[:300])
+            _handle_browser_command_timeout(task_id, session_info,
+                                            _prepare_session_socket_dir(session_info["session_name"]))
+            continue
+        break
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
     # empty, non-JSON, nonzero rc, parsed).

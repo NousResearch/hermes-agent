@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Optional
 
 from hermes_cli.relay_plugin_cutover import (
@@ -125,12 +126,18 @@ def dumps_toml(document: Mapping[str, Any]) -> str:
 
 
 def validate_relay_plugin_payload(payload: Mapping[str, Any]) -> list:
-    """Run the payload through Relay's own validator; returns the warnings (empty = clean).
-    Raises when Relay rejects the document, including by error-level diagnostics."""
+    """Validate the serialized payload through the same file layering the runtime uses.
+
+    Returns warnings (empty = clean) and raises when Relay rejects the document,
+    including by error-level diagnostics.
+    """
     from nemo_relay import plugin
 
-    # validate() would layer the payload over the ambient user config; the runtime never does.
-    diagnostics = list(plugin.validate_exact(dict(payload))["config"]["diagnostics"])
+    with TemporaryDirectory(prefix="hermes-relay-validation-") as directory:
+        config_path = Path(directory) / RELAY_PLUGINS_TOML_NAME
+        config_path.write_text(dumps_toml(payload), encoding="utf-8")
+        report = plugin.validate({}, additional_plugins_toml=config_path)
+    diagnostics = list(report["config"]["diagnostics"])
     # Relay 0.8's initialize() raised on these; 0.9's validator only reports them.
     if errors := [d for d in diagnostics if d.get("level") == "error"]:
         raise ValueError("; ".join(str(d.get("message") or d.get("code") or d) for d in errors))

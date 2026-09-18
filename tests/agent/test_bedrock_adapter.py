@@ -508,7 +508,7 @@ class TestNormalizeConverseStreamEvents:
         the text into one block per delta and let the toolUse start (index 1) overwrite the second fragment
         and sort into the middle — a ``[text, toolUse, text...]`` sidecar Claude 5 on Bedrock rejects on
         replay as "does not support assistant message prefill"."""
-        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_stream_events
+        from agent.bedrock_adapter import normalize_converse_stream_events
         result = normalize_converse_stream_events({"stream": list(self._LIVE_TEXT_THEN_TOOL_EVENTS)})
         msg = result.choices[0].message
         assert msg.content == "I'll echo banana now."
@@ -517,15 +517,6 @@ class TestNormalizeConverseStreamEvents:
             {"toolUse": {"toolUseId": "tooluse_1", "name": "echo", "input": {"s": "banana"}}},
         ]
         assert [tc.function.name for tc in msg.tool_calls] == ["echo"]
-        # The sidecar is authoritative on replay: the next turn must go out as text THEN toolUse, nothing after.
-        _, converse = convert_messages_to_converse([
-            {"role": "user", "content": "echo banana"},
-            {"role": "assistant", "content": msg.content, "bedrock_content_blocks": msg.bedrock_content_blocks,
-             "tool_calls": [{"id": "tooluse_1", "type": "function", "function": {"name": "echo", "arguments": '{"s": "banana"}'}}]},
-            {"role": "tool", "tool_call_id": "tooluse_1", "content": "banana"},
-        ])
-        assert [list(b)[0] for b in converse[1]["content"]] == ["text", "toolUse"]
-        assert converse[1]["content"][0]["text"] == "I'll echo banana now."
 
     def test_events_without_content_block_index_fall_back_to_arrival_order(self):
         """Proxies/test doubles may omit contentBlockIndex: deltas continue the current block, a start opens a

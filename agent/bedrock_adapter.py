@@ -829,12 +829,10 @@ def stream_converse_with_callbacks(
     def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
         """Index of the block a contentBlock* event addresses. Without ``contentBlockIndex`` (test doubles,
         proxies) a start opens a fresh slot and a delta/stop continues the current one."""
-        nonlocal current_block_index
         idx = payload.get("contentBlockIndex")
-        if not isinstance(idx, int):
-            idx = len(stream_blocks) if new_block or current_block_index is None else current_block_index
-        current_block_index = idx
-        return idx
+        if isinstance(idx, int):
+            return idx
+        return len(stream_blocks) if new_block or current_block_index is None else current_block_index
 
     def flush_text() -> None:
         if current_text_buffer:
@@ -849,7 +847,7 @@ def stream_converse_with_callbacks(
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
-            idx = block_index(start_event, new_block=True)
+            idx = current_block_index = block_index(start_event, new_block=True)
             start = start_event.get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
@@ -860,7 +858,7 @@ def stream_converse_with_callbacks(
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
             delta_event = event["contentBlockDelta"]
-            idx = block_index(delta_event)
+            idx = current_block_index = block_index(delta_event)
             delta = delta_event.get("delta", {})
             if "text" in delta:
                 text = delta["text"]

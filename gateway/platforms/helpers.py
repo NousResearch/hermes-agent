@@ -52,7 +52,11 @@ class MessageDeduplicator:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # ValueError covers json.JSONDecodeError AND the UnicodeDecodeError that
+            # read_text() raises on a non-UTF-8 journal -- it is not an OSError, so
+            # catching only OSError lets a damaged file escape the constructor and
+            # break adapter init, against the memory-only contract above.
             logger.warning("Dedupe state at %s is unreadable; starting from memory",
                            path, exc_info=True)
             return

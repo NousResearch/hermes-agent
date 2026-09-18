@@ -92,6 +92,19 @@ class TestMessageDeduplicatorRestartSurvival:
         assert dedup.is_duplicate("m1") is False
         assert dedup.is_duplicate("m1") is True
 
+    def test_undecodable_journal_degrades_to_memory_only(self, tmp_path):
+        """A non-UTF-8 journal must degrade like any other damage.
+
+        read_text() decodes before json.loads runs, and UnicodeDecodeError is a
+        ValueError, not an OSError -- so an except clause naming only OSError and
+        JSONDecodeError lets it escape the constructor and break adapter init.
+        """
+        journal = tmp_path / "seen.json"
+        journal.write_bytes(b'{"seen": {"m1": 1900000000.0}}\xff\xfe')
+        dedup = MessageDeduplicator(ttl_seconds=60, persist_path=journal)
+        assert dedup.is_duplicate("m1") is False
+        assert dedup.is_duplicate("m1") is True
+
     def test_unwritable_journal_degrades_without_raising(self, tmp_path):
         """An unusable path (a file where a directory belongs) is not fatal."""
         blocker = tmp_path / "blocker"

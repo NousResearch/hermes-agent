@@ -2110,7 +2110,15 @@ def _terminal_env_value(value: Any) -> str:
 
 def _terminal_config_value_is_bridgeable(key: str, value: Any) -> bool:
     """Return whether a terminal config value owns its mirrored env var."""
-    return not (key == "cwd" and str(value or "").strip() in {".", "auto", "cwd"})
+    if key == "cwd" and str(value or "").strip() in {".", "auto", "cwd"}:
+        return False
+    # An empty ssh_* value means "not configured" — the schema declares these
+    # keys so `hermes config set terminal.ssh_host` validates, but exporting
+    # them blank would override the backend's own fallbacks (port 22, the
+    # invoking user's SSH defaults) and make int('') kill every command.
+    if key in {"ssh_host", "ssh_user", "ssh_port", "ssh_key"} and str(value or "").strip() == "":
+        return False
+    return True
 
 
 def terminal_config_owned_env_vars(terminal_config: Any) -> Set[str]:

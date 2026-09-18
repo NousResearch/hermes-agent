@@ -231,11 +231,26 @@ def _safe_skills_path(skills_dir: Path) -> str:
     return str(safe_dir)
 
 
+def _is_syncable_sync_file(item) -> bool:
+    """Return whether a directory entry should be synced to a remote env.
+
+    Skips symlinks, non-files, and macOS AppleDouble sidecars (``._name``).
+    AppleDouble files carry only HFS metadata, never skill content, and are
+    created by the OS on any non-native filesystem. On a real install they are
+    ~50% of the sync set; they also disappear between enumeration and transfer,
+    which makes tar emit "Cannot stat" errors and exit non-zero mid-stream.
+    """
+    if item.is_symlink() or not item.is_file():
+        return False
+    return not item.name.startswith("._")
+
+
 def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file entries for all skills files (for backends that upload individually)."""
     return [_mount(item, f"{container_root}/{item.relative_to(host_dir)}")
             for host_dir, container_root in _skill_dir_roots(container_base)
-            for _base, files in _walk_skill_tree(host_dir) for item in files]
+            for _base, files in _walk_skill_tree(host_dir) for item in files
+            if _is_syncable_sync_file(item)]
 
 
 # --- Cache directory mounts (documents, images, audio, videos, screenshots) ---
@@ -355,10 +370,10 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
 
 
 def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
-    """Per-file cache entries (Modal upload/resync); skips symlinks."""
+    """Per-file cache entries (Modal upload/resync); skips symlinks and AppleDouble sidecars."""
     return [_mount(item, f"{root}/{item.relative_to(host_dir)}")
             for host_dir, root in _cache_dir_roots(container_base, create_missing=False)
-            for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()]
+            for item in host_dir.rglob("*") if _is_syncable_sync_file(item)]
 
 
 def clear_credential_files() -> None:

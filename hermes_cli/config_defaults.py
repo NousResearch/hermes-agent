@@ -259,6 +259,16 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        # Connection settings for backend "ssh". These are read via
+        # TERMINAL_CONFIG_ENV_MAP (ssh_host -> TERMINAL_SSH_HOST, etc.) and
+        # must be declared here so `hermes config set terminal.ssh_host ...`
+        # validates as a known key instead of warning that Hermes may never
+        # read it. Empty means "not configured"; ssh_user/ssh_key fall back
+        # to the invoking user's SSH defaults, ssh_port to 22.
+        "ssh_host": "",
+        "ssh_user": "",
+        "ssh_port": "",
+        "ssh_key": "",
         # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +
         # traceback.

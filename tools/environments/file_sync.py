@@ -6,6 +6,7 @@ Docker and Singularity use bind mounts (live host FS view) and don't need this.
 """
 
 import hashlib
+import inspect
 import logging
 import os
 import posixpath
@@ -22,7 +23,7 @@ try:
 except ImportError:
     fcntl = None  # Windows — file locking skipped
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
@@ -41,7 +42,7 @@ _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
 # Transport callbacks provided by each backend
 UploadFn = Callable[[str, str], None]  # (host_path, remote_path) -> raises on failure
 BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_path), ...] -> raises on failure
-BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive, raises on failure
+BulkDownloadFn = Callable[..., None]  # (dest_tar_path, paths=None) -> writes tar archive, raises on failure
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
 
@@ -143,6 +144,31 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+
+def _accepts_paths_arg(fn: Callable[..., Any]) -> bool:
+    """Return whether *fn* takes a second positional arg (the path list).
+
+    Lets sync_back request a targeted tar from backends that support it while
+    still working with older single-argument download callbacks. Introspection
+    rather than catching TypeError, so a genuine TypeError raised inside the
+    callback is not mistaken for a signature mismatch and silently retried.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 2
 
 
 class FileSyncManager:
@@ -284,6 +310,12 @@ class FileSyncManager:
                 return
             except Exception as exc:
                 last_exc = exc
+                # A NameError here means the interpreter is tearing down its
+                # globals; every remaining attempt will fail identically, so
+                # stop instead of sleeping through the backoff schedule.
+                if isinstance(exc, NameError):
+                    logger.debug("sync_back: interpreter shutting down — abandoning")
+                    return
                 if attempt < _SYNC_BACK_MAX_RETRIES - 1:
                     delay = _SYNC_BACK_BACKOFF[attempt]
                     logger.warning("sync_back: attempt %d failed (%s), retrying in %ds", attempt + 1, exc, delay)
@@ -324,7 +356,15 @@ class FileSyncManager:
             # Windows: no flock — run without serialization
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w", encoding="utf-8")
+        # During interpreter shutdown module globals (including builtins such
+        # as ``open``) are torn down, so a cleanup() firing from a late atexit
+        # or __del__ raises a bare NameError that no retry can fix. Detect it
+        # and skip rather than burning the retry budget on a lost cause.
+        try:
+            lock_fd = open(lock_path, "w", encoding="utf-8")
+        except NameError:  # pragma: no cover - shutdown-only path
+            logger.debug("sync_back: interpreter shutting down — skipping")
+            return
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
@@ -355,7 +395,20 @@ class FileSyncManager:
         fd, tar_path = tempfile.mkstemp(prefix=_SYNC_BACK_TEMP_PREFIX, suffix=".tar")
         os.close(fd)
         try:
-            self._bulk_download_fn(Path(tar_path))
+            # Only files previously pushed can produce an applied change (the
+            # loop below requires a _pushed_hashes entry), so ask the backend
+            # for just those. With nothing pushed there is nothing sync_back
+            # could apply, so skip the transfer entirely rather than dragging
+            # the whole remote tree across the wire to discard it.
+            wanted = sorted(self._pushed_hashes.keys())
+            if _accepts_paths_arg(self._bulk_download_fn):
+                if not wanted:
+                    logger.debug("sync_back: nothing was pushed — skipping download")
+                    return
+                self._bulk_download_fn(Path(tar_path), wanted)
+            else:
+                # Backend predates the `paths` argument: full-tree tar.
+                self._bulk_download_fn(Path(tar_path))
 
             # A misbehaving sandbox could produce an arbitrarily large tar.
             try:
@@ -373,13 +426,19 @@ class FileSyncManager:
                     tar.extractall(staging, filter="data")
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
+                # Built once for the whole run: rebuilding this per file restored the
+                # O(files x mappings) filesystem rescan inside _infer_host_path.
+                dir_index = self._build_dir_index(file_mapping, upload_only)
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
                         # Remote keys are POSIX; relpath uses host separators (backslashes on Windows).
                         remote_path = "/" + Path(os.path.relpath(staged_file, staging)).as_posix()
-                        applied += self._apply_staged_file(staged_file, remote_path, file_mapping, upload_only)
+                        applied += self._apply_staged_file(
+                            staged_file, remote_path, file_mapping, upload_only,
+                            dir_index=dir_index,
+                        )
 
                 if applied:
                     logger.info("sync_back: applied %d changed file(s)", applied)
@@ -392,18 +451,23 @@ class FileSyncManager:
                 pass
 
     def _apply_staged_file(
-        self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
+        self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]],
+        upload_only_host_paths: set[str], *, dir_index: list[tuple[str, str]] | None = None,
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
         applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
-        modified since push is overwritten with the remote version (last-write-wins) with a warning."""
+        modified since push is overwritten with the remote version (last-write-wins) with a warning.
+
+        ``dir_index`` is the precomputed :meth:`_build_dir_index`; a caller resolving many files
+        builds it once and passes it in rather than rescanning the mapping per file."""
         pushed_hash = self._pushed_hashes.get(remote_path)
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
 
         host_path = self._resolve_host_path(remote_path, file_mapping)
         if host_path is None:
-            host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
+            host_path = self._infer_host_path(
+                remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths, dir_index=dir_index)
             if host_path is None:
                 logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
                 return 0
@@ -426,19 +490,56 @@ class FileSyncManager:
         """Find the host path for a known remote path from the file mapping."""
         return next((host for host, remote in file_mapping or [] if remote == remote_path), None)
 
-    def _infer_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None, *,
-                         upload_only_host_paths: set[str] | None = None) -> str | None:
-        """Infer a host path for a new remote file by matching path prefixes: an existing
-        remote->host pair whose parent directory prefixes *remote_path* gets the same
-        substitution (``/root/.hermes/skills/b.md`` -> ``~/.hermes/skills/b.md``)."""
-        upload_only_host_paths = upload_only_host_paths or set()
-        for host, remote in file_mapping or []:
+    def _infer_host_path(self, remote_path: str,
+                         file_mapping: list[tuple[str, str]] | None = None,
+                         *,
+                         upload_only_host_paths: set[str] | None = None,
+                         dir_index: list[tuple[str, str]] | None = None) -> str | None:
+        """Infer a host path for a new remote file by matching path prefixes.
+
+        Uses the existing file mapping to find a remote->host directory
+        pair, then applies the same prefix substitution to the new file.
+        For example, if the mapping has ``/root/.hermes/skills/a.md`` →
+        ``~/.hermes/skills/a.md``, a new remote file at
+        ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
+
+        ``dir_index`` is the precomputed result of :meth:`_build_dir_index`;
+        callers resolving many files should build it once and pass it in.
+        """
+        if dir_index is None:
+            dir_index = self._build_dir_index(
+                file_mapping if file_mapping is not None else [],
+                upload_only_host_paths or set(),
+            )
+        for remote_dir, host_dir in dir_index:
+            if remote_path.startswith(remote_dir + "/"):
+                suffix = remote_path[len(remote_dir):]
+                return host_dir + suffix
+        return None
+
+    def _build_dir_index(
+        self,
+        mapping: list[tuple[str, str]],
+        upload_only_host_paths: set[str],
+    ) -> list[tuple[str, str]]:
+        """Collapse the file mapping to deduplicated (remote_dir, host_dir) pairs.
+
+        The upload-only filter and the ``Path(..).parent`` calls are constant
+        for a whole sync, so this is built once per ``sync_back`` and reused
+        for every file rather than recomputed per candidate mapping. Preserves
+        first-match-wins order.
+        """
+        seen: set[tuple[str, str]] = set()
+        index: list[tuple[str, str]] = []
+        for host, remote in mapping:
             if self._is_upload_only_host_path(host, upload_only_host_paths):
                 continue
-            remote_dir = posixpath.dirname(remote)  # remote paths are POSIX even on a Windows host
-            if remote_path.startswith(remote_dir + "/"):
-                return str(Path(host).parent / remote_path[len(remote_dir) + 1:])
-        return None
+            pair = (str(Path(remote).parent), str(Path(host).parent))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            index.append(pair)
+        return index
 
     @staticmethod
     def _is_upload_only_host_path(host_path: str, upload_only_host_paths: set[str]) -> bool:

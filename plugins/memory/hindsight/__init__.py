@@ -39,7 +39,7 @@ from .embedded import (
     _may_rewrite_profile_env,
 )
 from .settings import (
-    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
+    _DEFAULT_A2A_TAG, _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
     _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider,
     _normalize_observation_scopes, _normalize_retain_tags, _parse_int_setting,
@@ -352,8 +352,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._tags: list[str] | None = None
         self._retain_source = _DEFAULT_RETAIN_SOURCE
         self._retain_user_prefix, self._retain_assistant_prefix = "User", "Assistant"
+        # Extra tag on turns authored by a peer bot (agent-to-agent DMs).
+        self._a2a_tag = _DEFAULT_A2A_TAG
         self._turn_counter = self._turn_index = 0
         self._session_turns: list[str] = []  # ALL turns for the session
+        # Per-turn source tag, parallel to _session_turns: a turn's tag is fixed when the
+        # turn arrives, so a later turn can never re-tag it.
+        self._session_turn_tags: list[str] = []
         self._last_retained_turn_count = 0  # append-mode delta watermark
         # Server-side async retain ops still in flight: aretain_batch returns on
         # *acceptance*, not durability, so the prefetch gates on these via
@@ -437,6 +442,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories (identifies the client that stored them)", "default": _DEFAULT_RETAIN_SOURCE},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
+            {"key": "a2a_tag", "description": "Extra tag applied to turns authored by another bot (agent-to-agent messages), so agent-to-agent traffic can be kept out of normal recall later while the history stays in the bank. This only marks the turn: excluding it needs Hindsight's tag_groups NOT filter, which this plugin does not send yet. Do NOT try recall_tags as a substitute — tags_match='any' also drops memories that carry other tags (measured on a live bank: 93% of session-tagged history), so the whitelist drops exactly what it should keep. Empty disables tagging.", "default": "source:bot"},
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
@@ -647,6 +653,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 return False
             time.sleep(self._RETAIN_OP_POLL_INTERVAL_S)
 
+    def _a2a_tag_for_turn(self, turn_author: Optional[Dict[str, Any]]) -> str:
+        """Extra retain tag for one turn. ``turn_author`` (``{"id","name","is_bot"}``) is the
+        kernel's authoritative "who wrote the user side" signal: a peer bot's turn carries
+        ``a2a_tag`` so recall can leave agent-to-agent traffic out, and the turn is still
+        retained in full. The text is deliberately NOT sniffed (a human may quote a bot
+        line), only this signal decides."""
+        if self._a2a_tag and isinstance(turn_author, dict) and turn_author.get("is_bot"):
+            return self._a2a_tag
+        return ""
+
     # -- retain target -----------------------------------------------------------
 
     def _resolve_retain_target(self, fallback_document_id: str) -> tuple[str, str | None]:
@@ -688,6 +704,7 @@ class HindsightMemoryProvider(MemoryProvider):
             setattr(self, f"_{name}", str(kwargs.get(name) or "").strip())
         self._turn_index = self._last_retained_turn_count = 0
         self._session_turns = []
+        self._session_turn_tags = []
         self._mode = cfg.get("mode", "cloud")
         self._timeout = self._int_setting("timeout", "HINDSIGHT_TIMEOUT", _DEFAULT_TIMEOUT)
         self._idle_timeout = self._int_setting("idle_timeout", "HINDSIGHT_IDLE_TIMEOUT", _DEFAULT_IDLE_TIMEOUT)
@@ -770,6 +787,10 @@ class HindsightMemoryProvider(MemoryProvider):
     def _apply_retain_policy(self, cfg: dict) -> None:
         """Pure-config retain knobs (no env/secret reads; ``{}`` yields the defaults)."""
         self._auto_retain = cfg.get("auto_retain", True)
+        # Agent-to-agent turns are tagged, never dropped: the tag keeps a peer's words out
+        # of filtered recall while the turn itself is retained in full. An empty value
+        # ("" or null) disables tagging.
+        self._a2a_tag = str(cfg.get("a2a_tag", _DEFAULT_A2A_TAG) or "").strip()
         self._retain_every_n_turns = max(1, int(cfg.get("retain_every_n_turns", 1)))
         self._retain_context = cfg.get("retain_context", _RETAIN_CONTEXT_DEFAULT)
         self._retain_async = cfg.get("retain_async", True)
@@ -1021,13 +1042,16 @@ class HindsightMemoryProvider(MemoryProvider):
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
     def _make_turn_retain_job(self, turns: list[str], *, document_id: str, update_mode: str | None,
-                              label: str, track_ops: bool = True) -> Callable[[], None]:
+                              label: str, track_ops: bool = True, source_tag: str = "") -> Callable[[], None]:
         """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
-        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
+        writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id.
+        ``source_tag`` is the batch's authorship tag (agent-to-agent vs human), decided when
+        the turn arrived; it must not be read from a mutable attribute at write time."""
         content = "[" + ",".join(turns) + "]"
         metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
-        tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
+        tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] + ([source_tag] if source_tag else [])
+        tags = tags or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
 
         def _job() -> None:
@@ -1044,17 +1068,40 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return _job
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def _tagged_retain_jobs(self, pending: list[tuple[str, str]], *, document_id: str,
+                            update_mode: str | None, label: str,
+                            track_ops: bool = True) -> list[Callable[[], None]]:
+        """One writer job per source tag, turns in their order (a single-tag batch, the
+        common case, is still exactly one job). Every buffered turn already carries the tag
+        it got when it arrived, so a later turn's author can never re-tag it, and a mixed
+        batch is split rather than mislabelled: a human turn must never ship as
+        agent-to-agent traffic, and a peer bot's turn must not slip through untagged.
+        Grouping keeps within-tag order, not cross-tag interleaving order — fine for retain."""
+        grouped: Dict[str, list[str]] = {}
+        for turn, source_tag in pending:
+            grouped.setdefault(source_tag, []).append(turn)
+        return [
+            self._make_turn_retain_job(turns, document_id=document_id, update_mode=update_mode,
+                                       label=label, track_ops=track_ops, source_tag=source_tag)
+            for source_tag, turns in grouped.items()
+        ]
+
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "",
+                  turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
-        once shutdown() fired so post-exit retains never reach aiohttp during teardown."""
+        once shutdown() fired so post-exit retains never reach aiohttp during teardown.
+        ``turn_author`` names who wrote the user side: a peer bot's turn is retained with
+        the agent-to-agent tag so recall can leave it out, never dropped or rewritten."""
         why = "auto_retain disabled" if not self._auto_retain else "shutting down" if self._shutting_down.is_set() else None
         if why:
             logger.debug("sync_turn: skipped (%s)", why)
             return
+        turn_tag = self._a2a_tag_for_turn(turn_author)
         if session_id:
             self._session_id = str(session_id).strip()
 
         self._session_turns.append(json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False))
+        self._session_turn_tags.append(turn_tag)
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
@@ -1065,15 +1112,15 @@ class HindsightMemoryProvider(MemoryProvider):
         # Append-capable APIs get only the delta since the last retain; legacy /
         # overwrite APIs need the whole session because each retain replaces the document.
         start = self._last_retained_turn_count if update_mode == "append" else 0
-        turns_to_retain = self._session_turns[start:]
-        if not turns_to_retain:
+        pending = list(zip(self._session_turns[start:], self._session_turn_tags[start:]))
+        if not pending:
             logger.debug("sync_turn: skipped append retain; no new turns since last retain")
             return
         logger.debug("sync_turn: retaining %d/%d turns, payload %d chars",
-                     len(turns_to_retain), len(self._session_turns), sum(len(t) for t in turns_to_retain))
+                     len(pending), len(self._session_turns), sum(len(t) for t, _ in pending))
 
-        job = self._make_turn_retain_job(turns_to_retain, document_id=document_id,
-                                         update_mode=update_mode, label="retain")
+        jobs = self._tagged_retain_jobs(pending, document_id=document_id,
+                                        update_mode=update_mode, label="retain")
         # Indicator fires only past every skip/buffer gate: solely on turns that persist.
         # Model-independent status line; no-op without retain_indicator/status channel.
         if self._retain_indicator and self._status_callback is not None:
@@ -1081,7 +1128,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._status_callback(f"{_HINDSIGHT_GLYPH} Hindsight — saving to memory…")
             except Exception:
                 logger.debug("Retain indicator emit failed (non-fatal)", exc_info=True)
-        self._enqueue_retain(job)
+        for job in jobs:
+            self._enqueue_retain(job)
         # Advance the watermark only after the delta is queued so a later retain
         # doesn't re-ship turns already handed to the writer.
         if update_mode == "append":
@@ -1171,19 +1219,23 @@ class HindsightMemoryProvider(MemoryProvider):
         # rotation (legacy: per-process unique; >=0.5.0: session-scoped + append).
         if self._session_turns:
             old_document_id, old_update_mode = self._resolve_retain_target(self._document_id)
-            job = self._make_turn_retain_job(list(self._session_turns), document_id=old_document_id,
-                                             update_mode=old_update_mode, label="flush-on-switch",
-                                             track_ops=False)
+            jobs = self._tagged_retain_jobs(list(zip(self._session_turns, self._session_turn_tags)),
+                                           document_id=old_document_id, update_mode=old_update_mode,
+                                           label="flush-on-switch", track_ops=False)
 
-            def _flush():
-                try:
-                    job()
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+            def _guarded(job: Callable[[], None]) -> Callable[[], None]:
+                def _run() -> None:
+                    try:
+                        job()
+                    except Exception as e:
+                        logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+                return _run
+
             # Same writer queue as sync_turn: FIFO behind queued old-session retains,
             # no two threads racing aretain_batch on one document, shutdown drain intact.
             if not self._shutting_down.is_set():
-                self._enqueue_retain(_flush)
+                for job in jobs:
+                    self._enqueue_retain(_guarded(job))
 
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
@@ -1195,6 +1247,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._parent_session_id = str(parent_session_id).strip()
         self._session_id, self._document_id = new_id, _mint_document_id(new_id)
         self._session_turns = []
+        self._session_turn_tags = []
         self._turn_counter = self._turn_index = self._last_retained_turn_count = 0
         logger.debug("Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
                      self._session_id, self._parent_session_id, reset, self._document_id)

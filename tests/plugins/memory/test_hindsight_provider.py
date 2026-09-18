@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import inspect
 import json
 import os
 import re
@@ -1005,6 +1006,120 @@ class TestSyncTurn:
         assert p1._document_id != p2._document_id
         assert p1._document_id.startswith("resumed-session-")
         assert p2._document_id.startswith("resumed-session-")
+
+
+# ---------------------------------------------------------------------------
+# turn_author — bot-authored (agent-to-agent) turns
+# ---------------------------------------------------------------------------
+
+
+BOT_AUTHOR = {"id": "bot:fron", "name": "@fron", "is_bot": True}
+HUMAN_AUTHOR = {"id": "u1", "name": "Wang", "is_bot": False}
+BOT_DM = "Message from 🤖 fron (@fron): t2 done"
+
+
+class TestTurnAuthor:
+    """A bot's DM arrives as role=user but was written by a peer agent. ``turn_author``
+    carries ``is_bot``: the turn is retained in full and tagged (``a2a_tag``) so recall
+    can leave agent-to-agent traffic out. Nothing is dropped, no text is sniffed."""
+
+    def test_bot_authored_turn_carries_a2a_tag(self, provider):
+        provider.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session", "source:bot"]
+        # Tagged, not dropped: the peer's turn is still in the retained payload.
+        assert BOT_DM in json.dumps(json.loads(item["content"]), ensure_ascii=False)
+
+    def test_human_turn_carries_no_a2a_tag(self, provider):
+        provider.sync_turn("hello", "hi", turn_author=HUMAN_AUTHOR)
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+
+    def test_turn_without_author_carries_no_a2a_tag(self, provider):
+        """Older callers omit turn_author entirely — unchanged behavior."""
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+
+    def test_custom_a2a_tag_respected(self, provider_with_config):
+        p = provider_with_config(a2a_tag="x:y")
+
+        p.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "x:y" in item["tags"]
+        assert "source:bot" not in item["tags"]
+
+    def test_empty_a2a_tag_disables_tagging(self, provider_with_config):
+        p = provider_with_config(a2a_tag="")
+
+        p.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+
+    def test_null_a2a_tag_disables_tagging(self, provider_with_config):
+        """A blank YAML value (``a2a_tag: null``) disables tagging; it must not ship as
+        the literal "None" tag."""
+        p = provider_with_config(a2a_tag=None)
+
+        p.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["session:test-session"]
+
+    def test_a2a_tag_defaults_and_only_fires_for_bots(self, provider):
+        assert provider._a2a_tag == "source:bot"
+        assert provider._a2a_tag_for_turn(BOT_AUTHOR) == "source:bot"
+        assert provider._a2a_tag_for_turn(HUMAN_AUTHOR) == ""
+        assert provider._a2a_tag_for_turn({"id": "u1", "is_bot": False}) == ""
+        assert provider._a2a_tag_for_turn(None) == ""
+
+    def test_bot_turn_is_buffered_like_any_other(self, provider):
+        """No special short-circuit: the turn is buffered, counted and session-stamped."""
+        provider.sync_turn(BOT_DM, "ack", session_id="s-new", turn_author=BOT_AUTHOR)
+
+        assert provider._session_id == "s-new"
+        assert len(provider._session_turns) == 1
+        assert provider._session_turn_tags == ["source:bot"]
+        assert provider._turn_counter == 1
+
+    def test_mixed_batch_splits_by_source_tag(self, provider_with_config):
+        """retain_every_n_turns > 1 (or a legacy overwrite server) can pack both kinds
+        into one batch: each job then carries only its own tag, so a peer's turn is never
+        mislabelled as the human's and a human turn never ships as agent-to-agent."""
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        p.sync_turn(BOT_DM, "ack", turn_author=BOT_AUTHOR)      # turn 1: buffered
+        p.sync_turn("hello", "hi", turn_author=HUMAN_AUTHOR)    # turn 2: flushes both
+        p._retain_queue.join()
+
+        calls = p._client.aretain_batch.call_args_list
+        assert len(calls) == 2
+        jobs = [(c.kwargs["items"][0]["tags"], json.dumps(c.kwargs["items"][0]["content"], ensure_ascii=False)) for c in calls]
+        bot_jobs = [body for tags, body in jobs if "source:bot" in tags]
+        human_jobs = [body for tags, body in jobs if "source:bot" not in tags]
+        assert len(bot_jobs) == 1 and len(human_jobs) == 1
+        assert BOT_DM in bot_jobs[0] and "hello" not in bot_jobs[0]
+        assert "hello" in human_jobs[0] and BOT_DM not in human_jobs[0]
+
+    def test_signature_accepts_turn_author_for_core_dispatch(self, provider):
+        """MemoryManager only forwards turn_author to sync_turn signatures that
+        name it, so dropping the kwarg silently re-opens this bug — pin it."""
+        assert "turn_author" in inspect.signature(provider.sync_turn).parameters
+
+    def test_core_dispatch_forwards_turn_author(self, provider):
+        from agent.memory_manager import MemoryManager
+
+        assert MemoryManager._provider_sync_accepts(provider, "turn_author") is True
 
 
 # ---------------------------------------------------------------------------

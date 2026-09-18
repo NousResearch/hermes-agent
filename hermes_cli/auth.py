@@ -1329,6 +1329,17 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
             return model_cfg, "openrouter"
         if provider in PROVIDER_REGISTRY:
             return model_cfg, provider
+        # A bare name matching an enabled ``providers:`` / ``custom_providers:`` entry is the same
+        # explicit intent, spelled by name instead of by the ``custom:<name>`` form. The runtime
+        # resolver already routes it (``hermes chat`` works), so without this rung the two paths
+        # disagree and the dashboard parks on Setup Required for a working config — the #109397
+        # symptom, one rung over. has_named_custom_provider() is the runtime's own lookup: it
+        # ignores disabled entries and entries without a usable endpoint, and covers both the
+        # current ``providers:`` and the legacy ``custom_providers:`` spellings.
+        if provider:
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            if has_named_custom_provider(provider):
+                return model_cfg, "custom"
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
         if base_url:

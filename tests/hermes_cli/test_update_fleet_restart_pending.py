@@ -858,3 +858,39 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
 
     assert capsys.readouterr().err == ""
     assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
+def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_checkout(monkeypatch, capsys):
+    """The remedy the warning names must clear it: after a completed update, a manual ``git pull``
+    plus ``hermes gateway restart`` leaves every owed gateway on today's checkout — newer than the
+    update's ``post_update.sha`` — which is nothing that update still owes (#113350 steps 3–4)."""
+    pre, pulled, checkout = "a" * 40, "b" * 40, "c" * 40
+    _patch_marker_sha(monkeypatch, checkout)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "success", "exit_code": 0,
+                "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
+                "gateway_restart": {
+                    "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],
+                    "externally_supervised_profiles": [], "killed_pids": [], "failed_units": [],
+                    "incomplete": False, "phase_error": "",
+                },
+                "fleet": [{"profile": "default", "pid": 7, "code_sha": pulled, "state": "current"}],
+                "plan": {"runtimes": [{"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.3", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""

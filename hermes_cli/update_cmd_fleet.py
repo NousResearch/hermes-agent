@@ -325,8 +325,10 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
     if not _receipt_reports_stale_runtime(receipt):
         return False
     restarted_to = _receipt_restart_phase_completed(receipt)
-    if restarted_to:
-        return not _live_fleet_covers_receipt(restarted_to, receipt, owed, accept_states=("current", "stale"))
+    # A fleet an operator has since restarted onto a moved checkout (``hermes gateway restart`` —
+    # the remedy this warning names) has nothing of the update left to owe either.
+    if restarted_to and _live_fleet_covers_receipt(restarted_to, receipt, owed, accept_states=("current", "stale")):
+        return False
     return not _live_fleet_covers_receipt(_current_checkout_sha(), receipt, owed)
 
 

@@ -433,3 +433,75 @@ def test_recovery_match_moves_forward_in_destination():
         assert len(db.get_messages(sid)) == 3
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("encoded_metadata", [False, True])
+def test_producer_durable_fields_survive_diversion_and_retry(encoded_metadata):
+    from types import SimpleNamespace
+    from agent.session_persistence import _db_flush_row
+    from agent.turn_context import substitute_api_content
+    from hermes_cli.cli_agent_setup_mixin import _collect_resume_entries
+    from hermes_state import divert_session_transcript_jsonl
+
+    sid = "durable-divert"
+    metadata = {"source": "delegation", "nested": {"task": 1}}
+    message = {
+        "role": "assistant", "content": "internal handoff", "_compressed_summary": True,
+        "display_kind": "hidden",
+        "display_metadata": json.dumps(metadata) if encoded_metadata else metadata,
+        "platform_message_id": "platform-42", "api_content": " exact API bytes ",
+        "finish_reason": "stop", "reasoning": "reason",
+        "reasoning_content": "thinking", "reasoning_details": [{"text": "detail"}],
+        "codex_reasoning_items": [{"type": "reasoning", "id": "r1"}],
+        "codex_message_items": [{"type": "message", "id": "m1"}],
+    }
+    row = _db_flush_row(SimpleNamespace(), message, False)
+    jsonl = divert_session_transcript_jsonl(sid, [row])
+    assert jsonl is not None
+    db = SessionDB()
+    try:
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        stored = db.get_messages(sid)
+        assert len(stored) == 1
+        assert stored[0]["_compressed_summary"]
+        restored = db.get_messages_as_conversation(sid)[0]
+        assert restored["display_kind"] == "hidden"
+        assert _collect_resume_entries([restored], {}, lambda text: text)[0] == []
+        assert db.has_platform_message_id(sid, message["platform_message_id"])
+        assert restored["message_id"] == message["platform_message_id"]
+        wire = dict(restored)
+        substitute_api_content(wire)
+        assert wire["content"] == message["api_content"]
+        for key in ("finish_reason", "reasoning", "reasoning_content", "reasoning_details",
+                    "codex_reasoning_items", "codex_message_items"):
+            assert restored[key] == message[key]
+        assert {key: restored["display_metadata"][key] for key in metadata} == metadata
+        assert restored["display_metadata"]["diverted_recovery_id"]
+    finally:
+        db.close()
+
+
+def test_legacy_recovery_identity_survives_durable_field_upgrade():
+    import hashlib
+
+    sid = "legacy-durable-divert"
+    legacy = {"role": "assistant", "content": "already recovered"}
+    record = {**legacy, "display_kind": "hidden", "api_content": "wire bytes",
+              "display_metadata": {"source": "original"}, "platform_message_id": "p1"}
+    jsonl = _write_diverted(get_hermes_home() / "sessions" / f"{sid}.jsonl", [record])
+    digest = hashlib.sha256(str(jsonl.resolve()).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(json.dumps(legacy, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    db = SessionDB()
+    try:
+        db.create_session(sid, "cli")
+        db.append_message(sid, **legacy, display_metadata={"diverted_recovery_id": digest.hexdigest()})
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 1
+        _write_diverted(jsonl, [record, record])
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 2
+    finally:
+        db.close()

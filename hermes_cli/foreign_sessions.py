@@ -300,6 +300,14 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     return None
 
 
+# Durable sidecars emitted by _db_flush_row and accepted by append_message.
+_DIVERTED_DURABLE_FIELDS = (
+    "finish_reason", "reasoning", "reasoning_content", "reasoning_details",
+    "codex_reasoning_items", "codex_message_items", "_compressed_summary",
+    "api_content", "display_kind", "display_metadata", "platform_message_id",
+)
+
+
 def _diverted_has_tool_graph(obj: Dict[str, Any]) -> bool:
     calls = obj.get("tool_calls")
     return bool((isinstance(calls, list) and calls) or obj.get("tool_call_id") or obj.get("tool_name"))
@@ -327,6 +335,7 @@ def _diverted_jsonl_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             record[key] = obj[key]
     if obj.get("timestamp") is not None:
         record["timestamp"] = obj["timestamp"]
+    record.update((key, obj[key]) for key in _DIVERTED_DURABLE_FIELDS if key in obj)
     return record
 
 
@@ -383,7 +392,7 @@ def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None
         tool_calls=record.get("tool_calls"),
         tool_call_id=record.get("tool_call_id"),
         timestamp=_diverted_timestamp(record),
-        display_metadata=record.get("display_metadata"),
+        **{key: record[key] for key in _DIVERTED_DURABLE_FIELDS if key in record},
     )
 
 
@@ -439,8 +448,20 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
         digest = hashlib.sha256(str(jsonl.resolve()).encode("utf-8"))
         for record in incoming:
             digest.update(b"\0")
-            digest.update(json.dumps(record, sort_keys=True, ensure_ascii=False).encode("utf-8"))
-            record["display_metadata"] = {"diverted_recovery_id": digest.hexdigest()}
+            # Keep the pre-sidecar hash projection so previously recovered rows
+            # without timestamps remain recognizable after upgrading.
+            identity = {key: value for key, value in record.items() if key not in _DIVERTED_DURABLE_FIELDS}
+            digest.update(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+            metadata = record.get("display_metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except ValueError:
+                    metadata = None
+            record["display_metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                "diverted_recovery_id": digest.hexdigest(),
+            }
         skip = _longest_already_persisted(db.get_messages(sid), incoming)
         for record in incoming[skip:]:
             _append_diverted_record(db, sid, record)

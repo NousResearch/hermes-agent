@@ -194,7 +194,9 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
         events_before = kb.list_events(conn, tid)
         monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
         monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
-        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False)
+        # raising=False: a regression that drops the module flag must fail on the
+        # symptom assertions below, not on this attribute probe.
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False, raising=False)
 
         with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
             assert kanban_tools.heartbeat_current_worker_from_env() is False

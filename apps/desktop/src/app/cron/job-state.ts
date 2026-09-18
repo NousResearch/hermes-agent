@@ -19,11 +19,16 @@ export function jobState(job: CronJob): string {
   return state || (job.enabled === false ? 'disabled' : 'scheduled')
 }
 
+export function truncateText(value: string, max: number): string {
+  const codePoints = Array.from(value)
+
+  return codePoints.length > max ? `${codePoints.slice(0, max).join('')}…` : value
+}
+
 // Human label for a job: name → first 60 of prompt → first 60 of script → id.
 // One source for the sidebar row and the Cron page so the two never drift.
 export function jobTitle(job: CronJob): string {
   const pick = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
-  const clip = (v: string) => (v.length > 60 ? `${v.slice(0, 60)}…` : v)
 
-  return pick(job.name) || clip(pick(job.prompt)) || clip(pick(job.script)) || job.id || 'Cron job'
+  return pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
 }

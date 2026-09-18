@@ -495,10 +495,13 @@ def get_profiles_sessions_sidebar(
             if slices is None:
                 continue
         # A full window means more rows remain on disk — all "load more" needs, at no cost
-        # beyond the rows already read. Discount pinned back-fills: they arrive past the
-        # LIMIT and would fake a full page on a short list.
-        unpinned_count = sum(1 for s in slices["recents"] if not s.get("pinned"))
-        recents_truncated[name] = unpinned_count >= cap["recents"]
+        # beyond the rows already read. Count every row the window admitted, pins included:
+        # a pin that made the window on its own holds a slot like any other row, so a
+        # pinned-discounted count under-reports a full page whenever a pin sits inside the
+        # window and cuts "Load more" short (#113866). Back-filled pins cannot fake a full
+        # page the other way: a pin is only back-filled past the LIMIT when the store holds
+        # more rows than the window fetched, which is exactly when truncation is true.
+        recents_truncated[name] = len(slices["recents"]) >= cap["recents"]
         profile_totals[name] = slices["usage"]
         for key in slice_scope:
             rows[key].extend(_tag_rows(slices[key], name, now))

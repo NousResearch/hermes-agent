@@ -29,6 +29,14 @@ def shared_ingress_profile(adapter: Any) -> Optional[str]:
     return getattr(adapter, "_shared_listener_profile", None) or None
 
 
+def listener_base_url(host: Any, port: Any) -> str:
+    """``http://host:port`` clients use to reach a listener bound on ``host`` (wildcards → loopback)."""
+    host = "127.0.0.1" if host is None or str(host).strip() in _WILDCARD_HOSTS else str(host)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port or 0}"
+
+
 def shared_listener_base(runner: Any) -> Optional[str]:
     """``http://host:port`` of the default profile's live listener (api_server first, then webhook)."""
     from gateway.config import Platform
@@ -37,11 +45,7 @@ def shared_listener_base(runner: Any) -> Optional[str]:
         adapter = adapters.get(platform)
         if adapter is None:
             continue
-        host = getattr(adapter, "_host", None)
-        host = "127.0.0.1" if host is None or str(host).strip() in _WILDCARD_HOSTS else str(host)
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        return f"http://{host}:{getattr(adapter, '_port', 0)}"
+        return listener_base_url(getattr(adapter, "_host", None), getattr(adapter, "_port", 0))
     return None
 
 

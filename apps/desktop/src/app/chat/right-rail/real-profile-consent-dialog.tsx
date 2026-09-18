@@ -78,7 +78,9 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     setConfig(next)
 
     try {
-      await saveHermesConfigRecord(next)
+      // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+      // snapshot would overwrite keys other surfaces changed since it loaded.
+      await saveHermesConfigRecord({ browser: { use_real_profile: true } })
       notify({ kind: 'info', title: copy.enabledTitle, message: copy.enabledMessage })
     } catch (err) {
       setConfig(config)

@@ -117,6 +117,25 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_forked_session_stays_listable_and_parent_survives_failed_fork(adapter, session_db):
+    """A fork is created before the parent is ended (#11030) and carries the explicit branch
+    marker, so it still shows in the default listing (the timestamp fallback no longer holds)."""
+    session_db.create_session("parent", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/sessions/parent/fork", json={"id": "child"})
+        assert resp.status == 201
+        listed = await (await cli.get("/api/sessions")).json()
+        ids = {row["id"] for row in listed["data"]}
+        assert {"parent", "child"} <= ids, ids
+
+        session_db.create_session("solo", "api_server")
+        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+            resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
+        assert resp.status >= 500
+    assert session_db.get_session("solo")["end_reason"] is None
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
@@ -366,6 +385,40 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(adapter, session_db):
+    """The SSE terminal payload is derived from the result, never hard-coded: an interrupted
+    turn streams ``completed: false`` / ``interrupted: true`` and ends with ``run.cancelled``,
+    and the run status matches (#111770)."""
+    import json as _json
+
+    session_id = session_db.create_session("interrupted-session", "api_server")
+
+    async def fake_run(**_kwargs):
+        return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False,
+                "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
+            body = await resp.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+        data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = _json.loads(data)
+
+    assert payloads["assistant.completed"]["completed"] is False
+    assert payloads["assistant.completed"]["interrupted"] is True
+    assert "run.cancelled" in payloads and "run.completed" not in payloads
+    assert payloads["run.cancelled"]["completed"] is False
+    assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)
@@ -487,7 +540,7 @@ def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        lambda provider: {
+        lambda provider, target_model=None: {
             "provider": provider,
             "api_key": f"sk-{provider}",
             "base_url": f"https://{provider}.example/v1",
@@ -953,3 +1006,89 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
+    adapter, session_db
+):
+    """A caller whose socket died must still be able to read what the agent said.
+
+    The session-stream route put the reply only on the SSE queue, so a client
+    that lost its connection saw the run reach "completed" with no way to learn
+    the text — indistinguishable from, and as useless as, a run that produced
+    nothing. POST /v1/runs has always recorded `output`; this pins the same for
+    this route, which is what makes GET /v1/runs/{run_id} a recovery path.
+    """
+    session_id = session_db.create_session("recover-stream-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            allow_finish.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("partial ")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "the answer worth keeping", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(
+        adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)
+    ), patch.object(
+        adapter, "_read_json_body", return_value=({"message": "stream please"}, None)
+    ), patch.object(
+        adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw["stream_delta_callback"])
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        allow_finish.set()
+        await handler_task
+
+    record = adapter._run_statuses[run_id]
+    assert record["status"] == "completed"
+    # The whole point: the text survived the dead socket.
+    assert record.get("output") == "the answer worth keeping"
+
+    # And it is reachable through the documented read path, not just the dict.
+    get_request = MagicMock()
+    get_request.headers = {}
+    get_request.match_info = {"run_id": run_id}
+    response = await adapter._handle_get_run(get_request)
+    assert response.status == 200
+    assert "the answer worth keeping" in response.text

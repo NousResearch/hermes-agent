@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # before any completion chunk arrives; distinct from generic JSON parse errors.
 PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
 
+# Same rejection with an EMPTY payload: the frame carried no ``data`` at all (``data:`` /
+# ``event: ping`` / ``id:`` with no content). Per the SSE spec those are legal keepalives /
+# no-ops, not malformed payloads — a degraded gateway answers every streaming request with
+# them, so the session switches to non-streaming instead of re-streaming into the same
+# window. See ``chat_completion_helpers._maybe_disable_streaming``.
+PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE = "provider_stream_empty_frame"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -85,13 +92,24 @@ class ClassifiedError:
 
 # Billing exhaustion (not transient rate limit). "out of extra usage" is the
 # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400).
+# The Nous gateway's own words for "the free tier will not serve this" — a billing wall for a
+# named account, the tier refusing for an anonymous one (see ``_WELCOME_403_NAMED_PATTERNS``).
+_FREE_TIER_REFUSAL_PATTERNS = ("model_not_supported_on_free_tier", "not available on the free tier")
 _BILLING_PATTERNS = (
     "insufficient credits", "insufficient_quota", "insufficient balance", "credit balance",
     "credits exhausted", "credits have been exhausted", "requires available credits",
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
-    "model_not_supported_on_free_tier", "not available on the free tier",
+    # OpenRouter org-level monthly cap arrives as 403 "Budget limit exceeded (monthly limit)" (#107166):
+    # account exhaustion, not a credential problem.
+    "budget limit exceeded",
+    *_FREE_TIER_REFUSAL_PATTERNS,
+    # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
+    # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing
+    # limit" free text is NOT matched: substring rules can't negate the
+    # "non-terminal billing limit" wording, and the structured code covers it.
+    "hard billing limit",
 )
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
@@ -107,7 +125,12 @@ _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
     "no_usable_credits", "balance_depleted", "model_not_supported_on_free_tier",
-    "member_spend_cap_exceeded", _XAI_SPENDING_LIMIT_ERROR_CODE,
+    "member_spend_cap_exceeded", "terminal_quota_exhausted", _XAI_SPENDING_LIMIT_ERROR_CODE,
+    # OpenAI (and OpenAI-compatible aggregators) spend/usage-limit family:
+    # a credit balance or an org/project spend or usage cap is exhausted —
+    # terminal for this credential until limits are raised.
+    "credit_balance_exhausted", "organization_spend_limit_exceeded",
+    "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -156,10 +179,16 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
 # with wording that names no image-size vocabulary — without this pattern it
 # fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
+# Byte caps enforced with a 400 instead of a 413 (#112473): NVIDIA NIM caps the whole
+# payload ("Please make sure your payload is below 26214400 bytes in size"); Alibaba
+# DashScope caps the base64 image string via Jackson ("String value length (N) exceeds the
+# maximum allowed (M, from `StreamReadConstraints.getMaxStringLength()`)"). Only an inline
+# image reaches those sizes, so shrinking is the recovery; the method-scoped Jackson token
+# is used because the bare class name also appears when Jackson caps a *token* length.
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
-    "patches after processing",
+    "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -173,11 +202,16 @@ _IMAGE_CORRUPT_PATTERNS = (
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
 # not set", Alibaba, OpenAI-compat long tail). Recovery: strip image parts from
 # tool messages, remember (provider, model), retry. (#27344)
+# NVIDIA NIM's Rust gateway never names the field: its serde rejection says the
+# body "did not match any variant of untagged enum
+# ChatCompletionRequestToolMessageContent", which is the same list-type tool
+# content that every other wording here describes (#111231).
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
+    "chatcompletionrequesttoolmessagecontent",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -240,6 +274,16 @@ _INVALID_MESSAGE_BODY_PATTERNS = (
     "must have non-empty content", "messages must have non-empty", "invalid_request_body",
     "text content blocks must be non-empty", "content field is required",
     "messages: at least one message is required", _NO_USER_QUERY_SIGNAL,
+)
+
+# Proxy-side rejection of the model's own tool-call JSON (Ollama "invalid tool call arguments",
+# OpenRouter-wrapped "function_call arguments"). Checked before the generic 400 validation and
+# overflow heuristics: on a large session the bare message would otherwise read as overflow.
+_MALFORMED_TOOL_ARGS_PATTERNS = (
+    "invalid tool call arguments", "invalid tool_call arguments", "invalid tool_calls arguments",
+    "invalid function call arguments", "invalid function_call arguments",
+    "tool call arguments are invalid", "tool_call arguments are invalid",
+    "function call arguments are invalid", "function_call arguments are invalid",
 )
 
 # Malformed request, identical on every retry. Some gateways (codex.nekos.me)
@@ -374,14 +418,19 @@ _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
-_V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, retryable=False)
-_V_SSL_CERT = _v(_R.ssl_cert_verification, retryable=False)
+# A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
+_V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
+_V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
 _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+# The MODEL emitted unparseable tool-call JSON and the proxy (Ollama, OpenRouter) rejected it: no
+# other provider can fix that output, so falling back only replays the same broken turn 4-5 times
+# (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
+_V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
@@ -479,6 +528,8 @@ class _Ctx:
     approx_tokens: int
     context_length: int
     num_messages: int
+    base_url: str = ""  # the route the call went to; "" when the caller did not say
+    anonymous: bool = False
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -515,6 +566,13 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+# A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
+# tier refusing. The free-tier refusal phrases are left OUT: on the free route they mean exactly
+# "the tier refused", and an anonymous session has no credits to check.
+_WELCOME_403_NAMED_PATTERNS = _CONTENT_POLICY_BLOCKED_PATTERNS + tuple(
+    p for p in _BILLING_PATTERNS if p not in _FREE_TIER_REFUSAL_PATTERNS)
+
+
 def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     """The Nous inference gateway's welcome-tier (free tier) refusals, read from the structured body.
 
@@ -528,6 +586,14 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     from hermes_cli.anon_auth import (
         WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
     status = c.status_code
+    if not c.anonymous:
+        # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
+        # one welcome refusal it does receive is the gateway's mirror 400 on the welcome host; its
+        # reconnect copy stands, only the sign-in card is withheld (``_welcome_surface_kind``).
+        if c.provider == "nous" and status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
+            return _v(_R.format_error, retryable=False, should_fallback=True,
+                      error_context={"welcome_route": "named_on_welcome_host"})
+        return None
     if status == 429:
         refusal = parse_welcome_refusal(c.body)
         if refusal is None:
@@ -538,7 +604,10 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         if refusal["retry_after"] > 0:
             ctx["reset_at"] = time.time() + refusal["retry_after"]
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
-    kind = welcome_route_refusal(status, c.msg)
+    # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
+    # or a billing wall on the welcome host keeps its own classification (and its own recovery).
+    plain_403 = not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
+    kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None
     ctx = {"welcome_route": kind}
@@ -674,8 +743,16 @@ _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
 def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
+    base_url: str = "",
+    api_key: Any = None,
 ) -> ClassifiedError:
-    """Classify an API error into a structured recovery recommendation (see ``_STAGES``)."""
+    """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
+
+    ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
+    dark-tier 403 on it because that refusal carries no distinguishing message.
+    ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
+    The credential is never included in the returned context."""
+    from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
@@ -683,7 +760,8 @@ def classify_api_error(
     body = _extract_error_body(error)
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
-        approx_tokens, context_length, num_messages,
+        approx_tokens, context_length, num_messages, str(base_url or ""),
+        anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
@@ -710,6 +788,11 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    # A structured billing code is decisive: LiteLLM stamps
+    # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
+    # this handler always returns, so _by_error_code never sees the code.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):
@@ -749,9 +832,49 @@ def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
 
 
+def _has_large_inline_image(content: Any) -> bool:
+    """True when a rejected ``content`` list carries a ``data:image/`` part the shrink pass would rewrite
+    (over ``conversation_compression._IMAGE_SHRINK_TARGET_BYTES``; below it a shrink retry is a no-op)."""
+    from agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
+
+    for part in content if isinstance(content, list) else ():
+        image = part.get("image_url") if isinstance(part, dict) else None
+        url = image.get("url") if isinstance(image, dict) else image
+        if isinstance(url, str) and url.startswith("data:image/") and len(url) > _IMAGE_SHRINK_TARGET_BYTES:
+            return True
+    return False
+
+
+def _oversized_message_content_rejection(body: Any) -> bool:
+    """400 rejecting a *message* ``content`` field whose rejected value carries a large inline image.
+
+    Nebius Token Factory caps a single image at 10 MiB and reports the violation through the field that
+    failed to coerce — pydantic ``{"type": "string_type", "loc": ["body","messages",N,"content","str"],
+    "msg": "Input should be a valid string", "input": [...]}`` — naming no size vocabulary, so the
+    keyword multimodal *tool*-content rule (#104731) claimed it and spent its retry stripping tool images
+    that were never there (#112473). The same list-shaped content with a small image succeeds, so the
+    image bytes are the trigger. Tool-scoped locs (``messages.N.tool.content.str``) stay with #104731.
+    """
+    details = body.get("detail") if isinstance(body, dict) else None
+    for detail in details if isinstance(details, list) else ():
+        loc = detail.get("loc") if isinstance(detail, dict) else None
+        if detail.get("type") != "string_type" or not isinstance(loc, list) or len(loc) < 2:
+            continue
+        parts = [str(x).lower() for x in loc]
+        if parts[:2] == ["body", "messages"] and parts[-2:] == ["content", "str"] and not any(
+            x.startswith("tool") for x in parts
+        ) and _has_large_inline_image(detail.get("input")):
+            return True
+    return False
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
+    # A size cap reported *through* a message content field must beat the keyword
+    # multimodal rule, which would otherwise claim "input should be a valid string".
+    if _oversized_message_content_rejection(c.body):
+        return _V_IMAGE_TOO_LARGE
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
@@ -760,6 +883,12 @@ def _classify_400(c: _Ctx) -> Verdict:
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
     ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
+        "encrypted content could not be decrypted or parsed" in msg
+    ) or (
+        # OpenCode Zen wraps this OpenAI replay rejection in ``invalid_request_error`` (#111309).
+        "encrypted_content" in msg and "was not issued to this caller" in msg
+    ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
     ):
@@ -773,6 +902,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
     if _is_server_injected_param_rejection(msg, c.provider_slug):
         return _V_SERVER_ERROR
+    if any(p in msg for p in _MALFORMED_TOOL_ARGS_PATTERNS):
+        return _V_MALFORMED_TOOL_ARGS
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR
@@ -802,6 +933,13 @@ def _classify_400(c: _Ctx) -> Verdict:
     return _V_FORMAT_ERROR
 
 
+def _classify_image_tool_422(c: _Ctx) -> Verdict:
+    """422: pydantic relays report the same content-field shapes as 400 (#104731, #112473)."""
+    if _oversized_message_content_rejection(c.body):
+        return _V_IMAGE_TOO_LARGE
+    return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
+
+
 # 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
@@ -809,7 +947,7 @@ def _classify_400(c: _Ctx) -> Verdict:
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
-    422: lambda c: _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR,
+    422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

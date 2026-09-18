@@ -158,15 +158,13 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def _tail_trunc(text: str, limit: int) -> str:
-    """Tail-truncate to ``limit`` chars with ``...`` (0 = unlimited; no guard for limit <= 3)."""
-    return text[:limit - 3] + "..." if limit > 0 and len(text) > limit else text
-
-
-def _truncate_preview(text: str, max_len: int | None) -> str:
-    if max_len and max_len > 0 and len(text) > max_len:
-        return "." * max_len if max_len <= 3 else text[:max_len - 3] + "..."
-    return text
+def _tail_trunc(text: str, limit: int | None) -> str:
+    """Tail-truncate to ``limit`` chars with ``...`` (0/None = unlimited). The result never
+    exceeds ``limit``: for 1-3 the ellipsis itself is clipped (``text[:limit - 3]`` would go
+    negative and hand back almost the whole string, #9439)."""
+    if not limit or limit <= 0 or len(text) <= limit:
+        return text
+    return "." * limit if limit <= 3 else text[:limit - 3] + "..."
 
 
 def _clip(text: str, n: int) -> str:
@@ -340,7 +338,7 @@ def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:
     if not isinstance(tasks, list):
         return []
     raw_goals = (task.get("goal") for task in tasks if isinstance(task, dict))
-    return [_truncate_preview(("?" if g is None else _oneline(str(g))) or "?", per_goal_len) for g in raw_goals]
+    return [_tail_trunc(("?" if g is None else _oneline(str(g))) or "?", per_goal_len) for g in raw_goals]
 
 
 def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
@@ -374,21 +372,21 @@ def _delegate_action_preview(args: dict) -> str | None:
 def _preview_browser_exec(args: dict, max_len: int) -> str | None:
     label = _browser_exec_step_label(args)
     if label is not None:
-        return _truncate_preview(label, max_len)
-    return _truncate_preview(_oneline(str(args.get("code", "") or "")), max_len) or None
+        return _tail_trunc(label, max_len)
+    return _tail_trunc(_oneline(str(args.get("code", "") or "")), max_len) or None
 
 
 def _preview_delegate_task(args: dict, max_len: int) -> str | None:
     action_preview = _delegate_action_preview(args)
     tasks = args.get("tasks")
     if action_preview is not None:
-        return _truncate_preview(action_preview, max_len)
+        return _tail_trunc(action_preview, max_len)
     if tasks and isinstance(tasks, list):
         goals = _delegate_task_goals(tasks, per_goal_len=40)
         preview = f"{len(goals)} tasks: " + " | ".join(goals) if goals else f"{len(tasks)} parallel tasks"
-        return _truncate_preview(preview, max_len)
+        return _tail_trunc(preview, max_len)
     goal = args.get("goal", "")
-    return None if goal is None else _truncate_preview(_oneline(str(goal)), max_len) or None
+    return None if goal is None else _tail_trunc(_oneline(str(goal)), max_len) or None
 
 
 def _preview_process_manage(args: dict, _max_len: int) -> str | None:
@@ -407,14 +405,14 @@ def _preview_todo_list(args: dict, _max_len: int) -> str:
 def _preview_shell(key: str):
     def _build(args: dict, max_len: int) -> str | None:
         command = args.get(key)
-        return None if command is None else _truncate_preview(summarize_shell_command(str(command)), max_len) or None
+        return None if command is None else _tail_trunc(summarize_shell_command(str(command)), max_len) or None
     return _build
 
 
 def _preview_read_file(args: dict, max_len: int) -> str | None:
     path = args.get("path") or args.get("file") or args.get("filepath")
     label = (Path(str(path).replace("\\", "/")).name or str(path)) if path is not None else None
-    return None if label is None else _truncate_preview(f"{label} {_read_file_line_label(args)}".strip(), max_len) or None
+    return None if label is None else _tail_trunc(f"{label} {_read_file_line_label(args)}".strip(), max_len) or None
 
 
 def _preview_memory(args: dict, _max_len: int) -> str:
@@ -435,7 +433,7 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
     name = _oneline(str(args.get("name") or ""))
     file_path = args.get("file_path")
     label = (f"{name} → {_oneline(str(file_path))}" if name else _oneline(str(file_path))) if file_path else name
-    return _truncate_preview(label, max_len) or None
+    return _tail_trunc(label, max_len) or None
 
 
 # Tool-specific preview builders: f(args, max_len) -> preview. Tools not listed
@@ -475,7 +473,7 @@ def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, ma
     """Compact preview plus explicit truncation/URL facts (the uncapped preview is
     rebuilt from the arguments so an upstream display cap cannot drop its link target)."""
     full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
-    text = _truncate_preview(full_text, max_len)
+    text = _tail_trunc(full_text, max_len)
     truncated = text != full_text
     url = _http_url(_display_url(full_text)) if truncated else None
     return ToolPreview(text=text, truncated=truncated, url=url)
@@ -890,6 +888,8 @@ class KawaiiSpinner:
 # ── Cute tool message (completion line that replaces the spinner) ─────────
 
 _ERROR_SUFFIX_MAX_LEN = 48
+# A degraded backend (Docker down, SSH host unreachable) needs the whole reason plus the fix hint.
+_DEGRADED_SUFFIX_MAX_LEN = 200
 
 
 def _trim_error(msg: str) -> str:
@@ -902,17 +902,32 @@ def _trim_error(msg: str) -> str:
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def _degraded_suffix(data: dict) -> str:
+    """`` [<reason> — <retry_hint>]`` for a ``status: degraded`` terminal result (hint omitted when empty)."""
+    reason = str(data.get("reason") or data.get("error") or "terminal backend unavailable").strip()
+    hint = str(data.get("retry_hint") or "").strip()
+    text = f"{reason} — {hint}" if hint else reason
+    return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+
+def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+
+    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
+    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
+    if isinstance(data, dict) and data.get("user_summary"):
+        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         if exit_code is None or exit_code == 0:
             return False, ""
+        if data.get("status") == "degraded":
+            return True, _degraded_suffix(data)
         err_msg = data.get("error")
         return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
 
@@ -945,7 +960,9 @@ def _cute_path(p) -> str:
     """Head-truncate a path to the configured preview cap, keeping the filename end."""
     p = str(p)
     limit = _tool_preview_max_len
-    return ("..." + p[-(limit-3):]) if limit and len(p) > limit else p
+    if not limit or len(p) <= limit:
+        return p
+    return "." * limit if limit <= 3 else "..." + p[-(limit - 3):]
 
 
 def _cute_web_extract(a: dict, _r) -> str:

@@ -24,6 +24,8 @@ from hermes_time import now as _hermes_now
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
+# An adapter traceback is not a log line; bound what one attempt may store.
+MAX_DELIVERY_ERROR_CHARS = 4000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
@@ -81,6 +83,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "ON executions(status, claimed_at DESC, id DESC)"
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
+    add_column_if_missing(conn, "executions", "delivery_error", "delivery_error TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
@@ -244,11 +247,31 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     return record
 
 
+def _bounded_delivery_error(delivery_error: Optional[str]) -> Optional[str]:
+    """Normalize a delivery reason for storage: blank is no reason, and a multi-KB adapter
+    traceback is capped rather than allowed to bloat every retained attempt."""
+    if delivery_error is None:
+        return None
+    text = str(delivery_error)
+    if not text.strip():
+        return None
+    if len(text) > MAX_DELIVERY_ERROR_CHARS:
+        return text[:MAX_DELIVERY_ERROR_CHARS] + "… [truncated]"
+    return text
+
+
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, delivery_error: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten."""
+    """Write a terminal result once; terminal attempts cannot be rewritten.
+
+    ``delivery_error`` is WHY the result never reached its target, and is deliberately not folded
+    into ``error``: ``error`` means the job itself failed, and a successful run whose delivery
+    failed is a different fact (conflating them would mislabel ``error_class`` telemetry). It is
+    therefore stored independently of ``success`` — the jobs store keeps only the latest reason per
+    job and the next run overwrites it, so this row is the sole durable per-attempt record.
+    """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
@@ -256,10 +279,11 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL, delivery_outcome=?, delivery_error=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, delivery_outcome, _bounded_delivery_error(delivery_error),
+             execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None

@@ -570,20 +570,24 @@ class EmailAdapter(BasePlatformAdapter):
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
         """Parse one RFC822 payload into a dispatchable dict; ``None`` for automated senders. Raises on pathological input (caller logs + continues)."""
         msg = email_lib.message_from_bytes(raw_email)
-        sender_addr, sender_name = _extract_email_address(msg.get("From", "")), _decode_header_value(msg.get("From", ""))
+        # ``email`` can return a Header object for malformed/raw non-ASCII
+        # headers. Normalize at this parser boundary because the helpers below
+        # (and the dispatched message contract) operate on strings.
+        sender_raw = str(msg.get("From", ""))
+        sender_addr, sender_name = _extract_email_address(sender_raw), _decode_header_value(sender_raw)
         if "<" in sender_name:
             sender_name = sender_name.split("<")[0].strip().strip('"')
-        subject = _decode_header_value(msg.get("Subject", "(no subject)"))
-        if _is_automated_sender(sender_addr, dict(msg.items())):
+        subject = _decode_header_value(str(msg.get("Subject", "(no subject)")))
+        if _is_automated_sender(sender_addr, {key: str(value) for key, value in msg.items()}):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None
         # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
-                "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
+                "message_id": str(msg.get("Message-ID", "")), "in_reply_to": str(msg.get("In-Reply-To", "")),
                 "body": _extract_text_body(msg),
                 "attachments": _extract_attachments(msg, skip_attachments=self._skip_attachments),
-                "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
+                "date": str(msg.get("Date", "")), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
 
     @staticmethod
     def _allow_all_senders() -> bool:

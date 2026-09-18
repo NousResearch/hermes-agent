@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from email.header import Header
 from unittest.mock import patch, MagicMock, AsyncMock, ANY
 
 from gateway.platforms.base import SendResult
@@ -551,6 +552,32 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_parse_fetched_message_normalizes_header_objects(self):
+        """Malformed non-ASCII headers must not leak Header objects into helpers."""
+        adapter = self._make_adapter()
+        parsed_message = MagicMock()
+        headers = {
+            "From": Header("M\u00f6bius <user@example.com>", "utf-8"),
+            "Subject": Header("R\u00e9sum\u00e9", "utf-8"),
+            "Message-ID": Header("<message@example.com>", "utf-8"),
+            "In-Reply-To": Header("<parent@example.com>", "utf-8"),
+            "Date": Header("Tue, 17 Sep 2026 12:00:00 +0000", "utf-8"),
+            "Auto-Submitted": Header("no", "utf-8"),
+        }
+        parsed_message.get.side_effect = lambda name, default="": headers.get(name, default)
+        parsed_message.items.return_value = list(headers.items())
+
+        with patch("plugins.platforms.email.adapter.email_lib.message_from_bytes", return_value=parsed_message), \
+             patch("plugins.platforms.email.adapter._extract_text_body", return_value="body"), \
+             patch("plugins.platforms.email.adapter._extract_attachments", return_value=[]), \
+             patch("plugins.platforms.email.adapter._verify_sender_authentication", return_value=(True, "")):
+            result = adapter._parse_fetched_message(b"1", b"raw message")
+
+        self.assertEqual(result["sender_addr"], "user@example.com")
+        self.assertEqual(result["subject"], str(headers["Subject"]))
+        for field in ("sender_name", "subject", "message_id", "in_reply_to", "date"):
+            self.assertIsInstance(result[field], str)
 
 
 class TestPollLoop(unittest.TestCase):

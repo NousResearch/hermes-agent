@@ -105,7 +105,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_tools import _scan_cron_skill_assembled  # noqa: E402
+from tools.cronjob_prompt_scan import _scan_cron_skill_assembled  # noqa: E402
 
 
 class TestScanCronSkillAssembled:
@@ -206,6 +206,15 @@ class TestCronjobRequirements:
 
         assert check_cronjob_requirements() is True
 
+
+    def test_accepts_external_cron_worker_with_presence_vars_stripped(self, monkeypatch):
+        """``_launch_external_cron_worker`` strips the presence trio from the worker env; the
+        cron session marker alone must keep ``cron.allow_agent_scheduling: true`` effective."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+        assert check_cronjob_requirements() is True
 
     @pytest.mark.parametrize(
         "var_name",
@@ -644,6 +653,45 @@ class TestLocalDeliveryNotice:
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
+
+    def test_resnap_requires_scope(self):
+        # resnap with neither job_id nor all=true must refuse to guess scope.
+        result = json.loads(cronjob(action="resnap"))
+        assert result["success"] is False
+        assert "resnap requires either" in result["error"]
+
+    def test_resnap_single_job(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        # Deterministic global resolution for the snapshot recompute.
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            created = json.loads(
+                cronjob(action="create", prompt="Check", schedule="every 1h")
+            )
+            job_id = created["job_id"]
+            result = json.loads(cronjob(action="resnap", job_id=job_id))
+        assert result["success"] is True
+        assert "remains unpinned" in result["message"]
+        assert result["job"]["job_id"] == job_id
+
+    def test_resnap_all(self, monkeypatch, tmp_path):
+        from unittest.mock import patch as _patch
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with _patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            cronjob(action="create", prompt="One", schedule="every 1h")
+            cronjob(action="create", prompt="Two", schedule="every 2h")
+            result = json.loads(cronjob(action="resnap", all=True))
+        assert result["success"] is True
+        assert "Refreshed inference snapshots on" in result["message"]
+        assert len(result["updated_jobs"]) >= 1
 
 
 class TestValidateCronBaseUrl:

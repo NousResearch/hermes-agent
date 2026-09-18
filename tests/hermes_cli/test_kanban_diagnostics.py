@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_diagnostics as kd
 
 
@@ -81,6 +82,19 @@ def _run(outcome="completed", run_id=1, error=None):
 
 
 
+def test_running_with_open_parents_fires_only_while_running():
+    """A running card whose parent is not terminal is flagged; the same graph
+    on a ready/todo card (the gate is holding it) and a done parent are not."""
+    graph = {"parents": [{"id": "t_parent", "title": "p", "status": "todo"}], "children": []}
+    diags = kd.compute_task_diagnostics(_task(status="running", started_at=100), [], [], graph=graph)
+    assert [d.kind for d in diags] == ["running_with_open_parents"]
+    assert diags[0].data["open_parents"] == [{"id": "t_parent", "status": "todo"}]
+    assert "hermes kanban unlink t_parent t_demo00" in diags[0].actions[0].payload["command"]
+    assert kd.compute_task_diagnostics(_task(status="todo"), [], [], graph=graph) == []
+    done_graph = {"parents": [{"id": "t_parent", "title": "p", "status": "done"}], "children": []}
+    assert kd.compute_task_diagnostics(_task(status="running"), [], [], graph=done_graph) == []
+
+
 def test_stuck_in_blocked_fires_past_threshold():
     now = int(time.time())
     task = _task(status="blocked")
@@ -138,7 +152,7 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
     as well as dataclass Task / plain dict. The API layer passes Row
     objects directly.
     """
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="p", assignee="w")
         real = kb.create_task(conn, title="r", assignee="x", created_by="w")

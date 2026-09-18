@@ -12,16 +12,18 @@ from __future__ import annotations
 import pytest
 
 import tools.approval as approval_mod
+from tools import approval_context, approval_human_wait
 import tools.terminal_tool as terminal_tool
+import tools.terminal_tool_sudo as terminal_tool_sudo
 
 
 @pytest.fixture(autouse=True)
 def _clean_human_wait_state():
-    with approval_mod._human_wait_lock:
-        approval_mod._human_wait_states.clear()
+    with approval_human_wait._human_wait_lock:
+        approval_human_wait._human_wait_states.clear()
     yield
-    with approval_mod._human_wait_lock:
-        approval_mod._human_wait_states.clear()
+    with approval_human_wait._human_wait_lock:
+        approval_human_wait._human_wait_states.clear()
 
 
 class TestSudoWaitExcludedFromDeadlines:
@@ -31,7 +33,7 @@ class TestSudoWaitExcludedFromDeadlines:
     def test_sudo_callback_wait_accrues_human_wait(self, monkeypatch):
         session = "sudo-test-session"
         monkeypatch.setattr(
-            approval_mod, "get_current_session_key", lambda default="": session
+            approval_context, "get_current_session_key", lambda default="": session
         )
 
         def _slow_cb():
@@ -43,11 +45,11 @@ class TestSudoWaitExcludedFromDeadlines:
         monkeypatch.setattr(
             terminal_tool, "_get_sudo_password_callback", lambda: _slow_cb
         )
-        before = approval_mod.human_wait_seconds(session)
-        pw = terminal_tool._prompt_for_sudo_password(timeout_seconds=5)
+        before = approval_human_wait.human_wait_seconds(session)
+        pw = terminal_tool_sudo._prompt_for_sudo_password(timeout_seconds=5)
 
         assert pw == "pw"
-        after = approval_mod.human_wait_seconds(session)
+        after = approval_human_wait.human_wait_seconds(session)
         assert after > before, (
             f"sudo wait did not accrue human-wait time ({before} -> {after}); "
             "the wait still counts against tool deadlines"
@@ -57,7 +59,7 @@ class TestSudoWaitExcludedFromDeadlines:
         """The non-callback path (thread + join) must be wrapped too."""
         session = "sudo-join-session"
         monkeypatch.setattr(
-            approval_mod, "get_current_session_key", lambda default="": session
+            approval_context, "get_current_session_key", lambda default="": session
         )
         monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: None)
         monkeypatch.setattr(terminal_tool, "_is_windows", False, raising=False)
@@ -65,12 +67,12 @@ class TestSudoWaitExcludedFromDeadlines:
         # read_password_thread writes into `result` via closure in the real
         # code; stub the thread target by making join return quickly and the
         # result dict empty -> returns "" but the wait must still be wrapped.
-        before = approval_mod.human_wait_seconds(session)
-        pw = terminal_tool._prompt_for_sudo_password(timeout_seconds=1)
+        before = approval_human_wait.human_wait_seconds(session)
+        pw = terminal_tool_sudo._prompt_for_sudo_password(timeout_seconds=1)
         assert pw == ""
         # The wrap is structural; a zero-length join may not move the clock,
         # so assert only that no exception escaped and state stays consistent.
-        assert approval_mod.human_wait_seconds(session) >= before
+        assert approval_human_wait.human_wait_seconds(session) >= before
 
 
 if __name__ == "__main__":

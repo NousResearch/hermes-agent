@@ -12,10 +12,8 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.cron import (
-    _contains_gateway_lifecycle_command,
-    cron_command,
-)
+from cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
+from hermes_cli.cron import cron_command
 
 
 # ---------------------------------------------------------------------------
@@ -1777,17 +1775,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         rlg.clear()
 
-
-
-
-    def test_is_tripped_reads_without_recording(self):
-        import gateway.restart_loop_guard as rlg
-        rlg.record_restart_interrupted_boot(60, now=1000.0)
-        rlg.record_restart_interrupted_boot(60, now=1001.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1002.0) is False
-        rlg.record_restart_interrupted_boot(60, now=1002.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1003.0) is True
-
     def test_clear_resets(self):
         import gateway.restart_loop_guard as rlg
         rlg.check_and_record(3, 60, now=1000.0)
@@ -1821,7 +1808,6 @@ class TestRestartLoopGuard:
         rlg.check_and_record(3, 60, now=1150.0)
         # 1h later: unrelated restart, chain reset to a single boot.
         assert rlg.check_and_record(3, 60, now=4800.0) is False
-        assert rlg.is_restart_loop_tripped(3, 60, now=4801.0) is False
 
     def test_fast_respawn_loop_still_trips(self):
         """#30719 regression: the original ~10s loop must keep tripping."""
@@ -1850,7 +1836,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
-        assert rlg.is_restart_loop_tripped(0, 60, now=1451.0) is False
 
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
@@ -1894,6 +1879,33 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
         assert any("head -c" in c for c in calls)
+
+
+    def test_unscannable_executed_script_names_the_reason(self, monkeypatch, tmp_path):
+        """A script the command EXECUTES that the guard cannot scan (here a live SQLite database)
+        still fails closed, but the error names that reason instead of claiming a lifecycle
+        command the model then rewords and retries in a loop (#113944)."""
+        import tools.terminal_tool as tt
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        db = tmp_path / "state.db"
+        conn = connect_tracked(db)
+
+        class _LocalEnv:
+            env = {}
+            cwd = str(tmp_path)
+            def execute(self, command, **kwargs):
+                return {"output": "", "returncode": 1}
+
+        self._patch_env(monkeypatch, _LocalEnv(), inside_gateway=True)
+        try:
+            result = json.loads(tt.terminal_tool(command=f"bash {db}"))
+        finally:
+            conn.close()
+
+        assert result["exit_code"] == 1
+        assert "could not scan" in result["error"] and "SQLite" in result["error"]
+        assert "cannot restart, stop, or uninstall" not in result["error"]
 
 
 class TestCronCreateLifecycleBlockExtra:

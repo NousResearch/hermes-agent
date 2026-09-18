@@ -13,6 +13,7 @@ complete`` instead of the success line, and gateway mode writes ``1`` to
 import pytest
 
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_maint as update_cmd_maint
 from hermes_cli.update_cmd import (
     _print_update_summary,
     _rebuild_desktop_after_update,
@@ -50,6 +51,10 @@ def desktop_env(tmp_path, monkeypatch):
         def _run_logged_subprocess(cmd, cwd=None, env=None):
             calls["builds"] += 1
             return _Result(1, stdout="Error: [stage-native-deps] boom")
+
+        @staticmethod
+        def _install_rebuilt_desktop_app(_desktop_dir):
+            return [], []
 
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
     monkeypatch.setattr(
@@ -137,9 +142,15 @@ def test_summary_keeps_success_banner_when_desktop_ok(capsys, monkeypatch):
     monkeypatch.setattr(
         update_cmd, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
     )
+    monkeypatch.setattr(
+        update_cmd_maint, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
+    )
     monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda *a, **k: "")
     monkeypatch.setattr(
         update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None)
+    )
+    monkeypatch.setattr(
+        update_cmd_maint, "_post_update_sqlite_runtime_status", lambda: (True, None)
     )
     _print_update_summary(
         node_failures=[],

@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 import pytest
+import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 # Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
 # at module level. Run them in the same xdist worker so they don't race
@@ -274,7 +275,7 @@ def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog)
 
 def test_trusted_proxy_allowlist_rejects_unbounded_entries(caplog):
     """Wildcard and whole-address-space trust must fail closed."""
-    trusted = web_server._dashboard_forwarded_allow_ips({
+    trusted = _web_server_lifecycle._dashboard_forwarded_allow_ips({
         "trusted_proxies": ["*", "0.0.0.0/0", "::/0", "172.18.0.7"],
     })
 
@@ -288,7 +289,7 @@ def test_trusted_container_proxy_controls_https_detection():
     from starlette.requests import Request
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-    trusted = web_server._dashboard_forwarded_allow_ips({
+    trusted = _web_server_lifecycle._dashboard_forwarded_allow_ips({
         "trusted_proxies": ["172.18.0.0/16"],
     })
 

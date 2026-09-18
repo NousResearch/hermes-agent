@@ -13,17 +13,17 @@ import threading
 
 import pytest
 
-from tools import tts_tool
+from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
 
 
 @pytest.fixture(autouse=True)
 def _clean_lifecycle(monkeypatch):
-    tts_tool._reset_tts_leases_for_tests()
-    for cache in tts_tool._LOCAL_TTS_MODEL_CACHES.values():
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
         cache.clear()
     yield
-    tts_tool._reset_tts_leases_for_tests()
-    for cache in tts_tool._LOCAL_TTS_MODEL_CACHES.values():
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
         cache.clear()
 
 
@@ -67,13 +67,13 @@ def fake_piper(monkeypatch, tmp_path):
 
 
 def test_warm_loads_piper_into_synthesis_cache(fake_piper, tmp_path):
-    result = tts_tool.warm_tts_provider(fake_piper)
+    result = tts_tool_lifecycle.warm_tts_provider(fake_piper)
 
     assert result["warmed"] is True
     assert result["action"] == "loaded"
     assert result["provider"] == "piper"
     assert _FakePiperVoice.loads == 1
-    assert len(tts_tool._piper_voice_cache) == 1
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
     # The load that would have happened on the first reply is already done:
     # synthesis reuses the warmed instance without loading again.
@@ -84,15 +84,15 @@ def test_warm_loads_piper_into_synthesis_cache(fake_piper, tmp_path):
 
 
 def test_warm_twice_is_a_cache_hit(fake_piper):
-    tts_tool.warm_tts_provider(fake_piper)
-    second = tts_tool.warm_tts_provider(fake_piper)
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    second = tts_tool_lifecycle.warm_tts_provider(fake_piper)
 
     assert second["action"] == "cached"
     assert _FakePiperVoice.loads == 1
 
 
 def test_warm_reads_configured_provider_when_none_given(fake_piper):
-    result = tts_tool.warm_tts_provider()
+    result = tts_tool_lifecycle.warm_tts_provider()
     assert result["provider"] == "piper"
     assert result["action"] == "loaded"
 
@@ -102,16 +102,16 @@ def test_warm_never_raises_on_engine_failure(monkeypatch):
         raise ImportError("No module named 'piper'")
 
     monkeypatch.setattr(tts_tool, "_import_piper", _boom)
-    result = tts_tool.warm_tts_provider({"provider": "piper"})
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "piper"})
 
     assert result["warmed"] is False
     assert result["action"] == "error"
     assert "piper" in result["error"]
-    assert tts_tool._piper_voice_cache == {}
+    assert tts_tool_local._piper_voice_cache == {}
 
 
 def test_warm_is_noop_for_cloud_provider_without_lazy_sdk(monkeypatch):
-    result = tts_tool.warm_tts_provider({"provider": "openai"})
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "openai"})
     assert result == {"provider": "openai", "warmed": False, "action": "noop"}
 
 
@@ -123,7 +123,7 @@ def test_warm_lazy_sdk_provider_reports_cached_when_installed(monkeypatch):
         ensure=lambda *a, **k: pytest.fail("ensure must not run when the SDK is present"),
     )
     monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
-    result = tts_tool.warm_tts_provider({"provider": "edge"})
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
     assert result["warmed"] is True
     assert result["action"] == "cached"
 
@@ -137,7 +137,7 @@ def test_warm_lazy_sdk_provider_installs_when_missing(monkeypatch):
         ensure=lambda feature, prompt: calls.append((feature, prompt)),
     )
     monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
-    result = tts_tool.warm_tts_provider({"provider": "edge"})
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
     assert result["action"] == "installed"
     assert calls == [("tts.edge", False)]
 
@@ -148,24 +148,24 @@ def test_warm_lazy_sdk_provider_installs_when_missing(monkeypatch):
 
 
 def test_release_drops_every_local_cache(fake_piper):
-    tts_tool.warm_tts_provider(fake_piper)
-    tts_tool._kittentts_model_cache["m"] = object()
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    tts_tool_local._kittentts_model_cache["m"] = object()
 
-    assert tts_tool.release_tts_provider() == {"released": 2}
-    assert tts_tool._piper_voice_cache == {}
-    assert tts_tool._kittentts_model_cache == {}
+    assert tts_tool_lifecycle.release_tts_provider() == {"released": 2}
+    assert tts_tool_local._piper_voice_cache == {}
+    assert tts_tool_local._kittentts_model_cache == {}
 
 
 def test_release_scoped_to_one_provider(fake_piper):
-    tts_tool.warm_tts_provider(fake_piper)
-    tts_tool._kittentts_model_cache["m"] = object()
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    tts_tool_local._kittentts_model_cache["m"] = object()
 
-    assert tts_tool.release_tts_provider("kittentts") == {"released": 1}
-    assert len(tts_tool._piper_voice_cache) == 1
+    assert tts_tool_lifecycle.release_tts_provider("kittentts") == {"released": 1}
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
 
 def test_release_with_nothing_resident_is_zero():
-    assert tts_tool.release_tts_provider() == {"released": 0}
+    assert tts_tool_lifecycle.release_tts_provider() == {"released": 0}
 
 
 # --------------------------------------------------------------------------
@@ -174,32 +174,32 @@ def test_release_with_nothing_resident_is_zero():
 
 
 def test_acquire_warms_and_counts(fake_piper):
-    result = tts_tool.acquire_tts_lease("desktop:read-aloud")
+    result = tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
     assert result["leases"] == 1
     assert result["action"] == "loaded"
-    assert tts_tool.tts_lease_holders() == ["desktop:read-aloud"]
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:read-aloud"]
 
 
 def test_last_release_unloads_but_earlier_release_does_not(fake_piper):
-    tts_tool.acquire_tts_lease("desktop:read-aloud")
-    tts_tool.acquire_tts_lease("tui:voice-tts")
-    assert len(tts_tool._piper_voice_cache) == 1
+    tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
     # One surface turning speech off must not pull the model from under the
     # other surface that still speaks through this process.
-    first = tts_tool.release_tts_lease("desktop:read-aloud")
+    first = tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     assert first == {"leases": 1, "released": 0}
-    assert len(tts_tool._piper_voice_cache) == 1
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
-    last = tts_tool.release_tts_lease("tui:voice-tts")
+    last = tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
     assert last == {"leases": 0, "released": 1}
-    assert tts_tool._piper_voice_cache == {}
+    assert tts_tool_local._piper_voice_cache == {}
 
 
 def test_reacquire_is_idempotent_and_reheals_cache(fake_piper):
-    tts_tool.acquire_tts_lease("cli:voice-tts")
-    tts_tool.release_tts_provider()  # something else dropped the model
-    result = tts_tool.acquire_tts_lease("cli:voice-tts")
+    tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
+    tts_tool_lifecycle.release_tts_provider()  # something else dropped the model
+    result = tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
 
     assert result["leases"] == 1
     assert result["action"] == "loaded"
@@ -207,9 +207,9 @@ def test_reacquire_is_idempotent_and_reheals_cache(fake_piper):
 
 
 def test_release_unknown_lease_is_noop(fake_piper):
-    tts_tool.acquire_tts_lease("a")
-    assert tts_tool.release_tts_lease("never-acquired") == {"leases": 1, "released": 0}
-    assert len(tts_tool._piper_voice_cache) == 1
+    tts_tool_lifecycle.acquire_tts_lease("a")
+    assert tts_tool_lifecycle.release_tts_lease("never-acquired") == {"leases": 1, "released": 0}
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
 
 def test_acquire_failure_still_registers_lease(monkeypatch):
@@ -217,10 +217,10 @@ def test_acquire_failure_still_registers_lease(monkeypatch):
         raise RuntimeError("engine missing")
 
     monkeypatch.setattr(tts_tool, "_import_piper", _boom)
-    result = tts_tool.acquire_tts_lease("desktop:conversation", {"provider": "piper"})
+    result = tts_tool_lifecycle.acquire_tts_lease("desktop:conversation", {"provider": "piper"})
     assert result["action"] == "error"
     assert result["leases"] == 1
-    assert tts_tool.tts_lease_holders() == ["desktop:conversation"]
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:conversation"]
 
 
 # --------------------------------------------------------------------------
@@ -229,10 +229,10 @@ def test_acquire_failure_still_registers_lease(monkeypatch):
 
 
 def test_every_local_warmer_has_a_registered_cache():
-    warmers = tts_tool._local_tts_warmers()
-    assert set(warmers) == set(tts_tool._LOCAL_TTS_MODEL_CACHES)
-    assert tts_tool._LOCAL_TTS_MODEL_CACHES["piper"] is tts_tool._piper_voice_cache
-    assert tts_tool._LOCAL_TTS_MODEL_CACHES["kittentts"] is tts_tool._kittentts_model_cache
+    warmers = tts_tool_lifecycle._local_tts_warmers()
+    assert set(warmers) == set(tts_tool_local._LOCAL_TTS_MODEL_CACHES)
+    assert tts_tool_local._LOCAL_TTS_MODEL_CACHES["piper"] is tts_tool_local._piper_voice_cache
+    assert tts_tool_local._LOCAL_TTS_MODEL_CACHES["kittentts"] is tts_tool_local._kittentts_model_cache
 
 
 # --------------------------------------------------------------------------
@@ -267,11 +267,11 @@ def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch):
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
     monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None)
     try:
-        assert tts_tool.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
-        tts_tool.acquire_tts_lease("tui:voice-tts", cfg)
-        tts_tool.release_tts_lease("desktop:read-aloud")
+        assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+        tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts", cfg)
+        tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
         assert calls == ["warm", "warm"]  # still one holder — no release yet
-        tts_tool.release_tts_lease("tui:voice-tts")
+        tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
         assert calls == ["warm", "warm", "release"]
     finally:
         tts_registry._reset_for_tests()
@@ -285,7 +285,7 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch):
         ran.append(command)
         done.set()
 
-    monkeypatch.setattr(tts_tool, "_run_command_tts", _fake_run)
+    monkeypatch.setattr(tts_command_provider, "run_command_provider", _fake_run)
     cfg = {
         "provider": "srv",
         "providers": {"srv": {
@@ -297,9 +297,9 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch):
     }
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
 
-    assert tts_tool.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+    assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
     assert done.wait(5)
     done.clear()
-    tts_tool.release_tts_lease("desktop:read-aloud")
+    tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     assert done.wait(5)
     assert ran == ["curl -s localhost:5002/load?model='kokoro v1'", "curl -s localhost:5002/unload"]

@@ -1,24 +1,30 @@
 """GGUF metadata + tensor-table reader (stdlib only).
 
-Feeds the per-layer context estimator: architecture, layer count, per-layer
-KV head counts (0 = recurrent layer — the hybrid discriminator), head dims,
-sliding-window config, trained context, and exact weight bytes summed from
-the tensor table (validated to within 0.01% of the loader's buffer).
-
-Reads the header only (metadata + tensor infos); never touches tensor data,
-so it is fast enough to run at picker time on multi-GB files.
+Reads the header only (metadata + tensor infos); never touches tensor data, so it is fast enough to
+run at picker time on multi-GB files.
 """
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _GGUF_MAGIC = b"GGUF"
 
-# ggml tensor type sizes: type_id -> (block_bytes, block_elems).
-# IQ-family sizes verified against ggml-common.h.
+# Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
+SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+_PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+
+
+def model_id_from_stem(stem: str) -> str:
+    """Model id from a GGUF file stem (split-part suffix stripped)."""
+    return _PART_SUFFIX_RE.sub("", stem)
+
+
+# ggml tensor type sizes: type_id -> (block_bytes, block_elems). IQ-family verified against
+# ggml-common.h.
 _GGML_TYPE_SIZES = {
     0: (4, 1), 1: (2, 1), 2: (18, 32), 3: (20, 32), 6: (22, 32), 7: (24, 32),
     8: (34, 32), 9: (36, 32), 10: (84, 256), 11: (110, 256), 12: (144, 256),
@@ -28,16 +34,19 @@ _GGML_TYPE_SIZES = {
     26: (4, 1), 27: (8, 1), 28: (8, 1), 29: (56, 256), 30: (2, 1),
 }
 
-# GGUF metadata value types.
-_V_UINT8, _V_INT8, _V_UINT16, _V_INT16 = 0, 1, 2, 3
-_V_UINT32, _V_INT32, _V_FLOAT32, _V_BOOL = 4, 5, 6, 7
-_V_STRING, _V_ARRAY, _V_UINT64, _V_INT64, _V_FLOAT64 = 8, 9, 10, 11, 12
-
+# GGUF metadata value types -> struct format; STRING (8) and ARRAY (9) are variable-length.
+_V_STRING, _V_ARRAY = 8, 9
 _SCALAR_FMT = {
-    _V_UINT8: "<B", _V_INT8: "<b", _V_UINT16: "<H", _V_INT16: "<h",
-    _V_UINT32: "<I", _V_INT32: "<i", _V_FLOAT32: "<f", _V_BOOL: "<?",
-    _V_UINT64: "<Q", _V_INT64: "<q", _V_FLOAT64: "<d",
+    0: "<B", 1: "<b", 2: "<H", 3: "<h",       # uint8 int8 uint16 int16
+    4: "<I", 5: "<i", 6: "<f", 7: "<?",       # uint32 int32 float32 bool
+    10: "<Q", 11: "<q", 12: "<d",             # uint64 int64 float64
 }
+
+# general.sampling.* metadata key -> preset INI key.
+_SAMPLING_INI_KEY = {"temp": "temp", "temperature": "temp", "top_p": "top-p",
+                     "top_k": "top-k", "min_p": "min-p",
+                     "repeat_penalty": "repeat-penalty",
+                     "presence_penalty": "presence-penalty"}
 
 
 @dataclass
@@ -47,8 +56,7 @@ class GGUFHeader:
     metadata: dict = field(default_factory=dict)
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
-    embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side
-                                   # when fully offloaded)
+    embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -59,15 +67,24 @@ class GGUFHeader:
     def _arch_key(self, suffix: str):
         return self.metadata.get(f"{self.architecture}.{suffix}")
 
-    @property
-    def n_layer(self) -> int:
-        return int(self._arch_key("block_count") or 0)
+    def _arch_int(suffix: str, doc: str = ""):  # noqa: N805 — property factory, deleted below
+        return property(lambda self: int(self._arch_key(suffix) or 0), doc=doc)
+
+    n_layer = _arch_int("block_count")
+    n_ctx_train = _arch_int("context_length")
+    n_embd = _arch_int("embedding_length")
+    sliding_window = _arch_int("attention.sliding_window")
+    expert_count = _arch_int("expert_count")
+    full_attention_interval = _arch_int(
+        "full_attention_interval",
+        "GDN-hybrid discriminator (qwen35 family): every Nth layer is full attention, the rest "
+        "are linear/recurrent. 0 = not present.")
+    del _arch_int
 
     @property
     def n_vocab(self) -> int:
-        """Vocabulary size: prices the GPU logits buffers (they scale
-        ubatch x vocab). vocab_size metadata when present, else the
-        tokenizer list length."""
+        """Vocabulary size (prices the GPU logits buffers): vocab_size metadata when present, else
+        the tokenizer list length."""
         v = self._arch_key("vocab_size")
         if v:
             return int(v)
@@ -75,37 +92,22 @@ class GGUFHeader:
         return len(toks) if isinstance(toks, list) else 0
 
     @property
-    def n_ctx_train(self) -> int:
-        return int(self._arch_key("context_length") or 0)
-
-    @property
     def sampling_defaults(self) -> dict:
-        """Upstream's recommended sampling, when the file carries it.
+        """Upstream's recommended sampling as preset INI keys, when the file carries it.
 
-        Model publishers bake general.sampling.* keys into the GGUF
-        (llama-server reads them as that model's default generation
-        settings), so the file itself is the source of truth for how its
-        publisher wants it run — it arrives with the download and updates
-        with every re-upload, no catalog required. Returned as preset INI
-        keys; empty when the file carries none.
+        Publishers bake ``general.sampling.*`` keys into the GGUF (llama-server reads them as that
+        model's defaults), so the file is the source of truth — it ships with the download and
+        updates with every re-upload, no catalog needed. Empty if absent.
         """
-        ini_key = {"temp": "temp", "temperature": "temp", "top_p": "top-p",
-                   "top_k": "top-k", "min_p": "min-p",
-                   "repeat_penalty": "repeat-penalty",
-                   "presence_penalty": "presence-penalty"}
         out = {}
         for key, value in self.metadata.items():
             if not key.startswith("general.sampling."):
                 continue
-            name = ini_key.get(key.rsplit(".", 1)[-1])
+            name = _SAMPLING_INI_KEY.get(key.rsplit(".", 1)[-1])
             if name is not None and isinstance(value, (int, float)):
                 num = round(float(value), 4)
                 out[name] = str(int(num)) if num == int(num) else str(num)
         return out
-
-    @property
-    def n_embd(self) -> int:
-        return int(self._arch_key("embedding_length") or 0)
 
     @property
     def n_head(self) -> int:
@@ -114,23 +116,13 @@ class GGUFHeader:
             return int(max(v))
         return int(v or 0)
 
-    @property
-    def full_attention_interval(self) -> int:
-        """GDN-hybrid discriminator (qwen35 family): every Nth layer is full
-        attention, the rest are linear/recurrent. 0 = not present."""
-        return int(self._arch_key("full_attention_interval") or 0)
-
     def head_counts_kv(self) -> list[int]:
-        """Per-layer KV head counts; 0 marks a recurrent/linear layer (the
-        n_head_kv == 0 discriminator).
+        """Per-layer KV head counts; 0 marks a recurrent/linear layer (n_head_kv == 0).
 
-        Three GGUF shapes, each verified against real files:
-        - per-layer array (nemotron_h_moe): use as-is;
-        - scalar + full_attention_interval (qwen35): the scalar applies to
-          every INTERVAL-th layer (1-indexed: layers where (i+1) % N == 0),
-          zero elsewhere — pricing all layers as attention was a 4x
-          overestimate on Qwen3.6-27B;
-        - plain scalar (dense): broadcast to every layer.
+        Three GGUF shapes: a per-layer array (nemotron_h_moe) is used as-is; a scalar plus
+        ``full_attention_interval`` (qwen35) applies to every N-th layer (1-indexed) and is zero
+        elsewhere — pricing all layers as attention was a 4x overestimate; a plain scalar (dense)
+        broadcasts to every layer.
         """
         v = self._arch_key("attention.head_count_kv")
         if isinstance(v, list):
@@ -156,52 +148,43 @@ class GGUFHeader:
             return int(v)
         return self.head_dim_k
 
-    @property
-    def sliding_window(self) -> int:
-        return int(self._arch_key("attention.sliding_window") or 0)
-
-    @property
-    def expert_count(self) -> int:
-        return int(self._arch_key("expert_count") or 0)
-
 
 def read_gguf_header(path: str | Path) -> GGUFHeader:
     path = Path(path)
 
+    def read(f, fmt: str):
+        return struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+
     def read_str(f) -> str:
-        (n,) = struct.unpack("<Q", f.read(8))
+        (n,) = read(f, "<Q")
         return f.read(n).decode("utf-8", errors="replace")
 
     def read_value(f, vtype: int):
         if vtype == _V_STRING:
             return read_str(f)
         if vtype == _V_ARRAY:
-            (etype,) = struct.unpack("<I", f.read(4))
-            (n,) = struct.unpack("<Q", f.read(8))
+            etype, n = read(f, "<IQ")
             return [read_value(f, etype) for _ in range(n)]
-        fmt = _SCALAR_FMT[vtype]
-        (value,) = struct.unpack(fmt, f.read(struct.calcsize(fmt)))
-        return value
+        return read(f, _SCALAR_FMT[vtype])[0]
 
     with open(path, "rb") as f:
         if f.read(4) != _GGUF_MAGIC:
             raise ValueError(f"not a GGUF file: {path}")
-        (version,) = struct.unpack("<I", f.read(4))
-        n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+        version, n_tensors, n_kv = read(f, "<IQQ")
 
         metadata: dict = {}
         for _ in range(n_kv):
             key = read_str(f)
-            (vtype,) = struct.unpack("<I", f.read(4))
+            (vtype,) = read(f, "<I")
             metadata[key] = read_value(f, vtype)
 
         tensor_bytes = 0
         embd_bytes = 0
         for _ in range(n_tensors):
             name = read_str(f)
-            (n_dims,) = struct.unpack("<I", f.read(4))
-            dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
-            (ttype,) = struct.unpack("<I", f.read(4))
+            (n_dims,) = read(f, "<I")
+            dims = read(f, f"<{n_dims}Q")
+            (ttype,) = read(f, "<I")
             f.read(8)  # offset
             size = _GGML_TYPE_SIZES.get(ttype)
             if size is None:

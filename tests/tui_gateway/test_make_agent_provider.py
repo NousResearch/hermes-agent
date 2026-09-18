@@ -121,7 +121,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         patch("tui_gateway.server._emit"),
         patch("tui_gateway.server._restart_slash_worker"),
         patch("tui_gateway.server._session_info", return_value={}),
-        patch("tui_gateway.server._persist_model_switch") as mock_persist,
+        patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
     ):
         before = {k: os.environ.get(k) for k in env_keys}
         result = server._apply_model_switch("sidB", sess_b, "glm-5.1")

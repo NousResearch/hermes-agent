@@ -43,8 +43,7 @@ def server():
     # _enter_buffered_busy. Clearing the per-session dicts gives the
     # next test a clean slate.
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):

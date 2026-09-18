@@ -19,6 +19,7 @@ import pytest
 
 from gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +73,28 @@ class TestNotifyInterruptedCronJobs:
         assert len(adapter.sent) == 1
         body = adapter.sent[0]
         assert "daily-digest" in body
-        assert "interrupted" in body.lower()
+        assert "cut short" in body.lower()
+        assert "hermes cron run daily-digest" in body
         assert adapter.sent_calls[0][0] == "123456"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", [None, False, True])
+    async def test_interrupt_notice_is_a_suppressible_diagnostic(self, tmp_path, monkeypatch, setting):
+        import json
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+        cfg = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
+        (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+        runner, adapter = make_restart_runner()
+        _bind_notifier(runner)
+        job = _telegram_job()
+        with patch("cron.jobs.get_job", return_value=job), \
+             patch("cron.scheduler._resolve_delivery_targets",
+                   return_value=[_telegram_target()]):
+            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+        expected = 0 if setting is True else 1
+        assert sent == expected
+        assert len(adapter.sent) == expected
 
     @pytest.mark.asyncio
     async def test_says_restarting_when_restart_was_requested(self):
@@ -199,7 +220,6 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         """The whole point is ordering: a notice sent after teardown is lost,
         which is the bug."""
         import cron.scheduler as sched
-        import tools.browser_tool as _bt
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
 
@@ -209,13 +229,13 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         events: list[str] = []
         real_send = adapter.send
 
         async def _tracking_send(chat_id, content, reply_to=None, metadata=None):
-            if "was interrupted" in content:
+            if "was cut short" in content:
                 events.append("cron_notice")
             return await real_send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
@@ -251,10 +271,12 @@ class TestDeliveryErrorIsRecordedWhenTheNoticeCannotBeSent:
 
         import cron.scheduler as sched
 
-        src = inspect.getsource(sched._run_one_job_body)
+        body_src = inspect.getsource(sched._run_one_job_body)
+        src = inspect.getsource(sched._finish_interrupted_run)
         assert 'update_job(job["id"], {"last_delivery_error": delivery_error})' in src, (
             "interrupted runs must still persist the delivery failure"
         )
         # The recovery branch hangs off the interrupted-flag short-circuit,
         # not off a second mark_job_run call.
-        assert "if interrupted:" in src and "if delivery_error:" in src
+        assert "_consume_interrupted_flag(" in body_src and "_finish_interrupted_run(" in body_src
+        assert "if delivery_error:" in src and "mark_job_run(" not in src

@@ -432,7 +432,7 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
         # (categories_dict, uncategorized_list, hidden_count)
         return ({}, list(entries), 0)
 
-    import hermes_cli.commands as _hc
+    import hermes_cli.commands_platforms as _hc
     monkeypatch.setattr(
         _hc, "discord_skill_commands_by_category", fake_categories,
     )
@@ -514,9 +514,9 @@ async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
     assert kwargs.get("ephemeral") is True
-    assert "not authorized" in (
+    assert "hermes pairing approve discord" in (
         args[0] if args else kwargs.get("content", "")
-    ).lower()
+    )
     # Critically: nothing was dispatched, and the auth message did NOT
     # mention the skill name "alpha" (no catalog leak).
     assert dispatched == []

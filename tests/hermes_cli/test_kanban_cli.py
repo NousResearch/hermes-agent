@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -44,7 +45,8 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     """JSON output exposes `session_id` so external clients (Scarf, web
     dashboards) don't need a side query to filter by chat session."""
     from hermes_cli import kanban_db as kb
-    with kb.connect() as conn:
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
         kb.create_task(
             conn, title="acp task", assignee="alice", session_id="acp-x"
         )
@@ -58,7 +60,7 @@ def test_kanban_list_json_includes_session_id(kanban_home):
 
 
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
         child_id = kb.create_task(conn, title="child task")
         kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
@@ -68,6 +70,38 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert f"Task {child_id}: child task" in output
     assert f"parents:   {parent_id}" in output
     assert "Cannot operate on a closed database" not in output
+
+
+def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        worker = kb.create_task(conn, title="worker")
+        assert kb.claim_task(conn, worker, claimer="worker") is not None
+        worker_run_id = kb.get_task(conn, worker).current_run_id
+        parent = kb.create_task(conn, title="unfinished parent")
+        ready_child = kb.create_task(conn, title="foreign ready child")
+        running_child = kb.create_task(conn, title="foreign running child")
+        assert kb.claim_task(conn, running_child, claimer="other") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
+
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=ready_child,
+    )) == 0
+    with pytest.raises(ValueError, match="child is already running"):
+        kc._cmd_link(argparse.Namespace(
+            parent_id=parent, child_id=running_child,
+        ))
+    # Owner handoff: the worker links its own running card, proving ownership
+    # with HERMES_KANBAN_RUN_ID — the one path _cmd_link forwards a run id for.
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=worker,
+    )) == 0
+
+    with kbc.connect_closing() as conn:
+        assert kb.parent_ids(conn, ready_child) == [parent]
+        assert kb.parent_ids(conn, running_child) == []
+        assert kb.parent_ids(conn, worker) == [parent]
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
@@ -107,9 +141,9 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
     assert failures == []
 
-    with kb.connect_closing(board="alpha") as conn:
+    with kbc.connect_closing(board="alpha") as conn:
         alpha_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
-    with kb.connect_closing(board="beta") as conn:
+    with kbc.connect_closing(board="beta") as conn:
         beta_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
 
     assert alpha_titles == ["alpha-task"]
@@ -134,6 +168,7 @@ def test_run_slash_reclaim_running_task(kanban_home):
     import time
     import secrets
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")
     m = re.search(r"(t_[a-f0-9]+)", out1)
@@ -141,7 +176,7 @@ def test_run_slash_reclaim_running_task(kanban_home):
     tid = m.group(1)
 
     # Simulate a running claim outside TTL.
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         lock = secrets.token_hex(4)
         conn.execute(

@@ -17,6 +17,7 @@ from hermes_cli.psutil_android import (
     PsutilAndroidInstallError,
     prepare_patched_psutil_sdist,
 )
+from hermes_cli import update_cmd
 
 
 def _add_dir(tf: tarfile.TarFile, name: str) -> None:
@@ -63,6 +64,20 @@ def test_prepare_patched_psutil_sdist_rejects_symlink_member(tmp_path):
     assert not (tmp_path / "outside" / "_common.py").exists()
 
 
+def test_prepare_patched_psutil_sdist_rejects_traversal_member(tmp_path):
+    """A ``..`` member must be refused the same way the shared archive guard refuses it
+    (one traversal check for every tar.gz we extract), surfaced as the installer's own error."""
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        _add_dir(tf, "psutil-7.2.2")
+        _add_file(tf, "psutil-7.2.2/../escaped.py", "x")
+
+    with pytest.raises(PsutilAndroidInstallError, match="Unsafe archive member path"):
+        prepare_patched_psutil_sdist(archive, tmp_path / "extract")
+
+    assert not (tmp_path / "escaped.py").exists()
+
+
 def test_install_psutil_android_compat_uses_patched_tree(tmp_path):
     """Updater path should install from the patched temporary sdist tree."""
     archive = tmp_path / "psutil.tar.gz"
@@ -87,7 +102,7 @@ def test_install_psutil_android_compat_uses_patched_tree(tmp_path):
 
     with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
          patch.object(hermes_main, "_run_install_with_heartbeat", side_effect=fake_run_install):
-        hermes_main._install_psutil_android_compat(
+        update_cmd._install_psutil_android_compat(
             ["uv", "pip"],
             env={"HERMES_TEST": "1"},
         )

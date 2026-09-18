@@ -1,43 +1,41 @@
-"""Shared path validation helpers for tool implementations.
+"""Shared path validation helpers for tool implementations (skills, cron, credential files)."""
 
-Extracts the ``resolve() + relative_to()`` and ``..`` traversal check
-patterns previously duplicated across skill_manager_tool, skills_tool,
-skills_hub, cronjob_tools, and credential_files.
-"""
-
-import logging
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 
 def validate_within_dir(path: Path, root: Path) -> Optional[str]:
-    """Ensure *path* resolves to a location within *root*.
-
-    Returns an error message string if validation fails, or ``None`` if the
-    path is safe.  Uses ``Path.resolve()`` to follow symlinks and normalize
-    ``..`` components.
-
-    Usage::
-
-        error = validate_within_dir(user_path, allowed_root)
-        if error:
-            return tool_error(error)
-    """
+    """Error message if *path* does not resolve inside *root* (symlinks and ``..`` followed)."""
     try:
-        resolved = path.resolve()
-        root_resolved = root.resolve()
-        resolved.relative_to(root_resolved)
+        path.resolve().relative_to(root.resolve())
     except (ValueError, OSError) as exc:
         return f"Path escapes allowed directory: {exc}"
     return None
 
 
 def has_traversal_component(path_str: str) -> bool:
-    """Return True if *path_str* contains ``..`` traversal components.
+    """Cheap pre-check for a literal ``..`` component before full resolution."""
+    return ".." in Path(path_str).parts
 
-    Quick check for obvious traversal attempts before doing full resolution.
-    """
-    parts = Path(path_str).parts
-    return ".." in parts
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import logging  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('tools.approval', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

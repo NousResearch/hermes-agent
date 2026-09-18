@@ -19,11 +19,11 @@ from tools.env_passthrough import (
 def _clean_passthrough():
     """Ensure a clean passthrough state for every test."""
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
+    _ep_mod._config_passthrough.clear()
     ss.set_multiplex_active(False)
     yield
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
+    _ep_mod._config_passthrough.clear()
     ss.set_multiplex_active(False)
 
 
@@ -46,7 +46,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
+        _ep_mod._config_passthrough.clear()
 
         assert is_env_passthrough("MY_CUSTOM_KEY")
         assert is_env_passthrough("ANOTHER_TOKEN")
@@ -58,7 +58,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
+        _ep_mod._config_passthrough.clear()
 
         register_env_passthrough(["SKILL_KEY"])
         all_pt = get_all_passthrough()
@@ -156,7 +156,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_uses_active_profile_for_passthrough(self, monkeypatch):
         """The execute_code child must receive the routed profile's value."""
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -172,7 +172,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not leak into the execute_code child."""
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -196,7 +196,7 @@ class TestExecuteCodeIntegration:
         - BUZZ_RELAY_URL matches no secret substring but is not on the safe
           prefix allowlist, so it is dropped too.
         """
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         buzz_vars = {
             "BUZZ_PRIVATE_KEY": "nsec1fake",
@@ -252,6 +252,48 @@ class TestTerminalIntegration:
 
         assert "SERVICE_TOKEN" not in child_env
 
+    def test_scope_only_declared_name_reaches_every_local_child(self, monkeypatch):
+        """A routed profile's declared secret lives only in its scope (its .env never enters the
+        process env), so it must be added from the scope on every local spawn surface; an
+        undeclared scope entry stays out. No scope bound -> byte-identical single-profile env."""
+        from tools.code_execution_env import _scrub_child_env
+        from tools.environments.local import _sanitize_subprocess_env
+
+        register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.delenv("SERVICE_TOKEN", raising=False)
+        base = {"PATH": "/usr/bin", "HOME": "/home/user"}
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile",
+                                     "UNDECLARED_TOKEN": "never-forwarded"})
+        try:
+            terminal_env = _sanitize_subprocess_env(dict(base))
+            sandbox_env = _scrub_child_env(dict(base))
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        for child_env in (terminal_env, sandbox_env):
+            assert child_env["SERVICE_TOKEN"] == "token-for-routed-profile"
+            assert "UNDECLARED_TOKEN" not in child_env
+        assert "SERVICE_TOKEN" not in _sanitize_subprocess_env(dict(base))
+        assert "SERVICE_TOKEN" not in _scrub_child_env(dict(base))
+
+    def test_scope_overlay_failure_is_loud_on_both_local_surfaces(self, monkeypatch):
+        """A scope/config failure while resolving declared scope-only names must raise, not be
+        swallowed into a debug log that silently drops the declared secret again (#114209)."""
+        import tools.env_passthrough as ep
+        from tools.code_execution_env import _scrub_child_env
+        from tools.environments.local import _sanitize_subprocess_env
+
+        def _boom(_present):
+            raise RuntimeError("scope lookup failed")
+
+        monkeypatch.setattr(ep, "scoped_passthrough_additions", _boom)
+        with pytest.raises(RuntimeError, match="scope lookup failed"):
+            _sanitize_subprocess_env({"PATH": "/usr/bin"})
+        with pytest.raises(RuntimeError, match="scope lookup failed"):
+            _scrub_child_env({"PATH": "/usr/bin"})
+
     def test_shared_local_snapshot_re_resolves_current_profile(self, monkeypatch, tmp_path):
         """A persistent shell snapshot must not retain the previous profile's value."""
         from tools.environments.local import LocalEnvironment
@@ -290,7 +332,8 @@ class TestTerminalIntegration:
         assert missing["output"] == "unset"
 
     def test_blocklisted_var_blocked_by_default(self):
-        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         # Pick a var we know is in the blocklist
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
@@ -304,10 +347,8 @@ class TestTerminalIntegration:
         Hermes provider credentials — that was the bypass where a skill
         could declare ANTHROPIC_TOKEN / OPENAI_API_KEY as passthrough and
         defeat the execute_code sandbox scrubbing."""
-        from tools.environments.local import (
-            _sanitize_subprocess_env,
-            _HERMES_PROVIDER_ENV_BLOCKLIST,
-        )
+        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         # Attempt to register — must be silently refused (logged warning).
@@ -368,7 +409,7 @@ class TestTerminalIntegration:
             result = _sanitize_subprocess_env({var: "value", "PATH": "/usr/bin"})
             assert result.get(var) == "value"
             # ...but the execute_code child never sees them.
-            from tools.code_execution_tool import _scrub_child_env
+            from tools.code_execution_env import _scrub_child_env
 
             child_env = _scrub_child_env({var: "value", "PATH": "/usr/bin"})
             assert var not in child_env
@@ -388,10 +429,8 @@ class TestTerminalIntegration:
     def test_make_run_env_blocklist_override_rejected(self):
         """_make_run_env must NOT expose a blocklisted var to subprocess env
         even after a skill attempts to register it via passthrough."""
-        from tools.environments.local import (
-            _make_run_env,
-            _HERMES_PROVIDER_ENV_BLOCKLIST,
-        )
+        from tools.environments.local import _make_run_env
+        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         os.environ[blocked_var] = "secret_value"
@@ -433,7 +472,7 @@ class TestTerminalIntegration:
         """
         import builtins
 
-        from tools.code_execution_tool import _scrub_child_env
+        from tools.code_execution_env import _scrub_child_env
 
         real_import = builtins.__import__
 

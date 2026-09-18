@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -32,9 +33,9 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
-    _sanitize_bank_segment,
     _WRITER_SENTINEL,
 )
+from plugins.memory.hindsight.settings import _sanitize_bank_segment
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,30 @@ def _clean_env(tmp_path, monkeypatch):
     # Patch the actual API and keep all legacy profile writes in tmp_path.
     isolated_home = tmp_path / "user-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
+
+    # These tests provide client doubles, so they must not attempt a network
+    # install merely because the optional SDK is absent from the test env.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    # The retain-operation path imports this exception solely to classify a
+    # fake client's response. Supply the smallest matching SDK surface so the
+    # mocked tests remain runnable without the optional Hindsight extra.
+    # Only when the real SDK is absent: shadowing an installed SDK with a
+    # fake (no ``__path__``) breaks ``import hindsight_client`` and turns the
+    # pinned-client test into a permanent skip.
+    if importlib.util.find_spec("hindsight_client_api") is not None:
+        return
+    client_api = ModuleType("hindsight_client_api")
+    exceptions = ModuleType("hindsight_client_api.exceptions")
+
+    class NotFoundException(Exception):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args)
+
+    exceptions.NotFoundException = NotFoundException
+    client_api.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "hindsight_client_api", client_api)
+    monkeypatch.setitem(sys.modules, "hindsight_client_api.exceptions", exceptions)
 
 
 def _make_mock_client():
@@ -782,7 +807,11 @@ class TestPrefetchServerRetainVisibility:
 
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
-        from hindsight_client_api.exceptions import NotFoundException
+        exceptions = pytest.importorskip(
+            "hindsight_client_api.exceptions",
+            reason="Hindsight SDK is not installed",
+        )
+        NotFoundException = exceptions.NotFoundException
 
         client = _make_mock_client()
         client.operations = MagicMock()
@@ -1413,7 +1442,7 @@ class TestAvailability:
             )
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
         p = HindsightMemoryProvider()
@@ -1432,7 +1461,7 @@ class TestAvailability:
             raise RuntimeError("x86_64-v2 unsupported")
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
 
@@ -1538,6 +1567,23 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def test_load_config_corrupt_profile_file_falls_through_to_env(tmp_path, monkeypatch):
+    """A corrupt $HERMES_HOME/hindsight/config.json is not the config: the loader falls through
+    (legacy file, then env) instead of returning an empty, silently-unconfigured mapping."""
+    home = tmp_path / "home"
+    (home / "hindsight").mkdir(parents=True)
+    (home / "hindsight" / "config.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("HINDSIGHT_MODE", "local")
+    monkeypatch.setenv("HINDSIGHT_BANK_ID", "from-env")
+
+    cfg = _load_config()
+
+    assert cfg["mode"] == "local"
+    assert cfg["banks"]["hermes"]["bankId"] == "from-env"
 
 
 class TestLoadSimpleEnv:

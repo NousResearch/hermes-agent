@@ -7,11 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.anthropic_adapter import (
-    _read_claude_code_credentials_from_keychain,
-    read_claude_code_credentials,
-    _refresh_oauth_token,
-)
+from agent.anthropic_credentials import _read_claude_code_credentials_from_keychain, read_claude_code_credentials, _refresh_oauth_token
 
 
 # This module exercises the reader itself with explicit platform and subprocess
@@ -67,7 +63,7 @@ class TestReadClaudeCodeCredentialsPriority:
                 "expiresAt": 9999999999999,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         # Mock Keychain to return a "newer" token
         with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
@@ -100,7 +96,7 @@ class TestReadClaudeCodeCredentialsPriority:
                 "expiresAt": 9999999999999,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             # Simulate Keychain entry not found
@@ -113,7 +109,7 @@ class TestReadClaudeCodeCredentialsPriority:
 
     def test_returns_none_when_neither_keychain_nor_json_has_creds(self, tmp_path, monkeypatch):
         """No credentials anywhere — must return None cleanly."""
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
@@ -147,7 +143,7 @@ class TestReadClaudeCodeCredentialsDesync:
                 "expiresAt": file_expires_at,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
     def _keychain_payload(self, *, access_token, expires_at, refresh_token="kc-refresh"):
         return MagicMock(

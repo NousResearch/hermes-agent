@@ -57,9 +57,10 @@ class TestMetadata:
     def test_default_model(self, provider):
         assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
+    def test_picker_matches_resolvable_catalog(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        assert set(ids) == set(provider.models)
+        assert provider.default_model() in ids
 
     def test_catalog_entries_have_display_speed_strengths(self, provider):
         for entry in provider.list_models():
@@ -171,24 +172,40 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
-    @pytest.mark.parametrize("tier,expected_quality", [
-        ("gpt-image-2-low", "low"),
-        ("gpt-image-2-medium", "medium"),
-        ("gpt-image-2-high", "high"),
+    @pytest.mark.parametrize("api_model,quality", [
+        ("gpt-image-2", quality) for quality in ("low", "medium", "high")
+    ] + [
+        (model, quality)
+        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
     ])
-    def test_tier_maps_to_quality(self, provider, monkeypatch, tier, expected_quality):
-        monkeypatch.setenv("OPENAI_IMAGE_MODEL", tier)
+    @pytest.mark.parametrize("editing", [False, True])
+    def test_selection_reaches_image_request(
+        self, provider, monkeypatch, tmp_path, api_model, quality, editing
+    ):
+        import yaml
+
+        tier = api_model if quality == "auto" else f"{api_model}-{quality}"
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai": {"model": tier}}
+        }))
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
         fake_client = MagicMock()
-        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        call = fake_client.images.edit if editing else fake_client.images.generate
+        call.return_value = _fake_response(b64=_b64_png())
 
         with _patched_openai(fake_client):
-            result = provider.generate("a cat")
+            result = provider.generate("a cat", image_url=str(source) if editing else None)
 
+        assert result["success"] is True
         assert result["model"] == tier
-        assert result["quality"] == expected_quality
-        assert fake_client.images.generate.call_args.kwargs["quality"] == expected_quality
-        # Always the same underlying API model regardless of tier.
-        assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2"
+        assert result["quality"] == quality
+        assert call.call_args.kwargs["quality"] == quality
+        assert call.call_args.kwargs["model"] == api_model
+        assert "response_format" not in call.call_args.kwargs
+        assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
 
     @pytest.mark.parametrize("aspect,expected_size", [
         ("landscape", "1536x1024"),
@@ -230,7 +247,7 @@ class TestGenerate:
         )
 
         with _patched_openai(fake_client), patch(
-            "plugins.image_gen.openai.save_url_image",
+            "plugins.image_gen._common.save_url_image",
             return_value=Path("/tmp/openai_gpt-image-2_20260524_000000_deadbeef.png"),
         ) as mock_save_url:
             result = provider.generate("a cat")

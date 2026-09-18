@@ -15,6 +15,7 @@ import json
 import pytest
 
 import hermes_cli.auth as auth
+import hermes_cli.auth_codex as auth_codex
 from hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
 
 STALE = {"access_token": "stale-access", "refresh_token": "stale-refresh"}
@@ -38,8 +39,11 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
         )
 
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
+    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _rejected)
     monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(auth_codex, "_import_codex_cli_tokens", lambda: dict(fresh))
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
+    monkeypatch.setattr(auth_codex, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     out = _refresh_codex_auth_tokens(STALE, 20.0)
 

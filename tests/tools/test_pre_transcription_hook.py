@@ -19,7 +19,7 @@ Covers:
    kwargs — no signature change.
 
 Mirrors the ``transform_tool_result`` hook test conventions from
-``tests/test_transform_tool_result_hook.py``.
+``tests/plugins/test_transform_tool_result_hook.py``.
 """
 
 from __future__ import annotations
@@ -383,9 +383,10 @@ class TestSttPromptConfig:
 
         assert result["success"] is True  # truncation never errors
         _, kwargs = backend.call_args
+        from tools import transcription_command
         max_chars = (
-            transcription_tools._WHISPER_PROMPT_TOKEN_CAP
-            * transcription_tools._PROMPT_CHARS_PER_TOKEN
+            transcription_command._WHISPER_PROMPT_TOKEN_CAP
+            * transcription_command._PROMPT_CHARS_PER_TOKEN
         )
         assert len(kwargs["prompt"]) == max_chars
         # Tail survives — whisper conditions on the final context window.

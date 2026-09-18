@@ -16,6 +16,7 @@ import os
 import pytest
 
 from hermes_cli import update_cmd
+import hermes_cli.update_cmd_deps as update_cmd_deps
 
 
 def _make_fake_venv(tmp_path):
@@ -59,6 +60,7 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
         return real_uid(path)
 
     monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
     foreign = update_cmd._venv_foreign_owned_paths(venv)
     assert foreign == [(installer, 0)]
 
@@ -69,6 +71,11 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     real_uid = update_cmd._path_uid
     monkeypatch.setattr(
         update_cmd,
+        "_path_uid",
+        lambda p: 0 if str(p) == hermes_bin else real_uid(p),
+    )
+    monkeypatch.setattr(
+        update_cmd_deps,
         "_path_uid",
         lambda p: 0 if str(p) == hermes_bin else real_uid(p),
     )
@@ -89,6 +96,11 @@ def test_limit_caps_reported_paths(tmp_path, monkeypatch):
         (bin_dir / f"tool{i}").write_text("x")
     monkeypatch.setattr(
         update_cmd,
+        "_path_uid",
+        lambda p: 0 if str(p).startswith(str(bin_dir) + os.sep) else 12345,
+    )
+    monkeypatch.setattr(
+        update_cmd_deps,
         "_path_uid",
         lambda p: 0 if str(p).startswith(str(bin_dir) + os.sep) else 12345,
     )
@@ -116,6 +128,7 @@ def test_running_as_root_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd.os, "geteuid", lambda: 0, raising=False)
     # Even with foreign uids everywhere, root skips the gate.
     monkeypatch.setattr(update_cmd, "_path_uid", lambda p: 4242)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", lambda p: 4242)
     assert update_cmd._venv_foreign_owned_paths(venv) == []
 
 

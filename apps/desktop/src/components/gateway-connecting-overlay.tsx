@@ -6,6 +6,7 @@ import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $gatewayState } from '@/store/session'
 
 // Decode mechanics live in the shared <DecodeText> primitive
@@ -129,6 +130,15 @@ export function GatewayConnectingOverlay() {
 
   // Never showed (e.g. gateway already up on a warm reload) — stay out.
   if (!previewing && !connecting && !shownRef.current) {
+    return null
+  }
+
+  // The guided first launch has its own opening (the film, then the typed
+  // greeting in a small window). "Connecting…" over it, then "Connected to
+  // localhost", is the app's boot narrating itself in the middle of the
+  // guide's; the guide's surface stays, this one yields. Boot progress still
+  // gates the transcript underneath — nothing paints early.
+  if (!previewing && guidedOnboardingActive()) {
     return null
   }
 

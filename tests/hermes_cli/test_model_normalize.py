@@ -110,32 +110,43 @@ class TestDeepseekVSeriesPassThrough:
         result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
         assert result == "deepseek-v4-pro"
 
+    def test_deepseek_provider_preserves_versionless_flash_id(self):
+        """``deepseek-flash`` must reach DeepSeek's API unchanged.
+
+        DeepSeek's 2026-09 Flash refresh dropped the ``v<N>`` marker from the
+        public id: ``GET /v1/models`` reports ``deepseek-flash`` and the API
+        accepts it directly (verified live — it answers 200, and the older
+        ``deepseek-v4-flash`` is aliased onto it).  Folding it onto
+        ``deepseek-v4-flash`` meant the id users picked never reached the wire
+        and the config stored a different model than the picker advertised.
+        """
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
+
 
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
-class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
-
-    DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
-    """
-
+class TestDeepseekRetiredAliasesAndCustomSlugs:
+    """Only the two retired aliases are rewritten; every other id is the user's and reaches the
+    wire as typed (a shape allow-list swallowed the vendor's own ``deepseek-flash``, #107206)."""
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
+        "deepseek-v4.1-flash",
+        "deepseek-v4-flash-0731",
         "deepseek-r1",
-        "deepseek-r1-0528",
-        "deepseek-think-v3",
-        "deepseek-reasoning-preview",
-        "deepseek-cot-experimental",
+        "deepseek-next-preview",
+        "my-fine-tune",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_unknown_ids_pass_through_untouched(self, model):
+        assert _normalize_for_deepseek(model) == model
 
 
 # ── Regression: issue #78796 ───────────────────────────────────────────

@@ -109,6 +109,102 @@ def _should_skip_external_secret_sources() -> bool:
     return _UPDATE_RETRY_RECOVERED or sys.argv[1:2] == ["update"]
 
 
+def early_cli_subcommand(argv: list[str]) -> str:
+    """Find the command using the canonical parser's value-option grammar."""
+    from hermes_cli._parser import PRE_ARGPARSE_INHERITED_FLAGS, top_level_value_flag_sets
+
+    required, optional = top_level_value_flag_sets()
+    value_flags = required | optional | {flag for flag, takes_value in PRE_ARGPARSE_INHERITED_FLAGS if takes_value}
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument in value_flags:
+            index += 2
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return argument
+    return ""
+
+
+def _emit_health_dependency_failure(args: list[str], broken: list[str]) -> None:
+    """Exit through the health contract before importing broken dependencies."""
+    explicit_profile = None
+    for index, argument in enumerate(args):
+        if argument in {"-p", "--profile"} and index + 1 < len(args):
+            explicit_profile = args[index + 1]
+        elif argument.startswith("--profile="):
+            explicit_profile = argument.split("=", 1)[1]
+
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        root = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        root /= "hermes"
+    else:
+        root = Path.home() / ".hermes"
+
+    inherited_home = os.environ.get("HERMES_HOME", "").strip()
+    if inherited_home:
+        inherited_path = Path(inherited_home)
+        root = (
+            inherited_path.parent.parent
+            if inherited_path.parent.name == "profiles"
+            else inherited_path
+        )
+
+    profile = explicit_profile or os.environ.get("HERMES_PROFILE", "").strip()
+    if not profile and inherited_home and Path(inherited_home).parent.name == "profiles":
+        profile = Path(inherited_home).name
+    if not profile and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        try:
+            sticky = (root / "active_profile").read_text(encoding="utf-8").strip()
+            if sticky and sticky != "default":
+                profile = sticky
+        except (OSError, UnicodeError):
+            pass
+    profile = profile or "default"
+
+    if explicit_profile or not inherited_home or Path(inherited_home).parent.name != "profiles":
+        home_path = root if profile == "default" else root / "profiles" / profile
+    else:
+        home_path = Path(inherited_home)
+
+    package = sys.modules.get("hermes_cli")
+    version = str(getattr(package, "__version__", "unknown"))
+    home = str(home_path)
+    detail = f"core runtime dependencies unavailable: {', '.join(broken)}"
+    result = {
+        "schema_version": 1,
+        "status": "critical",
+        "exit_code": 2,
+        "profile": profile,
+        "hermes_home": home,
+        "hermes_version": version,
+        "checks": [
+            {
+                "id": "runtime_dependencies",
+                "subsystem": "runtime dependencies",
+                "status": "critical",
+                "detail": detail,
+                "action": "run: hermes update",
+            }
+        ],
+    }
+    if "--json" in args:
+        import json
+
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print()
+        print("Hermes Health")
+        print("Status: critical (exit 2)")
+        print(f"Profile: {profile}")
+        print(f"CRITICAL runtime dependencies: {detail}")
+        print("Action: run: hermes update")
+    raise SystemExit(2)
+
+
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -369,6 +465,12 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
 
     try:
         args = sys.argv[1:] if argv is None else argv
+        # Health reports broken dependencies without repairing the venv.
+        if early_cli_subcommand(args) == "health":
+            broken = _probe_broken_packages()
+            if broken:
+                _emit_health_dependency_failure(args, broken)
+            return
         root = _project_root() if project_root is None else project_root
         if _pytest_owns_live_checkout(root):
             return

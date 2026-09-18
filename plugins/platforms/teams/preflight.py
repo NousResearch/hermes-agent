@@ -104,10 +104,24 @@ async def preflight_teams_config(config: dict[str, Any], *, http_post: HttpPost 
         "category": "success",
         "message": "Teams configuration passed the Bot Framework preflight.",
         "checklist": {
-            "capabilities": [{"name": "Bot Framework messaging", "status": "verified"}],
+            "capabilities": [{
+                "name": "Bot Framework messaging",
+                "status": "verified",
+                "next_step": "Continue with a local send test."
+            }],
             "permissions": [
-                {"name": "Microsoft Entra admin consent", "status": "unknown", "note": "Not introspectable from a Bot Framework token request."},
-                {"name": "Teams channel messaging", "status": "unknown", "note": "Not introspectable from a Bot Framework token request."},
+                {
+                    "name": "Microsoft Entra admin consent",
+                    "status": "not_verifiable",
+                    "note": "The token request cannot inspect tenant consent.",
+                    "next_step": "Ask a Teams administrator to confirm consent."
+                },
+                {
+                    "name": "Teams channel messaging",
+                    "status": "not_verifiable",
+                    "note": "The token request cannot inspect channel availability.",
+                    "next_step": "Ask a Teams administrator to verify the channel setup."
+                },
             ],
         },
     }

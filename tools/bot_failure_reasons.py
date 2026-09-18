@@ -96,3 +96,19 @@ def classify_agent_error(text: str) -> str:
             if pattern.search(raw):
                 return code
     return UNKNOWN
+
+
+def delivery_failure_reason(error: BaseException) -> str:
+    """The typed reason for a delivery refusal, kept inside the documented vocabulary.
+
+    An exception's own ``reason`` is trusted only when it names a real code: ``TurnBusyError``
+    carries ``target_busy``, but ``reason`` is also a stdlib attribute on ``ssl.SSLError`` and
+    ``urllib.error.URLError``, and forwarding one of those would put free text where consumers
+    expect a closed set. Anything else is classified like every other failure. Shared by the
+    relay lane (``bot_relay.deliver``) and the local runner (``bot_mode_dm --run-delivery``).
+    """
+    # 'target_busy' extends the structured refusal enum and predates ALL_REASONS.
+    supplied = str(getattr(error, "reason", "") or "").strip()
+    if supplied == "target_busy" or supplied in ALL_REASONS:
+        return supplied
+    return classify_agent_error(str(error))

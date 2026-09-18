@@ -680,13 +680,12 @@ def _delivery_main(args: list[str]) -> int:
             profile_home, argv = Path(argv[1]), argv[2:]
         return _run_delivery(argv, rest[1], stdin_file=rest[0] == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
-        # 'target_busy': the queued delivery gave up after its bounded wait — surface the
-        # structured payload on stdout so the completion notification carries it back.
-        if getattr(exc, "reason", "") == "target_busy":
-            # See #93091.
-            print(json.dumps({"error": str(exc), "reason": "target_busy"}))
-        else:
-            print(f"message_agent delivery failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        # Every refusal ships a typed reason on stdout so the completion notification carries it
+        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
+        # same vocabulary-guarded classification the relay lane applies.
+        from tools.bot_failure_reasons import delivery_failure_reason
+
+        print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))
         return 1
 
 

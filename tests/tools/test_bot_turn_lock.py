@@ -393,3 +393,31 @@ def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, fai
 
     assert out["error"]["code"] == code
     assert out["error"]["data"]["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (RuntimeError("Error code: 401 - invalid api key"), "provider_auth_or_access"),
+        (RuntimeError("something nobody has a rule for"), "unknown"),
+        (_WithReason("CERTIFICATE_VERIFY_FAILED", "ssl handshake failed"), "unknown"),
+    ],
+    ids=["classifiable-failure", "unclassifiable-failure", "reason-outside-the-vocabulary"],
+)
+def test_delivery_main_reports_every_failure_as_typed_json(tmp_path, monkeypatch, capsys, failure, reason):
+    """The local lane's runner stdout IS the sender's completion notification. A failure other
+    than target_busy used to reach the sender as stderr prose with no reason, so it could not
+    tell an auth failure from a transient one; it now rides the same vocabulary as the relay."""
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hi", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(bot_mode_dm, "_run_delivery", _raise)
+
+    rc = bot_mode_dm._delivery_main(["--run-delivery", "query-file", str(dm), "hermes", "-p", "ops", "chat"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"error": str(failure), "reason": reason}

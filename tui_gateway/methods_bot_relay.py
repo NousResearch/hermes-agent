@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 # Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_failure_reasons import delivery_failure_reason
 from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
 from .method_ctx import HandlerRegistry
@@ -32,23 +33,6 @@ def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess
     return subprocess.run(
         local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
-
-
-def _delivery_failure_reason(error: BaseException) -> str:
-    """The typed reason for a refusal, kept inside the documented vocabulary.
-
-    An exception's own ``reason`` is trusted only when it names a real code: ``TurnBusyError``
-    carries ``target_busy``, but ``reason`` is also a stdlib attribute on ``ssl.SSLError`` and
-    ``urllib.error.URLError``, and forwarding one of those would put free text where consumers
-    expect a closed set. Anything else is classified like every other failure.
-    """
-    from tools.bot_failure_reasons import ALL_REASONS, classify_agent_error
-
-    # 'target_busy' extends the structured refusal enum and predates ALL_REASONS.
-    supplied = str(getattr(error, "reason", "") or "").strip()
-    if supplied == "target_busy" or supplied in ALL_REASONS:
-        return supplied
-    return classify_agent_error(str(error))
 
 
 @method("bot_relay.roster.sync")
@@ -75,7 +59,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 @method("bot_relay.deliver")
 def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
-      _failure_reason=_delivery_failure_reason) -> dict:
+      _failure_reason=delivery_failure_reason) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
     GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
     ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""

@@ -15,6 +15,7 @@ import {
   overlayLivePreviews,
   projectOwnerBySessionId,
   reconcileEnteredProjectSessions,
+  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
@@ -1310,5 +1311,23 @@ describe('project filter row rule (#97762)', () => {
   it('a live id still narrows', () => {
     expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
     expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
+  })
+
+  // Issue layout: the sibling worktree /work/repos/app-2 sits under the
+  // ancestor "work" folder by cwd alone, but the backend tree owns it via "app".
+  // Filter, bucket and color must follow that owner, like the lane overlay does.
+  it('follows the backend owner map for a sibling worktree row, not the cwd walk', () => {
+    const explicit = [makeProject('p_work', ['/work']), { ...makeProject('p_app', ['/work/repos/app']), color: '#abc' }]
+    const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: null })
+
+    const owners = projectOwnerBySessionId([
+      projectNode({ id: 'p_work', path: '/work' }),
+      projectNode({ id: 'p_app', path: '/work/repos/app', sessionIds: ['sibling'] })
+    ])
+
+    expect(sessionMatchesProjectFilter(sibling, ['p_work'], explicit, owners)).toBe(false)
+    expect(sessionMatchesProjectFilter(sibling, ['p_app'], explicit, owners)).toBe(true)
+    expect(sessionBucketId(sibling, explicit, owners)).toBe('p_app')
+    expect(sessionProjectColor(sibling, explicit, owners)).toBe('#abc')
   })
 })

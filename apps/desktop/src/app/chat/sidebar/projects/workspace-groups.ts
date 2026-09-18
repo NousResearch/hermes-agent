@@ -359,6 +359,8 @@ export function mergeRepoWorktreeGroups(
 // needs the backend common-root probe, so those rows are left for the next
 // tree refresh; the common case (a new main-checkout session) overlays here.
 
+const NO_OWNERS: ReadonlyMap<string, string> = new Map()
+
 /** True when `target` equals `folder` or is nested under it (segment-wise). */
 function isPathUnder(folder: string, target: string): boolean {
   const f = comparisonSegments(folder)
@@ -385,8 +387,21 @@ function isPathUnder(folder: string, target: string): boolean {
  * the row's cwd sits outside its recorded repo root (a mid-session relocation,
  * or a sibling worktree of a project repo), the folder match is authoritative;
  * only the repo-root AUTO-project fallback needs cwd-under-root confidence.
+ * When the backend tree already claims the row (`owners`, see
+ * {@link projectOwnerBySessionId}), that owner wins over the cwd walk so a
+ * sibling worktree under an umbrella folder files with its repo project.
  */
-export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+export function liveSessionProjectId(
+  session: SessionInfo,
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  const owner = owners.get(session.id)
+
+  if (owner && owner !== NO_PROJECT_ID) {
+    return owner
+  }
+
   const cwd = (session.cwd || '').trim()
   // A session may carry only a git_repo_root and no cwd — older/imported rows,
   // or ones captured before cwd tracking. The backend still groups those by repo
@@ -435,8 +450,12 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
 }
 
 /** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
-export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
-  return liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+export function sessionBucketId(
+  session: SessionInfo,
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  return liveSessionProjectId(session, explicitProjects, owners) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
 }
 
 /**
@@ -448,13 +467,14 @@ export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectI
 export function sessionMatchesProjectFilter(
   session: SessionInfo,
   filter: readonly string[],
-  explicitProjects: ProjectInfo[]
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
 ): boolean {
   if (!filter.length) {
     return true
   }
 
-  const id = sessionBucketId(session, explicitProjects)
+  const id = sessionBucketId(session, explicitProjects, owners)
 
   return id !== null && filter.includes(id)
 }
@@ -469,8 +489,12 @@ export function sessionMatchesProjectFilter(
  * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
  * for sessions under an uncolored (or auto) project.
  */
-export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
-  const projectId = liveSessionProjectId(session, projects)
+export function sessionProjectColor(
+  session: SessionInfo,
+  projects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  const projectId = liveSessionProjectId(session, projects, owners)
 
   if (!projectId) {
     return null
@@ -776,7 +800,7 @@ export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
   removed: ReadonlySet<string> = NO_REMOVED,
-  authoritativeOwners: ReadonlyMap<string, string> = new Map()
+  authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS
 ): SidebarProjectTree {
   if (project.isNoProject) {
     return overlayHomeLane(project, live, removed)

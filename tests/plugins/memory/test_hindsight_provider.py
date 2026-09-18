@@ -31,6 +31,7 @@ from plugins.memory.hindsight import (
     _build_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
+    _parse_float_setting,
     _resolve_bank_id_template,
     _WRITER_SENTINEL,
 )
@@ -222,6 +223,69 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
         "agent:fakeassistantname",
         "source_system:hermes-agent",
     ]
+
+
+# ---------------------------------------------------------------------------
+# _parse_float_setting tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseFloatSetting:
+    """Validate guarded float parsing mirrors _parse_float_setting contract."""
+
+    def test_valid_float(self):
+        assert _parse_float_setting(3.5, 5.0, 60.0) == 3.5
+
+    def test_valid_string(self):
+        assert _parse_float_setting("2.5", 5.0, 60.0) == 2.5
+
+    def test_valid_int(self):
+        assert _parse_float_setting(3, 5.0, 60.0) == 3.0
+
+    def test_zero_is_valid(self):
+        assert _parse_float_setting(0, 5.0, 60.0) == 0.0
+
+    def test_none_returns_default(self):
+        assert _parse_float_setting(None, 5.0, 60.0) == 5.0
+
+    def test_empty_string_returns_default(self):
+        assert _parse_float_setting("", 5.0, 60.0) == 5.0
+
+    def test_invalid_string_returns_default(self):
+        assert _parse_float_setting("not-a-number", 5.0, 60.0) == 5.0
+
+    def test_negative_returns_default(self):
+        assert _parse_float_setting(-1.0, 5.0, 60.0) == 5.0
+
+    def test_negative_string_returns_default(self):
+        assert _parse_float_setting("-3", 5.0, 60.0) == 5.0
+
+    def test_above_max_returns_default(self):
+        assert _parse_float_setting(100.0, 5.0, 60.0) == 5.0
+
+    def test_bool_returns_default(self):
+        assert _parse_float_setting(True, 5.0, 60.0) == 5.0
+
+    def test_default_clamped_to_max(self):
+        assert _parse_float_setting(None, 100.0, 60.0) == 60.0
+
+    @pytest.mark.parametrize("value", ["nan", "NaN", "inf", "Infinity", "-inf", "1e309"])
+    def test_non_finite_string_returns_default(self, value):
+        """nan/±inf (including float-parse spellings and 1e309 overflow)
+        must not reach the join timeout - an inf wait is an unbounded wait."""
+        assert _parse_float_setting(value, 5.0, 60.0) == 5.0
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_returns_default(self, value):
+        assert _parse_float_setting(value, 5.0, 60.0) == 5.0
+
+    def test_excessively_large_value_returns_default(self):
+        """1e20 parses to a finite float but is far beyond any sane join
+        timeout; the range check must reject it."""
+        assert _parse_float_setting("1e20", 5.0, 60.0) == 5.0
+
+    def test_max_boundary_is_inclusive(self):
+        assert _parse_float_setting(60.0, 5.0, 60.0) == 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -1144,6 +1208,131 @@ class TestSessionSwitchBufferFlush:
         assert p._document_id != old_doc
         assert p._document_id.startswith("new-sid-")
 
+    def test_no_flush_when_buffer_empty(self, provider):
+        """Switch with no buffered turns must not fire a spurious retain."""
+        provider.on_session_switch("new-sid")
+        # Nothing enqueued - join is immediate.
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+        assert provider._session_id == "new-sid"
+
+    def test_prefetch_join_timeout_default(self, provider_with_config):
+        """Default prefetch_join_timeout should be 5.0."""
+        p = provider_with_config()
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_join_timeout_from_config(self, provider_with_config):
+        """Config value should be respected."""
+        p = provider_with_config(prefetch_join_timeout=10.0)
+        assert p._prefetch_join_timeout == 10.0
+
+    def test_prefetch_join_timeout_zero(self, provider_with_config):
+        """Zero is a valid non-blocking timeout."""
+        p = provider_with_config(prefetch_join_timeout=0)
+        assert p._prefetch_join_timeout == 0.0
+
+    def test_prefetch_join_timeout_invalid_uses_default(self, provider_with_config):
+        """Invalid config value should fall back to default."""
+        p = provider_with_config(prefetch_join_timeout="garbage")
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_join_timeout_negative_uses_default(self, provider_with_config):
+        """Negative value should fall back to default."""
+        p = provider_with_config(prefetch_join_timeout=-5)
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_uses_configured_timeout(self, provider_with_config):
+        """prefetch() join should use the configured timeout."""
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0.1)
+        gate = threading.Event()
+
+        def _slow():
+            gate.wait(timeout=5.0)
+
+        p._prefetch_thread = threading.Thread(target=_slow, daemon=True)
+        p._prefetch_thread.start()
+
+        started = time.monotonic()
+        result = p.prefetch("test")
+        elapsed = time.monotonic() - started
+        gate.set()
+        assert result == ""
+        # The join must use the configured 0.1s, not the 5.0s default: under
+        # the default this call blocks ~5s, so the bound fails fast and loudly.
+        assert elapsed < 1.0
+
+    def test_session_switch_uses_configured_timeout(self, provider_with_config):
+        """on_session_switch join should use the configured timeout."""
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0.1)
+        gate = threading.Event()
+
+        def _slow():
+            gate.wait(timeout=5.0)
+
+        p._prefetch_thread = threading.Thread(target=_slow, daemon=True)
+        p._prefetch_thread.start()
+
+        started = time.monotonic()
+        p.on_session_switch("new-sid")
+        elapsed = time.monotonic() - started
+        gate.set()
+        assert p._prefetch_result == ""
+        # Same discrimination as above: bounded by the configured 0.1s.
+        assert elapsed < 1.0
+
+    def test_prefetch_result_cleared_on_switch(self, provider):
+        """Stale recall text from the old session must not leak into the
+        next session's first prefetch read."""
+        provider._prefetch_result = "old-session recall: User likes Rust"
+        provider.on_session_switch("new-sid")
+        assert provider._prefetch_result == ""
+        # And subsequent prefetch() should now report empty, not the leftover.
+        assert provider.prefetch("anything") == ""
+
+    def test_late_old_session_prefetch_cannot_write_after_switch(
+        self, provider_with_config, monkeypatch
+    ):
+        """A zero-wait session switch must discard a late result from the old
+        session's still-running prefetch worker (the generation check).
+
+        Regression guard for the race the generation counter fixes: with only
+        a join timeout, a wedged old-session worker completes AFTER the switch
+        cleared _prefetch_result and re-populates it, so the new session's
+        first prefetch() serves the old session's memories. Deleting the
+        generation check in queue_prefetch's worker reintroduces that leak -
+        this test must fail if that happens.
+        """
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0)
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked_recall(_operation):
+            started.set()
+            release.wait(timeout=5.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="old-session memory")])
+
+        monkeypatch.setattr(p, "_run_hindsight_operation", _blocked_recall)
+        p.queue_prefetch("old-session query")
+        assert started.wait(timeout=1.0), "prefetch worker never reached the recall"
+
+        # Zero-wait switch: the join times out immediately while the worker is
+        # still blocked mid-recall. The switch must invalidate its future write.
+        p.on_session_switch("new-session")
+
+        # The worker completes AFTER the switch - its result must be discarded
+        # by the generation check, not written into the new session's cache.
+        release.set()
+        assert p._prefetch_thread is not None
+        p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == ""
+        assert p.prefetch("new-session query") == ""
 
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
         """on_session_switch must wait for an in-flight prefetch from the

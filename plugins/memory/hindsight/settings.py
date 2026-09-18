@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import re
 from typing import Any, List
 
@@ -20,6 +21,11 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids
 # on-by-default attribution tags): ``retain_source`` / HINDSIGHT_RETAIN_SOURCE.
 _DEFAULT_RETAIN_SOURCE = ""
+# How long prefetch()/on_session_switch() wait for the in-flight background
+# recall thread before proceeding with the cached result (config:
+# prefetch_join_timeout). The upper bound guards against absurd config values.
+_DEFAULT_PREFETCH_JOIN_TIMEOUT = 5.0
+_MAX_PREFETCH_JOIN_TIMEOUT = 60.0
 # Hindsight brand mark (eye ringed by graph nodes) for the recall/retain indicators.
 _HINDSIGHT_GLYPH = "👁️"
 # Hindsight 0.5.0 added ``update_mode='append'``; older APIs would silently
@@ -53,6 +59,28 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_float_setting(value: Any, default: float, maximum: float) -> float:
+    """Parse a non-negative float config value bounded by *maximum*.
+
+    Mirrors ``_parse_int_setting``'s fallback-on-invalid contract, plus a
+    finite/range check so an absurd config value (``inf``, negative, or a
+    huge number) can't silently turn a bounded wait into an unbounded one.
+    Falls back to *default* (clamped into range) on any invalid input.
+    """
+    clamped_default = max(0.0, min(default, maximum))
+    if value is None or value == "" or isinstance(value, bool):
+        return clamped_default
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid float Hindsight setting %r; using default %s", value, clamped_default)
+        return clamped_default
+    if not math.isfinite(result) or result < 0 or result > maximum:
+        logger.warning("Out-of-range float Hindsight setting %r; using default %s", value, clamped_default)
+        return clamped_default
+    return result
 
 
 def _daemon_llm_provider(provider: str) -> str:

@@ -15,8 +15,9 @@ from agent import relay_runtime
 
 
 HOST_CONFLICT = RuntimeError(
-    "a static plugin configuration is already active; to combine static and dynamic plugins, "
-    "provide the static components as the base configuration"
+    "conflict: a static plugin configuration is already active; to combine static and dynamic plugins, "
+    "provide the static components as the base configuration to dynamic plugin activation before calling "
+    "plugin initialization"
 )
 
 
@@ -248,7 +249,7 @@ def test_foreign_active_plugin_configuration_is_left_unchanged(
 def test_dynamic_host_conflict_is_foreign_too(explicit_static_config, caplog):
     relay = _FakeRelay(
         initialize_error=RuntimeError(
-            "plugin configuration is owned by an active dynamic plugin host"
+            "conflict: plugin configuration is owned by an active dynamic plugin host"
         )
     )
 
@@ -261,6 +262,57 @@ def test_dynamic_host_conflict_is_foreign_too(explicit_static_config, caplog):
         )
     finally:
         host.shutdown()
+
+
+def test_plugin_error_containing_conflict_text_is_not_misclassified(
+    explicit_static_config,
+    caplog,
+):
+    relay = _FakeRelay(
+        initialize_error=RuntimeError(
+            "registration failed: plugin configuration is owned by an active dynamic plugin host"
+        )
+    )
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
+        assert "Hermes Relay plugin initialization failed" in caplog.text
+        assert "already active outside Hermes native ownership" not in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_real_binding_leaves_foreign_plugin_host_unchanged(
+    explicit_static_config,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    activation = relay_runtime._resolve_plugin_awaitable(
+        relay.plugin.initialize(
+            {},
+            additional_plugins_toml=explicit_static_config,
+        )
+    )
+
+    try:
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        try:
+            assert (
+                host._plugin_configuration_state
+                is relay_runtime._RelayPluginConfigurationState.FOREIGN
+            )
+            assert activation.is_active
+        finally:
+            host.shutdown()
+        assert activation.is_active
+    finally:
+        relay_runtime._resolve_plugin_awaitable(activation.close())
 
 
 def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(

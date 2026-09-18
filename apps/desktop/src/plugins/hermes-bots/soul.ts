@@ -10,7 +10,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { botHandle, serverInjectsProtocol } from './data'
-import { displayName } from './labels'
+import { displayName, stripPreviewMarkdown } from './labels'
 import type { RosterRow } from './types'
 
 /** The agent-to-agent messaging protocol, reusable so a CUSTOM SOUL keeps
@@ -145,19 +145,66 @@ export function backfillMessagingProtocol(roster: RosterRow[] | null | undefined
   }
 }
 
+/** profile.yaml description, derived from the saved SOUL.md. Display-only
+ *  (roster rows) -- never fed back into the SOUL. Takes the first
+ *  display-worthy line: skips headings, fences, and blanks, turns a bold
+ *  Label: value line into its value, flattens markdown, truncates. */
+export function deriveSoulDescription(soul: null | string | undefined, maxLength = 140): string {
+  let inFence = false
+
+  for (const raw of String(soul || '').split("\n")) {
+    const line = raw.trim()
+
+    if (!line) {
+      continue
+    }
+
+    if (line.startsWith('```')) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (inFence || line.startsWith('#')) {
+      continue
+    }
+
+    let text = line.replace(/^(>\s*|[-*+]\s+|\d+[.)]\s+)+/, '').trim()
+
+    if (!text) {
+      continue
+    }
+
+    const labeledLine = text.match(/^\*\*([^*]+?)\*\*:?\s*(.*)$/)
+
+    if (labeledLine && (labeledLine[2] || '').trim()) {
+      text = labeledLine[2].trim()
+    }
+
+    text = stripPreviewMarkdown(text).replace(/\s+/g, ' ').trim()
+
+    if (!text) {
+      continue
+    }
+
+    return text.length > maxLength ? text.slice(0, maxLength - 1).trimEnd() + '…' : text
+  }
+
+  return ''
+}
+
 /** SOUL.md for a new bot: identity (or the user's custom SOUL) + the
  *  messaging protocol — which ships UNLESS the backend injects it into the
  *  system prompt itself (bot_mode_protocol capability). */
 interface ComposeSoulOptions {
   /** The user's own SOUL text, when the create form supplied one. */
   customSoul?: null | string
-  description?: null | string
   name: string
   roster?: RosterRow[] | null
   title?: null | string
 }
 
-export function composeSoul({ name, title, description, roster, customSoul }: ComposeSoulOptions): string {
+export function composeSoul({ name, title, roster, customSoul }: ComposeSoulOptions): string {
   if (customSoul && customSoul.trim()) {
     return ensureMessagingProtocol(customSoul, name, roster)
   }
@@ -169,7 +216,6 @@ export function composeSoul({ name, title, description, roster, customSoul }: Co
     })}`,
     '',
     title ? `**Role:** ${title}` : null,
-    description ? `**Mission:** ${description}` : null,
     '',
     `You are ${displayName({
       name,

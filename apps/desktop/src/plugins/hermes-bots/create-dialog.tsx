@@ -82,7 +82,7 @@ import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from '
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { HubSkillsSection } from './skills-hub'
-import { composeSoul } from './soul'
+import { composeSoul, deriveSoulDescription } from './soul'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -295,7 +295,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const flightRef = useRef<Promise<null | string> | null>(null)
   const { discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
   const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
   // (falls back to the legacy shape vocabulary on older SDKs).
   const [shape, setShape] = useState(blobatarSvg ? 'blobatar' : 'circle')
@@ -370,7 +369,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const { slug, title: botTitle } = botProfileIdentity(name, title)
-  const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -383,7 +381,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const reset = () => {
     setName('')
     setTitle('')
-    setDescription('')
     setShape(blobatarSvg ? 'blobatar' : 'circle')
     setColor(null)
     setImage(null)
@@ -516,9 +513,18 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     const target = createTarget
 
     const flight = singleFlight(flightRef, async () => {
+      // Single source of truth: the SOUL owns the words. profile.yaml
+      // description is display-only, derived from the composed SOUL.
+      const soulText = composeSoul({
+        name: slug,
+        title: botTitle,
+        roster,
+        customSoul: soul
+      })
+
       await requestForTarget('profiles.create', {
         name: slug,
-        description: descriptionText,
+        description: deriveSoulDescription(soulText),
         // Clone sources are profiles of the TARGET backend. The picker's
         // roster is the local one, so a remote create always starts from the
         // remote machine's default (or fresh) — never a local profile name
@@ -529,13 +535,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // profile, so refreshes can't invalidate each other. Older gateways
         // ignore the param and copy — still functional, just forked.
         share_auth: shareAuth,
-        soul: composeSoul({
-          name: slug,
-          title: botTitle,
-          description,
-          roster,
-          customSoul: soul
-        }),
+        soul: soulText,
         ...(model.trim() && provider.trim()
           ? {
               model: model.trim(),
@@ -666,7 +666,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       const bot: RosterRow = {
         name: slugCreated,
-        description: descriptionText,
+        description: deriveSoulDescription(soul),
         title: botTitle,
         ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
       }
@@ -775,7 +775,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
             generateSeed={{
               name: slug || 'agent',
               title,
-              description
+              description: deriveSoulDescription(soul)
             }}
             image={image}
             onColor={setColor}
@@ -835,15 +835,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           {labeled(
             b.editor.title,
             <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />
-          )}
-          {labeled(
-            b.editor.description,
-            <Textarea
-              className="min-h-16"
-              onChange={event => setDescription(event.target.value)}
-              placeholder={b.bot.helpPromptPlaceholder}
-              value={description}
-            />
           )}
           <Button
             className="flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"

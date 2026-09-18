@@ -4,6 +4,8 @@ import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '
 import {
   $activeSessionId,
   $cronSessions,
+  $currentBranch,
+  $currentCwd,
   $freshDraftReady,
   $messagingSessions,
   $sessionProfilesTruncated,
@@ -11,6 +13,8 @@ import {
   $sessionsLoading,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessagingSessions,
   setSessionProfilesTruncated,
@@ -84,6 +88,16 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it("drops the outgoing gateway's draft workspace so the next gateway seeds its own (#114306)", () => {
+    setCurrentCwdTransient('/opt/data/profiles/tenant-a')
+    setCurrentBranch('main')
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($currentCwd.get()).toBe('')
+    expect($currentBranch.get()).toBe('')
   })
 
   it("forgets the previous backend's in-memory paging state", () => {

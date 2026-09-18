@@ -43,6 +43,14 @@ class AuthSpec:
     provider: Optional[str] = None  # OAuth-specific (third-party provider like Google)
     scopes: List[str] = field(default_factory=list)
     env_var: Optional[str] = None
+    # Pre-registered OAuth client block copied verbatim to ``mcp_servers.<name>.oauth`` (vendors
+    # without Dynamic Client Registration). Secrets stay ``${VAR}`` references declared in ``env``.
+    oauth: Dict[str, Any] = field(default_factory=dict)
+
+
+# ``auth.oauth`` keys a manifest may pin; everything else is a user-side tuning knob.
+_MANIFEST_OAUTH_KEYS = frozenset({"client_id", "client_secret", "redirect_host", "redirect_port", "scope"})
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass
@@ -187,9 +195,25 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
                 f"{path}: http + api_key auth requires auth.env to declare "
                 f"'{_required_key}' (the key the Authorization header references)"
             )
+    oauth_raw = auth_raw.get("oauth") or {}
+    if oauth_raw and a_type != "oauth":
+        raise CatalogError(f"{path}: auth.oauth is only valid with auth.type 'oauth'")
+    oauth = _require_mapping(path, "auth.oauth", oauth_raw)
+    unknown = sorted(set(oauth) - _MANIFEST_OAUTH_KEYS)
+    if unknown or not all(isinstance(v, (str, int)) and not isinstance(v, bool) for v in oauth.values()):
+        raise CatalogError(
+            f"{path}: auth.oauth allows string/int values for {sorted(_MANIFEST_OAUTH_KEYS)} only"
+            + (f" (unknown: {unknown})" if unknown else "")
+        )
+    # Same contract as api_key headers: install_entry persists only DECLARED env vars, so an
+    # undeclared ``${VAR}`` would reach the OAuth flow as a literal placeholder (invalid_client).
+    declared = {spec.name for spec in env_list}
+    undeclared = sorted({ref for v in oauth.values() if isinstance(v, str) for ref in _ENV_REF_RE.findall(v)} - declared)
+    if undeclared:
+        raise CatalogError(f"{path}: auth.oauth references env vars not declared in auth.env: {undeclared}")
     return AuthSpec(
         type=a_type, env=env_list, provider=auth_raw.get("provider"),
-        scopes=list(auth_raw.get("scopes") or []), env_var=auth_raw.get("env_var"))
+        scopes=list(auth_raw.get("scopes") or []), env_var=auth_raw.get("env_var"), oauth=dict(oauth))
 
 
 def _parse_tools(path: Path, raw: Any) -> ToolsSpec:
@@ -458,6 +482,8 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+            if entry.auth.oauth:
+                cfg["oauth"] = dict(entry.auth.oauth)
         elif entry.auth.type == "api_key":
             from hermes_cli.mcp_config import _bearer_auth_headers
 
@@ -629,8 +655,8 @@ def _apply_tool_selection(
 def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     """Install a catalog entry end-to-end.
 
-    Order: git clone + bootstrap (if any); API-key prompt to .env or the ``auth: oauth`` marker;
-    write ``mcp_servers.<name>``; probe + tool checklist (falling back per
+    Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
+    ``mcp_servers.<name>`` (with the ``auth: oauth`` marker and any pre-registered ``oauth`` block); probe + tool checklist (falling back per
     :func:`_apply_tool_selection`); print post_install notes.
     """
     print()
@@ -643,11 +669,11 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     install_dir = _do_git_install(entry) if entry.install is not None else None
 
-    if entry.auth.type == "api_key":
+    if entry.auth.env:
         print()
         _say("  Configure credentials:", Colors.CYAN)
         _prompt_env_vars(entry.auth.env)
-    elif entry.auth.type == "oauth" and entry.auth.provider:
+    if entry.auth.type == "oauth" and entry.auth.provider:
         # Provider-mediated OAuth relies on the existing `hermes auth <provider>` flow; surface
         # guidance rather than auto-running it to keep install decoupled from provider-auth lifecycle.
         _say(
@@ -656,8 +682,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
             "already authenticated.",
             Colors.YELLOW)
     elif entry.auth.type == "oauth":
+        client = "your pre-registered OAuth client" if entry.auth.oauth.get("client_id") else "native OAuth 2.1"
         _say(
-            "  This MCP uses native OAuth 2.1; tokens will be acquired "
+            f"  This MCP uses {client}; tokens will be acquired "
             "on first connection (browser flow).",
             Colors.DIM)
 

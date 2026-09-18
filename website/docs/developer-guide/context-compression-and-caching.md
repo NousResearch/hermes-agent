@@ -7,6 +7,35 @@ Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (de
 `agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
+## Bedrock context window cache
+
+Bedrock context resolution in `agent/model_metadata.py` uses this precedence:
+
+- **Explicit overrides win.** Configured context lengths take priority over cache,
+  probes, and the static table.
+- **Provider-confirmed limits persist.** A successful probe or a limit learned
+  from a provider error remains authoritative, even below the static table.
+  The compressor uses the same value after restart.
+- **Legacy entries are revalidated.** Old scalar entries have no provenance and
+  may be either probe results or fallbacks. Their size does not establish which.
+- **Failed probes use the current table without persisting it.** Failures have a
+  five-minute in-memory cooldown scoped to Hermes home, endpoint, model, and
+  region. Expiry or explicit cache invalidation permits another attempt.
+
+The cache remains at `context_length_cache.yaml` under the active Hermes home.
+`context_lengths` retains scalar values for older readers. An additive
+`bedrock_confirmed_v1` map binds each confirmed key to its exact value in the
+same atomic write. Generic writes clear that key's provenance. Older writers
+may drop the additive map, which causes revalidation after upgrading again.
+Downgrading remains readable but restores the older runtime's resolution rules.
+
+The static fallback for `xai.grok-4.6` (including `global.` and `us.` inference
+profiles) is 500,000 tokens, per the
+[AWS model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html).
+This is Bedrock-specific, not the direct xAI API window. Existing compression
+rules still apply: without output reservation or an explicit token cap, the
+small-window 75% threshold floor yields a 375,000-token trigger at this window.
+
 ## Pluggable Context Engine
 
 Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
@@ -246,6 +275,13 @@ feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
 protected messages, boundary alignment, summaries, and anchors can add tokens.
+
+The lowered trigger is a durable ceiling on the compressor, so window corrections for the
+same model (a provider-reported limit, a grown local window) keep it. Whenever the main
+runtime changes — `/model`, fallback activation, or the restore back to the primary — the
+auxiliary model is re-probed immediately: the trigger is clamped again before the first
+compaction on the new window, or restored to the main model's own value when the
+auxiliary model now fits.
 
 ### Per-model threshold overrides
 

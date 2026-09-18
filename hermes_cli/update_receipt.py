@@ -197,6 +197,10 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        from hermes_cli.update_serve_obligations import retain_receipt_manual_serves
+        pending = retain_receipt_manual_serves(read_latest_receipt() or {})
+        if pending:
+            receipt.data["pending_manual_serves"] = pending
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"

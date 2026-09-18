@@ -182,11 +182,12 @@ class CLIAgentSetupMixin:
         from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
         _primary_exc = None
         runtime = None
+        _model_at_entry = self.model
         try:
-            # target_model: the ladder's model-keyed rungs (OpenCode free tier, Zen/Go api_mode,
-            # Copilot/Nous api_mode) must see the model this CLI will actually send, not
-            # config's `default` -- otherwise `hermes -m mimo-v2.5 --provider opencode-go` with a
-            # *-free default is routed to the keyless Zen relay (#112600).
+            # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+            # api_mode) must see the model this CLI will actually send, not config's `default`,
+            # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
+            # sent model cannot use (#112600).
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url, target_model=self.model or None)
@@ -271,6 +272,16 @@ class CLIAgentSetupMixin:
         # Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
+        # Startup resolved reasoning_config for the launch model; whichever path above moved
+        # self.model (auth fallback, custom-entry model, provider default, normalization) leaves a
+        # per-model contract the lazily built agent would otherwise miss (an always-thinking model
+        # 400s on the primary's effort). Same chokepoint as /model, /new and --resume; an explicit
+        # --reasoning is the user's intent for this run and outranks the new model's config.
+        if self.model != _model_at_entry and getattr(self, "_explicit_reasoning_config", None) is None:
+            from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+            _resolve_cli_reasoning(self)
+            logger.info("Model moved to %s: reasoning_config resolved: %s", self.model, self.reasoning_config)
+
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
@@ -320,9 +331,13 @@ class CLIAgentSetupMixin:
                 logger.warning(
                     "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                     primary_exc, _fb_provider, _fb_model)
-                _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
                 return runtime
             except Exception:
                 continue
@@ -389,6 +404,11 @@ class CLIAgentSetupMixin:
                 self.requested_provider = (_model_cfg.get("provider") or "").strip() or self.requested_provider
                 _new_model = (_model_cfg.get("default") or _model_cfg.get("model") or "").strip()
                 self.model = _new_model or self.model
+                # The picker's model has its own per-model reasoning contract (see
+                # _resolve_cli_reasoning); an explicit --reasoning stays the user's intent.
+                if _new_model and getattr(self, "_explicit_reasoning_config", None) is None:
+                    from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+                    _resolve_cli_reasoning(self)
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
         # Force credential re-resolution + agent rebuild on next use.

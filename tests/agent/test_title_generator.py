@@ -8,6 +8,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    wait_for_title_upgrades,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -607,6 +608,62 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "and now something else", history)
         assert db.get_session_title("sess-1") == "Existing name"
         mock_auto.assert_not_called()
+
+    @pytest.mark.parametrize("title, provisional", [
+        ("Friendly greeting", True),
+        ("'Friendly greeting in chat'", True),
+        ("Friendly greeting card design", False),
+        ("Friendly greetings and pleasantries", False),
+    ])
+    def test_only_the_exact_greeting_placeholder_is_provisional(self, title, provisional):
+        """A topical title that merely starts with the phrase keeps its ``llm`` rank."""
+        from agent.title_generator import _is_provisional_greeting_title
+        assert _is_provisional_greeting_title(title) is provisional
+
+    def test_upgrades_a_provisional_greeting_on_a_substantive_second_turn(self, tmp_path):
+        """A bare "hi" opener leaves only placeholders (instant slice / the model's greeting title);
+        the next real request must still be allowed to name the session."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        answers = iter(["Friendly greeting", "Debug scheduler failures"])
+
+        def stub_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices[0].message.content = next(answers)
+            resp.choices[0].message.reasoning = None
+            return resp
+
+        history = [{"role": "user", "content": "hi how are you"}]
+        with patch("agent.title_generator.call_llm", side_effect=stub_call_llm), \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "hi how are you", history)
+            wait_for_title_upgrades(10)
+            assert db.get_session_title_source("sess-1") == "derived"
+            history += [{"role": "assistant", "content": "Well, thanks."},
+                        {"role": "user", "content": "help me debug the scheduler"}]
+            maybe_auto_title(db, "sess-1", "help me debug the scheduler", history)
+            wait_for_title_upgrades(10)
+
+        assert db.get_session_title("sess-1") == "Debug scheduler failures"
+        assert db.get_session_title_source("sess-1") == "llm"
+
+    def test_a_placeholder_title_stops_retrying_after_the_third_turn(self, tmp_path):
+        """A derived name gets turns 2-3 to upgrade, not a model call on every later turn."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_auto_title("sess-1", "hi", source="derived")
+        history = [{"role": "user", "content": f"turn {n}"} for n in range(3)]
+        with patch("agent.title_generator.auto_title_session") as mock_auto, \
+                patch("agent.title_generator._auto_title_enabled", return_value=True), \
+                patch("agent.title_generator._model_title_upgrade_enabled", return_value=True):
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+            assert mock_auto.call_count == 1  # turn 3: the placeholder still gets a model shot
+            history.append({"role": "user", "content": "turn 3"})
+            maybe_auto_title(db, "sess-1", "and now the real question", history)
+            wait_for_title_upgrades(10)
+        assert mock_auto.call_count == 1  # turn 4: capped, no call
 
     def test_instant_title_declines_a_name_collision(self, tmp_path):
         """A colliding derived title is skipped, not scanned into 'hi #2'.

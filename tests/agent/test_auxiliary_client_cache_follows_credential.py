@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+import agent.anthropic_credentials as anth_cred
 import agent.auxiliary_client as aux
 from hermes_cli.auth import write_credential_pool
 
@@ -29,7 +30,20 @@ def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> No
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(aux, "_client_cache", {})
+    # HERMES_HOME only redirects Hermes-owned state; the borrowed Claude Code
+    # reader still consults ~/.claude/.credentials.json and the macOS Keychain,
+    # so an ambient login on the host would seed a second un-cooled-down pool
+    # entry and break the cooldown assertions below (#114424).
+    monkeypatch.setattr(anth_cred, "read_claude_code_credentials", lambda: None)
     return tmp_path / "hermes"
+
+
+def test_isolated_home_hides_ambient_borrowed_credentials(isolated_home):
+    """The suite stays hermetic on hosts with an ambient Claude Code login (#114424)."""
+    _seed("anthropic", "tok-old", model_cooldown=MODEL)
+    pool = aux._load_pool_with_credentials("anthropic")
+    assert [entry.source for entry in pool.entries()] == ["manual"]
+    assert aux._pool_cache_hint("anthropic").startswith("anthropic::")
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai-codex"])

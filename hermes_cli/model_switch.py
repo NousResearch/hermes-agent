@@ -237,7 +237,9 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                     if model:
                         merged[key] = DirectAlias(
                             model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
-                            base_url=_clean(value.get("base_url")))
+                            base_url=_clean(value.get("base_url", "")),
+                            api_key=_clean(value.get("api_key", "")),
+                            key_env=_clean(value.get("key_env", "")))
                 elif isinstance(value, str) and value.strip():
                     val = value.strip()
                     provider, model = val.split("/", 1) if "/" in val else (current_provider, val)

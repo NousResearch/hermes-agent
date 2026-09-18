@@ -253,8 +253,10 @@ def _finish_dashboard_update_cleanup(
         return
 
     try:
+        from hermes_constants import get_hermes_home
         stop_result = _m()._kill_stale_dashboard_processes(
-            restart_managed=True, already_restarted_units=already_restarted_units
+            restart_managed=True, already_restarted_units=already_restarted_units,
+            scope_home=str(get_hermes_home()),
         )
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort

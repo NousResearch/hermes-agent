@@ -470,8 +470,8 @@ class TestBatchedDescribe:
         ))
 
         assert result["errors"][name] == (
-            f"'{name}' is not a deferrable tool. If you see it in the tools list "
-            "already, call it directly; otherwise check the spelling against tool_search."
+            f"'{name}' is a directly-listed tool, not a deferred one. "
+            "Call it directly instead of via tool_call."
         )
         assert name not in result.get("not_found", [])
 

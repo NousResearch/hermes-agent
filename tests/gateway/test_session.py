@@ -492,6 +492,21 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_expected_session_id_refuses_moved_route(self, tmp_path):
+        """With ``expected_session_id`` the repoint is a CAS: a route that moved past the caller's
+        snapshot is left alone (None), while a matching snapshot still switches."""
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
+        source = SessionSource(platform=Platform.FEISHU, chat_id="chat-2", chat_type="dm", user_id="user-2")
+        entry = store.get_or_create_session(source)
+
+        assert store.switch_session(entry.session_key, "target", expected_session_id="someone-else") is None
+        assert store.lookup_by_session_key(entry.session_key).session_id == entry.session_id
+
+        switched = store.switch_session(entry.session_key, "target", expected_session_id=entry.session_id)
+        assert switched is not None and switched.session_id == "target"
+
     def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
         from hermes_state import SessionDB
 

@@ -176,6 +176,41 @@ Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
 
+### Entries that need your own OAuth app (no DCR)
+
+Some vendors run their remote MCP behind OAuth but do **not** offer Dynamic
+Client Registration — every client must be an app the user pre-registers in
+the vendor's developer console. Asana's V2 server
+(`https://mcp.asana.com/v2/mcp`) is the shipped example: the retired V1
+`https://mcp.asana.com/sse` server accepted any client; V2 does not.
+
+Such a manifest declares the credentials under `auth.env` and pins the
+client under `auth.oauth`, so installing it (CLI picker, web dashboard or
+Desktop) prompts for the Client ID / Client secret, stores them in the
+profile's `.env`, and writes only `${VAR}` references to `config.yaml`:
+
+```yaml
+mcp_servers:
+  asana:
+    url: https://mcp.asana.com/v2/mcp
+    auth: oauth
+    oauth:
+      client_id: "${ASANA_CLIENT_ID}"
+      client_secret: "${ASANA_CLIENT_SECRET}"
+      redirect_host: localhost      # the vendor matches the redirect URL exactly
+      redirect_port: 27890          # register http://localhost:27890/callback on the app
+```
+
+Read the entry's `post_install` notes for the exact app type and redirect URL
+to register, then run `hermes mcp login <name>` and restart (or
+`/reload-mcp`) the session or gateway that should expose the tools. The
+dashboard / Desktop **Authorize** button works too: because the client is
+pre-registered with a pinned `redirect_port`, Hermes keeps the registered
+loopback callback (`http://localhost:27890/callback`) instead of the
+dashboard's own callback URL — so the browser you approve in must run on the
+same machine as the Hermes process. For a remote host, use `hermes mcp login`
+over SSH port-forwarding.
+
 ### Updating tool selection later
 
 ```bash

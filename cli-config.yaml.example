@@ -1395,6 +1395,7 @@ platform_toolsets:
 #
 # discord:
 #   require_mention: true            # Require @mention in server channels (default: true)
+#   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
@@ -1796,6 +1797,14 @@ display:
   #   true:  Keep/send mid-turn assistant updates (default)
   #   false: Only keep/send the final response
   interim_assistant_messages: true
+
+  # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
+  # and fallback notices, credit/subagent failure lines, inactivity and watchdog
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # Requested results, approvals, clarifications and command outcomes are never
+  # hidden, and nothing is removed from the logs. Per-platform override under
+  # display.platforms.<platform>.suppress_warning_notifications.
+  suppress_warning_notifications: false
 
   # Gateway-only long-running status heartbeats.
   # When false, the platform does not receive periodic "⏳ Working — N min"

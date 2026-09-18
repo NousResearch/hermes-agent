@@ -802,3 +802,103 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
   })
 })
+
+
+describe('rejected secondary authentication', () => {
+  it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
+    vi.useFakeTimers()
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    }))
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+    await ensureGatewayForAgent('cloud', 'default')
+    gatewayMocks.instances[0].connectionState = 'closed'
+    getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
+    const rejected = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await rejected).toBeNull()
+    const calls = getGatewayWsUrlFor.mock.calls.length
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await vi.advanceTimersByTimeAsync(60_000)
+    const nudged = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await nudged).toBeNull()
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls)
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    await ensureGatewayForAgent('healthy', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    await ensureGatewayForAgent('cloud', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 2)
+  })
+
+  it('the explicit Reconnect action redials a parked active source', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    }))
+
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+    await ensureGatewayForAgent('cloud', 'default')
+    gatewayMocks.instances[0].connectionState = 'closed'
+    getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
+    const rejected = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await rejected).toBeNull()
+
+    // The user re-authenticated in Settings and pressed Reconnect on the same route.
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    const calls = getGatewayWsUrlFor.mock.calls.length
+    const recovered = ensureActiveGatewayOpen({ explicit: true })
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect((await recovered)?.connectionState).toBe('open')
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 1)
+  })
+})
+
+
+it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
+  const { requestGatewayForAgent } = await import('./gateway')
+  const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+  }))
+  const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
+  installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  pruneSecondaryGateways(new Set())
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(1)
+
+  // Removing/replacing a connection must not leave a stale rejection behind.
+  disposeSecondariesForConnection('cloud')
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
+
+  getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' } as never)
+  await ensureGatewayForAgent('cloud', 'default')
+  expect(activeGateway()?.connectionState).toBe('open')
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(3)
+})
+
+
+it('does not let a removed connection repopulate the auth rejection', async () => {
+  const { requestGatewayForAgent } = await import('./gateway')
+  const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+  }))
+  let rejectTicket!: (error: Error) => void
+  const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
+  const getGatewayWsUrlFor = vi.fn(() => ticket)
+  installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+  const pending = requestGatewayForAgent('cloud', 'default', 'session.list')
+  const rejected = expect(pending).rejects.toThrow()
+  await vi.waitFor(() => expect(getGatewayWsUrlFor).toHaveBeenCalledOnce())
+  disposeSecondariesForConnection('cloud')
+  rejectTicket(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+  await rejected
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
+})

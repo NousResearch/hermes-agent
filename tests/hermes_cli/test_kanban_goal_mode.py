@@ -153,6 +153,7 @@ class TestCLIJudgeGate:
         from hermes_cli.kanban import _cmd_complete
 
         fake_task = types.SimpleNamespace(
+            id="t_goal",
             goal_mode=goal_mode,
             title="Finish report",
             body="acceptance: criteria",

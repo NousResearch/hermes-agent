@@ -149,7 +149,10 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if (payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
+        # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
+        # like unparseable JSON instead of letting ``.get`` abort the whole drain.
+        if (not isinstance(payload, dict)
+                or payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
                 or payload.get("session_key") != session_id):
             continue
         message = (payload.get("data") or {}).get("message")

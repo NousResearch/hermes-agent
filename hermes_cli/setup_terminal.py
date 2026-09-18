@@ -9,6 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from tools import tool_backend_helpers
+from tools.environments.docker import docker_runtime_name, find_docker
 from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
@@ -144,9 +145,12 @@ def _setup_backend_local(config: dict) -> None:
 
 
 def _setup_backend_docker(config: dict) -> None:
-    _setup.print_success("Terminal backend: Docker")
-    _report_binary(shutil.which("docker"), "Docker not found in PATH!",
-                   "Install Docker: https://docs.docker.com/get-docker/", "Docker found: ")
+    _setup.print_success("Terminal backend: Docker / Podman")
+    docker_exe = find_docker()
+    _report_binary(docker_exe, "Docker or Podman not found in PATH!",
+                   "Install Docker: https://docs.docker.com/get-docker/ "
+                   "or Podman: https://podman.io/docs/installation",
+                   f"{docker_runtime_name(docker_exe)} found: " if docker_exe else "")
     # Image and resource limits use defaults; tune via `hermes setup terminal`.
     config["terminal"].setdefault("docker_image", _SANDBOX_IMAGE)
     _setup._info(None, "Docker sandboxes can be protected with the egress credential firewall.",
@@ -275,7 +279,7 @@ def _setup_backend_plugin(config: dict, backend: str) -> None:
 
 _BUILTIN_TERMINAL_BACKENDS = [
     ("local", "Local - run directly on this machine (default)"),
-    ("docker", "Docker - isolated container with configurable resources"),
+    ("docker", "Docker/Podman - isolated container with configurable resources"),
     ("modal", "Modal - serverless cloud sandbox"), ("ssh", "SSH - run on a remote machine"),
     ("daytona", "Daytona - persistent cloud development environment"),
     ("vercel_sandbox", "Vercel Sandbox - cloud microVM with snapshot filesystem persistence")]

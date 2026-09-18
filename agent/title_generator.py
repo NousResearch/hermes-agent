@@ -81,6 +81,14 @@ _EXAMPLE_ECHO_REJECT = frozenset(
     t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
 ) | {_PROMPT_VAGUE_EXAMPLE.lower()}
 
+# "Friendly greeting" is what the prompt asks for when the opener has no topic yet, so
+# it is the one model title that must NOT settle the session: it is persisted at
+# ``derived`` authority (a placeholder, like the instant title) and the next substantive
+# turn upgrades it. Kept as a prompt example on purpose — a predictable placeholder is
+# detectable, an improvised one ("Casual check-in chat") would lock the title as ``llm``.
+_PROVISIONAL_GREETING_TITLE = "friendly greeting"
+
+
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
@@ -314,6 +322,12 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
     _safe_callback(title_callback, (title, source), "%s callback failed", label)
 
 
+def _is_provisional_greeting_title(title: str) -> bool:
+    """The prompt's greeting placeholder (also "Friendly greeting in chat" and quoted/bracketed variants)."""
+    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
+    return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
+
+
 def _is_prompt_example_echo(title: str) -> bool:
     """Return True when *title* is one of the prompt's own example titles.
 
@@ -387,7 +401,7 @@ def generate_title(
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title fires for the first two exchanges). Port of can1357/oh-my-pi#7306.
+        # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
@@ -503,6 +517,8 @@ def auto_title_session(
         title, source = generate_title(
             user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
         ), "llm"
+        if title and _is_provisional_greeting_title(title):
+            source = "derived"
         if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
             title, source = derive_title(user_message), "derived"
         if not title:
@@ -576,10 +592,16 @@ def maybe_auto_title(
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
         return
-    # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
-    # left a machinery-opened session nameless; title alone never titles on an old store.
+    # History may be pre- or post-message. Past the opening turn, skip once the session holds an
+    # ``llm``/``user`` name: count alone left a machinery-opened session nameless, and a ``derived``
+    # name is still a placeholder (instant slice, or the model's greeting title for a bare "hi") that
+    # the first substantive turn should replace. Untitled sessions always get another shot; a
+    # placeholder gets turns 2-3, so a failing title model costs at most three calls, not one per turn.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+    if user_msg_count > 1 and (
+        _has_upgraded_title(session_db, session_id)
+        or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
+    ):
         return
     kanban_title = _kanban_task_title()
     if kanban_title:

@@ -62,15 +62,20 @@ type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
  * (all-zero) install stamps still produce a marker that
  * isBootstrapComplete() accepts (pinnedCommit length >= 7).
  */
-function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
+function resolveCheckoutHead(
+  activeRoot: string | null | undefined,
+  opts: { execGit?: ExecGitFn; gitBinary?: string } = {}
+): string | null {
   if (!activeRoot) {
     return null
   }
 
+  // Bare 'git' takes the first PATH hit, which can exist yet be unlaunchable
+  // (Intel-only build on Apple Silicon); main.ts passes its probed binary.
   const run: ExecGitFn =
     opts.execGit ||
     ((args, cwd) =>
-      execFileSync('git', args, {
+      execFileSync(opts.gitBinary || 'git', args, {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -900,7 +905,8 @@ async function runBootstrap(opts) {
     logRoot,
     onEvent,
     abortSignal,
-    writeMarker // callback to write the bootstrap-complete marker; main.ts provides
+    writeMarker, // callback to write the bootstrap-complete marker; main.ts provides
+    gitBinary // probed git path from main.ts; bare 'git' when absent
   } = opts
 
   // Bail before spawning anything if the user already cancelled — otherwise an
@@ -1021,7 +1027,9 @@ async function runBootstrap(opts) {
     // not real pins -- resolve HEAD from the checkout we just installed so
     // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
     // instead of re-running bootstrap on every launch (#50823 review).
-    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot)
+    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot, {
+      resolveHead: root => resolveCheckoutHead(root, { gitBinary })
+    })
 
     if (!pinnedCommit) {
       emit({

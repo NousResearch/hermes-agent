@@ -175,6 +175,10 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+    # Set when the backend's own ``builtin cd -- <cwd> || exit 126`` wrapper failed:
+    # the command never ran, so the verdict is about the working directory, not
+    # the requested path (callers must neither cache it nor blame the path).
+    cwd_error: str = ""
 
 
 # ---------------------------------------------------------------------------

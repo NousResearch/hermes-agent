@@ -471,12 +471,13 @@ class SearchMixin:
             out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
         return out
 
-    def _path_exists_probe(self, path: str) -> str:
-        """Stdout of the existence probe: contains "exists" or "not_found"."""
+    def _path_exists_probe(self, path: str) -> ExecuteResult:
+        """Existence probe; stdout contains "exists" or "not_found" (or the probe's
+        ``cwd_error`` when the exec wrapper itself failed)."""
         if self._native_read_enabled():
             full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
-            return "exists" if os.path.exists(full) else "not_found"
-        return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found").stdout
+            return ExecuteResult(stdout="exists" if os.path.exists(full) else "not_found")
+        return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
                          file_glob: Optional[str], limit: int, offset: int,
@@ -519,7 +520,7 @@ class SearchMixin:
         existing, missing = [], []
         for p in parts:
             expanded = self._expand_path(p)
-            (existing if "exists" in self._path_exists_probe(expanded) else missing).append(expanded)
+            (existing if "exists" in self._path_exists_probe(expanded).stdout else missing).append(expanded)
         if not existing:
             return None
         if target == "files":

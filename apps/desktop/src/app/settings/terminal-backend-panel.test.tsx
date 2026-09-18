@@ -1,14 +1,20 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '@/test/deferred'
 import type { TerminalBackendsResponse } from '@/types/hermes'
 
 const getTerminalBackends = vi.fn()
 const selectTerminalBackend = vi.fn()
+const confirmMock = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getTerminalBackends: () => getTerminalBackends(),
   selectTerminalBackend: (backend: string) => selectTerminalBackend(backend)
+}))
+
+vi.mock('@/store/confirm', () => ({
+  confirm: (...args: Parameters<typeof confirmMock>) => confirmMock(...args)
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -52,6 +58,7 @@ function backends(overrides: Partial<TerminalBackendsResponse> = {}): TerminalBa
 beforeEach(() => {
   getTerminalBackends.mockResolvedValue(backends())
   selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'ssh' })
+  confirmMock.mockReset()
 })
 
 afterEach(() => {
@@ -103,16 +110,51 @@ describe('TerminalBackendPanel', () => {
     expect(ssh.getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('allows selecting a needs_setup backend (guidance instead of blocking)', async () => {
+  it('gates a needs_setup backend behind a confirm dialog before selecting it', async () => {
+    const confirmGate = deferred<boolean>()
+    confirmMock.mockReturnValue(confirmGate.promise)
     selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'docker' })
     const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
 
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining('Docker'),
+        description: expect.stringContaining('Docker daemon not reachable')
+      })
+    )
+    // Must not select while the confirm dialog is still pending.
+    expect(selectTerminalBackend).not.toHaveBeenCalled()
+
+    confirmGate.resolve(true)
+
     await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('docker'))
     // The guidance detail stays visible on the now-active row.
     expect(screen.getByText(/Docker daemon not reachable/)).toBeTruthy()
+  })
+
+  it('does not select a needs_setup backend when the confirm dialog is declined', async () => {
+    const confirmGate = deferred<boolean>()
+    confirmMock.mockReturnValue(confirmGate.promise)
+    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled())
+
+    // Resolve inside act() and await the same promise handleSelect is
+    // awaiting, so its post-await early return has actually run (no
+    // arbitrary-duration sleep — deterministic on the real microtask queue).
+    await act(async () => {
+      confirmGate.resolve(false)
+      await confirmGate.promise
+    })
+
+    expect(selectTerminalBackend).not.toHaveBeenCalled()
   })
 
   it('does not re-select the already active backend', async () => {

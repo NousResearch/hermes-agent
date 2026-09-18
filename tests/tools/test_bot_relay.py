@@ -124,6 +124,23 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
+def test_claim_skips_non_dict_envelope(root):
+    """A parseable-but-non-object outbox file must not reach the Desktop consumer or
+    crash the claim sweep; the claim stays claimed so it is not re-queued."""
+    bot_relay.write_remote_roster(root, _rows())
+    roster = bot_relay.read_remote_roster(root)
+    target = bot_relay.resolve_remote_target("researcher", roster)
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="hi", sender_profile="work", sender_handle="work"
+    )
+    base = bot_relay.relay_root(root)
+    bad = base / bot_relay.OUTBOX_DIR / f"{'9' * 32}.json"
+    bad.write_text('"not an envelope"', encoding="utf-8")
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [e["id"] for e in claimed] == [env["id"]]
+    assert not bad.exists() and (base / bot_relay.CLAIMED_DIR / bad.name).exists()
+
+
 def test_write_reply_validates_envelope_id(root):
     with pytest.raises(ValueError):
         bot_relay.write_reply(root, "../../etc/passwd", reply="x")

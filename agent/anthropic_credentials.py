@@ -75,12 +75,14 @@ def is_native_anthropic_oauth(key: Any, base_url: Any) -> bool:
 
     ``key`` may be a static string or a callable token source (``key_cmd`` /
     MiniMax per-request provider). A callable is materialized ONCE here purely
-    to test the token shape — ``CommandTokenSource`` caches the mint, so the
-    later request path pays nothing extra, and a mint failure simply
-    classifies as non-OAuth (the wire client surfaces the real error when it
-    actually needs the token). Third-party Anthropic-protocol endpoints never
-    qualify: Claude Code identity headers and tool-name transforms are only
-    valid against api.anthropic.com, and injecting them elsewhere 401/403s.
+    to test the token shape, so the callable contract is *safe to invoke for
+    classification*: it must serve a cached token or mint idempotently
+    (``CommandTokenSource`` does; a single-use mint would be consumed here).
+    A mint failure simply classifies as non-OAuth (the wire client surfaces
+    the real error when it actually needs the token). Third-party
+    Anthropic-protocol endpoints never qualify: Claude Code identity headers
+    and tool-name transforms are only valid against api.anthropic.com, and
+    injecting them elsewhere 401/403s.
     """
     if not routes_to_native_anthropic(base_url):
         return False

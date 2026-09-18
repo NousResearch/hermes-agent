@@ -159,6 +159,25 @@ class TestBearerHookOAuthIdentityHeaders:
         headers = kwargs.get("default_headers") or {}
         assert "oauth-2025-04-20" not in str(headers.get("anthropic-beta", ""))
 
+    def test_oauth_only_betas_disjoint_from_common_betas(self):
+        # The OAuth branches concatenate the common betas with _OAUTH_ONLY_BETAS;
+        # a beta present in both sets would be sent twice on the anthropic-beta line.
+        from agent.anthropic_adapter import _OAUTH_ONLY_BETAS, _common_betas_for_base_url
+
+        for base_url in (
+            _NATIVE,
+            None,
+            "https://api.minimaxi.com/anthropic",
+            "https://r.services.ai.azure.com/anthropic",
+        ):
+            for drop_1m in (False, True):
+                common = set(
+                    _common_betas_for_base_url(base_url, drop_context_1m_beta=drop_1m)
+                )
+                assert common.isdisjoint(_OAUTH_ONLY_BETAS), (
+                    f"OAuth-only betas duplicated in the common set for {base_url!r}"
+                )
+
 
 # ---------------------------------------------------------------------------
 # auxiliary named custom provider — api_mode=anthropic_messages + native host

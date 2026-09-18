@@ -1243,6 +1243,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    selected_skills: "tuple[str, ...] | None" = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1265,7 +1266,9 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
+            selected_skills=selected_skills,
+        )
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1327,6 +1330,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    selected_skills: "tuple[str, ...] | None" = None,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
@@ -1334,16 +1338,34 @@ def _render_skills_index(
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    routed = selected_skills is not None
+    selected = frozenset(selected_skills or ())
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    ) if demoted and not routed else ""
+    if routed:
+        hidden_note = (
+            "\n(The session router selected the described skills above. Every other skill remains "
+            "available by exact name through skill_view or discoverable with skills_list.)"
+        )
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
+        if routed:
+            unique = {name: desc for name, desc in sorted(entries, key=lambda x: x[0])}
+            chosen = [(name, unique[name]) for name in sorted(unique) if name in selected]
+            remaining = [name for name in sorted(unique) if name not in selected]
+            if chosen:
+                cat_desc = category_descriptions.get(category, "")
+                index_lines.append(f"  {category} [selected]: {cat_desc}" if cat_desc else f"  {category} [selected]:")
+                index_lines.extend(f"    - {name}: {desc}" if desc else f"    - {name}" for name, desc in chosen)
+            if remaining:
+                index_lines.append(f"  {category} [names only]: {', '.join(remaining)}")
+            continue
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
@@ -1380,7 +1402,7 @@ def _render_skills_index(
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_dirs: "list[Path] | None" = None, *, selected_skills: "tuple[str, ...] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1391,6 +1413,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        tuple(selected_skills) if selected_skills is not None else None,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1448,7 +1471,10 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools,
+        selected_skills=selected_skills,
+    )
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

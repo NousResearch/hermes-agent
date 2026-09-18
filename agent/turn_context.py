@@ -953,19 +953,23 @@ def build_turn_context(
             f"{'...' if len(_preview_text) > 60 else ''}'"
         )
 
-    # System prompt is cached per session for prefix caching.
-    if agent._cached_system_prompt is None:
-        restore_or_build_system_prompt(agent, system_message, conversation_history)
-    active_system_prompt = agent._cached_system_prompt
-
-    # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
-    # gate as the protocol section); gate is session-stable, so cache-safe.
+    # Bot Mode DM tool and the session capability route are both session-stable.
+    # Resolve them before the first system-prompt build so prompt/tool prefixes are
+    # frozen together and every surface shares the same routing seam.
     try:
         from tools.bot_mode_dm import ensure_message_agent_tool
 
         ensure_message_agent_tool(agent)
     except Exception:
         logger.debug("message_agent injection skipped", exc_info=True)
+    from agent.session_capabilities import ensure_session_capability_plan
+
+    ensure_session_capability_plan(agent, original_user_message, conversation_history)
+
+    # System prompt is cached per session for prefix caching.
+    if agent._cached_system_prompt is None:
+        restore_or_build_system_prompt(agent, system_message, conversation_history)
+    active_system_prompt = agent._cached_system_prompt
 
     _ensure_session_row(agent, pending_cli_message)
 

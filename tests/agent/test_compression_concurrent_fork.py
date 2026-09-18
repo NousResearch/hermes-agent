@@ -1155,6 +1155,47 @@ def test_rotation_child_starts_without_durable_prune_runway(tmp_path: Path) -> N
     ] == 120_000
 
 
+def test_rotation_child_inherits_immutable_capability_plan(tmp_path: Path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "ROTATION_INHERITS_CAPABILITY_PLAN"
+    plan = {
+        "version": 1,
+        "direct_tools": ["clarify"],
+        "deferred_tools": ["terminal"],
+        "matched_toolsets": [],
+        "selected_skills": [],
+        "direct_schema_tokens": 1,
+        "intent_hash": "intent",
+        "manifest_hash": "manifest",
+        "wire_tool_defs": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "clarify",
+                    "description": "clarify",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "fallback_tool_defs": [],
+        "tool_schema_hash": "ignored-by-copy-test",
+    }
+    db.create_session(parent_sid, source="cli", model_config={"reasoning_effort": "low"})
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    db.append_messages_batch(parent_sid, messages)
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._session_init_model_config = {
+        "reasoning_effort": "low",
+        "capability_plan": plan,
+    }
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    child_config = json.loads(db.get_session(agent.session_id)["model_config"])
+    assert child_config["reasoning_effort"] == "low"
+    assert child_config["capability_plan"] == plan
+
+
 @pytest.mark.parametrize("in_place", [False, True])
 def test_equal_copy_compression_result_does_not_rewrite_session(
     tmp_path: Path,

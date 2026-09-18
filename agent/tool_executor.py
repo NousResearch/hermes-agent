@@ -337,6 +337,9 @@ def _tool_search_scoped_names(agent) -> frozenset:
     """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
     validate against this set. Cached on the agent, keyed by registry scope/generation."""
+    planned = getattr(agent, "_capability_fallback_names", None)
+    if planned is not None:
+        return frozenset(planned)
     try:
         import model_tools
         from tools import tool_search as _ts
@@ -391,7 +394,10 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
+        planned = getattr(agent, "_capability_fallback_names", None)
+        underlying, underlying_args, err = _ts.resolve_underlying_call(
+            function_args, allowed_names=planned,
+        )
         if err or not underlying:
             return function_name, function_args, None
         if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
@@ -406,6 +412,8 @@ def _unwrap_tool_search_call(
         # parameter schema from provider-native tool-call validation.
         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
         if scope_block is None:
+            if planned is not None:
+                logger.info("Intent routing fallback invoked: tool=%s", underlying)
             return underlying, underlying_args, None
         if flatten_probe:
             probe = json.loads(scope_block)
@@ -1585,13 +1593,22 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                enabled_tools=(
+                    list(getattr(agent, "_authorized_tool_names", ()) or ())
+                    or (list(agent.valid_tool_names) if agent.valid_tool_names else None)
+                ),
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
                 skip_tool_execution_middleware=True,
                 tool_request_middleware_trace=list(middleware_trace),
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                bridge_tool_defs=list(
+                    getattr(agent, "_capability_bridge_tool_defs", ()) or ()
+                ) or None,
+                bridge_allowed_names=list(
+                    getattr(agent, "_capability_fallback_names", ()) or ()
+                ) or None,
             )
 
     return _SequentialDispatch(

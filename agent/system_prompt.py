@@ -303,14 +303,25 @@ def _skills_prompt(agent: Any) -> str:
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
-    avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
+    available_tools = set(getattr(agent, "_authorized_tool_names", ()) or agent.valid_tool_names)
+    avail_toolsets = {
+        toolset for tool_name in available_tools
+        if (toolset := model_tools.get_toolset_for_tool(tool_name))
+    }
     try:
         from agent.coding_context import coding_compact_skill_categories
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
-    return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+    plan = getattr(agent, "_capability_plan", None)
+    selected_skills = getattr(plan, "selected_skills", None) if plan is not None else None
+    return _pb.build_skills_system_prompt(
+        available_tools=available_tools,
+        available_toolsets=avail_toolsets,
+        compact_categories=_compact_cats or None,
+        skills_dir_override=_agent_skills_dir(agent),
+        selected_skills=selected_skills,
+    )
 
 
 def _auto_load_parts(agent: Any) -> List[str]:

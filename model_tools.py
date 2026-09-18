@@ -11,12 +11,12 @@ import json
 import re
 import asyncio
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from contextvars import ContextVar
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
@@ -211,20 +211,30 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
+                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False,
+                         defer_tools_override: Optional[Sequence[str]] = None,
+                         authorized_snapshot_out: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Tool definitions for model API calls, filtered by toolset.
 
     enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
     quiet_mode suppresses status prints and enables memoization.
     skip_tool_search_assembly returns raw schemas for every enabled tool — only
     the tool_search bridge should use it (it reads the real, uncollapsed catalog).
+    defer_tools_override freezes session-specific bridge eligibility after the
+    normal authorization/check_fn filtering. It can hide tools, never add them.
     """
     def compute():
-        return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                         skip_tool_search_assembly=skip_tool_search_assembly)
-    if not quiet_mode:
+        return _compute_tool_definitions(
+            enabled_toolsets, disabled_toolsets, quiet_mode,
+            skip_tool_search_assembly=skip_tool_search_assembly,
+            defer_tools_override=defer_tools_override,
+            authorized_snapshot_out=authorized_snapshot_out,
+        )
+    if not quiet_mode or authorized_snapshot_out is not None:
         return compute()
-    cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)
+    cache_key = _tool_defs_cache_key(
+        enabled_toolsets, disabled_toolsets, skip_tool_search_assembly, defer_tools_override,
+    )
     # Cache the freshly-computed list, but hand callers a shallow copy so downstream mutations (e.g.
     # run_agent appending memory/LCM tool schemas to self.tools) don't poison the cache. Without this, a
     # long-lived Gateway process accumulates duplicate tool names across agent inits and providers that
@@ -254,6 +264,7 @@ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_
 
 def _tool_defs_cache_key(
     enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], skip_tool_search_assembly: bool,
+    defer_tools_override: Optional[Sequence[str]] = None,
 ) -> Optional[tuple]:
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
@@ -274,6 +285,7 @@ def _tool_defs_cache_key(
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
+        tuple(defer_tools_override) if defer_tools_override is not None else None,
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
     )
 
@@ -498,7 +510,9 @@ _TOOL_SEARCH_LISTING_FORMS = {
 
 
 def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                              quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
+                              quiet_mode: bool = False, skip_tool_search_assembly: bool = False,
+                              defer_tools_override: Optional[Sequence[str]] = None,
+                              authorized_snapshot_out: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
     # Selection is per schema, not per process/profile. Kanban's local checks
@@ -520,6 +534,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
 
+    if authorized_snapshot_out is not None:
+        authorized_snapshot_out.clear()
+        authorized_snapshot_out.extend(filtered_tools)
+
     # Tool Search (progressive disclosure): replace MCP/plugin tools with the
     # tool_search/describe/call bridge when the deferrable surface exceeds the
     # configured share of the context window. Core tools are never deferred.
@@ -527,6 +545,13 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
         ts_cfg = _load_ts_config()
+        if defer_tools_override is not None:
+            authorized_names = {tool["function"]["name"] for tool in filtered_tools}
+            ts_cfg = replace(
+                ts_cfg,
+                enabled="on",
+                defer_tools=frozenset(defer_tools_override) & authorized_names,
+            )
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
             assembly = assemble_tool_defs(filtered_tools, context_length=_resolve_active_context_length(), config=ts_cfg)
             if assembly.activated and not quiet_mode:
@@ -699,7 +724,9 @@ def _emit_post_tool_call_hook(
 
 
 def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
-                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]]):
+                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]],
+                          bridge_tool_defs: Optional[List[Dict[str, Any]]] = None,
+                          bridge_allowed_names: Optional[Sequence[str]] = None):
     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
@@ -714,17 +741,29 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None
     # Un-collapsed catalog scoped to the session's toolsets, so a restricted
     # session (subagent, kanban worker) can't reach the whole registry via the bridge.
-    try:
-        current_defs = get_tool_definitions(enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-                                            quiet_mode=True, skip_tool_search_assembly=True) or []
-    except Exception:
-        current_defs = []
+    if bridge_tool_defs is not None:
+        current_defs = list(bridge_tool_defs)
+    else:
+        try:
+            current_defs = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+                quiet_mode=True, skip_tool_search_assembly=True,
+            ) or []
+        except Exception:
+            current_defs = []
+    eligible = tuple(bridge_allowed_names) if bridge_allowed_names is not None else None
     args = function_args or {}
     if function_name == ts.TOOL_SEARCH_NAME:
-        return ts.dispatch_tool_search(args, current_tool_defs=current_defs), None
+        return ts.dispatch_tool_search(
+            args, current_tool_defs=current_defs, eligible_names=eligible,
+        ), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
-        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
+        return ts.dispatch_tool_describe(
+            args, current_tool_defs=current_defs, eligible_names=eligible,
+        ), None
+    underlying_name, underlying_args, err = ts.resolve_underlying_call(
+        args, allowed_names=eligible,
+    )
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
@@ -733,7 +772,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
-    if underlying_name not in ts.scoped_deferrable_names(current_defs):
+    if underlying_name not in ts.scoped_deferrable_names(current_defs, eligible):
         return tool_error(f"'{underlying_name}' is not available in this session. "
                           "Use tool_search to find tools you can call."), None
     # Validate against the deferred tool's concrete schema — the generic
@@ -871,6 +910,8 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
+    bridge_tool_defs: Optional[List[Dict[str, Any]]] = None,
+    bridge_allowed_names: Optional[Sequence[str]] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -897,7 +938,10 @@ def handle_function_call(
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
+    bridged = _dispatch_bridge_tool(
+        function_name, function_args, enabled_toolsets, disabled_toolsets,
+        bridge_tool_defs=bridge_tool_defs, bridge_allowed_names=bridge_allowed_names,
+    )
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:
@@ -914,6 +958,7 @@ def handle_function_call(
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
             skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            bridge_tool_defs=bridge_tool_defs, bridge_allowed_names=bridge_allowed_names,
         )
 
     from tools.connectors import is_connector_name

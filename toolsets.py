@@ -71,7 +71,11 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
-    "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
+    "web": _ts(
+        "Web research and content extraction tools",
+        ["web_search", "web_extract"],
+        routing_keywords=["research", "current information", "latest", "news", "look up", "website", "online"],
+    ),
     "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),
     "x_search": _ts(
         "Search X (Twitter) posts and threads via xAI's built-in x_search Responses "
@@ -81,9 +85,15 @@ TOOLSETS = {
         "X (Twitter) Search.",
         ["x_search"],
     ),
-    "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
+    "vision": _ts(
+        "Image analysis and vision tools", ["vision_analyze"],
+        routing_keywords=["image", "photo", "screenshot", "diagram", "visual"],
+    ),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
-    "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
+    "image_gen": _ts(
+        "Creative generation tools (images)", ["image_generate"],
+        routing_keywords=["generate image", "create image", "illustration", "artwork", "logo"],
+    ),
     "video_gen": _ts(
         "Video generation tools. Single ``video_generate`` tool covers text-to-video "
         "(prompt only) and image-to-video (prompt + image_url), plus "
@@ -97,7 +107,10 @@ TOOLSETS = {
         "or keyboard focus. Works with any tool-capable model.",
         ["computer_use"],
     ),
-    "terminal": _ts("Terminal/command execution and process management tools", ["terminal", "process_manage"]),
+    "terminal": _ts(
+        "Terminal/command execution and process management tools", ["terminal", "process_manage"],
+        routing_keywords=["command", "shell", "process", "port", "system", "calculate", "math", "time", "date"],
+    ),
     "skills": _ts(
         "Access, create, edit, and manage skill documents with specialized "
         "instructions and knowledge",
@@ -111,22 +124,34 @@ TOOLSETS = {
         "Browser automation for web interaction (navigate, click, type, scroll, "
         "iframes, hold-click)",
         [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
+        routing_keywords=["browser", "click", "form", "log in", "website interaction", "web app", "visual qa"],
     ),
     "cronjob": _ts(
         "Cronjob management tool - create, list, update, pause, resume, remove, and "
         "trigger scheduled tasks",
         ["cronjob_manage"],
+        routing_keywords=["schedule", "remind", "recurring", "cron", "every day", "monitor"],
     ),
     "file": _ts(
         "File manipulation tools: read, write, patch (with fuzzy matching), and "
         "search (content + files)",
         ["read_file", "write_file", "patch", "search_files"],
+        routing_keywords=["file", "document", "folder", "repository", "code", "edit", "write", "read"],
     ),
     "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
-    "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
-    "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
+    "todo": _ts(
+        "Task planning and tracking for multi-step work", ["todo_list"],
+        routing_keywords=["plan", "multi-step", "all items", "checklist", "implement"],
+    ),
+    "memory": _ts(
+        "Persistent memory across sessions (personal notes + user profile)", ["memory"],
+        routing_keywords=["remember", "preference", "from now on", "always", "my name"],
+    ),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
-    "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "session_search": _ts(
+        "Search and recall past conversations with summarization", ["session_search"],
+        routing_keywords=["past conversation", "previous chat", "where did we leave", "last time", "recall"],
+    ),
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
@@ -142,9 +167,18 @@ TOOLSETS = {
          "gui_tour", "show_tip"],
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
-    "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
-    "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
-    "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
+    "code_execution": _ts(
+        "Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"],
+        routing_keywords=["many tool calls", "batch", "loop", "programmatically", "data processing"],
+    ),
+    "delegation": _ts(
+        "Spawn subagents with isolated context for complex subtasks", ["delegate_task"],
+        routing_keywords=["parallel", "independent workstreams", "large investigation", "subagent"],
+    ),
+    "homeassistant": _ts(
+        "Home Assistant smart home control and monitoring", _HA_TOOLS,
+        routing_keywords=["smart home", "light", "thermostat", "sensor", "home assistant"],
+    ),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "
         "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
@@ -167,7 +201,10 @@ TOOLSETS = {
     ),
 
     # Scenario-specific toolsets
-    "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
+    "debugging": _ts(
+        "Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"],
+        routing_keywords=["debug", "bug", "error", "failing", "crash", "slow", "performance", "troubleshoot"],
+    ),
     "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
 
     # Coding posture, auto-selected in a code workspace (agent/coding_context.py).
@@ -179,6 +216,11 @@ TOOLSETS = {
         "delegate, vision, browser",
         _CODING_TOOLS,
         posture=True,
+        routing_keywords=["code", "repository", "implement", "test", "build", "refactor", "fix bug", "pull request"],
+        routing_tools=[
+            "terminal", "process_manage", "read_file", "write_file", "patch", "search_files",
+            "skills_list", "skill_view", "todo_list", "execute_code", "delegate_task",
+        ],
     ),
 
     # Full Hermes toolsets (CLI + messaging platforms). All share the core tools;
@@ -429,6 +471,47 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     for name in TOOLSETS.keys() & aliases.keys():
         result[name] = get_toolset(name) or result[name]
     return result
+
+
+def get_capability_manifests() -> Dict[str, Dict[str, Any]]:
+    """Return declarative routing manifests for every current toolset.
+
+    Tools are resolved through the registry, so newly installed plugin and MCP
+    toolsets participate automatically.  Routing metadata is advisory only;
+    authorization remains the caller's filtered tool-definition set.
+    """
+    manifests: Dict[str, Dict[str, Any]] = {}
+    for name, toolset in get_all_toolsets().items():
+        if name.startswith("hermes-"):
+            # Platform bundles duplicate nearly every capability and describe the
+            # transport rather than the user's intent.
+            continue
+        manifest = dict(toolset)
+        manifest["tools"] = list(manifest.get("routing_tools") or resolve_toolset(name))
+        raw_keywords = manifest.get("routing_keywords")
+        keywords: List[str] = [raw_keywords] if isinstance(raw_keywords, str) else list(raw_keywords or ())
+        if name not in keywords:
+            keywords.append(name)
+        manifest["routing_keywords"] = keywords
+        manifests[name] = manifest
+    # Plugins contribute metadata only. Resolve their declared toolsets here,
+    # then the session planner intersects these names with its immutable,
+    # already-authorized tool snapshot.
+    try:
+        from hermes_cli.plugins import get_registered_capability_manifests
+        plugin_manifests = get_registered_capability_manifests()
+    except Exception:
+        plugin_manifests = {}
+    for name, registered in sorted(plugin_manifests.items()):
+        if name in manifests:
+            continue
+        resolved: Set[str] = set(registered.get("tools") or ())
+        for toolset_name in registered.get("toolsets") or ():
+            resolved.update(resolve_toolset(toolset_name))
+        manifest = dict(registered)
+        manifest["tools"] = sorted(resolved)
+        manifests[name] = manifest
+    return manifests
 
 
 def get_toolset_names() -> List[str]:

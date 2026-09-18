@@ -721,7 +721,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # only answer ``tool_error("desktop only")`` here does not read as a live capability.
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
-            if saved_tools:
+            from agent.session_capabilities import CapabilityPlan
+            if saved_tools and not isinstance(getattr(agent, "_capability_plan", None), CapabilityPlan):
                 from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
                 # Captured BEFORE the pin merges the previous surface's tools back in.
                 built_for_this_surface = agent_tool_names(agent) if announced_switch else []

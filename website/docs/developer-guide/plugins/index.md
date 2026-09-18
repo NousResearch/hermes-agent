@@ -567,6 +567,30 @@ def register(ctx):
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
+### Register intent-routing capability metadata
+
+Plugins may contribute declarative capability manifests without replacing or
+patching Hermes' router:
+
+```python
+def register(ctx):
+    ctx.register_capability_manifest(
+        name="build-modify",
+        description="Modify files, run tests, and produce implementation changes.",
+        toolsets=["skills", "file", "terminal", "code_execution"],
+        tools=[],
+        routing_keywords=["build", "modify", "implement", "code"],
+        routing_examples=[],
+        routing_priority=0,
+    )
+```
+
+Manifests are ranking metadata only. Hermes resolves declared toolsets and
+intersects the result with the session's already-authorized tool snapshot;
+a plugin manifest can never grant a tool. The host owns immutable plan
+persistence, resume/compression inheritance, progressive disclosure, and the
+normal guardrail/approval path for deferred execution.
+
 **`dispatch_tool` example — a slash command that runs a tool:**
 
 ```python

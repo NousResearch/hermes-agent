@@ -964,6 +964,54 @@ class PluginContext:
                                     section, "Plugin %s registered system prompt section: %s", id,
                                     previous=existing)
 
+    def register_capability_manifest(
+        self, *, name: str, description: str, toolsets: Optional[List[str]] = None,
+        tools: Optional[List[str]] = None, routing_keywords: Optional[List[str]] = None,
+        routing_examples: Optional[List[str]] = None, routing_priority: int = 0,
+    ) -> PluginRegistration:
+        """Register declarative intent-routing metadata.
+
+        The host resolves toolsets and intersects the resulting names with the
+        session's already-authorized tool snapshot. A manifest is ranking data,
+        never an authorization grant.
+        """
+        clean = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", clean):
+            raise ValueError("capability manifest name must match [a-z0-9][a-z0-9_-]{0,127}")
+        text = str(description or "").strip()
+        if not text:
+            raise ValueError("capability manifest description is required")
+        if clean in self._manager._capability_manifests:
+            owner = self._manager._capability_manifests[clean].get("plugin", "another plugin")
+            raise ValueError(f"capability manifest {clean!r} is already registered by {owner!r}")
+
+        def _strings(label: str, values: Optional[List[str]]) -> tuple[str, ...]:
+            if values is None:
+                return ()
+            if not isinstance(values, (list, tuple)):
+                raise TypeError(f"capability manifest {label} must be a list")
+            normalized = tuple(str(value).strip() for value in values if str(value).strip())
+            if len(normalized) != len(set(normalized)):
+                raise ValueError(f"capability manifest {label} must not contain duplicates")
+            return normalized
+
+        if isinstance(routing_priority, bool) or not isinstance(routing_priority, int):
+            raise TypeError("capability manifest routing_priority must be an integer")
+        entry = {
+            "name": clean,
+            "description": text,
+            "toolsets": _strings("toolsets", toolsets),
+            "tools": _strings("tools", tools),
+            "routing_keywords": _strings("routing_keywords", routing_keywords),
+            "routing_examples": _strings("routing_examples", routing_examples),
+            "routing_priority": routing_priority,
+            "plugin": self.plugin_id,
+        }
+        return self._register_entry(
+            "capability_manifest", clean, self._manager._capability_manifests, entry,
+            "Plugin %s registered capability manifest: %s", clean,
+        )
+
     def emit(self, event: str, payload: Optional[dict] = None) -> int:
         """Publish bare *event* as ``<plugin_key>:<event>`` (namespace FORCED to this plugin); return
         the subscriber count scheduled. Any ``':'`` in the name (``hermes:x`` is reserved for core,
@@ -1158,6 +1206,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._cli_commands: Dict[str, dict] = {}
         self._plugin_commands: Dict[str, dict] = {}
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
+        self._capability_manifests: Dict[str, Dict[str, Any]] = {}
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1714,6 +1763,12 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+
+
+def get_registered_capability_manifests() -> Dict[str, Dict[str, Any]]:
+    """Profile-scoped declarative capability manifests from enabled plugins."""
+    manager = _ensure_plugins_discovered()
+    return {name: dict(value) for name, value in manager._capability_manifests.items()}
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

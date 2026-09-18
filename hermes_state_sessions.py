@@ -715,6 +715,34 @@ class SessionSessionsMixin:
             return
         self._write_model_config_patch(session_id, patch)
 
+    def set_session_model_config_value_once(self, session_id: str, key: str, value: Any) -> Any:
+        """Atomically set one model-config key only when it is absent and return the winner.
+
+        Capability plans and similar session-identity values must be immutable once a turn can
+        observe them.  ``BEGIN IMMEDIATE`` in :meth:`_execute_write` serializes competing gateway
+        processes, so two concurrent session starters cannot publish different cached tool prefixes.
+        A missing session returns ``None``; normal session creation can still persist the value from
+        ``_session_init_model_config``.
+        """
+        if not session_id or not key:
+            return None
+
+        def _do(conn):
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            config = _parse_model_config(row[0])
+            if key in config:
+                return config[key]
+            config[key] = value
+            conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (json.dumps(config), session_id),
+            )
+            return value
+
+        return self._execute_write(_do)
+
     def get_session_model_config_value(self, session_id: str, key: str, default: Any = None) -> Any:
         """Read one key out of a session's model_config JSON (tolerant parse)."""
         session = self.get_session(session_id) or {}

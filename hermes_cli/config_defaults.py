@@ -1853,10 +1853,19 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-    # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
-    # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
+    # Tool Search progressively discloses tools behind tool_search / tool_describe /
+    # tool_call. The legacy path defers plugin/MCP and a curated built-in set; the
+    # disabled-by-default intent router can freeze any nonselected authorized tool
+    # behind the same bridge for one session.
     "tools": {
+        "intent_routing": {
+            # Route once from the first accepted user intent. Existing and resumed
+            # legacy sessions remain unchanged when no persisted plan exists.
+            "enabled": False,
+            # Adaptive by default: 3% of model context, clamped to 2k..8k tokens.
+            # Set an integer here only for controlled canaries/benchmarks.
+            "direct_schema_token_budget": None,
+        },
         "tool_search": {
             # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2

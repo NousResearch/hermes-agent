@@ -3269,6 +3269,35 @@ class TestCompressionChainProjection:
         assert db.get_compression_lineage("tip1") == ["root1", "tip1"]
         assert db.get_compression_lineage("reset1") == ["reset1"]
 
+    def test_routing_lineage_cte_agrees_with_python_walk_for_reset_fork(self, db):
+        """``record_gateway_session_peer(include_compression_ancestors=True)`` re-keys every row named by
+        ``_COMPRESSION_LINEAGE_CTE``. Resuming a reset fork of a compression-ended parent must
+        re-key only the fork: the CTE has to stop at the reset child exactly like
+        ``get_compression_lineage`` does, or the real lineage's ancestors land on the fork's peer."""
+        import hermes_state_gateway as gateway_mod
+
+        t0 = time.time() - 3600
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "root"))
+        db.create_session("mid1", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 20, "mid1"))
+        db.create_session("mid2", "cli", parent_session_id="mid1")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 30, "mid2"))
+        db.create_session("tip", "cli", parent_session_id="mid2")
+        db.create_session("reset", "cli", parent_session_id="mid2", model_config={"_reset_from": "mid2"})
+        db._conn.commit()
+
+        sql = gateway_mod._COMPRESSION_LINEAGE_CTE + " SELECT id FROM compression_lineage"
+        with db._read_ctx() as conn:
+            cte = {start: sorted(r[0] for r in conn.execute(sql, (start,)).fetchall()) for start in ("reset", "tip")}
+        assert cte["reset"] == sorted(db.get_compression_lineage("reset")) == ["reset"]
+        assert cte["tip"] == sorted(db.get_compression_lineage("tip")) == ["mid1", "mid2", "root", "tip"]
+
+        db.record_gateway_session_peer("reset", source="cli", user_id="u", session_key="cli:reset-chat",
+                                       chat_id="reset-chat", chat_type="dm", include_compression_ancestors=True)
+        assert db.get_session("reset")["session_key"] == "cli:reset-chat"
+        assert all(db.get_session(s)["session_key"] != "cli:reset-chat" for s in ("root", "mid1", "mid2", "tip"))
+
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
         alone are not enough client-side: a persisted tile or route can hold

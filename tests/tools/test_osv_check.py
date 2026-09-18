@@ -23,6 +23,34 @@ class TestInferEcosystem:
         assert _infer_ecosystem("/usr/bin/npx") == "npm"
 
 
+    def test_windows_shims(self):
+        # Real shim names installed by each runner on Windows
+        # (npm ships npx.cmd; uv ships uvx.exe; pip installs pipx.exe).
+        assert _infer_ecosystem("npx.cmd") == "npm"
+        assert _infer_ecosystem("NPX.CMD") == "npm"
+        assert _infer_ecosystem("uvx.exe") == "PyPI"
+        assert _infer_ecosystem("UVX.EXE") == "PyPI"
+        assert _infer_ecosystem("pipx.exe") == "PyPI"
+
+
+    def test_windows_paths_either_separator(self):
+        # Backslash paths must resolve even when the check runs on POSIX
+        # (config authored for Windows) — os.path.basename alone would not.
+        assert _infer_ecosystem(r"C:\Program Files\nodejs\npx.cmd") == "npm"
+        assert _infer_ecosystem("C:/Program Files/nodejs/nPx.CmD") == "npm"
+        assert _infer_ecosystem(r"C:\Users\u\.local\bin\UVX.EXE") == "PyPI"
+        assert _infer_ecosystem("C:/Users/u/.local/bin/uVx.ExE") == "PyPI"
+
+
+    def test_lookalikes_stay_fail_open(self):
+        # No broad suffix matching: only the shims each runner actually
+        # installs are recognized.
+        assert _infer_ecosystem("my-npx") is None
+        assert _infer_ecosystem("npx.exe") is None
+        assert _infer_ecosystem("npx.cmd.bak") is None
+        assert _infer_ecosystem("uvx.cmd.old") is None
+
+
     def test_unknown(self):
         assert _infer_ecosystem("node") is None
         assert _infer_ecosystem("python") is None

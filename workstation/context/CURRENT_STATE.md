@@ -1,20 +1,37 @@
 # Current State
 
-Snapshot date: 2026-09-17.
+Snapshot date: 2026-09-18.
 
 The 2026-09-15 hardening snapshot below remains valid as implementation and test
 history, but a 2026-09-17 forensic audit of current `main`, persisted Workstation
 state and historical behavioral traces found a stronger cross-domain reliability
-boundary that was not exercised by the existing green suites. The active next
-milestone is therefore the
-[`CANONICAL_EXECUTION_RELIABILITY_GATE.md`](CANONICAL_EXECUTION_RELIABILITY_GATE.md),
-not further feature expansion.
+boundary that was not exercised by the existing green suites. The active next correction is therefore
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md),
+which refines the already-implemented reliability gate before further feature expansion.
 
 This file describes **observed implementation state**, not target architecture.
 When it disagrees with code on current `main`, inspect the code and update this
 file. “Implemented”, “contract layer validated” and “tests green” do not imply that
 a product-level causal invariant has been proven across Task -> Run -> operation ->
 evidence -> canonical commit -> projection.
+
+## 2026-09-18 native-browser compiler obstruction — active correction
+
+The Canonical Execution Reliability Gate remains implemented history, but real
+native-browser dogfood exposed a new execution-policy regression: the durable
+compiler can prevent safe stateful work from progressing when a repeatability
+signal is treated as a broad mutation latch.
+
+Current target architecture is defined in
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+The active work is to replace the binary/session-wide gate with operation-scoped
+progressive compilation:
+
+ADAPTIVE -> COMPILED SEGMENT -> COMPILED WORK -> PROMOTED ROUTINE, with compact
+NEEDS_REASONING escalation on drift.
+
+All prior safety invariants remain required. This is a correction to admission
+and learning, not a rollback of durable execution.
 
 ## 2026-09-17 forensic reliability audit — current boundary
 

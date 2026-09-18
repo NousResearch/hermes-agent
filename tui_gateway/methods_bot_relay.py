@@ -6,6 +6,7 @@ Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the re
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -28,11 +29,23 @@ def _relay_root() -> Path:
     return _hermes_root(Path(_default_home()))
 
 
-def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:
+def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
+                  timeout: float = TURN_ATTEMPT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    """One relayed turn; the cap bounds the TURN, not the child (#114980). ``-Q`` prints its answer
+    only after the one-shot exit linger (a teammate's reply during it may become that answer), so a
+    child that exits under the cap is booked from its streams as before; one still lingering at the
+    cap is booked from its turn report — its answer and outcome, never a timeout — and left to finish
+    the linger that protects its own handoff. Only a turn that never ends is a timeout."""
+    from hermes_cli.quiet_single_query import run_reported_turn
     from tools.bot_relay import local_delivery_command
-    return subprocess.run(
-        local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
+    report = f"{tmp}.turn.json"
+    try:
+        return run_reported_turn(
+            local_delivery_command(profile, tmp), env=os.environ if env is None else env,
+            report_path=report, timeout=timeout, exit_grace=None)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(report)
 
 
 @method("bot_relay.roster.sync")

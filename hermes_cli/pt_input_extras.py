@@ -252,8 +252,12 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     # Existing entries (Shift+Enter \x1b[27;2;13~, Shift+Tab, Shift+Space) win via setdefault.
     # xterm/Ghostty only use this encoding for produced codepoints 0x40-0x7E (`IsControlInput`);
     # '!' '#' '$' still arrive as plain text, so the 33-63 rows are inert there but harmless.
+    # Super+<printable> (modifier 9, Super+Shift 10) follows the same produced-codepoint rule:
+    # Ghostty sends Super+o as ESC[27;9;111~ (#114242). The CLI has no Super bindings, so type
+    # the character — what the terminal sends without modifyOtherKeys and what the Ink TUI does.
     for cp in range(33, 127):
-        _put(f"\x1b[27;2;{cp}~", chr(cp))
+        for modifier in (2, 9, 10):
+            _put(f"\x1b[27;{modifier};{cp}~", chr(cp))
 
     # The Esc KEY under Kitty disambiguate mode: ESC[27u (+ modifiers 1-16 incl. super 9+, and
     # lock twins of the modifier-less form, which is how a lone Esc arrives with a lock on).

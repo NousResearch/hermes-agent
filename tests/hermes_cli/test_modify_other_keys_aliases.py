@@ -287,6 +287,17 @@ def test_modify_other_keys_shift_symbol_produces_char(cp):
     assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") is None
 
 
+@pytest.mark.parametrize("seq, ch", [
+    ("\x1b[27;9;111~", "o"),   # Super+o (the #114242 report)
+    ("\x1b[27;10;79~", "O"),   # Super+Shift+o
+])
+def test_modify_other_keys_super_printable_produces_char(seq, ch):
+    """Ghostty encodes Super+<printable> as ESC[27;9;<cp>~ under modifyOtherKeys=2;
+    the CLI has no Super bindings, so it must type the character (Ink TUI parity),
+    not leak the escape text (#114242)."""
+    assert _parse(seq) == [ch]
+
+
 def test_shift_symbol_data_normalized_in_buffer():
     """End-to-end: Vt100Parser with install_keypress_data_normalization
     must deliver the character in KeyPress.data, not the raw escape."""

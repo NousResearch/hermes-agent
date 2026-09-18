@@ -40,6 +40,9 @@ MESSAGE_AGENT_TOOL_NAME = "message_agent"
 # Message body cap — generous for real work, small enough that a runaway paste can't
 # turn one DM into a context bomb on the recipient.
 MESSAGE_MAX_CHARS = 16000
+# The delivery process's completion notification IS the reply: size it like a message, plus the
+# runner's header and failure prose, instead of the 2000-char tail a build log gets.
+REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 # A runner owns and removes each DM file; this bounds residual plaintext lifetime if
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
@@ -632,7 +635,8 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
         from tools.terminal_tool import terminal_tool
 
         raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True)
+                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
+                            _completion_output_chars=REPLY_COMPLETION_CHARS)
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):

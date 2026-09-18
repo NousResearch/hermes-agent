@@ -16,7 +16,12 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+try:
+    from utils import file_signature
+except ImportError:  # pragma: no cover — staggered upgrade: old utils lacks file_signature
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time as _time
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
@@ -708,14 +708,30 @@ def _run_quick_snapshots() -> Optional[str]:
     return snapshot_id
 
 
-def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
+def _abort_pre_update_backup(reason: str) -> NoReturn:
+    """Abort the update before any git/file mutation; the checkout and data are untouched."""
+    from hermes_cli.update_cmd import _record_update_step
+    _record_update_step("pre_update_backup", False, f"failed: {reason}")
+    print(f"✗ Pre-update backup failed: {reason}")
+    print("  Aborting update before any changes — your checkout and data are untouched.")
+    print("  Retry once the backup issue is fixed, or explicitly opt out with")
+    print("  --no-backup (or updates.pre_update_backup: off in config.yaml).")
+    print()
+    raise SystemExit(1)
+
+
+def _run_full_backup():
+    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``).
+
+    Returns the backup path on success, None when the backup failed or was
+    skipped. Never raises — the caller fails closed on None.
+    """
     try:
         from hermes_cli.backup import create_pre_update_backup
     except Exception as exc:
-        print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
+        print(f"⚠ Pre-update backup: could not load backup module ({exc}).")
         print()
-        return
+        return None
 
     try:
         _keep = _load_updates_cfg().get("backup_keep", 5)
@@ -728,15 +744,14 @@ def _run_full_backup() -> None:
         out_path = create_pre_update_backup(keep=int(_keep))
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
-        print("  Continuing with update.")
         print()
-        return
+        return None
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+        print("  ⚠ Backup skipped (no files found or write failed).")
         print()
-        return
+        return None
 
     try:
         size_bytes = out_path.stat().st_size
@@ -758,11 +773,16 @@ def _run_full_backup() -> None:
 
 
 def _run_pre_update_backup(args) -> Optional[str]:
-    """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
+    """Run the pre-update backup; return the quick-snapshot id (None when off/empty).
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
     ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
+
+    Fail-closed: when a requested backup fails (quick snapshot raised, or the
+    full-mode zip failed/skipped), the update aborts via SystemExit(1) BEFORE
+    any git/file mutation. A None return with no exception (empty home, nothing
+    to protect) and explicit opt-out still proceed.
 
     Explicit user opt-out is honored fully. See #34600.
     """
@@ -776,15 +796,23 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
-    with _best_effort('Pre-update snapshot failed: %s'):
+    snapshot_failed: Optional[BaseException] = None
+    try:
         snapshot_id = _run_quick_snapshots()
+    except Exception as exc:
+        snapshot_failed = exc
+    if snapshot_failed is not None:
+        logger.debug("Pre-update snapshot failed: %s", snapshot_failed)
+        _abort_pre_update_backup(str(snapshot_failed))
 
     if mode != "full":
         if snapshot_id:
             print()
         return snapshot_id
 
-    _run_full_backup()
+    full_backup_path = _run_full_backup()
+    if full_backup_path is None:
+        _abort_pre_update_backup("full backup zip failed or was skipped")
     return snapshot_id
 
 

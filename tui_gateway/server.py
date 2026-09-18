@@ -26,7 +26,12 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import file_signature, is_truthy_value
+try:
+    from utils import file_signature
+except ImportError:  # pragma: no cover — staggered upgrade: old utils lacks file_signature
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import canonicalize_replay_history

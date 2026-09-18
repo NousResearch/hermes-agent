@@ -22,7 +22,11 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
-from utils import file_signature
+try:
+    from utils import file_signature
+except ImportError:  # pragma: no cover — staggered upgrade: old utils lacks file_signature
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 logger = logging.getLogger(__name__)
 

@@ -1507,12 +1507,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
-    # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
+    # Backup before any git/file mutation; the snapshot id (None if disabled/empty) feeds
+    # the post-update cron-jobs safety net. A failed backup aborts inside
+    # _run_pre_update_backup before any mutation, so reaching here means safe to proceed.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_update_step(
         "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or empty")
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

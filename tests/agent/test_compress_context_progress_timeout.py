@@ -124,9 +124,15 @@ class TestContextCompressionTimeoutState:
 
 
 class TestResolveContextCompressionTimeouts:
-    def test_defaults_when_empty_cfg(self):
+    def test_defaults_when_empty_cfg(self, monkeypatch):
+        # #114594: the idle window is clamped up to the effective aux compression
+        # budget (floor 300s) so prep/chunking work is not cut off at 120s.
+        monkeypatch.setattr(
+            "agent.auxiliary_client._effective_aux_timeout",
+            lambda task, timeout: 300.0,
+        )
         idle, ceiling = resolve_context_compression_timeouts({})
-        assert idle == 120.0
+        assert idle == 300.0
         assert ceiling == 600.0
 
     def test_zero_idle_disables_wrapper(self):
@@ -136,15 +142,37 @@ class TestResolveContextCompressionTimeouts:
         assert idle == 0.0
         assert ceiling == 600.0
 
-    def test_ceiling_clamped_to_idle(self):
+    def test_ceiling_clamped_to_idle(self, monkeypatch):
+        # #114594: an explicit idle below the aux budget is raised to it, and the
+        # ceiling follows when the budget exceeds it.
+        monkeypatch.setattr(
+            "agent.auxiliary_client._effective_aux_timeout",
+            lambda task, timeout: 300.0,
+        )
         idle, ceiling = resolve_context_compression_timeouts(
             {
                 "context_timeout_seconds": 90,
                 "context_total_ceiling_seconds": 30,
             }
         )
-        assert idle == 90.0
-        assert ceiling == 90.0
+        assert idle == 300.0
+        assert ceiling == 300.0
+
+    def test_explicit_idle_above_aux_budget_is_kept(self, monkeypatch):
+        # #114594: the clamp only raises — an explicit idle above the aux budget
+        # is never lowered.
+        monkeypatch.setattr(
+            "agent.auxiliary_client._effective_aux_timeout",
+            lambda task, timeout: 300.0,
+        )
+        idle, ceiling = resolve_context_compression_timeouts(
+            {
+                "context_timeout_seconds": 400,
+                "context_total_ceiling_seconds": 600,
+            }
+        )
+        assert idle == 400.0
+        assert ceiling == 600.0
 
 
 class TestRunCompressContextWithProgressTimeout:

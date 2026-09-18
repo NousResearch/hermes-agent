@@ -17,7 +17,11 @@ from typing import Dict, Optional
 
 import yaml
 
-from utils import file_signature
+try:
+    from utils import file_signature
+except ImportError:  # pragma: no cover — staggered upgrade: old utils lacks file_signature (pre-a1e7f74e64)
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 logger = logging.getLogger(__name__)
 

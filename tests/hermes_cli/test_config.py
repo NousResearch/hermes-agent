@@ -120,6 +120,41 @@ class TestEnsureHermesHome:
             assert content == customized
             assert content != DEFAULT_SOUL_MD
 
+    def test_self_loop_symlink_soul_md_repaired_to_default(self, tmp_path):
+        # SOUL.md -> SOUL.md: exists() is False on ELOOP, so the seeder must not
+        # raise — the loop is unlinked and DEFAULT_SOUL_MD is seeded as a file.
+        import pytest as _pytest
+
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        soul_path = tmp_path / "SOUL.md"
+        try:
+            soul_path.symlink_to(soul_path.name)
+        except OSError:
+            _pytest.skip("symlinks unavailable")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()  # must not raise HomeInitializationError/OSError
+        assert not soul_path.is_symlink()
+        assert soul_path.is_file()
+        assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_symlinked_custom_soul_md_materialized(self, tmp_path):
+        # A symlink to an in-home customized file is materialized, not discarded.
+        import pytest as _pytest
+
+        customized = "You are a pirate test persona. Arr."
+        target = tmp_path / "real_soul.md"
+        target.write_text(customized, encoding="utf-8")
+        soul_path = tmp_path / "SOUL.md"
+        try:
+            soul_path.symlink_to(target.name)
+        except OSError:
+            _pytest.skip("symlinks unavailable")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+        assert not soul_path.is_symlink()
+        assert soul_path.read_text(encoding="utf-8") == customized
+
 
 
 

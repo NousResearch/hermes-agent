@@ -30,7 +30,12 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
+try:
+    from utils import file_signature
+except ImportError:  # pragma: no cover — staggered upgrade: old utils lacks file_signature (pre-a1e7f74e64)
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+from utils import atomic_replace, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -630,10 +635,115 @@ def _secure_file(path):
         pass
 
 
+def _repair_symlinked_soul_md(home: Path, soul_path: Path) -> bool:
+    """Repair a symlinked SOUL.md. Returns True when a customized target was materialized.
+
+    A valid in-home regular-file target carrying non-legacy content is copied into a
+    regular file (unlink-first, never written through the link). Anything else —
+    dangling, self-loop, ELOOP/ENAMETOOLONG, outside-home target, or legacy content —
+    is unlinked so the caller re-seeds DEFAULT_SOUL_MD as a regular file."""
+    try:
+        resolved = soul_path.resolve()
+    except (OSError, RuntimeError) as exc:
+        logger.warning(
+            "SOUL.md at %s is an unreadable symlink (%s); replacing it with the default persona.",
+            soul_path, exc)
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+        return False
+    try:
+        home_resolved = home.resolve()
+    except (OSError, RuntimeError):
+        home_resolved = home.absolute()
+    if resolved != home_resolved and home_resolved not in resolved.parents:
+        logger.warning(
+            "SOUL.md at %s points outside the Hermes home (%s); replacing it with the default persona.",
+            soul_path, resolved)
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+        return False
+    if resolved == home_resolved / "SOUL.md" or not resolved.is_file():
+        logger.warning(
+            "SOUL.md at %s is a dangling or self-referential symlink; replacing it with the default persona.",
+            soul_path)
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+        return False
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning(
+            "SOUL.md symlink target at %s is unreadable (%s); replacing SOUL.md with the default persona.",
+            resolved, exc)
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+        return False
+    if is_legacy_template_soul(content):
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+        return False
+    logger.warning(
+        "SOUL.md at %s was a symlink; materialized its target into a regular file.",
+        soul_path)
+    try:
+        soul_path.unlink()
+    except OSError:
+        pass
+    try:
+        soul_path.write_text(content, encoding="utf-8")
+    except OSError:
+        return False
+    _secure_file(soul_path)
+    return True
+
+
+def _seed_default_soul_md(soul_path: Path) -> None:
+    """Write DEFAULT_SOUL_MD as a regular file, never following a symlink for write."""
+    if soul_path.is_symlink():
+        try:
+            soul_path.unlink()
+        except OSError:
+            pass
+    try:
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except OSError as exc:
+        try:
+            if soul_path.is_symlink():
+                logger.warning(
+                    "SOUL.md at %s could not be seeded (%s); removing the symlink and retrying.",
+                    soul_path, exc)
+                try:
+                    soul_path.unlink()
+                except OSError:
+                    pass
+                soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+            else:
+                raise
+        except OSError as retry_exc:
+            raise OSError(
+                f"Cannot write SOUL.md at {soul_path}: {retry_exc}. "
+                f"Check `ls -l {soul_path}` for a symlink loop, dangling link, or permissions."
+            ) from retry_exc
+    _secure_file(soul_path)
+
+
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
     soul_path = home / "SOUL.md"
+    if soul_path.is_symlink():
+        if _repair_symlinked_soul_md(home, soul_path):
+            return
     if soul_path.exists():
         try:
             existing = soul_path.read_text(encoding="utf-8")
@@ -641,8 +751,7 @@ def _ensure_default_soul_md(home: Path) -> None:
             return
         if not is_legacy_template_soul(existing):
             return
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-    _secure_file(soul_path)
+    _seed_default_soul_md(soul_path)
 
 
 # Home paths whose directory skeleton was created this process. Only successful passes are

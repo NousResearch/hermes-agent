@@ -28,7 +28,12 @@ from agent.skill_utils import (
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
-from utils import atomic_json_write, file_signature
+try:
+    from utils import file_signature
+except ImportError:
+    def file_signature(st):  # type: ignore[no-redef]
+        return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 

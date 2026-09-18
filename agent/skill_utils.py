@@ -219,8 +219,13 @@ def _raw_config_cache_clear() -> None:
 def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
     """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
     try:
-        from utils import file_signature
-        return (str(config_path), *file_signature(config_path.stat()))
+        try:
+            from utils import file_signature as _fs
+            _file_signature = _fs
+        except ImportError:
+            def _file_signature(st):
+                return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+        return (str(config_path), *_file_signature(config_path.stat()))
     except OSError:
         return None
 

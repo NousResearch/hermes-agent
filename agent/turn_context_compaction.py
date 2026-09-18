@@ -374,6 +374,35 @@ def _run_preflight_passes(
     if _preflight_status:
         agent._emit_status(_preflight_status)
     _max_preflight_passes = max(1, int(getattr(agent, "max_compression_attempts", 3) or 3))
+    try:
+        _ctx_len = getattr(_compressor, "context_length", None)
+        if (
+            isinstance(_ctx_len, int) and not isinstance(_ctx_len, bool) and _ctx_len > 0
+            and _preflight_tokens > _ctx_len
+        ):
+            _prune_fn = getattr(_compressor, "prune_tool_results_only", None)
+            if callable(_prune_fn):
+                _prune_before = _preflight_tokens
+                _pruned_msgs, _pruned_count = _prune_fn(
+                    out.messages, current_tokens=_preflight_tokens
+                )
+                if _pruned_count > 0 and _pruned_msgs is not out.messages:
+                    out.messages = _pruned_msgs
+                    out.conversation_history = conversation_history_after_compression(
+                        agent, out.messages, out.conversation_history
+                    )
+                    _reset_retry_state_after_compaction(agent)
+                    _preflight_tokens = _tc._preflight_request_tokens(
+                        agent, out.messages, out.active_system_prompt or ""
+                    )
+                    logger.info(
+                        "Preflight emergency prune-to-fit: ~%s -> ~%s tokens "
+                        "(ctx %s, pruned %s tool results)",
+                        f"{_prune_before:,}", f"{_preflight_tokens:,}",
+                        f"{_ctx_len:,}", f"{_pruned_count:,}",
+                    )
+    except Exception as _prune_exc:
+        logger.debug("Preflight emergency prune-to-fit skipped: %s", _prune_exc)
     for _pass in range(_max_preflight_passes):
         _preflight_input = out.messages
         _orig_len = len(_preflight_input)

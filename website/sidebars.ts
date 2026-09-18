@@ -845,6 +845,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/streaming-tts',
             'developer-guide/billing-lifecycle',
             'developer-guide/trajectory-format',
+            'developer-guide/agent-learning-loop',
           ],
         },
       ],

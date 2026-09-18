@@ -1235,6 +1235,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Lyceum](https://lyceum.technology) | `https://api.lyceum.technology/openai/v1` | Serverless, pay-per-request open models |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
@@ -1456,9 +1457,9 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ---
 
-### Cookbook: Together AI, Groq, Perplexity
+### Cookbook: Together AI, Groq, Perplexity, Lyceum
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Four worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1534,9 +1535,32 @@ model:
 PERPLEXITY_API_KEY=your-perplexity-key
 ```
 
+#### Lyceum
+
+GPU cloud with serverless, pay-per-request inference on open models (Kimi, GLM, DeepSeek, MiniMax), with no idle compute cost. Model IDs are namespaced `vendor/model`, the same shape OpenRouter uses.
+
+```yaml
+# ~/.hermes/config.yaml
+providers:
+  lyceum:
+    api: https://api.lyceum.technology/openai/v1
+    key_env: LYCEUM_API_KEY
+
+model:
+  default: moonshotai/kimi-k2.7-code
+  provider: custom:lyceum
+```
+
+```bash
+# ~/.hermes/.env
+LYCEUM_API_KEY=lk_your-lyceum-key
+```
+
+Keys come from the [Lyceum dashboard](https://dashboard.lyceum.technology). The `/models` endpoint works, so `hermes model` can auto-discover the catalog, but it does not report context windows. If compression starts triggering at the wrong point, set `context_length` on the provider entry (see [Context Length Detection](#context-length-detection)).
+
 #### Multiple providers in one config
 
-The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+These recipes compose. Use them together and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
 providers:

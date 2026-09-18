@@ -110,6 +110,12 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-default-assignee", [
+        _SLUG,
+        _arg("profile", help="Profile that owns unassigned ready tasks and unroutable "
+                             "decomposed children on this board. 'none' clears it."),
+    ], help="Set the default assignee profile for tasks on a board "
+            "(overrides kanban.default_assignee)"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

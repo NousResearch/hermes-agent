@@ -191,7 +191,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             try:
                 settle(reason)
             except Exception:
-                logger.debug("approval settle hook failed", exc_info=True)
+                # A failure here is a contract slip (a reason outside RequestCancelReason, a gone sink): the
+                # card stays on every renderer, so it has to be visible in the log.
+                logger.warning("approval settle hook failed for %r", reason, exc_info=True)
         return choice
 
     # Plugins hear about the request before the gateway does (real-time observers).

@@ -170,39 +170,18 @@ describe('dispatchNativeNotification preferences', () => {
 })
 
 describe('dispatchNativeNotification session context', () => {
-  it('names the session in a blocking-prompt title so parked approvals stay tellable apart', () => {
-    setSessions([{ id: 'review-chat', title: 'Fix the flaky test' } as SessionInfo])
-
-    try {
-      dispatchNativeNotification({ kind: 'approval', sessionId: 'review-chat', title: 'Approval needed' })
-      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — Fix the flaky test' }))
-    } finally {
-      setSessions([])
-    }
-  })
-
-  it('carries the same label on the sibling input.request toast', () => {
+  it('names the session on blocking-prompt titles only, falling back to the id tail without a row', () => {
     setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
 
     try {
       dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
       expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
-    } finally {
-      setSessions([])
-    }
-  })
 
-  it('falls back to a short id tail while the session has no row yet', () => {
-    dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
-  })
+      dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
 
-  it('leaves a completion title alone (only blocking prompts need the session)', () => {
-    setSessions([{ id: 'done-chat', title: 'Fix the flaky test' } as SessionInfo])
-    setActiveSessionId('done-chat')
-
-    try {
-      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'done-chat', title: 'Hermes finished' })
+      setActiveSessionId('named-chat')
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'named-chat', title: 'Hermes finished' })
       expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
     } finally {
       setSessions([])

@@ -272,9 +272,11 @@ export const ru = defineLocale({
     },
     native: {
       approvalTitle: 'Требуется одобрение',
+      approvalTitleNamed: session => `Требуется одобрение — ${session}`,
       approveAction: 'Одобрить',
       rejectAction: 'Отклонить',
       inputTitle: 'Требуется ввод',
+      inputTitleNamed: session => `Требуется ввод — ${session}`,
       inputBody: 'Hermes ожидает ваш ответ.',
       turnDoneTitle: 'Hermes завершил',
       turnDoneBody: '',

@@ -325,9 +325,11 @@ export const en: Translations = {
     },
     native: {
       approvalTitle: 'Approval needed',
+      approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
       inputTitle: 'Input needed',
+      inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
       turnDoneTitle: 'Hermes finished',
       turnDoneBody: '',

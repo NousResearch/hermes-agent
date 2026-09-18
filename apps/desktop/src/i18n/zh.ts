@@ -289,9 +289,11 @@ export const zh = defineLocale({
     },
     native: {
       approvalTitle: '需要批准',
+      approvalTitleNamed: session => `需要批准 — ${session}`,
       approveAction: '批准',
       rejectAction: '拒绝',
       inputTitle: '需要输入',
+      inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
       turnDoneTitle: 'Hermes 已完成',
       turnDoneBody: '',

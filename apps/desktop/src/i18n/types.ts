@@ -371,9 +371,11 @@ export interface Translations {
     // bodies (the agent's reply, a command, an error) are passed through raw.
     native: {
       approvalTitle: string
+      approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
       inputTitle: string
+      inputTitleNamed: (session: string) => string
       inputBody: string
       turnDoneTitle: string
       turnDoneBody: string

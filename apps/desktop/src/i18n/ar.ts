@@ -264,9 +264,11 @@ export const ar = defineLocale({
     },
     native: {
       approvalTitle: 'مطلوب موافقة',
+      approvalTitleNamed: session => `مطلوب موافقة — ${session}`,
       approveAction: 'موافقة',
       rejectAction: 'رفض',
       inputTitle: 'مطلوب إدخال',
+      inputTitleNamed: session => `مطلوب إدخال — ${session}`,
       inputBody: 'ينتظر Hermes ردّك.',
       turnDoneTitle: 'أنهى Hermes',
       turnDoneBody: '',

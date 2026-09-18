@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
@@ -159,20 +160,23 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
  *  tail still tells three parked approvals apart. */
 const shortSessionId = (id: string) => `#${id.slice(-6)}`
 
-/** Name the session in a blocking-prompt title: "Approval needed — Fix the flaky
- *  test". Without it every parallel parked approval raises an identical OS toast
- *  and the user cannot tell which chat is waiting (the runtime id the caller
- *  already passes is the whole hint needed). */
-function withSessionLabel(title: string, runtimeSessionId: string): string {
+/** Blocking prompts name their session in the title ("Approval needed — Fix the
+ *  flaky test") so parallel parked approvals stay tellable apart; the caller's
+ *  `title` stays the bare fallback for a prompt with no session. */
+const NAMED_TITLE_KEYS: Partial<Record<NativeNotificationKind, string>> = {
+  approval: 'notifications.native.approvalTitleNamed',
+  input: 'notifications.native.inputTitleNamed'
+}
+
+/** Sidebar naming order (title → preview → short id) via the locale's
+ *  named-title template; the runtime id the caller already passes is the whole
+ *  hint needed. */
+function withSessionLabel(namedKey: string, runtimeSessionId: string): string {
   const storedId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
   const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedId))
-  const name = row?.title?.trim() || row?.preview?.trim()
+  const name = row?.title?.trim() || row?.preview?.trim() || shortSessionId(storedId)
 
-  if (!name) {
-    return `${title} — ${shortSessionId(storedId)}`
-  }
-
-  return `${title} — ${name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name}`
+  return translateNow(namedKey, name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name)
 }
 
 export interface NativeNotificationAction {
@@ -234,8 +238,8 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
-  const title =
-    ATTENTION_KINDS.has(input.kind) && input.sessionId ? withSessionLabel(input.title, input.sessionId) : input.title
+  const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
+  const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
   void window.hermesDesktop?.notify({
     actions: input.actions,

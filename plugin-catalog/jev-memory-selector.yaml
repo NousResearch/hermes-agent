@@ -1,0 +1,14 @@
+name: jev-memory-selector
+repo: https://github.com/Pinutss/jev-memory-selector
+sha: 14c06bb7ed464c4cf762b4133e6a5c45670bf9b0
+description: Selects retrieved memories that fit the current query and token budget. Portable Agent Plugins v1 package with memory_select MCP and a local heuristic by default.
+maintainer: Pinutss
+tier: community
+category: memory
+docs_url: https://github.com/Pinutss/jev-memory-selector#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

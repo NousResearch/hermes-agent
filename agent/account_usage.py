@@ -601,9 +601,88 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_XAI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+# Static client marker the Grok CLI sends alongside the user's OAuth bearer token
+# (xai-grok-login/src/config.rs::GrokComConfig::default().token_header).
+_XAI_TOKEN_AUTH_HEADER = "xai-grok-cli"
+
+
+def _fetch_xai_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """SuperGrok consumer subscription quota via the Grok CLI billing proxy.
+
+    The api.x.ai surface exposes NO usage/quota endpoint (``/v1/usage``,
+    ``/v1/quota``, ``/v1/credits`` … all 404; ``/v1/me`` is identity-only), but the
+    open-source Grok CLI (xai-org/grok-build,
+    ``crates/codegen/xai-grok-shell/src/extensions/billing.rs``) reads the
+    weekly/monthly consumer credit allowance from
+    ``GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`` — and it
+    accepts the SAME OAuth grant Hermes already stores for ``xai-oauth``. A bare
+    ``xai`` API key is an api.x.ai credential and never valid on the consumer
+    proxy, so this fetcher always authenticates from the xai-oauth store
+    (refreshing an expiring access token), ignoring *api_key*. Fail-open → None.
+    """
+    del base_url, api_key
+    from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}", "X-XAI-Token-Auth": _XAI_TOKEN_AUTH_HEADER,
+                "Accept": "application/json"}
+
+    try:
+        runtime = resolve_xai_oauth_runtime_credentials()
+        token = str(runtime.get("api_key", "") or "").strip()
+        if not token:
+            return None
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.get(_XAI_BILLING_URL, headers=_headers(token))
+            if response.status_code == 401:
+                # Access token expired between resolution and the call: force one refresh + retry.
+                runtime = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+                token = str(runtime.get("api_key", "") or "").strip()
+                if not token:
+                    return None
+                response = client.get(_XAI_BILLING_URL, headers=_headers(token))
+            response.raise_for_status()
+            payload = response.json() or {}
+    except Exception:
+        logger.debug("xai ▸ /usage billing-proxy fetch failed (fail-open)", exc_info=True)
+        return None
+
+    config = payload.get("config") or {}
+    if not isinstance(config, dict) or not config:
+        return _snapshot("xai-oauth", "grok-billing-proxy", [], [],
+                         unavailable_reason="No Grok subscription billing config returned for this account.")
+
+    windows: list[AccountUsageWindow] = []
+    used = config.get("creditUsagePercent")
+    period = config.get("currentPeriod") or {}
+    if _is_num(used):
+        period_type = str(period.get("type") or "").strip()
+        label = (_title_case_slug(period_type.removeprefix("USAGE_PERIOD_TYPE_"))
+                 or "Subscription") + " limit"
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=float(used), reset_at=_parse_dt(period.get("end")),
+        ))
+    details: list[str] = []
+    prepaid = (config.get("prepaidBalance") or {}).get("val")
+    if _is_num(prepaid):
+        details.append(f"Prepaid credits: ${float(prepaid) / 100:,.2f}")
+    on_demand_used = (config.get("onDemandUsed") or {}).get("val")
+    on_demand_cap = (config.get("onDemandCap") or {}).get("val")
+    if _is_num(on_demand_cap) and float(on_demand_cap) > 0 and _is_num(on_demand_used):
+        details.append(f"On-demand: ${float(on_demand_used) / 100:,.2f} of ${float(on_demand_cap) / 100:,.2f}")
+    return _snapshot("xai-oauth", "grok-billing-proxy", windows, details,
+                     plan=payload.get("subscriptionTier"))
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    # xai-oauth: SuperGrok OAuth. Plain "xai" (API key) shares the fetcher because the
+    # consumer quota lives on the grok.com grant, not the API key.
+    "xai-oauth": _fetch_xai_account_usage, "xai": _fetch_xai_account_usage,
 }
 
 

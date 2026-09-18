@@ -95,6 +95,99 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_xai_oauth_reads_credits_config(monkeypatch):
+    """SuperGrok consumer quota: weekly % + reset from the Grok CLI billing proxy, keyed by x-userid-free
+    bearer auth against the xai-oauth grant — not the api.x.ai API key."""
+    captured_headers = {}
+
+    class _HeaderClient:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            captured_headers.update(headers or {})
+            assert "billing?format=credits" in url
+            return _Response({
+                "config": {
+                    "creditUsagePercent": 4.0,
+                    "currentPeriod": {
+                        "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                        "start": "2026-09-17T10:13:12+00:00",
+                        "end": "2026-09-24T10:13:12+00:00",
+                    },
+                    "onDemandCap": {"val": 0},
+                    "onDemandUsed": {"val": 0},
+                    "prepaidBalance": {"val": 8666},
+                },
+                "subscriptionTier": "SuperGrok",
+            })
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _HeaderClient(None),
+    )
+    import agent.account_usage as au
+
+    def _fake_resolve(**kwargs):
+        return {"provider": "xai-oauth", "api_key": "oauth-access-token"}
+
+    monkeypatch.setattr("hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials", _fake_resolve)
+
+    snapshot = fetch_account_usage("xai-oauth", api_key="sk-plain-api-key")
+
+    assert snapshot is not None
+    assert snapshot.provider == "xai-oauth"
+    assert snapshot.source == "grok-billing-proxy"
+    assert snapshot.plan == "SuperGrok"
+    assert len(snapshot.windows) == 1
+    assert snapshot.windows[0].label == "Weekly limit"
+    assert snapshot.windows[0].used_percent == 4.0
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 24, 10, 13, 12, tzinfo=timezone.utc)
+    assert "Prepaid credits: $86.66" in snapshot.details
+    assert captured_headers.get("X-XAI-Token-Auth") == "xai-grok-cli"
+    assert captured_headers.get("Authorization") == "Bearer oauth-access-token"
+
+
+def test_fetch_account_usage_xai_oauth_fails_open(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("no store")),
+    )
+    assert fetch_account_usage("xai-oauth") is None
+
+
+def test_fetch_account_usage_xai_oauth_reports_missing_config(monkeypatch):
+    class _EmptyClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            return _Response({})
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _EmptyClient(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials",
+        lambda **kw: {"api_key": "tok"},
+    )
+    snapshot = fetch_account_usage("xai")
+
+    assert snapshot is not None
+    assert snapshot.windows == ()
+    assert snapshot.unavailable_reason is not None
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

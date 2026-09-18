@@ -26,6 +26,33 @@ The 2026-09-17 Canonical Execution Reliability Gate is the active sequencing aut
 
 Reuse the current canonical Kanban TaskRun/CAS support, TaskCompiler canary and dispatch checkpoints, BrowserTask, ExecutionJournal, EvidenceState, RecoveryPlane, WorkerRegistry, Hybrid delegation and ArtifactStore/reference plane. Do not solve reliability by introducing a parallel orchestration framework or state owner.
 
+## Progressive-compilation correction (2026-09-18)
+
+- Safety/authority/evidence gates may block work; **lack of an already-compiled
+  procedure alone may not**.
+- A repeatability hint is an optimization signal, not session-wide mutation
+  authority. Compilation requirements are scoped to an operation fingerprint /
+  target family.
+- Novel/drifted state may use bounded adaptive execution. Existing approvals,
+  TaskRun fencing, BrowserTask leases, no-progress limits and uncertain-effect
+  rules remain authoritative.
+- True homogeneous mutable fan-out still requires TaskCompiler/canary admission.
+- Deterministic work must be able to return a compact NEEDS_REASONING handoff and
+  resume from confirmed checkpoints rather than looping on refusal.
+- Native-browser tool constraints normalize to native_browser; do not compare
+  route names and tool names as if they were one namespace.
+- tools.effects is the single effect taxonomy. Do not maintain conflicting
+  browser idempotent/read/write lists in guardrail code.
+- Arbitrary browser_console remains potentially mutating. Use structured browser
+  reads for observation.
+- Reuse RecipeStore, ProceduralMemory, RoutinePromotionService, ArtifactStore and
+  ExecutionJournal for learning; do not add a parallel procedure/task/evidence
+  store.
+- The target lifecycle is adaptive -> compiled segment -> compiled work ->
+  promoted routine -> drift -> adaptive exception.
+
+See [Adaptive Execution & Progressive Compilation](ADAPTIVE_EXECUTION_COMPILATION.md).
+
 ## Reasoning vs deterministic execution boundary
 
 - The LLM owns semantic ambiguity, planning, interpretation, exception handling and replanning.

@@ -61,6 +61,9 @@ def fake_bw(tmp_path, monkeypatch):
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "bw.log"  # the backend runs bw with an allowlisted env, so the fake logs beside itself
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
     unlock_mod.lock()
     yield exe, log
     unlock_mod.lock()

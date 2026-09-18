@@ -532,6 +532,12 @@ terminal:
 # =============================================================================
 # Browser Tool Configuration
 # =============================================================================
+# Browser vault is opt-in; saving credentials or detecting a password manager
+# does not enable it. Only boolean true enables vault tools and vault-only
+# password/card/verification-code instructions. Start a new session after changes.
+vault:
+  enabled: false
+
 browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)

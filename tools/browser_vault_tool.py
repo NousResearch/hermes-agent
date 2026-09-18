@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Vault-backed model-blind browser autofill tools.
 
-Two model-facing tools, gated on the local vault having at least one item
-(zero schema cost otherwise, same ``check_fn`` pattern as the Home Assistant
-tools):
+Model-facing tools require explicit ``vault.enabled: true`` and an available
+browser (zero schema cost otherwise). CLI/Desktop vault management remains
+available for setup without enabling these tools:
 
 - ``browser_vault_list``  → handles + metadata (for logins this includes the
   identifier — it is NOT a secret; the agent types it itself). Passwords are
@@ -29,7 +29,10 @@ from __future__ import annotations
 import json
 import secrets
 import logging
+from functools import wraps
 from typing import Any, Dict, Optional
+
+from agent.vault_backends.base import browser_vault_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +42,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_vault_available() -> bool:
-    """Schema-gate: the vault tools ride with the browser. An empty vault still needs
-    browser_vault_save_login so the agent can offer to remember a login the first time it meets a
-    form; hiding the tools until an item exists meant nobody ever discovered the feature."""
+    """After opt-in, even an empty vault needs save_login for the first sign-in."""
+    if not browser_vault_enabled():
+        return False
     from tools.browser_tool_install import check_browser_requirements
     from tools.browser_use_cli import is_browser_use_cli_mode
     # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
     # built-in surface); the vault serves both stacks.
     return bool(is_browser_use_cli_mode() or check_browser_requirements())
+
+
+def _require_vault_enabled(fn):
+    """Gate execution too: registry dispatch can receive calls from an old session schema."""
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        if not browser_vault_enabled():
+            return json.dumps({"success": False, "error_type": "vault_disabled",
+                               "error": "Browser vault is disabled. To opt in, set vault.enabled to true "
+                                        "with hermes config set and start a new session."})
+        return fn(*args, **kwargs)
+    return guarded
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +221,7 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
 # Handlers
 # ---------------------------------------------------------------------------
 
+@_require_vault_enabled
 def browser_vault_list() -> str:
     """List login handles + metadata across every enabled backend. Passwords are never included.
 
@@ -248,6 +264,7 @@ def browser_vault_list() -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
+@_require_vault_enabled
 def browser_vault_unlock(backend_name: str) -> str:
     """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
     from agent.vault_backends import enabled_backends
@@ -277,6 +294,7 @@ def browser_vault_unlock(backend_name: str) -> str:
     return json.dumps({"success": True, "backend": backend.name})
 
 
+@_require_vault_enabled
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
@@ -321,6 +339,7 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
+@_require_vault_enabled
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
@@ -386,6 +405,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
+@_require_vault_enabled
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """Fill the current page's password field from a vault handle.
 

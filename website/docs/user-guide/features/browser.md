@@ -273,7 +273,7 @@ A real-profile session lets a `cronjob` drive a site you're already signed into.
 The snapshot runs headless by default, and the auth files (`Cookies`,
 `Login Data`, …) are re-synced from your real profile on every fresh session —
 an already-open session is reused as-is, so the sync happens when a new one is
-launched. Without saved vault credentials, an expired session on that site
+launched. Without an enabled browser vault and saved credentials, an expired session on that site
 surfaces as a login page that the unattended tick reports rather than hanging on.
 
 Three things to set up before scheduling one:
@@ -288,8 +288,9 @@ Three things to set up before scheduling one:
   `hermes chat -q` session has nobody to answer a prompt, so a site that is not
   usable on the synced cookies alone — a login form, a fresh 2FA challenge —
   needs its credentials saved ahead of time, authenticator key included. That is
-  the [credential vault's](./credential-vault.md#headless-sessions) job, and it
-  is what carries a run after your own session has expired.
+  the [credential vault's](./credential-vault.md#headless-sessions) job when explicitly
+  enabled with `hermes config set vault.enabled true` (default: off). Start a new
+  session after opting in; saved credentials alone do not enable it.
 
 **Windows prerequisite:** the browser has to be fully quit before a snapshot can
 be taken at all, so a scheduled tick needs it closed beforehand — Hermes never

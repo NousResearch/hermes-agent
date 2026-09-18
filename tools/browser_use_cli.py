@@ -514,6 +514,9 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
     a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
     endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+    from agent.vault_backends.base import browser_vault_enabled
+    if not browser_vault_enabled():
+        return
     cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
     if not cdp:
         return
@@ -733,7 +736,7 @@ _HELPERS_DIGEST = (
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
     "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
     "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
-    "credentials; see the vault note below if present, otherwise stop and ask the user."
+    "credentials. Use the user's configured login workflow, or ask them how to proceed."
 )
 
 

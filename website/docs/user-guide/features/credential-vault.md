@@ -1,16 +1,42 @@
 ---
 title: Passwords & Logins
-description: The agent signs into sites, pays and fills addresses for you without ever seeing a password.
+description: Opt-in browser autofill for logins, payments and addresses without exposing secrets to the model.
 ---
 
 # Passwords & Logins
 
-Say **"log into GitHub"** and the agent signs in for you. The first time it
+After you opt in, say **"log into GitHub"** and the agent signs in for you. The first time it
 reaches a sign-in page it has no login for, it asks you, right there, in a
 masked prompt. After that it just works. Passwords are encrypted on this
 machine and injected straight into the page; the model never sees them.
 
-There is nothing to set up.
+## Enable browser vault
+
+Browser vault is **off by default**, including for existing installations with saved
+items or installed password managers. Enable it explicitly for the active profile:
+
+```bash
+hermes config set vault.enabled true
+```
+
+The corresponding `config.yaml` setting is:
+
+```yaml
+vault:
+  enabled: true  # default: false; only boolean true opts in
+```
+
+For a named profile, use `hermes -p <profile> config set vault.enabled true`.
+Start a **new session** after changing the setting: Hermes does not rewrite the
+tool schemas or instructions of an existing conversation, preserving prompt caching.
+To turn it off, run `hermes config set vault.enabled false`; vault tool calls are
+refused immediately, and a new session removes the old vault tools and instructions.
+
+When disabled, none of the `browser_vault_*` tools or mandatory vault-only
+password/card/verification-code instructions are advertised. Normal browser tools
+remain available for your existing login workflow, including Proton Pass or custom
+automation. Saving an item, installing a manager, or enabling a manager source does
+**not** enable browser vault. The behavior described below applies after opt-in.
 
 ## What it looks like
 
@@ -52,8 +78,8 @@ Sites that ask for a code after the password are handled the same way:
 
 ## Already using 1Password or Bitwarden?
 
-Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
-in, Hermes picks it up automatically and its website logins become fillable
+Once `vault.enabled: true`, if the `op` or `bw` command-line tool is installed and signed
+in, Hermes detects it automatically and its website logins become fillable
 alongside the local ones. The first time the agent needs one of those logins it
 asks you to unlock the manager with your master password (masked prompt; once
 per session, 30 minutes idle). Hermes hands the master password to the manager's
@@ -79,6 +105,10 @@ cannot spend. Address fills need no confirmation.
 
 ## Managing what's saved
 
+Management remains available while browser vault is disabled, so you can prepare
+or remove credentials without opting into agent autofill. These actions never
+change `vault.enabled`.
+
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
@@ -92,13 +122,14 @@ the page.
 ## Headless sessions
 
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
-prompt. Saved local logins keep working there; a locked password manager reports
+prompt. With browser vault enabled, saved local logins work there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
 account token (`OP_SERVICE_ACCOUNT_TOKEN`).
 
 ```yaml
 vault:
+  enabled: true             # explicit browser autofill opt-in (default: false)
   onepassword:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default

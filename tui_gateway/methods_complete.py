@@ -166,8 +166,15 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
     )
     try:
         from tools.terminal_tool import terminal_tool
+        # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
+        # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
+        # completion would fire an auxiliary-LLM call (the main model when no auxiliary is
+        # configured), and Desktop's ws reconnect loop turns that into model traffic from an
+        # idle machine (#115478). The script is a constant and the search dir is quoted, so
+        # nothing here needs an approval verdict.
         result = json.loads(terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3))
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+            force=True))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):

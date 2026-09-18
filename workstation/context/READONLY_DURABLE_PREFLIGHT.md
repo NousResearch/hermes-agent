@@ -8,6 +8,23 @@ Successful read capability does not establish write capability.
 Fan-out is authorized by verified persistence of a representative canary,
 not by successful execution of a preparation step.
 
+
+## Scope correction — 2026-09-18
+
+This preflight protocol governs preparation for **durable homogeneous mutable
+fan-out**. It is not a rule that every stateful browser mutation in a larger
+repeatable task must remain read-only until the entire UI workflow is already
+compiled.
+
+Novel/drifted UI work may use bounded adaptive interaction under the canonical
+TaskRun/BrowserTask lease, approval, route and uncertainty contracts. Once the
+runtime identifies a stable repeated operation/segment, that candidate can be
+compiled and the normal canary/readback rules in this document apply.
+
+A repeatability signal for the parent request must not become a session-wide
+mutation latch. See
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+
 ## Caller protocol
 
 `DISCOVERING -> COMPILED -> CANARY -> VERIFIED -> FAN_OUT -> CHECKPOINT -> RESUME`

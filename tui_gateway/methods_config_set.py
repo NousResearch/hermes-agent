@@ -147,8 +147,11 @@ def _set_model(rid, params, key, value, session):
         if parse_model_switch_args(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
-            return _err(rid, 4001, "config.set model requires a live session; "
-                        "use Settings -> Models to change the profile default")
+            # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
+            # Settings; the dashboard has a Models page; only the Desktop has Settings -> Models.
+            return _err(rid, 4001, "config.set model requires a live session; to change the "
+                        "profile default run /setup, or use the Models page (dashboard) / "
+                        "Settings -> Models (Desktop)")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))

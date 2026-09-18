@@ -671,25 +671,10 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
 
 
-def _refresh_setup_readiness() -> None:
-    """Re-run the free-tier bootstrap inventory after a model assignment landed on disk.
-
-    A serve process whose boot-time mint failed keeps its record at
-    ``provider_configured: false`` for the whole process lifetime, so every
-    ``setup.status`` keeps the chat gated long after the user configured a
-    provider elsewhere. The re-inventory never mints when an identity already
-    exists; on success it broadcasts ``setup.ready`` to every connected client.
-    """
-    try:
-        from hermes_cli.free_tier_bootstrap import retry_bootstrap_mint
-        retry_bootstrap_mint(force=True, announce=True)
-    except Exception:
-        _log.debug("setup readiness refresh after model assignment failed", exc_info=True)
-
-
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
+    from hermes_cli.free_tier_bootstrap import reconcile_record
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -702,7 +687,8 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     save_config(cfg)
     if new_provider in {"custom", "local"} and base_url:
         _register_custom_endpoint(base_url, api_key, model)
-    _refresh_setup_readiness()
+    # The serve process's boot record may still say "nothing configured"; the chat gates on it.
+    reconcile_record()
 
     return {
         "ok": True,

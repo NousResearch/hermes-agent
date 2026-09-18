@@ -1506,41 +1506,34 @@ class TestWebServerEndpoints:
         assert data["model"] == "moonshotai/kimi-k2.6"
 
 
-    def test_model_set_refreshes_a_stale_setup_record(self, monkeypatch):
-        """POST /api/model/set landed a provider on disk; the serve process's
-        boot record must follow, or the web chat stays gated on "need setup"
-        until a restart (setup.status answers from the record)."""
+    def test_model_set_flips_a_stale_setup_record(self, monkeypatch):
+        """POST /api/model/set landed a provider on disk; the serve process's boot record
+        (``provider_configured: false`` since a failed boot-time mint) must follow at once, with
+        the ``setup.ready`` broadcast, or the web chat stays gated on "need setup" until a restart
+        (setup.status answers from the record)."""
         from hermes_cli import free_tier_bootstrap as fb
 
         fb.reset_for_tests()
-        monkeypatch.setattr(
-            "hermes_cli.model_cost_guard.expensive_model_warning",
-            lambda *_args, **_kwargs: None,
-        )
-        from hermes_cli.config import load_config, save_config
-        cfg = load_config()
-        cfg["model"] = {"provider": "openrouter", "default": "openai/gpt-5.5"}
-        save_config(cfg)
-        stale = fb.SetupRecord(
-            provider_configured=False, inference_provider="", free_tier=False,
-            has_identity=False, other_providers=False)
+        monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        broadcasts = []
+        monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
-            fb._record = stale
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                                        has_identity=False, other_providers=False)
             fb._started = True
             fb._done.set()
-        refreshed = []
-        monkeypatch.setattr(
-            fb, "retry_bootstrap_mint", lambda **kw: refreshed.append(kw) or stale
-        )
         try:
             resp = self.client.post(
                 "/api/model/set",
-                json={"scope": "main", "provider": "openrouter",
-                      "model": "moonshotai/kimi-k2.6"},
+                json={"scope": "main", "provider": "custom", "model": "local-model",
+                      "base_url": "http://127.0.0.1:8081/v1", "api_key": "sk-local"},
             )
-            assert resp.status_code == 200
-            assert resp.json()["ok"] is True
-            assert refreshed and refreshed[0].get("force") is True
+            assert resp.status_code == 200 and resp.json()["ok"] is True
+            record = fb.current_record()
+            assert record.provider_configured is True and record.other_providers is True
+            assert record.inference_provider == "custom"
+            assert broadcasts == [record]
         finally:
             fb.reset_for_tests()
 

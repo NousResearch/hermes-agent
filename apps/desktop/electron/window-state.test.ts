@@ -108,6 +108,7 @@ test('computeWindowOptions caps a positioned window to the display it overlaps',
     { workArea: { x: 0, y: 0, width: 2560, height: 1400 } },
     { workArea: { x: 2560, y: 0, width: 1366, height: 728 } }
   ]
+
   const saved = sanitizeWindowState({ x: 2700, y: 100, width: 1400, height: 900 })
   assert.deepEqual(computeWindowOptions(saved, dual), { width: 1366, height: 728, x: 2560, y: 0 })
 })

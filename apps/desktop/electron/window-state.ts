@@ -61,6 +61,7 @@ function matchingWorkArea(bounds, displays) {
 
   let best = null
   let bestArea = 0
+
   for (const { workArea: a } of displays) {
     if (!a) {
       continue
@@ -68,11 +69,13 @@ function matchingWorkArea(bounds, displays) {
 
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
+
     if (x < MIN_VISIBLE || y < MIN_VISIBLE) {
       continue
     }
 
     const area = x * y
+
     if (area > bestArea) {
       best = a
       bestArea = area
@@ -124,6 +127,7 @@ function computeWindowOptions(state, displays): WindowOptions {
       { x: state.x, y: state.y, width: opts.width, height: opts.height },
       displays
     )
+
     if (workArea) {
       opts.width = clamp(opts.width, MIN_WIDTH, workArea.width)
       opts.height = clamp(opts.height, MIN_HEIGHT, workArea.height)

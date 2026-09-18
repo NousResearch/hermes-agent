@@ -34,6 +34,27 @@ logger = logging.getLogger("hermes_state")
 # IOERR there means a real storage/fd problem.
 _READ_POOL_MAX = 8
 
+
+def resolved_read_pool_max(fallback: int = _READ_POOL_MAX) -> int:
+    """Return ``sessions.read_pool_max`` from config.yaml, or a safe positive fallback.
+
+    The import stays lazy because ``hermes_cli.config`` reaches state-related
+    modules during startup. A malformed or non-positive setting must not make
+    the LifoQueue or BoundedSemaphore unusable, so it preserves the existing
+    default instead.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        value = (load_config_readonly().get("sessions") or {}).get("read_pool_max")
+        if value is None:
+            return fallback
+        max_size = int(value)
+        return max_size if max_size > 0 else fallback
+    except Exception:
+        return fallback
+
+
 # Ceiling ALIVE in this PROCESS across every state.db (a multiplexed gateway
 # opens one per profile); three profiles' worth, then readers degrade likewise.
 # _READ_POOL_MAX bounds one file. A multiplexed gateway serves N profiles from one process and each profile
@@ -150,8 +171,9 @@ class _PathReadBudget:
     grows with the profile count, which is how a healthy process walked into EMFILE — #98573.
     """
 
-    def __init__(self) -> None:
-        self.permits = threading.BoundedSemaphore(_READ_POOL_MAX)
+    def __init__(self, max_size: int) -> None:
+        self.max_size = max_size
+        self.permits = threading.BoundedSemaphore(max_size)
         self._lock = threading.Lock()
         # Weak: a SessionDB dropped without close() must not pin peers' budget.
         self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
@@ -184,7 +206,7 @@ class _PathReadBudget:
                 "its own writer connection (read connections are capped at %d "
                 "for the file). A long-lived process should share one handle per path. "
                 "Created at: %s",
-                handles, db.db_path, _READ_POOL_MAX, creation_sites,
+                handles, db.db_path, self.max_size, creation_sites,
             )
 
     def acquire(self, requester: "SessionDB") -> bool:
@@ -241,11 +263,11 @@ def _read_budget_key(db_path) -> str:
         return str(db_path)
 
 
-def _read_budget_for(db_path) -> _PathReadBudget:
+def _read_budget_for(db_path, max_size: int) -> _PathReadBudget:
     key = _read_budget_key(db_path)
     with _read_budgets_lock:
         budget = _read_budgets.get(key)
         if budget is None:
-            budget = _PathReadBudget()
+            budget = _PathReadBudget(max_size)
             _read_budgets[key] = budget
         return budget

@@ -43,7 +43,7 @@ from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for, resolved_read_pool_max
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
@@ -551,7 +551,8 @@ class SessionDB(
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
         # per-thread connections pinned fds for the process lifetime and hit EMFILE.
-        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_READ_POOL_MAX)
+        self._read_pool_max = resolved_read_pool_max()
+        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=self._read_pool_max)
         # Permits bound PEAK descriptors (the pool bounds only the idle set), shared per
         # DATABASE PATH; acquired non-blocking so a permitless reader degrades to the writer lock.
         # One permit per live read connection, held from before the open in _get_read_conn() until after the
@@ -560,7 +561,7 @@ class SessionDB(
         # exhaustion into a stall, which is the same outage with a different stack trace. Permits are shared
         # per DATABASE PATH, not per instance: the descriptors they ration belong to the file, and one
         # process holds several SessionDB objects on the same state.db (#98573). See _PathReadBudget.
-        self._read_budget = _read_budget_for(self.db_path)
+        self._read_budget = _read_budget_for(self.db_path, self._read_pool_max)
         self._read_budget.register(self)
         self._read_permits = self._read_budget.permits
         self._read_conns_lock = threading.Lock()
@@ -817,7 +818,7 @@ class SessionDB(
         if not self._read_budget.acquire(self):
             logger.debug(
                 "read pool at capacity (%d) for %s; serving this read from the "
-                "locked writer connection", _READ_POOL_MAX, self.db_path,
+                "locked writer connection", self._read_budget.max_size, self.db_path,
             )
             return None
         conn = None  # bound before the try so the handlers can close a half-open one

@@ -44,6 +44,40 @@ import pytest
 from hermes_state import SessionDB
 
 
+def test_read_pool_max_defaults_and_rejects_invalid_config(monkeypatch):
+    """The YAML setting is lazy, optional, and cannot make a zero-sized pool."""
+    import hermes_cli.config as config_mod
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["sessions"]["read_pool_max"] == hermes_state_readpool._READ_POOL_MAX
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {})
+    assert hermes_state_readpool.resolved_read_pool_max() == hermes_state_readpool._READ_POOL_MAX
+
+    for value in (None, 0, -1, "not-a-number"):
+        monkeypatch.setattr(config_mod, "load_config_readonly", lambda value=value: {
+            "sessions": {"read_pool_max": value},
+        })
+        assert hermes_state_readpool.resolved_read_pool_max() == hermes_state_readpool._READ_POOL_MAX
+
+
+def test_read_pool_max_uses_configured_value_for_new_session_db(tmp_path, monkeypatch):
+    """A configured per-file cap sizes both the queue and its shared permits."""
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {
+        "sessions": {"read_pool_max": 3},
+    })
+    db = SessionDB(db_path=tmp_path / "configured-state.db")
+    try:
+        assert db._read_pool.maxsize == 3
+        assert all(db._read_permits.acquire(blocking=False) for _ in range(3))
+        assert not db._read_permits.acquire(blocking=False)
+    finally:
+        for _ in range(3):
+            db._read_permits.release()
+        db.close()
+
+
 def _live_count(path) -> int:
     """Live-connection count the tracking registry holds for *path*."""
     import hermes_cli.sqlite_safe_read as mod

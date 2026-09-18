@@ -2153,6 +2153,9 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Maximum live read-only SQLite connections per state.db. Raises concurrency at the cost
+        # of file descriptors; the process-wide descriptor guard remains in effect.
+        "read_pool_max": 8,
     },
     # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
     # `seen`; wipe the section to re-see all hints.

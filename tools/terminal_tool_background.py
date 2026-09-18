@@ -141,7 +141,8 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
-    notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
+    notify_on_complete: bool, completion_linger_seconds: float | None,
+    watch_patterns: Optional[List[str]], approval_note: Optional[str],
     pty_disabled_reason: Optional[str],
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
@@ -186,6 +187,7 @@ def spawn_background_process(
             result_data["watch_patterns_ignored"] = conflict_note
         if notify_on_complete:
             proc_session.notify_on_complete = True
+            proc_session.completion_linger_seconds = max(0.0, float(completion_linger_seconds or 0.0))
             result_data["notify_on_complete"] = True
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)

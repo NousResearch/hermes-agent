@@ -56,6 +56,16 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         return _err(rid, 5091, str(e))
 
 
+@method("bot_relay.deliver_budget")
+def _(rid, params: dict) -> dict:
+    del params
+    try:
+        from tools.bot_relay import turn_wait_seconds
+        return _ok(rid, {"turn_wait_seconds": turn_wait_seconds()})
+    except Exception as e:
+        return _err(rid, 5097, str(e))
+
+
 @method("bot_relay.deliver")
 def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS

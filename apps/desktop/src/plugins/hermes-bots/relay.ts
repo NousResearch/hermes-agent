@@ -62,6 +62,14 @@ const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_AT
 const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000
 // tools/bot_relay.py REPLY_WAIT_SECONDS rebuilds this sum and waits past it for the timeout reply below.
 const RELAY_DELIVER_TIMEOUT_MS = RELAY_DELIVER_BACKEND_CEILING_MS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
+
+function relayDeliverTimeoutMs(budget: unknown): number {
+  const configuredWaitSeconds = Number((budget as { turn_wait_seconds?: unknown } | undefined)?.turn_wait_seconds)
+  const lockWaitMs = Number.isFinite(configuredWaitSeconds) && configuredWaitSeconds >= 0
+    ? configuredWaitSeconds * 1000
+    : RELAY_TURN_LOCK_WAIT_MS
+  return lockWaitMs + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
+}
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
 // to ONE drain. The interval poll above stays as the backstop for older
@@ -483,6 +491,12 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
+    let budget: unknown
+    try {
+      budget = await host.requestProfile(target.route, 'bot_relay.deliver_budget', {})
+    } catch {
+      // Older gateways do not expose the preflight method.
+    }
     const res = await host.requestProfile<{ reply?: string }>(
       target.route,
       'bot_relay.deliver',
@@ -493,7 +507,7 @@ async function deliverRelayEnvelope(
         from_handle: String(envelope?.from_handle || ''),
         from_connection: String(sender.id)
       },
-      RELAY_DELIVER_TIMEOUT_MS
+      relayDeliverTimeoutMs(budget)
     )
 
     clearBotAttention(attentionKey)

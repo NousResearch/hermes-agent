@@ -695,6 +695,20 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   if (runtime.ready) {
+    // Runtime readiness is not proof that Desktop onboarding was completed. A
+    // provider may have been configured by the CLI/install flow before this
+    // renderer ever launched. Keep the first GUI launch eligible for the
+    // onboarding surface; only a cached Desktop completion (or an explicit
+    // "choose later" dismissal) may silently pass through here.
+    const state = $desktopOnboarding.get()
+    const desktopOnboardingCompleted = state.configured === true || state.firstRunSkipped
+
+    if (!desktopOnboardingCompleted) {
+      patch({ configured: false, reason: null })
+      await refreshProviders()
+      return false
+    }
+
     completeDesktopOnboarding()
     await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()

@@ -306,6 +306,26 @@ describe('refreshOnboarding', () => {
     })
   })
 
+  it('keeps first launch eligible when the provider was configured outside Desktop', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [makeOAuthProvider('fresh')] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    $desktopOnboarding.set(baseState({ configured: null, providers: null }))
+
+    const ready = await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get()).toMatchObject({ configured: false, firstRunSkipped: false })
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/providers/oauth' }))
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+  })
+
   it('does not preserve configured when onboarding was explicitly requested', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/api/providers/oauth') {

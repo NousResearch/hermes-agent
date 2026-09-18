@@ -51,6 +51,16 @@ DESKTOP_DELIVER_TIMEOUT_SECONDS = (
 )
 # The Desktop posts its own timeout reply at that deadline, so the waiter must still be watching then.
 REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
+
+def desktop_deliver_timeout_seconds(lock_wait_seconds: float | None = None) -> float:
+    """Return the delivery budget for a target gateway's actual lock wait."""
+    lock_wait = TURN_WAIT_SECONDS_FALLBACK if lock_wait_seconds is None else max(0.0, float(lock_wait_seconds))
+    return lock_wait + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+
+
+def relay_waiter_linger_seconds() -> float:
+    """One-shot linger needed to observe the Desktop's terminal reply."""
+    return desktop_deliver_timeout_seconds(turn_wait_seconds()) + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
 # Only a recent roster is authoritative for the fail-fast offline check: the
@@ -341,6 +351,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     """Shell command that blocks until the reply file appears, then prints it; spawned
     via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
     as the same completion notification local DMs use. Stdlib-only."""
+    wait_seconds = relay_waiter_linger_seconds()
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
     # !r keeps roster fields from breaking out of the generated python -c source.
@@ -354,7 +365,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "import json,os,sys,time\n"
         f"p = r{reply_path!r}\n"
         f"label = r{label!r}\n"
-        f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
+        f"deadline = time.time() + {wait_seconds:g}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
@@ -371,7 +382,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "        sys.exit(0)\n"
         # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
         "    time.sleep(0.25)\n"
-        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
+        f"print('No reply from ' + label + ' within {wait_seconds:g}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"
     )

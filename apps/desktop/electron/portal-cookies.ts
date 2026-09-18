@@ -1,4 +1,4 @@
-interface PortalCookie {
+export interface PortalCookie {
   name: string
   value: string
 }

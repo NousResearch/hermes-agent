@@ -1,6 +1,6 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
 
-import { cookiesHavePortalAccessToken, cookiesHavePortalSession, portalAccessCookies } from './portal-cookies'
+import { cookiesHavePortalSession, portalAccessCookies, type PortalCookie } from './portal-cookies'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
 interface PortalSessionDependencies {
@@ -76,162 +76,44 @@ export function createPortalSession({
   }
 
   async function hasPortalAccessToken() {
-    return cookiesHavePortalAccessToken(await readAccessCookies())
+    return (await readAccessCookies()).length > 0
   }
 
-  // Loading the portal lets NAS choose its own refresher: Privy client renewal,
-  // or the NAS server-side refresh redirect. Never pin a provider in Desktop.
-  // Share a single renewal so concurrent calls cannot race rotating refresh tokens.
-  let portalAccessRenewal: Promise<boolean> | null = null
+  // A portal window has done its job only when the jar holds an access cookie
+  // it did not hold when the window opened. Presence alone is not enough: a
+  // token the server already rejected can sit unexpired in Chromium's jar, and
+  // trusting it would close the login window before the user signs in, or
+  // report a renewal that never happened.
+  async function hasNewAccessCookie(previous: PortalCookie[]) {
+    const access = await readAccessCookies()
 
-  function renewPortalAccessSilently({ force = false } = {}) {
-    if (portalAccessRenewal) {
-      return portalAccessRenewal
-    }
-
-    portalAccessRenewal = (async () => {
-      if (!isReady()) {
-        return false
-      }
-
-      const sess = getOauthSession()
-
-      if (!sess) {
-        return false
-      }
-
-      // No renewal material at all → nothing to renew; interactive login is
-      // genuinely required.
-      if (!(await hasLivePortalSession())) {
-        return false
-      }
-
-      const previousAccess = await readAccessCookies()
-
-      if (!force && previousAccess.length > 0) {
-        return true
-      }
-
-      const portalBaseUrl = resolvePortalBaseUrl()
-
-      return await new Promise<boolean>(resolve => {
-        let settled = false
-        let win: BrowserWindow | null = null
-        let pollTimer: ReturnType<typeof setInterval> | null = null
-        let deadlineTimer: ReturnType<typeof setTimeout> | null = null
-
-        const finish = (ok: boolean) => {
-          if (settled) {
-            return
-          }
-
-          settled = true
-
-          if (pollTimer) {
-            clearInterval(pollTimer)
-          }
-
-          if (deadlineTimer) {
-            clearTimeout(deadlineTimer)
-          }
-
-          try {
-            if (win && !win.isDestroyed()) {
-              win.destroy()
-            }
-          } catch {
-            // window already torn down
-          }
-
-          rememberLog(`[cloud] silent portal access renewal ${ok ? 'succeeded' : 'did not complete'}`)
-          resolve(ok)
-        }
-
-        const checkCookie = async () => {
-          if (settled) {
-            return
-          }
-
-          const access = await readAccessCookies()
-
-          // A rejected token still in Chromium's jar is not a successful renewal.
-          if (
-            access.some(cookie => !previousAccess.some(old => old.name === cookie.name && old.value === cookie.value))
-          ) {
-            finish(true)
-          }
-        }
-
-        try {
-          win = createWindow({
-            width: 520,
-            height: 720,
-            show: false,
-            title: 'Renewing Hermes Cloud session…',
-            autoHideMenuBar: true,
-            webPreferences: {
-              contextIsolation: true,
-              nodeIntegration: false,
-              sandbox: true,
-              session: sess,
-              webSecurity: true
-            }
-          })
-        } catch {
-          finish(false)
-
-          return
-        }
-
-        win.webContents.on('did-navigate', () => void checkCookie())
-        win.webContents.on('did-redirect-navigation', () => void checkCookie())
-        win.webContents.on('did-frame-navigate', () => void checkCookie())
-        installWindowRendererLifecycle(win, { kind: 'portal-renew', callbacks: { log: rememberLog } })
-        pollTimer = setInterval(() => void checkCookie(), 500)
-        // Hard deadline: this window is never revealed, so an unrenewable session
-        // (revoked refresh token, portal down) must resolve false rather than
-        // hang the discovery call behind an invisible window.
-        deadlineTimer = setTimeout(() => finish(false), 12_000)
-
-        win.on('closed', () => finish(false))
-
-        win.loadURL(portalBaseUrl).catch(() => finish(false))
-      })
-    })().finally(() => {
-      portalAccessRenewal = null
-    }) as Promise<boolean>
-
-    return portalAccessRenewal
+    return access.some(cookie => !previous.some(old => old.name === cookie.name && old.value === cookie.value))
   }
 
-  // Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
-  // openOauthLoginWindow (which targets a gateway's /login), this lands on the
-  // portal itself so the resulting session cookie is portal-scoped — the cookie
-  // that authenticates discovery AND is reused for every silent per-agent
-  // cascade. Resolves once the portal session cookie appears.
-  function openPortalLoginWindow() {
+  interface CookieWindowOptions {
+    kind: string
+    title: string
+    show: boolean
+    pollMs: number
+    deadlineMs?: number
+  }
+
+  type CookieWindowOutcome = 'landed' | 'closed' | 'timeout' | Error
+
+  // Load the portal root in the OAuth partition and settle once a new access
+  // cookie lands, the window closes, the deadline passes, or the window cannot
+  // be created/loaded. The portal owns provider selection, provisioning and
+  // refresh redirects; Desktop only watches the jar.
+  function driveCookieWindow(sess: Session, previous: PortalCookie[], options: CookieWindowOptions) {
     const portalBaseUrl = resolvePortalBaseUrl()
 
-    return new Promise((resolve, reject) => {
-      if (!isReady()) {
-        reject(new Error('Desktop is not ready to start a Hermes Cloud sign-in.'))
-
-        return
-      }
-
-      const sess = getOauthSession()
-
-      if (!sess) {
-        reject(new Error('OAuth session partition is unavailable.'))
-
-        return
-      }
-
+    return new Promise<CookieWindowOutcome>(resolve => {
       let settled = false
       let win: BrowserWindow | null = null
       let pollTimer: ReturnType<typeof setInterval> | null = null
+      let deadlineTimer: ReturnType<typeof setTimeout> | null = null
 
-      const finish = err => {
+      const finish = (outcome: CookieWindowOutcome) => {
         if (settled) {
           return
         }
@@ -242,30 +124,20 @@ export function createPortalSession({
           clearInterval(pollTimer)
         }
 
-        try {
-          if (win && !win.isDestroyed()) {
-            win.destroy()
-          }
-        } catch {
-          // window already torn down
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer)
         }
 
-        if (err) {
-          reject(err)
-        } else {
-          resolve({ portalBaseUrl, ok: true })
+        if (win && !win.isDestroyed()) {
+          win.destroy()
         }
+
+        resolve(outcome)
       }
 
       const checkCookie = async () => {
-        if (settled) {
-          return
-        }
-
-        // Refresh material alone must not close the window before the portal
-        // can replace it with usable access, regardless of the login provider.
-        if (await hasPortalAccessToken()) {
-          finish(null)
+        if (!settled && (await hasNewAccessCookie(previous))) {
+          finish('landed')
         }
       }
 
@@ -273,7 +145,8 @@ export function createPortalSession({
         win = createWindow({
           width: 520,
           height: 720,
-          title: 'Sign in to Hermes Cloud',
+          show: options.show,
+          title: options.title,
           autoHideMenuBar: true,
           webPreferences: {
             contextIsolation: true,
@@ -292,24 +165,98 @@ export function createPortalSession({
       win.webContents.on('did-navigate', () => void checkCookie())
       win.webContents.on('did-redirect-navigation', () => void checkCookie())
       win.webContents.on('did-frame-navigate', () => void checkCookie())
-      // Log-only lifecycle diagnostics, same rationale as the OAuth window:
-      // a crashed portal sign-in renderer never settles the promise, so the
-      // failure would otherwise leave no trace in desktop.log (#81290
-      // follow-up).
-      installWindowRendererLifecycle(win, { kind: 'portal', callbacks: { log: rememberLog } })
-      pollTimer = setInterval(() => void checkCookie(), 750)
+      // Log-only lifecycle diagnostics: a crashed portal renderer never settles
+      // the promise, so the failure would otherwise leave no trace in
+      // desktop.log (#81290 follow-up).
+      installWindowRendererLifecycle(win, { kind: options.kind, callbacks: { log: rememberLog } })
+      pollTimer = setInterval(() => void checkCookie(), options.pollMs)
 
-      win.on('closed', () => {
-        if (!settled) {
-          finish(new Error('Sign-in window closed before authentication completed.'))
-        }
-      })
+      if (options.deadlineMs !== undefined) {
+        deadlineTimer = setTimeout(() => finish('timeout'), options.deadlineMs)
+      }
 
-      // The portal owns provider selection, provisioning and refresh redirects.
-      win.loadURL(portalBaseUrl).catch(error => {
-        finish(error instanceof Error ? error : new Error(String(error)))
-      })
+      win.on('closed', () => finish('closed'))
+      win.loadURL(portalBaseUrl).catch(error => finish(error instanceof Error ? error : new Error(String(error))))
     })
+  }
+
+  // Loading the portal lets NAS choose its own refresher: Privy client renewal,
+  // or the NAS server-side refresh redirect. Never pin a provider in Desktop.
+  // Concurrent callers share one hidden window so they cannot race rotating
+  // refresh tokens; a `force` caller (discovery just got a 401 with this very
+  // cookie) is never satisfied by a short-circuit, only by a real renewal.
+  let portalAccessRenewal: Promise<boolean> | null = null
+
+  async function renewPortalAccessSilently({ force = false }: { force?: boolean } = {}) {
+    const sess = getOauthSession()
+
+    if (!isReady() || !sess) {
+      return false
+    }
+
+    // No renewal material at all → nothing to renew; interactive login is
+    // genuinely required.
+    if (!(await hasLivePortalSession())) {
+      return false
+    }
+
+    if (!force && (await hasPortalAccessToken())) {
+      return true
+    }
+
+    portalAccessRenewal ??= (async () => {
+      const previous = await readAccessCookies()
+
+      // Hard deadline: this window is never revealed, so an unrenewable session
+      // (revoked refresh token, portal down) must resolve false rather than
+      // hang the discovery call behind an invisible window.
+      const outcome = await driveCookieWindow(sess, previous, {
+        kind: 'portal-renew',
+        title: 'Renewing Hermes Cloud session…',
+        show: false,
+        pollMs: 500,
+        deadlineMs: 12_000
+      })
+
+      const ok = outcome === 'landed'
+
+      rememberLog(`[cloud] silent portal access renewal ${ok ? 'succeeded' : 'did not complete'}`)
+
+      return ok
+    })().finally(() => {
+      portalAccessRenewal = null
+    })
+
+    return portalAccessRenewal
+  }
+
+  // Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
+  // openOauthLoginWindow (which targets a gateway's /login), this lands on the
+  // portal itself so the resulting session cookie is portal-scoped — the cookie
+  // that authenticates discovery AND is reused for every silent per-agent
+  // cascade. Resolves once a new access cookie appears; refresh material alone
+  // must not close the window before the portal can replace it.
+  async function openPortalLoginWindow(): Promise<void> {
+    if (!isReady()) {
+      throw new Error('Desktop is not ready to start a Hermes Cloud sign-in.')
+    }
+
+    const sess = getOauthSession()
+
+    if (!sess) {
+      throw new Error('OAuth session partition is unavailable.')
+    }
+
+    const outcome = await driveCookieWindow(sess, await readAccessCookies(), {
+      kind: 'portal',
+      title: 'Sign in to Hermes Cloud',
+      show: true,
+      pollMs: 750
+    })
+
+    if (outcome !== 'landed') {
+      throw outcome instanceof Error ? outcome : new Error('Sign-in window closed before authentication completed.')
+    }
   }
 
   return { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow }

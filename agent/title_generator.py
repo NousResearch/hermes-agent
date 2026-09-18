@@ -48,6 +48,8 @@ RuntimeValidator = Callable[[], bool]
 MAX_TITLE_INPUT_CHARS = 1000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
+# Footers the @-reference expander appends below the typed text (agent/context_references.py).
+_CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 # Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
@@ -216,6 +218,9 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
     preview = title_preview.strip() if isinstance(title_preview, str) else ""
     if not preview:
         return message[:MAX_TITLE_INPUT_CHARS]
+    # The titler sees the message AFTER @-reference expansion, so the generated ref drags a
+    # warnings/attached-context footer along; the preview already carries the topic, so drop it.
+    message = _CONTEXT_FOOTER_RE.sub("", message).strip()
     # A paste-only opener is just the generated `@file:` ref: the preview IS the topic, so it
     # leads (derive_title takes the first line, and a file path is not a title).
     if not _ATTACHMENT_REF_RE.sub("", message).strip():

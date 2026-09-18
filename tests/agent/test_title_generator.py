@@ -39,6 +39,20 @@ class TestGenerateTitle:
         lead = paste_preview if instruction.startswith("@file:") else instruction
         assert derive_title(instruction, paste_preview).startswith(lead[:12])
 
+    def test_expanded_paste_ref_footer_does_not_demote_the_preview(self):
+        """The titler receives the opener AFTER @-reference expansion: the generated ref carries a
+        `--- Context Warnings ---` (or `--- Attached Context ---`) footer, which must not turn a
+        paste-only opener into "instruction + trailing preview" (live wire finding on #114984)."""
+        ref = "@file:/home/u/.hermes/attachments/pasted_content_2026-09-18_14-09-43-735_d0ee85.txt"
+        preview = "Quarterly incident analysis for the database cluster"
+        for footer in (f"\n\n--- Context Warnings ---\n- {ref}: path is outside the allowed workspace",
+                       "\n\n--- Attached Context ---\n\n### file: pasted_content.txt\n" + preview):
+            title_input = build_title_input(ref + footer, preview)
+
+            assert title_input.startswith(preview)
+            assert "---" not in title_input and "@file:" not in title_input
+            assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
+
     def test_title_input_budget_and_manual_attachments_stay_unread(self):
         title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
 

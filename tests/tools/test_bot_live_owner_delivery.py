@@ -1,5 +1,6 @@
 """Durable mailbox invariants, using real disk and exec boundaries."""
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -346,6 +347,86 @@ def test_unreachable_queued_delivery_expires_with_a_reason(tmp_path, monkeypatch
         assert (receipt["status"], receipt["reason"]) == ("failed", "no_live_consumer")
         assert receipt["message"] == expired["message"]
         assert mailbox.read_delivery_result(tmp_path, young["delivery_id"])["status"] == "queued"
+    finally:
+        lease.release()
+        db.close()
+
+
+_AGE_UNREADABLE = object()
+
+
+@pytest.mark.parametrize("stamp", [_AGE_UNREADABLE, 0, "yesterday"],
+                         ids=["no-created-at", "zero", "not-a-number"])
+def test_unreachable_delivery_without_a_measurable_age_is_kept(tmp_path, monkeypatch, stamp):
+    """A ticket whose age cannot be read stays queued, never failed as infinitely old.
+
+    ``created_at`` is not a required field of a delivery record, so a foreign or half-written ticket
+    reaches the expiry arm with no usable stamp. Expiry is terminal — the record never reaches a turn
+    afterwards — so an unreadable age must not be read as infinitely old (nor raise out of the sweep).
+    """
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None
+        other = dict(current, session_id="other-chat", lease_id="ghost-lease",
+                     live_session_id="ghost-live")
+        monkeypatch.setattr(mailbox.time, "time_ns",
+                            lambda: int((time.time() - 2 * mailbox.UNREACHABLE_AFTER_SECONDS) * 1e9))
+        aged = mailbox.deliver_to_live_owner(tmp_path, other, "an ask this chat cannot reach",
+                                             delivery_id="a" * 32)
+        monkeypatch.undo()
+        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+        unreadable_id = "b" * 32
+        record = dict(aged, delivery_id=unreadable_id, id=unreadable_id, message="ask b")
+        if stamp is _AGE_UNREADABLE:
+            record.pop("created_at", None)
+        else:
+            record["created_at"] = stamp
+        (root / f"{unreadable_id}.json").write_text(json.dumps(record), encoding="utf-8")
+        assert mailbox.claim_pending_delivery(tmp_path, current) is None
+        # Control: the same aged ticket with its stamp intact is still expired by this same sweep,
+        # so the assertion below cannot pass on a sweep that never reached the expiry arm.
+        receipt = mailbox.read_delivery_result(tmp_path, aged["delivery_id"])
+        assert (receipt["status"], receipt["reason"]) == ("failed", "no_live_consumer")
+        kept = mailbox.read_delivery_result(tmp_path, unreadable_id)
+        assert kept["status"] == "queued", "an unreadable age must not expire a record"
+        assert kept["message"] == "ask b"
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_reclaim_logs_the_matching_arm_and_the_lengths(tmp_path, caplog):
+    """The audit trail names the arm that matched, so a hash match never hides behind a substring one."""
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None
+        ghost = dict(current, lease_id="ghost-lease", live_session_id="ghost-live")
+        exact = "an ask already answered by the lease this chat replaced, verbatim"
+        inner = ("an ask this chat already ran inside a longer stored body that the substring arm "
+                 "still finds, which is the arm that can match a body it never saw")
+        assert len(inner) >= mailbox._SHORTEST_SUBSTRING_BODY, "the substring arm needs a long body"
+        stored = f"{inner} and then more of the stored body around it"
+        db.append_message("chat", "user", exact)
+        db.append_message("chat", "user", stored)
+        mailbox.deliver_to_live_owner(tmp_path, ghost, exact, delivery_id="a" * 32)
+        mailbox.deliver_to_live_owner(tmp_path, ghost, inner, delivery_id="b" * 32)
+        with caplog.at_level(logging.INFO, logger="tools.bot_live_delivery"):
+            assert mailbox.claim_pending_delivery(tmp_path, current) is None
+        logged = "\n".join(record.getMessage() for record in caplog.records
+                           if record.name == "tools.bot_live_delivery")
+        assert "sha256" in logged and str(len(exact)) in logged
+        assert "substring" in logged and str(len(inner)) in logged and str(len(stored)) in logged
+        assert exact not in logged and inner not in logged and stored not in logged, \
+            "log the lengths, not the bodies"
+        for delivery_id in ("a" * 32, "b" * 32):
+            receipt = mailbox.read_delivery_result(tmp_path, delivery_id)
+            assert (receipt["status"], receipt["reason"]) == ("settled", "already_present")
     finally:
         lease.release()
         db.close()

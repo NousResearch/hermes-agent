@@ -427,13 +427,28 @@ class _StoreBodies:
             db.close()
 
     def contains(self, message: Any) -> bool:
-        """True when this body is already in the store, so running it again would duplicate it."""
+        """True when this body is already in the store, so running it again would duplicate it.
+
+        The arm that matched is logged with the lengths it matched at — the exact ``sha256`` arm, or
+        the ``substring`` arm over stored user bodies. The substring arm is the one that can match a
+        body the store never ran verbatim, and a false match settles a record as ``already_present``
+        (a silent drop), so this line is the audit trail that measures how often it does; the bodies
+        themselves are never logged.
+        """
         body = message.strip() if isinstance(message, str) else ""
         if not body:
             return False
         if _digest(body) in self._digests:
+            log.info("Delivery reclaim matched by sha256 (%d-char body)", len(body))
             return True
-        return any(len(body) >= _SHORTEST_SUBSTRING_BODY and body in text for text in self._bodies)
+        if len(body) < _SHORTEST_SUBSTRING_BODY:
+            return False
+        for text in self._bodies:
+            if body in text:
+                log.info("Delivery reclaim matched by substring (%d-char body inside a %d-char "
+                         "stored body)", len(body), len(text))
+                return True
+        return False
 
 
 def deliver_to_live_owner(
@@ -494,6 +509,24 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def _created_at_seconds(record: dict[str, Any]) -> float | None:
+    """The record's age basis in epoch seconds, or ``None`` when it carries no usable stamp.
+
+    ``None`` means *not measurable*, never *infinitely old*: expiry is terminal (the record never
+    reaches a turn afterwards), and ``_looks_like_delivery`` does not require ``created_at``, so a
+    half-written or foreign ticket must not be failed on its first sweep merely because its age
+    cannot be read. A stamp that is absent, zero or not a number is retained for inspection or for a
+    later sweep that can read it — and a non-numeric stamp must not raise out of the sweep, which
+    would wedge every other record behind it.
+    """
+    raw = record.get("created_at")
+    try:
+        stamp = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    return stamp / 1e9 if stamp > 0 else None
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any], *, now: float | None = None,
 ) -> dict[str, Any] | None:
@@ -513,7 +546,8 @@ def claim_pending_delivery(
     * Expiry: a queued record this consumer can never reach (a different lineage, its pinned
       owner gone) becomes ``failed``/``no_live_consumer`` once it is older than
       ``UNREACHABLE_AFTER_SECONDS`` — an unreachable ask is reported, not left silent. Its body
-      stays in the receipt.
+      stays in the receipt. A record whose ``created_at`` is absent, zero or unreadable has no age
+      to compare and is kept queued (``_created_at_seconds``) rather than failed on its first sweep.
 
     Only a provably-live consumer may reclaim or expire: an unregistered caller cannot take
     mail off another lease's hands.
@@ -540,10 +574,10 @@ def claim_pending_delivery(
                 continue
             pinned = record["owner"]
             if not lineage.matches(record, current):
-                created_at = float(record.get("created_at") or 0.0)
+                created_at = _created_at_seconds(record)
                 reachable_by_its_owner = (pinned["lease_id"] == current["lease_id"])
-                if (not reachable_by_its_owner
-                        and stamp - created_at / 1e9 > UNREACHABLE_AFTER_SECONDS):
+                if (not reachable_by_its_owner and created_at is not None
+                        and stamp - created_at > UNREACHABLE_AFTER_SECONDS):
                     _finish_in_place(root, record, status="failed", reason="no_live_consumer",
                                      detail="no_live_consumer")
                 continue

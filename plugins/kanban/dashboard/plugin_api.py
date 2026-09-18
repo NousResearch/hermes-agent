@@ -1574,7 +1574,9 @@ _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 @router.get("/orchestration")
 def get_orchestration_settings():
     """Current orchestration knobs from config.yaml plus the resolved effective
-    values (fallbacks filled the same way the decomposer does)."""
+    values. An unset/unknown profile resolves to the active profile here; the
+    decomposer prefers the root card's assignee in that case and uses the active
+    profile only for cards with no assignee."""
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
     explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}

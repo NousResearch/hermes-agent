@@ -26,6 +26,8 @@ _OPENCLAW_SCRIPT_INSTALLED = get_hermes_home() / "skills" / _SCRIPT_REL
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+# pgrep -f ERE anchored on a node interpreter as argv[0] (``node /usr/local/bin/openclaw gateway``).
+_OPENCLAW_NODE_CMDLINE_RE = r"^(\S*/)?node(js)?\s.*(openclaw|clawd)"
 
 # `hermes claw migrate` flags/defaults. Secrets are never included implicitly: --migrate-secrets
 # is required even under --preset full (OpenClaw's two-phase posture); no silent API-key import.
@@ -54,7 +56,7 @@ def _print_banner(title: str) -> None:
     """Print the magenta boxed banner shared by the claw subcommands."""
     print()
     rule = "─" * 57
-    for line in (f"┌{rule}┐", f"│          ⚕ Hermes — {title:<35s}│", f"└{rule}┘"):
+    for line in (f"┌{rule}┐", f"│          ☤ Hermes — {title:<35s}│", f"└{rule}┘"):
         print(color(line, Colors.MAGENTA))
 
 
@@ -124,9 +126,19 @@ def _detect_openclaw_processes() -> list[str]:
     result = _posix_probe(["systemctl", "--user", "is-active", "openclaw-gateway.service"], 5)
     if result is not None and result.stdout.strip() == "active":
         found.append("systemd service: openclaw-gateway.service")
-    result = _posix_probe(["pgrep", "-f", "openclaw"], 3)
-    if result is not None and result.returncode == 0:
-        found.append(f"openclaw process(es) (PIDs: {', '.join(result.stdout.strip().split())})")
+    # Never a bare ``pgrep -f openclaw``: it matches ANY argv containing the word (an editor on
+    # ~/.openclaw/config.json, ``tail -f openclaw.log``) and aborted cleanup on idle hosts (#12648).
+    # Mirror the Windows branch: exact binary names, plus node processes whose script mentions it.
+    pids: list[str] = []
+    # ``-x`` matches the 15-char comm: the gateway sets process.title="openclaw-gateway", which
+    # the kernel truncates to "openclaw-gatewa".
+    for probe in (["pgrep", "-x", "openclaw"], ["pgrep", "-x", "openclaw-gatewa"], ["pgrep", "-x", "clawd"],
+                  ["pgrep", "-f", _OPENCLAW_NODE_CMDLINE_RE]):
+        result = _posix_probe(probe, 3)
+        if result is not None and result.returncode == 0:
+            pids.extend(result.stdout.split())
+    if pids:
+        found.append(f"openclaw process(es) (PIDs: {', '.join(dict.fromkeys(pids))})")
     return found
 
 

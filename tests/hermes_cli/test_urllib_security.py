@@ -318,7 +318,7 @@ def test_anthropic_profile_drops_x_api_key_on_redirect(monkeypatch):
     original_request = urllib.request.Request
 
     def local_anthropic_request(url, *args, **kwargs):
-        if url == "https://api.anthropic.com/v1/models":
+        if url.startswith("https://api.anthropic.com/v1/models"):
             url = f"http://127.0.0.1:{source.server_port}/redirect"
         return original_request(url, *args, **kwargs)
 

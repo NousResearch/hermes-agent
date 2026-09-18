@@ -126,3 +126,36 @@ def test_cron_construction_sets_skip_background_review() -> None:
     assert "skip_background_review=True" in text, (
         "cron/scheduler.py must construct AIAgent with skip_background_review=True."
     )
+
+
+def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_empty(monkeypatch, tmp_path) -> None:
+    """With no model text, result["error"] carries a profile-pinned `hermes doctor`, while the
+    memory sync and the background-review gate still see the turn as having produced nothing."""
+    from hermes_constants import profile_cli_selector
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    selector = profile_cli_selector()
+    assert selector.strip()
+    agent = _make_agent()
+    _stub_agent_for_finalize(agent)
+    # Force the fallback: the explainer normally supplies the text, so an empty explainer is
+    # the only way the hardcoded copy reaches the user.
+    monkeypatch.setattr(AIAgent, "_format_turn_completion_explanation", staticmethod(lambda *a, **k: ""))
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=True,
+        messages=[{"role": "user", "content": "hi"}],
+        conversation_history=[],
+        effective_task_id="test",
+        turn_id="test-turn",
+        user_message="hi",
+        original_user_message="hi",
+        _should_review_memory=True,
+        _turn_exit_reason="session_persistence_failed",
+    )
+    assert f"`hermes {selector}doctor`" in result["error"]
+    assert agent._sync_external_memory_for_turn.call_args.kwargs["final_response"] == ""
+    agent._spawn_background_review.assert_not_called()

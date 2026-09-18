@@ -12,10 +12,9 @@ import yaml
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     PlatformConfig,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest

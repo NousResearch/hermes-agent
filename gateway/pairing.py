@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import secrets
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -21,7 +20,7 @@ from typing import Optional
 
 from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,7 @@ RATE_LIMIT_SECONDS = 600            # 1 request per user per 10 minutes
 LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
+DECLINE_DEDUPE_SECONDS = 24 * 3600  # One polite decline per (platform, sender) per window (#88028)
 
 # Default pairing directory override. Deliberately ``None``: an eagerly computed
 # path would freeze the HERMES_HOME/profile context at gateway boot, ignoring later
@@ -279,7 +279,7 @@ def _load_json_file(path: Path) -> dict:
 
 
 def _save_json_file(path: Path, data: dict) -> None:
-    _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+    atomic_json_write(path, data, mode=0o600)
 
 
 def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional[Path] = None) -> None:
@@ -303,24 +303,6 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
         merged.update(current)
         if merged != current:
             _save_json_file(active / src.name, merged)
-
-
-def _secure_write(path: Path, data: str) -> None:
-    """Write 0600 via temp file + atomic rename so readers never see a partial file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-        with contextlib.suppress(OSError):  # Windows doesn't support chmod the same way
-            os.chmod(path, 0o600)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
 
 
 def _is_hashed_entry(entry) -> bool:
@@ -367,6 +349,9 @@ class PairingStore:
 
     def _rate_limit_path(self) -> Path:
         return self._dir / "_rate_limits.json"
+
+    def _decline_stamp_path(self) -> Path:
+        return self._dir / "_declined.json"
 
     def _cleanup_expired(self, platform: str) -> None:
         """Remove expired pending codes; malformed/legacy entries (no numeric ``created_at``) count as expired."""
@@ -479,7 +464,9 @@ class PairingStore:
         """
         with self._lock:
             self._cleanup_expired(platform)
-            code = code.upper().strip()
+            # Chat UIs insert visual spacing between code characters; strip all
+            # whitespace, then match exactly (surrounding words still fail). #89937
+            code = "".join(str(code or "").upper().split())
             # Before the lookup, or an already-issued valid code would bypass lockout.
             if self._is_locked_out(platform):
                 return None
@@ -574,6 +561,30 @@ class PairingStore:
         for alias in _user_id_aliases(platform, user_id):
             limits[f"{platform}:{alias}"] = now
         self._save_limits(limits)
+
+    # ----- "decline" unauthorized-DM behavior (#88028) -----
+
+    def has_recent_decline(self, platform: str, user_id: str) -> bool:
+        """Whether this sender (under any alias) was sent a polite decline within DECLINE_DEDUPE_SECONDS."""
+        stamps = self._load_json(self._decline_stamp_path())
+        now = time.time()
+        return any(
+            isinstance(stamped := stamps.get(f"{platform}:{alias}"), (int, float)) and (now - stamped) < DECLINE_DEDUPE_SECONDS
+            for alias in _user_id_aliases(platform, user_id)
+        )
+
+    def record_decline(self, platform: str, user_id: str) -> None:
+        """Stamp the sender (all aliases) and prune expired stamps. Callers stamp BEFORE sending so a
+        delivery failure cannot become a decline storm on the sender's next message."""
+        with self._lock:
+            now = time.time()
+            stamps = {
+                key: value for key, value in self._load_json(self._decline_stamp_path()).items()
+                if isinstance(value, (int, float)) and (now - value) < DECLINE_DEDUPE_SECONDS
+            }
+            for alias in _user_id_aliases(platform, user_id):
+                stamps[f"{platform}:{alias}"] = now
+            self._save_json(self._decline_stamp_path(), stamps)
 
     def _is_locked_out(self, platform: str) -> bool:
         return time.time() < self._limits().get(f"_lockout:{platform}", 0)

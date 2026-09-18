@@ -226,6 +226,8 @@ class TestAuxAzureFoundryEntra:
                 self.base_url = kwargs.get("base_url", "")
 
         class _FakeAnthropicSDK:
+            Omit = object  # the adapter omits the unused credential header via sdk.Omit()
+
             class Anthropic:
                 def __init__(self, **kwargs):
                     received["anthropic"] = kwargs

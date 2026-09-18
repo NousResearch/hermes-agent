@@ -1,17 +1,17 @@
 """Serve-process lifecycle: parent death watchdog, port-conflict preflight, READY announcement, browser open, trusted proxies.
 """
 
+import asyncio
 import logging
 import ipaddress
-import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
@@ -75,7 +75,9 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    if result.returncode == 1 and not marker:
+    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
+    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
+    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 
@@ -86,7 +88,30 @@ def _valid_parent_start_marker(marker: str) -> bool:
         return False
     if prefix in ("linux", "win", "winms"):
         return value.isdigit()
-    return prefix == "ps"
+    if prefix != "ps":
+        return False
+    # ``ps -o lstart=`` renders as ``Sat Aug 29 15:04:31 2026``. A marker split
+    # on whitespace somewhere in the env plumbing arrives as ``ps:Sat`` -- a
+    # real-looking identity that can never match, so the watchdog would exit a
+    # live backend. Require a full value (#98132).
+    tokens = value.split()
+    has_year = any(token.isdigit() and len(token) == 4 for token in tokens)
+    has_time = any(":" in token for token in tokens)
+    return len(tokens) >= 4 and has_year and has_time
+
+
+def _parent_start_marker_mismatch_is_conclusive(actual: str, expected: str) -> bool:
+    """Whether a marker mismatch proves the Desktop parent was replaced.
+
+    ``linux:`` jiffies and ``win:``/``winms:`` FILETIME markers are machine
+    values; a mismatch there is PID-reuse evidence. The POSIX fallback (macOS
+    has no ``/proc``) is ``ps -o lstart=`` -- a wall-clock string rendered in
+    the current TZ/locale. Electron caches it once per app lifetime while the
+    backend re-renders it per spawn, so a timezone change (or DST, or column
+    padding) makes the SAME instant differ byte-for-byte. Any ``ps:`` mismatch
+    is therefore inconclusive (#95693, #93958).
+    """
+    return not (actual.startswith("ps:") or expected.startswith("ps:"))
 
 
 def _parent_start_markers_match(actual: str, expected: str) -> bool:
@@ -145,16 +170,22 @@ def _resolve_restart_drain_timeout() -> float:
 
 
 def _eager_reconcile_own_session_db() -> None:
-    """One writable open of this process's own state.db at startup.
+    """Bring this process's own state.db schema current at startup — read-only first.
 
-    ``SessionDB.__init__`` runs ``_init_schema`` → ``_reconcile_columns`` with
-    open-time lock patience. Never raises: an unfixable store still gets the
-    per-poll read-probe heal in :func:`_open_session_db_at_path`.
+    The dashboard is a view layer; the gateway owns the writer. A healthy store
+    must never see a second writable ``SessionDB`` from this process (its
+    close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
+    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
+    #79531 contract holds) live in the routers' own-store opener,
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import SessionDB, _default_db_path
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        SessionDB(db_path=Path(_default_db_path()), read_only=False).close()
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
@@ -179,25 +210,9 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     if not target:
         return
 
-    tmp_name = ""
     try:
-        path = Path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp", delete=False
-        ) as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-            tmp_name = fh.name
-        os.replace(tmp_name, path)
+        atomic_json_write(Path(target), {"port": int(actual_port)}, indent=None, separators=(",", ":"))
     except Exception as exc:
-        if tmp_name:
-            try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except Exception:
-                pass
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
@@ -253,15 +268,25 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            return not _parent_start_markers_match(probe(int(desktop_pid)), expected_start_marker)
+            try:
+                actual_marker = probe(int(desktop_pid))
+            except ProcessLookupError:
+                return True
+            except Exception:
+                actual_marker = None
+
+            if actual_marker is not None:
+                if _parent_start_markers_match(actual_marker, expected_start_marker):
+                    return False
+                if _parent_start_marker_mismatch_is_conclusive(actual_marker, expected_start_marker):
+                    return True
+                # Inconclusive marker: degrade to PID liveness instead of exiting.
 
         if pid_exists is None:
             from gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
-    except ProcessLookupError:
-        return True
     except Exception:
         return False
 
@@ -274,8 +299,9 @@ def _start_parent_death_watchdog() -> None:
     marker without nonce or vice versa disables the watchdog).
     """
     raw_pid = os.environ.get("HERMES_PARENT_PID")
-    start_marker = os.environ.get("HERMES_PARENT_START_MARKER")
-    nonce = os.environ.get("HERMES_PARENT_NONCE")
+    # Empty inherited values mean "absent", not "marker present but blank".
+    start_marker = os.environ.get("HERMES_PARENT_START_MARKER") or None
+    nonce = os.environ.get("HERMES_PARENT_NONCE") or None
 
     try:
         desktop_pid = int(raw_pid or "")
@@ -288,6 +314,14 @@ def _start_parent_death_watchdog() -> None:
     if has_marker != (nonce is not None):
         return
     if has_marker and (not _valid_parent_start_marker(start_marker or "") or not nonce or nonce != nonce.strip()):
+        # Disarming is fail-safe (the backend keeps serving) but must not be
+        # traceless: this backend will never reap itself if the Desktop dies.
+        _log.warning(
+            "Parent-death watchdog disabled: unusable HERMES_PARENT_START_MARKER=%r / nonce; "
+            "falling back to no parent tracking for desktop PID %s.",
+            start_marker,
+            desktop_pid,
+        )
         return
 
     try:
@@ -298,6 +332,14 @@ def _start_parent_death_watchdog() -> None:
     def _loop() -> None:
         while not _is_serve_orphaned(desktop_pid, start_marker):
             time.sleep(poll)
+        try:
+            _log.warning(
+                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); exiting.",
+                desktop_pid,
+                start_marker,
+            )
+        except Exception:
+            pass
         os._exit(0)
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()

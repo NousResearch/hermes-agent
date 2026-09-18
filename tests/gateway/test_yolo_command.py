@@ -6,7 +6,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from tools.approval import disable_session_yolo, is_session_yolo_enabled
 

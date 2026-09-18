@@ -270,6 +270,24 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         return
 
 
+def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> bool:
+    """Register a ``down`` s6 slot for a profile whose directory exists but was never registered.
+
+    `hermes profile create` can only register a slot when it runs inside the container; created
+    from the host against a bind-mounted home, the directory lands where the container reads it
+    but no ``/run/service/gateway-<name>`` exists, and the boot reconciler only notices on the
+    next container restart. Returns False without touching anything unless the directory carries
+    ``SOUL.md`` — the reconciler's own "real profile" marker — so a mistyped ``-p`` name cannot
+    mint a phantom slot. ``start_now=False``: the caller's ordinary ``start`` stays the single
+    owner of the ``desired_state`` write.
+    """
+    profile_dir = _profile_dir_for_gateway_service(f"{S6_SERVICE_PREFIX}{profile}")
+    if not (profile_dir / "SOUL.md").exists():
+        return False
+    mgr.register_profile_gateway(profile, start_now=False)
+    return True
+
+
 # s6-overlay installs its binaries under /command/ and only adds it to PATH inside the supervision
 # tree. Out-of-tree entry points (``docker exec``, the profile create/delete hooks) inherit the base
 # PATH, so every s6 invocation uses this absolute prefix. Not ``/usr/bin/s6-*``: the

@@ -6,12 +6,17 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+import pytest
+
+import tools.terminal_tool_sudo as terminal_tool_sudo
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
     """Concrete subclass for testing base class methods."""
+
+    _sudo_nopasswd_probe_supported = True
 
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -21,6 +26,39 @@ class _TestableEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
+
+
+def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: True)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt should not run for NOPASSWD")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    assert env._prepare_command("sudo true") == ("sudo true", None)
+
+
+@pytest.mark.parametrize(
+    ("supported", "returncode", "expected", "probed"),
+    [(True, 0, True, True), (True, 1, False, True), (False, 0, False, False)],
+)
+def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
+    monkeypatch, supported, returncode, expected, probed
+):
+    env = _TestableEnv()
+    env._sudo_nopasswd_probe_supported = supported
+    run = MagicMock(return_value=object())
+    monkeypatch.setattr(env, "_run_bash", run)
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": returncode}))
+
+    assert env._sudo_nopasswd_works() is expected
+    assert run.called is probed
+    if probed:
+        assert run.call_args.args[0] == "sudo -n true"
 
 
 class TestBoundedOutputCollector:

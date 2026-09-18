@@ -281,18 +281,11 @@ _MESSAGING_KEYS_PAGE_KEYS = frozenset({
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_PROXY_KEY", "GATEWAY_PROXY_URL"})
 
 
-_PLATFORM_ENV_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {
-    "email": ("EMAIL_",),
-    "homeassistant": ("HASS_",),
-    "qqbot": ("QQ_", "QQBOT_"),
-    "sms": ("TWILIO_",),
-    "wecom": ("WECOM_BOT_", "WECOM_SECRET"),
-    "wecom_callback": ("WECOM_CALLBACK_",)}
-
-
 def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
-    """Env-var prefixes owned by a messaging platform card."""
-    return _PLATFORM_ENV_PREFIX_ALIASES.get(platform_id, (platform_id.upper().replace("-", "_") + "_",))
+    """Env-var prefixes owned by a messaging platform card (shared with the profile-clone
+    channel stripper so a card and a clone agree on which keys belong to a platform)."""
+    from hermes_cli.profile_channels import platform_env_prefixes
+    return platform_env_prefixes(platform_id)
 
 
 def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:

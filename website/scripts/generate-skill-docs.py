@@ -395,9 +395,10 @@ def render_skill_page(
             if skill_index is not None:
                 target_meta = skill_index.get(r)
             if target_meta is not None:
+                # Relative file link: resolves on the site and on GitHub (#114428).
                 href = (
-                    f"/docs/user-guide/skills/{target_meta['source_kind']}"
-                    f"/{target_meta['category']}/{page_id(target_meta)}"
+                    f"../../{target_meta['source_kind']}"
+                    f"/{target_meta['category']}/{page_id(target_meta)}.md"
                 )
                 link_parts.append(f"[`{r}`]({href})")
             else:
@@ -495,7 +496,7 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/bundled/{meta['category']}/{page_id(meta)}"
+            link_target = f"../user-guide/skills/bundled/{meta['category']}/{page_id(meta)}.md"
             path = f"`{meta['rel_path']}`"
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(
@@ -556,7 +557,7 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/optional/{meta['category']}/{page_id(meta)}"
+            link_target = f"../user-guide/skills/optional/{meta['category']}/{page_id(meta)}.md"
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(f"| [**{name}**]({link_target}) | {desc_esc} |")
         lines.append("")

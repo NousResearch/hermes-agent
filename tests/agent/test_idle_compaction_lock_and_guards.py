@@ -45,6 +45,7 @@ def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
     agent.context_compressor.summary_target_ratio = 0.20
     agent.context_compressor.protect_first_n = 2
     agent.context_compressor.protect_last_n = 2
+    agent.context_compressor.awaiting_real_usage_after_compression = False
     # No active failure cooldown unless a test installs one.
     agent.context_compressor.get_active_compression_failure_cooldown = (
         lambda *a, **k: None

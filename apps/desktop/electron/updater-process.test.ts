@@ -6,6 +6,7 @@ import { test } from 'vitest'
 
 import {
   collectRelaunchArgs,
+  describeUpdaterHandoffFailure,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -391,6 +392,20 @@ test('observeUpdaterHandoff reports a non-zero early exit', async () => {
   assert.equal(outcome.ok, false)
   assert.equal(outcome.reason, 'early-exit')
   assert.equal(outcome.code, 127)
+})
+
+test('describeUpdaterHandoffFailure leads with plain copy and confines the raw outcome to Details', () => {
+  for (const raw of ['updater exited 127 before the settle window elapsed', 'updater spawn failed: ENOENT']) {
+    const text = describeUpdaterHandoffFailure({ message: raw })
+    const [lead, details] = text.split('\n\nDetails: ')
+
+    assert.match(lead, /Hermes keeps running/)
+    assert.match(lead, /Try again/)
+    assert.doesNotMatch(lead, /exited|spawn|ENOENT|settle window|hermes update|\d/)
+    assert.equal(details, raw)
+  }
+
+  assert.doesNotMatch(describeUpdaterHandoffFailure({}), /Details:/)
 })
 
 test('observeUpdaterHandoff reports a signal death inside the window', async () => {

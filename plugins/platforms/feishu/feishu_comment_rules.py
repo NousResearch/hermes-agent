@@ -10,16 +10,26 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Resolved at import time: this module is lazy-imported by the comment event handler,
-# long after profile/HERMES_HOME overrides have been applied, so freezing is safe.
 RULES_FILE = get_hermes_home() / "feishu_comment_rules.json"
 PAIRING_FILE = get_hermes_home() / "feishu_comment_pairing.json"
+_RULES_FILE_AT_IMPORT, _PAIRING_FILE_AT_IMPORT = RULES_FILE, PAIRING_FILE
+
+
+def _rules_file() -> Path:
+    """Active profile's rules file at call time: the patched ``RULES_FILE`` when a test changed
+    it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every profile from
+    one process, so the import-time constant would apply the launch profile's rules everywhere."""
+    return RULES_FILE if RULES_FILE != _RULES_FILE_AT_IMPORT else get_hermes_home() / "feishu_comment_rules.json"
+
+
+def _pairing_file() -> Path:
+    return PAIRING_FILE if PAIRING_FILE != _PAIRING_FILE_AT_IMPORT else get_hermes_home() / "feishu_comment_pairing.json"
 
 _VALID_POLICIES = ("allowlist", "pairing")
 
@@ -51,31 +61,40 @@ class ResolvedCommentRule:
 
 
 class _MtimeCache:
-    """Mtime-based JSON file cache: ``stat()`` per access, re-read only on change."""
+    """Mtime-based JSON file cache: ``stat()`` per access, re-read only on change. ``path`` is a
+    ``Path`` or a zero-arg callable resolving one; state is keyed per resolved path so profiles
+    routed through one multiplexed process never share a slot."""
 
-    def __init__(self, path: Path):
-        self._path, self._mtime, self._data = path, 0.0, None
+    def __init__(self, path: Path | Callable[[], Path]):
+        self._resolve = path if callable(path) else (lambda: path)
+        self._entries: Dict[Path, tuple[float, dict]] = {}
+
+    def invalidate(self) -> None:
+        self._entries.pop(self._resolve(), None)
 
     def load(self) -> dict:
+        path = self._resolve()
         try:
-            mtime = self._path.stat().st_mtime
+            mtime = path.stat().st_mtime
         except FileNotFoundError:
-            self._mtime, self._data = 0.0, {}
+            self._entries.pop(path, None)
             return {}
-        if mtime == self._mtime and self._data is not None:
-            return self._data
+        cached = self._entries.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
         try:
-            with open(self._path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
-            logger.warning("[Feishu-Rules] Failed to read %s, using empty config", self._path)
+            logger.warning("[Feishu-Rules] Failed to read %s, using empty config", path)
             data = {}
-        self._mtime, self._data = mtime, (data if isinstance(data, dict) else {})
-        return self._data
+        data = data if isinstance(data, dict) else {}
+        self._entries[path] = (mtime, data)
+        return data
 
 
-_rules_cache = _MtimeCache(RULES_FILE)
-_pairing_cache = _MtimeCache(PAIRING_FILE)
+_rules_cache = _MtimeCache(_rules_file)
+_pairing_cache = _MtimeCache(_pairing_file)
 
 
 def _parse_frozenset(raw: Any) -> Optional[frozenset]:
@@ -137,11 +156,12 @@ def _load_pairing_approved() -> set:
 
 
 def _save_pairing(data: dict) -> None:
-    PAIRING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PAIRING_FILE.with_suffix(".tmp"), "w", encoding="utf-8") as f:
+    pairing_file = _pairing_file()
+    pairing_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(pairing_file.with_suffix(".tmp"), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    PAIRING_FILE.with_suffix(".tmp").replace(PAIRING_FILE)
-    _pairing_cache._mtime, _pairing_cache._data = 0.0, None  # invalidate so the next load re-reads
+    pairing_file.with_suffix(".tmp").replace(pairing_file)
+    _pairing_cache.invalidate()  # same-second rewrite can keep the mtime; force the next load to re-read
 
 
 def _mutate_pairing(user_open_id: str, add: bool) -> bool:
@@ -186,7 +206,8 @@ def _fmt_allow(allow_from) -> str:
 
 def _print_status() -> None:
     cfg = load_config()
-    print(f"Rules file: {RULES_FILE}\n  exists: {RULES_FILE.exists()}\nPairing file: {PAIRING_FILE}\n  exists: {PAIRING_FILE.exists()}\n")
+    rules_file, pairing_file = _rules_file(), _pairing_file()
+    print(f"Rules file: {rules_file}\n  exists: {rules_file.exists()}\nPairing file: {pairing_file}\n  exists: {pairing_file.exists()}\n")
     print(f"Top-level:\n  enabled:    {cfg.enabled}\n  policy:     {cfg.policy}\n  allow_from: {_fmt_allow(cfg.allow_from)}\n")
     print(f"Document rules ({len(cfg.documents)}):" if cfg.documents else "Document rules: (none)")
     for key, rule in sorted(cfg.documents.items()):
@@ -242,7 +263,7 @@ Commands:
   pairing remove <user_open_id>        Remove user from pairing-approved list
   pairing list                         List pairing-approved users
 
-Rules config file: {RULES_FILE}
+Rules config file: {_rules_file()}
   Edit this JSON file directly to configure policies and document rules.
   Changes take effect on the next comment event (no restart needed).
 """

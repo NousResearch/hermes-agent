@@ -21,6 +21,8 @@
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { RosterRow } from './types'
+
 interface MentionCompletionItem {
   display: string
   insert: string
@@ -58,7 +60,7 @@ const ROSTER = {
 }
 
 const { cache, hostMock, live } = vi.hoisted(() => {
-  const live = { focused: 'default', profile: 'default' }
+  const live = { focused: 'default', profile: 'default', stored: null as string | null }
 
   return {
     cache: new Map<string, { key: unknown[]; value: unknown }>(),
@@ -69,7 +71,7 @@ const { cache, hostMock, live } = vi.hoisted(() => {
       state: {
         connectionId: { get: () => 'local', listen: () => () => undefined },
         focusedSessionProfile: { get: () => live.focused, listen: () => () => undefined },
-        focusedStoredSessionId: { get: () => null, listen: () => () => undefined },
+        focusedStoredSessionId: { get: () => live.stored, listen: () => () => undefined },
         gateway: { get: () => null, listen: () => () => undefined },
         profile: { get: () => live.profile, listen: () => () => undefined }
       }
@@ -173,6 +175,54 @@ beforeEach(() => {
   vi.clearAllMocks()
   live.focused = 'default'
   live.profile = 'default'
+  live.stored = null
+})
+
+describe('Bot Chat reset guard', () => {
+  it.each([
+    { connectionId: 'local', sourceScoped: true },
+    { connectionId: 'remote', remoteSource: true, sourceScoped: true },
+    {}
+  ])('compacts only the selected bot canonical chat: %j', async source => {
+    const { handler } = await contributions()
+    const { $lastRoster } = await import('./data')
+    const { saveSelectedRosterBot } = await import('./bot-state')
+
+    const selected: RosterRow = {
+      ...source,
+      name: 'writer',
+      canonical_session: { id: 'bot-root', resolved_id: 'bot-tip' }
+    }
+
+    // An identically named bot on another connection must not win the lookup.
+    $lastRoster.set([
+      { name: 'writer', connectionId: 'other', sourceScoped: true, canonical_session: { id: 'other-chat' } },
+      selected
+    ])
+    saveSelectedRosterBot(selected)
+
+    for (const stored of ['bot-root', 'bot-tip']) {
+      live.stored = stored
+
+      for (const text of ['/new', '/reset']) {
+        hostMock.notify.mockClear()
+        expect(await handler({ text })).toEqual({ text: '/compact' })
+        expect(hostMock.notify).toHaveBeenCalledOnce()
+        expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'This chat never resets' }))
+      }
+    }
+
+    for (const stored of ['scratch-chat', 'other-chat', null]) {
+      live.stored = stored
+
+      for (const text of ['/new', '/reset']) {
+        hostMock.notify.mockClear()
+        const draft = { text }
+        expect(await handler(draft)).toBe(draft)
+        expect(hostMock.notify).not.toHaveBeenCalled()
+      }
+    }
+  })
 })
 
 describe('@-mention completions', () => {

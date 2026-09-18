@@ -121,8 +121,9 @@ def _absolutize_portal_url(portal_url: Optional[str]) -> Optional[str]:
 # cross-process file locks + reads two files per call, wasteful for the 2s charge poll loop
 # (~150 calls per purchase). The resolver only returns tokens with >=120s of life (its refresh
 # skew), so a 30s cache can never hand back an about-to-expire token; a 401 still surfaces.
+# Keyed by hermes_home_key() so a multiplex profile never bills through a sibling's token.
 _TOKEN_CACHE_TTL_SECONDS = 30.0
-_token_cache: tuple[float, str, str] | None = None  # (cached_at, token, base)
+_token_cache: dict[str, tuple[float, str, str]] = {}  # home key -> (cached_at, token, base)
 
 
 def invalidate_cached_token() -> None:
@@ -131,8 +132,7 @@ def invalidate_cached_token() -> None:
     ``_request`` only self-busts on a 401, not on a 403 scope denial — after a step-up grant the
     cache would otherwise still hold the pre-grant unscoped token and the replay would 403 again.
     """
-    global _token_cache
-    _token_cache = None
+    _token_cache.clear()
 
 
 def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthError":
@@ -145,9 +145,12 @@ def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthE
 
 def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
     """``(access_token, portal_base_url)``, cached for ``_TOKEN_CACHE_TTL_SECONDS`` unless ``use_cache=False``."""
-    global _token_cache
-    if use_cache and _token_cache is not None:
-        cached_at, token, base = _token_cache
+    from hermes_constants import hermes_home_key
+
+    cache_key = hermes_home_key()
+    cached = _token_cache.get(cache_key) if use_cache else None
+    if cached is not None:
+        cached_at, token, base = cached
         if (time.time() - cached_at) < _TOKEN_CACHE_TTL_SECONDS:
             return token, base
     try:
@@ -170,7 +173,7 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
         except AuthError as exc:
             raise _billing_not_logged_in(exc) from exc
     resolved = (token.strip(), base)
-    _token_cache = (time.time(), *resolved)
+    _token_cache[cache_key] = (time.time(), *resolved)
     return resolved
 
 

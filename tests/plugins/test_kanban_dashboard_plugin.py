@@ -686,6 +686,36 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def _gated_child(client):
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "parent"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+    return parent["id"], child["id"]
+
+
+def test_patch_done_or_review_refused_by_open_parent_names_it(client):
+    """A completion refused by the dependency gate must say which parent is open,
+    not the generic 'not valid from current state'."""
+    parent_id, child_id = _gated_child(client)
+    for status in ("done", "review"):
+        r = client.patch(f"/api/plugins/kanban/tasks/{child_id}", json={"status": status})
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert f"{parent_id} (ready)" in detail, detail
+        assert "unsatisfied parent" in detail, detail
+
+
+def test_bulk_done_refused_by_open_parent_names_it(client):
+    parent_id, child_id = _gated_child(client)
+    r = client.post("/api/plugins/kanban/tasks/bulk", json={"ids": [child_id], "status": "done"})
+    assert r.status_code == 200
+    entry = r.json()["results"][0]
+    assert entry["ok"] is False
+    assert f"{parent_id} (ready)" in entry["error"], entry
+    assert "unsatisfied parent" in entry["error"], entry
+
+
 def test_bulk_status_running_rejected(client):
     """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
@@ -875,6 +905,22 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
     assert parent_select in bundle
     assert child_select in bundle
+
+
+def test_dashboard_board_project_binding_is_exposed_in_ui():
+    """The board switcher's unbind action clears the binding through the
+    same REST contract the API tests pin (PATCH ``project_id: ""``); the
+    create/settings payload shapes themselves are covered behaviourally in
+    ``test_kanban_board_project_api.py``. The bundle has no build step, so
+    only the UI-side seam is pinned here.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "hermes-kanban-board-project-unbind" in bundle
+    assert 'updateBoard(board, { project_id: "" })' in bundle
 
 
 def test_bulk_archive(client):

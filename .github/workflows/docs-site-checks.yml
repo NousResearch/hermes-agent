@@ -44,6 +44,9 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Check cross-page links resolve on GitHub and on the site
+        run: python3 website/scripts/check_doc_links.py
+
       - name: Lint docs diagrams
         run: npm run lint:diagrams
         working-directory: website

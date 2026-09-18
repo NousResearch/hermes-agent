@@ -30,9 +30,12 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows venv-holder E2E"
-)
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "win32", reason="live Windows venv-holder E2E"),
+    # ``_spawn`` sleepers carry a "gateway run" argv tail as inert data (the guard's real-gateway
+    # spawn check matches it); every child is ``_kill``ed by the test.
+    pytest.mark.spawns_gateway_lookalike,
+]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

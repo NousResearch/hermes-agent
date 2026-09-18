@@ -15,12 +15,38 @@ from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _ME
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
 
+# Persisted title provenance: automatic display labels are not user-selected identities.
+TITLE_SOURCE_DERIVED = "derived"
+TITLE_SOURCE_LLM = "llm"
+TITLE_SOURCE_USER = "user"
+
+
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
 # embeds the whole skill body, so scaffolded rows take a wider excerpt (whole message under budget, else head +
 # tail where the typed instruction lands) and ``_shape_preview`` recovers ``/work — fix ...`` from it.
 _PREVIEW_HEAD_CHARS = 63
 _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
+
+
+def routed_sessions_setting(key: str, env_var: str) -> Any:
+    """``sessions.<key>`` for the profile whose state.db this process is touching.
+
+    ``gateway/run.py`` bridges the LAUNCH profile's ``sessions.*`` into ``env_var`` (the cross-process
+    carrier CLI/cron children read). Under a multiplexer a routed turn runs with a HERMES_HOME override
+    and that env slot holds the default profile's value, so a served profile with different
+    ``sessions.*`` settings must read its own config.yaml. Unscoped: the env bridge, as before.
+    Returns ``None`` when neither source sets the key.
+    """
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override():
+        try:
+            from hermes_cli.config import load_config_readonly
+            return (load_config_readonly().get("sessions") or {}).get(key)
+        except Exception:
+            return None
+    return os.environ.get(env_var)
 
 
 def escape_like(text: str) -> str:
@@ -36,6 +62,16 @@ _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+def _sql_json_extract(expression: str, path: str) -> str:
+    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
+
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) "
+        f"THEN {expression} ELSE json_object() END)"
+    )
+    return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
 def _sql_ltrim_whitespace(expression: str) -> str:
@@ -74,11 +110,13 @@ _PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR
 _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
-_PREVIEW_ELIGIBLE_SQL = (f"((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
+# A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
+_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
+    f" AND ((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
     f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL} AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
     f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
-    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))")
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0)))")
 
 # ``_preview_raw`` SELECT for every listing query (scaffolded rows: head + tail around SKILL_EXCERPT_JOINT).
 _PREVIEW_RAW_SELECT = (
@@ -110,7 +148,7 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -120,8 +158,12 @@ _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = 
 # ended that way.  Must stay identical to the recovery fence in find_latest_gateway_session_for_peer.
 _RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired")
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
+# Deliberate conversation boundaries: the reset set plus CLI /new, which ends the predecessor as
+# 'new_session' (hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must
+# never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
+_BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
-# Accidental end reasons recovery treats as resumable (docs/session-lifecycle.md); single source of truth for
+# Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for
 # recovery SQL and SessionDB.RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
 # by a fresh session.resume; startup_orphan_reap = dead-gateway sweep, same class as ws_orphan_reap but kept
 # distinct for forensics.
@@ -160,7 +202,7 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
@@ -211,23 +253,27 @@ AUTO_VACUUM_MIN_FREELIST_RATIO = 0.25
 # layout 0 (marker absent) with a working inline index until the user opts in.
 #   1 = v23 external-content layout with a tool-row-excluded trigram
 #   2 = trigram also excludes structured tool_calls JSON
-FTS_STORAGE_VERSION = 2
+#   3 = messages_fts source aligned to a stable projection view
+#       (``messages_fts_src``): always-truncate tool rows to the prefix, no
+#       moving high-water boundary. The external-content source now reads
+#       back EXACTLY what the triggers indexed, so the rank=1
+#       'integrity-check' probe cannot drift from the stored index (the
+#       recurring fts5 "checksum mismatch" / leaked-token failures).
+FTS_STORAGE_VERSION = 3
 
-# Tool results are often multi-megabyte machine payloads. Index a useful
-# prefix for new tool rows instead of tokenizing the entire body while the
-# canonical message write holds SQLite's single writer lock. The high-water
-# marker lets upgraded databases retain the exact token stream already stored
-# for historical rows, so external-content delete/update commands stay valid
-# without an eager full-index rebuild.
+# Tool results are often multi-megabyte machine payloads. The base FTS index
+# stores only a bounded prefix of every tool row; tool rows are skipped by
+# default in search, and explicit tool-only search uses a LIKE fallback over
+# the full stored content, so no search capability is lost. The projection
+# below is STABLE — it depends only on the row being written, never on
+# mutable ``state_meta`` markers — which is what keeps the external-content
+# integrity checker and the trigger 'delete'/'update' commands in agreement
+# with the stored index forever.
 FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
-FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
 
 
 def _fts_indexed_content_sql(alias: str) -> str:
     return f"""CASE WHEN {alias}.role = 'tool'
-              AND {alias}.id > COALESCE((SELECT CAST(value AS INTEGER)
-                                         FROM state_meta
-                                         WHERE key = '{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}'), -1)
          THEN substr(COALESCE({alias}.content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
          ELSE {alias}.content END"""
 
@@ -261,6 +307,19 @@ def _ended_by_compression(row) -> bool:
 def _placeholders(items) -> str:
     """``?,?,?`` for one bound parameter per element of *items* (a sequence or an int count)."""
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
+
+
+# Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+# < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
+# died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
+_SQL_IN_CHUNK = 900
+
+
+def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
+    """Yield *ids* (any iterable) as lists of at most *size* elements."""
+    ids = list(ids)
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
@@ -363,7 +422,9 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    display_identity BLOB,
+    display_order INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -484,7 +545,16 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
+    -- _initialize_schema). Keeping the canonical fresh-install shape identical
+    -- to the tool's avoids a silent schema drift: the tool's lazy
+    -- ALTER TABLE ADD COLUMN used to be the only source of this column, so two
+    -- databases at the same schema_version had different
+    -- async_delegations shapes depending on whether the delegation tool had
+    -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
+    -- from the canonical schema (#94691).
+    origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -513,6 +583,81 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_display_page
+    ON messages(session_id, display_order, active DESC, id DESC)
+    WHERE active = 1 OR compacted = 1;
+CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
+    ON messages(session_id) WHERE (display_order IS NULL OR display_identity IS NULL)
+    AND (active = 1 OR compacted = 1);
+CREATE INDEX IF NOT EXISTS idx_messages_display_identity
+    ON messages(session_id, display_identity, display_order)
+    WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_display_order_insert;
+CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
+AFTER INSERT ON messages WHEN new.display_order IS NULL
+BEGIN
+    UPDATE messages SET display_order = COALESCE((
+        SELECT display_order FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
+    ), new.id) WHERE id = new.id;
+END;
+DROP TRIGGER IF EXISTS messages_display_visibility_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_visibility_update
+AFTER UPDATE OF active, compacted ON messages
+WHEN (new.active = 1 OR new.compacted = 1) <> (old.active = 1 OR old.compacted = 1)
+BEGIN
+    UPDATE messages SET display_order = MIN(new.id, COALESCE((
+        SELECT display_order FROM messages
+        WHERE session_id = new.session_id AND id <> new.id
+          AND (active = 1 OR compacted = 1)
+          AND display_identity = new.display_identity AND display_order IS NOT NULL
+        ORDER BY display_order LIMIT 1
+    ), new.id)) WHERE id = new.id
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (SELECT display_order FROM messages WHERE id = new.id)
+    WHERE session_id = new.session_id AND id <> new.id AND (active = 1 OR compacted = 1)
+      AND display_identity = new.display_identity
+      AND (new.active = 1 OR new.compacted = 1);
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity
+      AND NOT (new.active = 1 OR new.compacted = 1);
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
+AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
+                display_kind ON messages
+WHEN new.role IS NOT old.role
+  OR new.content IS NOT old.content
+  OR new.timestamp IS NOT old.timestamp
+  OR new.tool_call_id IS NOT old.tool_call_id
+  OR new.tool_calls IS NOT old.tool_calls
+  OR new.tool_name IS NOT old.tool_name
+  OR new.display_kind IS NOT old.display_kind
+BEGIN
+    UPDATE messages SET display_identity = NULL, display_order = NULL
+    WHERE id = new.id OR (
+        session_id = old.session_id AND display_identity = old.display_identity
+        AND (active = 1 OR compacted = 1)
+    );
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_delete;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_delete
+AFTER DELETE ON messages WHEN old.active = 1 OR old.compacted = 1
+BEGIN
+    UPDATE messages SET display_order = (
+        SELECT MIN(peer.id) FROM messages AS peer
+        WHERE peer.session_id = old.session_id AND (peer.active = 1 OR peer.compacted = 1)
+          AND peer.display_identity = old.display_identity
+    ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
+      AND display_identity = old.display_identity;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
@@ -550,12 +695,32 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 # predicate into a tautology (id > -1 OR id <= -1), i.e. normal operation.
 # The two state_meta PK probes per write are negligible next to the FTS
 # insert itself.
+#
+# messages_fts_src: the base word index no longer reads raw `messages` as its
+# external content. Tool rows are indexed as a bounded prefix, so the index
+# must read that SAME projection back or FTS5's 'integrity-check' / 'delete'
+# commands disagree with the stored tokens and corrupt the index (the
+# recurring fts5 checksum-mismatch drift: the projection used to depend on a
+# moving state_meta high-water key). The view/trigger/backfill all share the
+# one expression in `_fts_indexed_content_sql` — a fixed per-row function
+# with no marker lookups — so the boundary can never move again.
 FTS_SQL = f"""
+-- Stable projection the base word index reads and writes through: the view
+-- computes EXACTLY what the triggers/backfill insert, so 'rebuild' and the
+-- integrity checker always agree with the stored index.
+CREATE VIEW IF NOT EXISTS messages_fts_src AS
+    SELECT id,
+           CASE WHEN role = 'tool'
+                THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
+                ELSE content END AS content,
+           tool_name, tool_calls
+    FROM messages;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     tool_name,
     tool_calls,
-    content='messages',
+    content='messages_fts_src',
     content_rowid='id'
 );
 
@@ -648,22 +813,20 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
-# Predicate over a ``sessions`` row (unqualified column names) selecting
-# sessions whose rows belong in the trigram index. Shared by the view, the
-# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
-# never disagree about the index boundary.
-FTS_TRIGRAM_SESSION_SQL = (
-    "source NOT IN ("
-    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
-)
-
-
-def fts_trigram_session_sql(alias: str) -> str:
-    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
-    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
-        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+def fts_trigram_session_sql(alias: str = "") -> str:
+    """Predicate over a ``sessions`` row selecting sessions whose rows belong in
+    the trigram index; ``alias`` qualifies every column for joins. Shared by the
+    view, the sync triggers, and the deferred-backfill INSERT ... SELECTs so they
+    can never disagree about the index boundary."""
+    q = f"{alias}." if alias else ""
+    return (
+        f"{q}source NOT IN ("
+        + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+        + f") AND {_sql_json_extract(q + 'model_config', '$._delegate_from')} IS NULL"
     )
+
+
+FTS_TRIGRAM_SESSION_SQL = fts_trigram_session_sql()
 
 
 FTS_TRIGRAM_SQL = f"""

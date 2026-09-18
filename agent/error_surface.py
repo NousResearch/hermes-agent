@@ -28,14 +28,25 @@ LAYER_GATEWAY = "gateway"
 LAYER_DISK = "disk"
 
 # failure_reason → UI layer. Unlisted reasons fall back to LAYER_PROVIDER:
-# every FailoverReason comes from classifying a provider call.
+# every FailoverReason comes from classifying a provider call. Loop-site codes
+# (agent/turn_failure_copy.py::SITE_FAILURE_CODES) are listed explicitly: the
+# ones that are not provider verdicts map to the gateway layer so the client
+# does not offer "Switch provider"; the ones the model/provider caused
+# (cut-off output, empty or broken reply) stay on the provider layer, where the
+# clients' per-code copy names the real fix (`continue`, smaller steps, /retry).
 _REASON_TO_LAYER = {
     "auth": LAYER_AUTH, "auth_permanent": LAYER_AUTH, "billing": LAYER_BILLING, "billing_unverified": LAYER_BILLING,
+    "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
+    "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
+    "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
 }
 
 # Failures between us and the base_url (not a provider verdict); on a
 # custom/local endpoint they point at the user's endpoint config.
 _TRANSPORT_REASONS = {"timeout", "ssl_cert_verification"}
+# Free-tier kinds where a later send can succeed on its own (a wait, an outage clearing); the
+# rest need a sign-in or another provider.
+_FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 
 # Deterministic for the request — a bare "Retry" repeats the failure. Fallback
 # only: current backends stamp the classifier's verdict in ``failure_retryable``.
@@ -43,6 +54,7 @@ _TRANSPORT_REASONS = {"timeout", "ssl_cert_verification"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
+    "context_overflow", "interpreter_shutdown",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.
@@ -77,7 +89,35 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
     # Identity captured at classification time, so clients report the session
     # that actually failed — not whatever the composer points at later.
     identity = {k: v for k, v in (("provider", provider), ("model", model)) if v}
-    return {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    surface = {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    if layer == LAYER_AUTH and provider:
+        # OAuth providers are fixed by signing in again; API-key providers by
+        # replacing the key. The client's one-click recovery needs to know which
+        # and how to name the account it re-opens.
+        surface["auth_kind"] = auth_kind(provider)
+        surface["provider_label"] = _provider_label(provider)
+    return surface
+
+
+def _provider_label(provider: str) -> str:
+    try:
+        from hermes_cli.models import provider_label
+
+        return provider_label(provider)
+    except Exception:  # pragma: no cover — advisory only
+        return provider
+
+
+def auth_kind(provider: Optional[str]) -> str:
+    """``"oauth"`` for providers whose credential is an OAuth/subscription grant
+    (desktop Accounts tab), ``"api_key"`` for everything else."""
+    try:
+        from hermes_cli.provider_catalog import provider_catalog_by_slug
+
+        descriptor = provider_catalog_by_slug().get((provider or "").strip().lower())
+        return "oauth" if descriptor is not None and descriptor.tab == "accounts" else "api_key"
+    except Exception:  # pragma: no cover — advisory only
+        return "api_key"
 
 
 def _disk_full(candidate: Any) -> bool:
@@ -116,6 +156,15 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
+        # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
+        # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
+        # OAuth re-login, and the chat sentence rides along as the card body.
+        if isinstance(free_tier := result.get("free_tier"), dict) and free_tier.get("kind"):
+            kind = str(free_tier["kind"])
+            surface = _surface(LAYER_PROVIDER, f"free_tier_{kind}", kind in _FREE_TIER_RETRYABLE_KINDS, provider, model)
+            if message := str(free_tier.get("message") or ""):
+                surface["message"] = message
+            return surface
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)
@@ -130,7 +179,9 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         return None
 
 
-def build_error_surface_from_exception(exc: BaseException, provider: str = "", model: str = "") -> Optional[dict]:
+def build_error_surface_from_exception(
+    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None,
+) -> Optional[dict]:
     """Descriptor for an exception that escaped the turn dispatcher.
 
     API/transport exceptions go through ``classify_api_error`` (same taxonomy
@@ -146,7 +197,7 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
 
         from agent.error_classifier import classify_api_error
 
-        classified = classify_api_error(exc, provider=provider, model=model)
+        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:

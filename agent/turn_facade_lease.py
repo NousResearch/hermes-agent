@@ -4,7 +4,8 @@ One process at a time may load -> run -> flush a session shared through state.db
 resume, gateway, background delivery). ``admit_durable_turn_lease`` acquires the row lease (or
 returns the early result the façade must hand back); ``DurableTurnLease`` owns the periodic
 refresher, the turn-liveness watchdog wiring, and the lease-loss / stall interrupt plumbing. Both
-timers run on the shared scheduler thread (``agent/periodic_scheduler.py``), not per-turn threads.
+timers run via the shared scheduler (``agent/periodic_scheduler.py``; timer thread orders,
+bodies run on per-handle workers), not per-turn threads.
 """
 import logging
 import os
@@ -15,6 +16,9 @@ from typing import Any, Dict, List, Optional
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+# ``tool_reason`` for a lost session turn lease: attributes the stop to the lease, not the user (#112647).
+_REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
@@ -116,10 +120,11 @@ class DurableTurnLease:
                 return
             self.interrupt_message = message
             try:
-                self.agent.interrupt(message, hard_cancel=True)
+                self.agent.interrupt(message, hard_cancel=True, tool_reason=_REASON_LEASE_LOST)
             except Exception:
                 self.agent._interrupt_requested = True
                 self.agent._interrupt_message = message
+                self.agent._tool_interrupt_reason = _REASON_LEASE_LOST
 
     def commit_liveness_abort(self, snapshot, message: str) -> bool:
         """Commit point for the watchdog's stall observation.
@@ -141,7 +146,8 @@ class DurableTurnLease:
                 return False
         try:
             published = agent.interrupt(
-                message, hard_cancel=True, require_generation=current_generation
+                message, hard_cancel=True, tool_reason="turn liveness watchdog",
+                require_generation=current_generation,
             )
         except Exception:
             logger.debug("Turn liveness abort interrupt raised; declining the abort", exc_info=True)
@@ -172,7 +178,7 @@ class DurableTurnLease:
                 _set_interrupt(False, agent._execution_thread_id)
 
     def refresh_tick(self):
-        """One periodic renewal (every ``refresh_interval`` on the shared scheduler); a miss or
+        """One periodic renewal (every ``refresh_interval`` via the shared scheduler); a miss or
         error interrupts the turn. Returning False stops the timer.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
@@ -289,9 +295,18 @@ def admit_durable_turn_lease(
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
-            admission.conversation_history = db.get_messages_as_conversation(
+            reloaded = db.get_messages_as_conversation(
                 agent.session_id, repair_alternation=True, include_row_ids=True
             )
+            # A follow-up that aborted an earlier wait carries that turn's never-persisted input
+            # only in memory (see carry_unadmitted_user_message); the reload would drop it.
+            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+            reloaded.extend(
+                m for m in (conversation_history or [])
+                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                and "_row_id" not in m
+            )
+            admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
@@ -301,10 +316,48 @@ def admit_durable_turn_lease(
     return admission
 
 
+def carry_unadmitted_user_message(
+    early_result: Dict[str, Any], user_message: Any, persist_user_message: Any, *,
+    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[Dict[str, Any]],
+    platform_id: Optional[str],
+) -> None:
+    """A follow-up that interrupted the lease wait must not consume the accepted input: append it to
+    the early result's history so the follow-up turn sees it and persists it (the flush honours
+    ``_PERSIST_AFTER_ADMISSION_INTERRUPT`` because this turn never owned the lease). A hard stop
+    (``/stop``) cancels the input instead."""
+    hard_interrupted = early_result.pop("_hard_interrupted", False)
+    if hard_interrupted or not early_result.get("interrupted") or user_message in (None, ""):
+        return
+    from agent.message_metadata import append_message
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    durable_content = user_message
+    if persist_user_message is not None and (
+        not isinstance(user_message, list) or isinstance(persist_user_message, list)
+    ):
+        durable_content = persist_user_message
+    deferred_user: Dict[str, Any] = {
+        "role": "user", "content": durable_content, _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
+    }
+    if isinstance(user_message, str) and user_message != durable_content:
+        deferred_user["api_content"] = user_message
+    if display_kind:
+        deferred_user["display_kind"] = display_kind
+    if display_metadata:
+        deferred_user["display_metadata"] = display_metadata
+    if platform_id is not None:
+        deferred_user["platform_message_id"] = platform_id
+    append_message(early_result["messages"], deferred_user, timestamp=timestamp)
+
+
 def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)
+        hard_event = getattr(agent, "_hard_interrupt_requested", None)
+        hard_interrupted = bool(
+            callable(getattr(hard_event, "is_set", None)) and hard_event.is_set()
+        )
         result = {
             "final_response": (
                 "Stopped waiting for another Hermes process on this session. "
@@ -313,6 +366,8 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
             **base,
             "interrupted": True,
         }
+        if hard_interrupted:
+            result["_hard_interrupted"] = True
         if getattr(agent, "_interrupt_message", None):
             result["interrupt_message"] = agent._interrupt_message
         # The finalizer never runs on this early return; clear so a cached agent doesn't
@@ -333,9 +388,12 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
         agent._emit_warning(timeout_msg)
     except Exception:
         logger.debug("Failed to emit session turn lease timeout warning", exc_info=True)
+    # Stamped so Desktop/TUI show "session busy, send again" instead of code="unknown".
     return {
         "final_response": timeout_msg,
         **base,
         "failed": True,
         "error": f"session_turn_lease_timeout:{session_id}",
+        "failure_reason": "session_busy",
+        "failure_retryable": True,
     }

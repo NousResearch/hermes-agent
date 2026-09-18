@@ -421,17 +421,55 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
+def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
+    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
+    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
+    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
+    owners = {Path(".")}
+    try:
+        import json
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        workspaces = package.get("workspaces", [])
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages", [])
+        if not isinstance(workspaces, list):
+            return owners
+        for pattern in workspaces:
+            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
+            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
+            with suppress(Exception):
+                for directory in repo_root.glob(str(pattern)):
+                    if (directory / "package.json").is_file():
+                        owners.add(directory.relative_to(repo_root))
+    except (OSError, ValueError, TypeError):
+        pass
+    return owners
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. Only touches lockfiles whose package.json is NOT also dirty. Best-effort."""
+    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
+    with its sibling manifest. Best-effort."""
     from hermes_cli.update_cmd import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
-        dirty_package_dirs = {Path(p).parent for p in changed if p.endswith("package.json")}
-        dirty = [p for p in changed if p.endswith("package-lock.json") and Path(p).parent not in dirty_package_dirs]
+        dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
+        root_owners = _npm_lockfile_owners(Path(repo_root))
+        dirty = []
+        for path in changed:
+            if not path.endswith("package-lock.json"):
+                continue
+            lock_dir = Path(path).parent
+            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
+                lock_dir != Path(".") and lock_dir in dirty_manifests
+            )
+            if not protected:
+                dirty.append(path)
         if not dirty:
             return
         _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)

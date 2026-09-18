@@ -182,6 +182,30 @@ def _run_start_phase(
     return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
 
 
+def _compose_live_state_reason(root: Path) -> str | None:
+    """Why ``docker compose build``/``up`` must not run at *root*, or ``None`` to proceed.
+
+    Read-only ``docker compose ps`` probe. Only a missing docker binary proceeds -- the
+    build phase would fail the same way, so there is nothing to protect. A hung daemon
+    or a non-zero probe refuses: containers may be live and unobservable, which is
+    exactly the #103567 loss window.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
+            cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return "docker compose ps timed out after 15s; live containers cannot be ruled out"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return f"docker compose ps failed (exit {result.returncode}): {detail[-1] if detail else 'no output'}"
+    names = [line for line in result.stdout.splitlines() if line.strip()]
+    return f"this compose project already has running container(s): {', '.join(names)}" if names else None
+
+
 def run_verify(
     root: Path, recipe: Recipe, phases: tuple[str, ...] | list[str] | None = None,
     phase_timeout: float = DEFAULT_PHASE_TIMEOUT, ready_timeout: float = DEFAULT_READY_TIMEOUT,
@@ -189,10 +213,33 @@ def run_verify(
     on_output: Callable[[str], None] | None = None,
 ) -> VerifyResult:
     """Run the selected command phases sequentially, then (unless ``skip_start`` or a
-    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down."""
+    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down.
+
+    A ``compose`` recipe refuses outright when the project already has running
+    containers: ``docker compose build`` + ``up`` replaces them on an image-hash
+    change, destroying any container-local state they carry -- this has caused a
+    real state-loss incident (#103567). The check is best-effort and read-only
+    (``docker compose ps``); when it cannot run at all, verify proceeds rather than
+    blocking on an unrelated environment gap, matching every other recipe kind's
+    behavior when its own tooling is unavailable."""
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
+
+    mutating = ("build" in selected) or ("start" in selected and not skip_start)
+    if recipe.kind == "compose" and mutating:
+        reason = _compose_live_state_reason(root)
+        if reason:
+            result.phases.append(PhaseResult(
+                phase="build", command=recipe.build[0] if recipe.build else "docker compose build",
+                exit_code=1, duration=0.0, output_tail=(
+                    f"Refusing to run: {reason}. `docker compose build` + `up` would replace "
+                    "live containers on an image-hash change, destroying any container-local "
+                    "state they carry. If you intend to rebuild this live deployment, run "
+                    "`docker compose build`/`up` yourself."
+                ),
+            ))
+            return result
 
     for phase in PHASE_ORDER:
         if phase not in selected:

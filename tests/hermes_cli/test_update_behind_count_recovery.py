@@ -44,10 +44,18 @@ class _FakeResponse:
 
 
 def _patch_urlopen(payload):
+    banner._compare_payload_cache.clear()
     return patch(
         "urllib.request.urlopen",
         return_value=_FakeResponse(json.dumps(payload).encode()),
     )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_compare_cache():
+    banner._compare_payload_cache.clear()
+    yield
+    banner._compare_payload_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -98,69 +106,54 @@ def test_compare_behind_rejects_malformed_payloads(payload):
 # ---------------------------------------------------------------------------
 
 
-def _ls_remote_result(sha):
-    return MagicMock(returncode=0, stdout=f"{sha}\trefs/heads/main\n")
+def _upstream_tip(sha):
+    return patch.object(banner, "_github_branch_tip", return_value=sha)
 
 
 def test_check_via_rev_recovers_exact_count():
-    with patch(
-        "hermes_cli.banner.subprocess.run", return_value=_ls_remote_result(SHA_B)
-    ), patch.object(banner, "_github_compare_behind", return_value=61) as compare:
+    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=61) as compare:
         assert banner._check_via_rev(SHA_A) == 61
     compare.assert_called_once_with(SHA_A, SHA_B)
 
 
 def test_check_via_rev_falls_back_to_sentinel_offline():
     """FAIL-BEFORE (class): this path returned a fabricated 1 via callers."""
-    with patch(
-        "hermes_cli.banner.subprocess.run", return_value=_ls_remote_result(SHA_B)
-    ), patch.object(banner, "_github_compare_behind", return_value=None):
+    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=None):
         assert banner._check_via_rev(SHA_A) == banner.UPDATE_AVAILABLE_NO_COUNT
 
 
 def test_check_via_rev_up_to_date_short_circuits_compare():
-    with patch(
-        "hermes_cli.banner.subprocess.run", return_value=_ls_remote_result(SHA_A)
-    ), patch.object(banner, "_github_compare_behind") as compare:
+    with _upstream_tip(SHA_A), patch.object(banner, "_github_compare_behind") as compare:
         assert banner._check_via_rev(SHA_A) == 0
     compare.assert_not_called()
 
 
 def test_check_via_rev_local_ahead_reports_up_to_date():
     """ahead_by == 0 with differing tips = local commits on top, not behind."""
-    with patch(
-        "hermes_cli.banner.subprocess.run", return_value=_ls_remote_result(SHA_B)
-    ), patch.object(banner, "_github_compare_behind", return_value=0):
+    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=0):
         assert banner._check_via_rev(SHA_A) == 0
 
 
 # ---------------------------------------------------------------------------
-# _check_via_local_git: shallow path recovers the exact count
+# _check_via_local_git: tips from the API, exact count via compare, no fetch
 # ---------------------------------------------------------------------------
 
 
-def _shallow_git(head_sha, fetch_head_sha):
+def _local_git(head_sha):
     def fake_run(cmd, **kwargs):
         if cmd[:4] == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(
-                returncode=0,
-                stdout="https://github.com/NousResearch/hermes-agent.git\n",
-            )
-        if cmd[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
-            return MagicMock(returncode=0, stdout="true\n")
-        if cmd[:2] == ["git", "fetch"]:
-            return MagicMock(returncode=0, stdout="")
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
         if cmd[:3] == ["git", "rev-parse", "HEAD"]:
             return MagicMock(returncode=0, stdout=f"{head_sha}\n")
-        if cmd[:3] == ["git", "rev-parse", "FETCH_HEAD"]:
-            return MagicMock(returncode=0, stdout=f"{fetch_head_sha}\n")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return MagicMock(returncode=1, stdout="")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
     return fake_run
 
 
-def test_shallow_checkout_recovers_exact_count(tmp_path):
-    """The #84591 shape: shallow boundary kills merge-base, tips differ.
+def test_local_checkout_recovers_exact_count(tmp_path):
+    """The #84591 shape: no local history across the tips (shallow clone), tips differ.
 
     FAIL-BEFORE (class): reported UPDATE_AVAILABLE_NO_COUNT (or, further back,
     a fabricated 1) even though the compare API could count exactly.
@@ -168,31 +161,28 @@ def test_shallow_checkout_recovers_exact_count(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch(
-        "hermes_cli.banner.subprocess.run", side_effect=_shallow_git(SHA_A, SHA_B)
-    ), patch.object(banner, "_github_compare_behind", return_value=61):
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
+            patch.object(banner, "_github_branch_tip", return_value=SHA_B), \
+            patch.object(banner, "_github_compare_behind", return_value=61):
         assert banner._check_via_local_git(repo_dir) == 61
 
 
-def test_shallow_checkout_offline_keeps_honest_sentinel(tmp_path):
+def test_local_checkout_offline_compare_keeps_honest_sentinel(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch(
-        "hermes_cli.banner.subprocess.run", side_effect=_shallow_git(SHA_A, SHA_B)
-    ), patch.object(banner, "_github_compare_behind", return_value=None):
-        assert (
-            banner._check_via_local_git(repo_dir)
-            == banner.UPDATE_AVAILABLE_NO_COUNT
-        )
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
+            patch.object(banner, "_github_branch_tip", return_value=SHA_B), \
+            patch.object(banner, "_github_compare_behind", return_value=None):
+        assert banner._check_via_local_git(repo_dir) == banner.UPDATE_AVAILABLE_NO_COUNT
 
 
-def test_shallow_checkout_equal_tips_up_to_date_without_compare(tmp_path):
+def test_local_checkout_equal_tips_up_to_date_without_compare(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch(
-        "hermes_cli.banner.subprocess.run", side_effect=_shallow_git(SHA_A, SHA_A)
-    ), patch.object(banner, "_github_compare_behind") as compare:
+    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
+            patch.object(banner, "_github_branch_tip", return_value=SHA_A), \
+            patch.object(banner, "_github_compare_behind") as compare:
         assert banner._check_via_local_git(repo_dir) == 0
     compare.assert_not_called()

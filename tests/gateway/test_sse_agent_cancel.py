@@ -247,7 +247,7 @@ class TestSSEAgentCancelOnDisconnect:
                 )
 
             # agent.interrupt() must have been called
-            mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
+            mock_agent.interrupt.assert_called_once_with("SSE client disconnected", tool_reason="sse client disconnected")
             # Clean up
             agent_done.set()
 

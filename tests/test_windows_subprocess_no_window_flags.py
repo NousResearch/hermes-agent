@@ -360,8 +360,9 @@ def test_env_probe_run_hides_console_window(monkeypatch):
     rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
 
     assert rc == 0
-    assert len(captured) == 1, captured
-    cmd, kwargs = captured[0]
+    spawns = _spawns(captured, "python3", "--version")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
     assert cmd == ["python3", "--version"]
     assert kwargs["creationflags"] == _CREATE_NO_WINDOW
     # The temp-file capture contract (#67964) must survive: stdout/stderr are

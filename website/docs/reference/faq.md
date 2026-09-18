@@ -17,7 +17,7 @@ Quick answers and fixes for the most common questions and issues.
 Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
-- **[Nous Portal](/integrations/nous-portal)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
+- **[Nous Portal](../integrations/nous-portal.md)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
 - **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
 - **Anthropic** — Claude models (direct API, OAuth via `hermes auth add anthropic`, OpenRouter, or any compatible proxy)
 - **Google** — Gemini models (direct API via `gemini` provider, OpenRouter, or compatible proxy)
@@ -179,6 +179,8 @@ terminal:
 
 Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
 
+Independently of the init files, every terminal command's `PATH` is completed with the standard system directories (`/usr/local/bin`, `/opt/homebrew/bin`, …), the Hermes-managed runtime dirs, and `~/.local/bin` when it exists (the `pip --user` / `pipx` / `uv tool` install target) — appended after your own entries, so precedence is unchanged. This covers backends started with a thin non-interactive PATH (systemd, GUI launchers, the Desktop SSH remote backend) without any configuration.
+
 To disable the auto-source behaviour (strict login-shell semantics only):
 
 ```yaml
@@ -226,7 +228,7 @@ To isolate the source:
 3. Retry in a fresh session with another configured model or provider. A refusal that changes with the model is model/provider behavior, not a Hermes execution control.
 4. If an explicit tool error appears, use its exact text when reporting the problem.
 
-See [Security](/user-guide/security) for Hermes' documented execution controls and [Providers](/integrations/providers) for provider configuration.
+See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
 
 #### `/model` only shows one provider / can't switch providers
 
@@ -284,7 +286,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+hermes config set model.default anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -530,7 +532,7 @@ hermes prompt-size
 /usage
 ```
 
-If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](/reference/cli-commands#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
+If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](./cli-commands.md#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
 
 :::tip
 Use `/compress` regularly during long sessions. It summarizes the conversation history and reduces token usage significantly while preserving context.
@@ -601,9 +603,9 @@ hermes chat
 ```
 
 See also:
-- [MCP (Model Context Protocol)](/user-guide/features/mcp)
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [MCP Config Reference](/reference/mcp-config-reference)
+- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md)
+- [MCP Config Reference](./mcp-config-reference.md)
 
 #### MCP timeout errors
 
@@ -634,7 +636,7 @@ No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access 
 
 No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile, or add `--clone-from <profile>` to copy from a specific source profile.
 
-This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](/user-guide/features/memory-providers).
+This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](../user-guide/features/memory-providers.md).
 
 ### What happens when I run `hermes update`?
 
@@ -643,7 +645,7 @@ This isolation is also the reason to never run two agents against the *same* pro
 
 ### How many profiles can I run?
 
-There is no hard limit. Each profile is just a directory under `~/.hermes/profiles/`. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
+There is no hard limit. Each profile is a directory under `~/.hermes/profiles/` that carries at least one identity file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`); a bare directory without one (a leftover from a log rotation or cron tick) is not a profile — it is not listed or served, `-p <name>` reports it as missing, and `hermes profile create <name>` refuses to overwrite it until you move or remove it. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
 ---
 

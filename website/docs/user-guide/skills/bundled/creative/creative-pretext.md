@@ -21,7 +21,7 @@ Build creative browser demos with DOM-free text layout.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `creative-coding`, `typography`, `pretext`, `ascii-art`, `canvas`, `generative`, `text-layout`, `kinetic-typography` |
-| Related skills | [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) |
+| Related skills | [`p5js`](./creative-p5js.md), [`claude-design`](./creative-claude-design.md), [`excalidraw`](./creative-excalidraw.md), [`architecture-diagram`](./creative-architecture-diagram.md) |
 
 ## Reference: full SKILL.md
 

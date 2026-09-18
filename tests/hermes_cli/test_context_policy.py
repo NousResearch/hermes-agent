@@ -177,6 +177,38 @@ def test_physics_check_prices_at_floor_not_native():
     assert physics_check(p, card(24, ram_gib=8), FLOOR) is None
 
 
+@pytest.mark.parametrize("uma", [False, True])
+def test_initial_window_accounts_for_overhead_in_every_verdict(uma):
+    from dataclasses import replace
+
+    profile = hybrid(weights_gib=8, native=FLOOR)
+    base = profile.weights_bytes + ctx_bytes(profile, FLOOR)
+    overhead = 2 * GIB
+    budget = HardwareBudget(base + GIB, base + GIB, 0 if uma else 4 * GIB, uma)
+    decision = initial_window(profile, budget, overhead_bytes=overhead)
+    if uma:
+        assert isinstance(decision, PhysicsRefusal)
+        assert decision.needed_bytes == base + overhead
+    else:
+        assert isinstance(decision, WindowDecision)
+        assert decision.spill_bytes == GIB
+
+    exact = replace(budget, usable_vram_bytes=base + overhead, ram_available_bytes=0)
+    assert not initial_window(profile, exact, overhead_bytes=overhead).spilled
+    short = replace(exact, usable_vram_bytes=exact.usable_vram_bytes - 1)
+    assert isinstance(initial_window(profile, short, overhead_bytes=overhead), PhysicsRefusal)
+
+    # A cheap-KV model may grow on the spill path, but only into memory that exists.
+    growing = hybrid(weights_gib=20, full_layers=4, recurrent_layers=0,
+                     per_token_f16=1024, native=1024 * KIB)
+    floor_need = growing.weights_bytes + ctx_bytes(growing, FLOOR) + overhead
+    limited = HardwareBudget(8 * GIB, 8 * GIB, floor_need - 8 * GIB)
+    decision = initial_window(growing, limited, overhead_bytes=overhead)
+    assert isinstance(decision, WindowDecision)
+    assert decision.window == FLOOR
+    assert decision.spill_bytes == limited.ram_available_bytes
+
+
 # ── ladder + initial window ──────────────────────────────────
 
 

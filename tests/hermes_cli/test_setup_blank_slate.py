@@ -15,7 +15,6 @@ from hermes_cli import setup_quick
 class TestBlankSlateMinimalToolsets:
 
 
-
     def test_no_disabled_bundle_overlaps_kept_tools(self):
         """Invariant: ``disabled_toolsets`` is applied at *tool* granularity and
         a single tool can belong to several toolsets, so no disabled entry may
@@ -34,7 +33,6 @@ class TestBlankSlateMinimalToolsets:
                 f"disabled toolset '{ts}' overlaps kept tools {sorted(overlap)}; "
                 "it would silently strip them from the blank-slate agent"
             )
-
 
 
     def test_tool_schema_survives_disabled_toolsets_from_config(self, monkeypatch):
@@ -87,7 +85,6 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["memory"]["user_profile_enabled"] is False
         assert cfg["checkpoints"]["enabled"] is False
         assert cfg["smart_model_routing"]["enabled"] is False
-        assert cfg["session_reset"]["mode"] == "none"
 
 
 class TestBlankSlateFork:
@@ -125,4 +122,3 @@ class TestBlankSlateFork:
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
-

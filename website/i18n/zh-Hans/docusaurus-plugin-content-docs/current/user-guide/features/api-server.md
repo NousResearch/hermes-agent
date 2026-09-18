@@ -11,7 +11,7 @@ API 服务器将 hermes-agent 作为 OpenAI 兼容的 HTTP 端点暴露出来。
 你的 agent 使用完整工具集（终端、文件操作、网络搜索、记忆、技能）处理请求，并返回最终响应。在流式传输时，工具进度指示器会内联显示，让前端能够展示 agent 正在执行的操作。
 
 :::tip 一个后端同时覆盖模型与工具
-Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务器才能发挥作用。[Nous Portal](/user-guide/features/tool-gateway) 订阅同时处理两者——300+ 个模型，以及通过 Tool Gateway 提供的网络/图像/TTS/浏览器功能。在启动 API 服务器之前运行一次 `hermes setup --portal`，Open WebUI 或 LobeChat 等前端即可获得一个完整配备工具的后端。
+Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务器才能发挥作用。[Nous Portal](./tool-gateway.md) 订阅同时处理两者——300+ 个模型，以及通过 Tool Gateway 提供的网络/图像/TTS/浏览器功能。在启动 API 服务器之前运行一次 `hermes setup --portal`，Open WebUI 或 LobeChat 等前端即可获得一个完整配备工具的后端。
 :::
 
 ## 快速开始
@@ -51,7 +51,7 @@ curl http://localhost:8642/v1/chat/completions \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-或连接 Open WebUI、LobeChat 或其他任意前端——参见 [Open WebUI 集成指南](/user-guide/messaging/open-webui)获取分步说明。
+或连接 Open WebUI、LobeChat 或其他任意前端——参见 [Open WebUI 集成指南](../messaging/open-webui.md)获取分步说明。
 
 ## 端点
 
@@ -196,7 +196,7 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
 
 ### GET /v1/models
 
-将 agent 列为可用模型。广播的模型名称默认为 [profile](/user-guide/profiles) 名称（默认 profile 则为 `hermes-agent`）。大多数前端进行模型发现时需要此端点。
+将 agent 列为可用模型。广播的模型名称默认为 [profile](../profiles.md) 名称（默认 profile 则为 `hermes-agent`）。大多数前端进行模型发现时需要此端点。
 
 ### GET /v1/capabilities
 
@@ -396,7 +396,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 | 前端 | Stars | 连接方式 |
 |----------|-------|------------|
-| [Open WebUI](/user-guide/messaging/open-webui) | 126k | 提供完整指南 |
+| [Open WebUI](../messaging/open-webui.md) | 126k | 提供完整指南 |
 | LobeChat | 73k | 自定义 provider 端点 |
 | LibreChat | 34k | librechat.yaml 中的自定义端点 |
 | AnythingLLM | 56k | 通用 OpenAI provider |
@@ -410,7 +410,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 ## 使用 Profiles 的多用户设置
 
-要为多个用户提供各自隔离的 Hermes 实例（独立的配置、记忆、技能），请使用 [profiles](/user-guide/profiles)：
+要为多个用户提供各自隔离的 Hermes 实例（独立的配置、记忆、技能），请使用 [profiles](../profiles.md)：
 
 ```bash
 # 为每个用户创建 profile
@@ -441,7 +441,7 @@ hermes -p bob gateway &
 - `http://localhost:8643/v1/models` → 模型 `alice`
 - `http://localhost:8644/v1/models` → 模型 `bob`
 
-在 Open WebUI 中，将每个添加为单独的连接。模型下拉列表显示 `alice` 和 `bob` 作为不同模型，每个均由完全隔离的 Hermes 实例支持。详见 [Open WebUI 指南](/user-guide/messaging/open-webui#multi-user-setup-with-profiles)。
+在 Open WebUI 中，将每个添加为单独的连接。模型下拉列表显示 `alice` 和 `bob` 作为不同模型，每个均由完全隔离的 Hermes 实例支持。详见 [Open WebUI 指南](../messaging/open-webui.md#multi-user-setup-with-profiles)。
 
 ## 限制
 
@@ -453,4 +453,4 @@ hermes -p bob gateway &
 
 API 服务器还作为 **gateway 代理模式**的后端。当另一个 Hermes gateway 实例配置了指向此 API 服务器的 `GATEWAY_PROXY_URL` 时，它会将所有消息转发到这里，而不是运行自己的 agent。这支持分离部署——例如，一个处理 Matrix E2EE 的 Docker 容器将请求中继到宿主机侧的 agent。
 
-完整设置指南参见 [Matrix 代理模式](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)。
+完整设置指南参见 [Matrix 代理模式](../messaging/matrix.md#proxy-mode-e2ee-on-macos)。

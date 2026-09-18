@@ -595,9 +595,9 @@ hermes chat
 ```
 
 另请参阅：
-- [MCP（模型上下文协议）](/user-guide/features/mcp)
-- [在 Hermes 中使用 MCP](/guides/use-mcp-with-hermes)
-- [MCP 配置参考](/reference/mcp-config-reference)
+- [MCP（模型上下文协议）](../user-guide/features/mcp.md)
+- [在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md)
+- [MCP 配置参考](./mcp-config-reference.md)
 
 #### MCP 超时错误
 

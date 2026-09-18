@@ -23,7 +23,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig,
 } from './fixtures'
-import { type MockServer, startMockServer } from './mock-server'
+import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { type ElectronApplication, expect, type Page, test } from './test'
 

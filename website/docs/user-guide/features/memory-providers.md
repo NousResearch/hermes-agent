@@ -414,6 +414,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction, cut at the last sentence boundary. The default fits 512-token embedders (Ollama `bge-small-zh-v1.5`, `all-minilm`); raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3` or `bge-m3` |
 
 **OSS supported providers:**
 
@@ -566,7 +567,7 @@ hermes config set memory.provider byterover
 
 ### Supermemory
 
-Semantic long-term memory with profile recall, semantic search, explicit memory tools, and session-end conversation ingest via the Supermemory graph API.
+Semantic long-term memory with profile recall, semantic search, explicit memory tools, and per-turn conversation capture (one document per session per 4-hour window).
 
 | | |
 |---|---|
@@ -616,17 +617,17 @@ stays local.
 | `profile_frequency` | `50` | Include profile facts on first turn and every N turns |
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
 | `search_mode` | `hybrid` | Search mode: `hybrid`, `memories`, or `documents` |
-| `api_timeout` | `5.0` | Timeout for SDK and ingest requests |
+| `api_timeout` | `5.0` | Timeout for SDK requests |
 
 **Environment variables:** `SUPERMEMORY_API_KEY` (required), `SUPERMEMORY_BASE_URL` (compatibility fallback when `base_url` is not configured), `SUPERMEMORY_CONTAINER_TAG` (overrides config).
 
-Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`. SDK operations, setup/status probes, and conversation ingest all use the resolved endpoint.
+Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`. SDK operations and setup/status probes all use the resolved endpoint.
 
 **Key features:**
 - Automatic context fencing — strips recalled memories from captured turns to prevent recursive memory pollution
-- Full-session ingest — the entire conversation is sent once at session boundaries
-- Session-end conversation ingest (to `/v4/conversations`) for richer profile + graph building in Supermemory
-- End-to-end self-hosted routing — SDK, probe, and conversation-ingest requests use the same configured endpoint
+- Per-turn capture — each completed turn is written as it happens, one document per session per 4-hour window
+- Failed turn writes are retried (at-least-once) on the next turn, session end, `/reset`, or shutdown
+- End-to-end self-hosted routing — SDK and probe requests use the same configured endpoint
 - Profile facts injected on first turn and at configurable intervals
 - **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile
 - **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations stay on the primary container.
@@ -686,13 +687,23 @@ hermes memory setup
 
 ## Profile Isolation
 
-Each provider's data is isolated per [profile](/user-guide/profiles):
+Each provider's data is isolated per [profile](../profiles.md):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
+## Providers Moving to the Plugin Catalog
+
+Memory providers are moving out of the Hermes tree into their maintainers' own repositories,
+published through the [plugin catalog](./plugins.md). Nothing changes for you: the
+provider name, your `memory.<name>` settings, its data directory and its tools stay the same.
+When a provider you have configured stops shipping with Hermes, `hermes update` installs its
+catalog plugin for every profile that names it; if you update through the Desktop app, the
+agent does the same the first time it starts (unless `security.allow_lazy_installs` is
+`false`, in which case it prints the `hermes plugins install <name>` one-liner instead).
+
 ## Building a Memory Provider
 
-See the [Developer Guide: Memory Provider Plugins](/developer-guide/memory-provider-plugin) for how to create your own.
+See the [Developer Guide: Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) for how to create your own.

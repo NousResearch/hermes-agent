@@ -129,7 +129,7 @@ import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402
     GoogleChatAdapter,
     _is_google_owned_host,

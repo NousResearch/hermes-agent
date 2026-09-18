@@ -199,3 +199,14 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
 
     assert result.startswith("[CONTEXT SUMMARY]:")
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_process_entry_async_passes_non_dict_through():
+    """A scalar JSONL line used to crash on '"conversations" not in entry';
+    unknown shapes pass through byte-faithful."""
+    from trajectory_compressor import TrajectoryCompressor
+
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    entry, metrics = await compressor.process_entry_async(42)
+    assert entry == 42

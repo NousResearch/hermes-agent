@@ -276,7 +276,7 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     ignored user files.
     """
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n")
+    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n.venv/\n")
     subprocess.run(
         ["git", "-C", str(tmp_path), "add", ".gitignore"], check=True
     )
@@ -298,6 +298,11 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     (tmp_path / "data.local").unlink()
     (tmp_path / "venv").mkdir()
     (tmp_path / "venv" / "lib.py").write_text("x")
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # uv-default ``.venv`` is a supported layout (#112958): the ignored dir is the live runtime,
+    # not user data the overlay would destroy — refusing here made ZIP fallback impossible.
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib.py").write_text("x")
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None
 
 

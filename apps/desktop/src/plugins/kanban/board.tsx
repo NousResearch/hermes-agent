@@ -33,6 +33,7 @@ import {
   formatModifierToken,
   host,
   Input,
+  isSubmitEnter,
   Loader,
   SearchField,
   Select,
@@ -43,12 +44,12 @@ import {
   Switch,
   Textarea,
   Tip,
-  TITLEBAR_AREAS,
   useGrabScroll,
   useMutation,
   useQuery,
   useQueryClient,
-  useValue
+  useValue,
+  WORKSPACE_PAGE_HEADER_AREA
 } from '@hermes/plugin-sdk'
 import {
   type CSSProperties,
@@ -683,7 +684,7 @@ function NewTaskDialog({
             autoFocus
             onChange={event => setTitle(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter') {
+              if (isSubmitEnter(event)) {
                 event.preventDefault()
                 void submit()
               }
@@ -1322,8 +1323,8 @@ export function KanbanBoardPage() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
-      <Contribute area={TITLEBAR_AREAS.center} id="kanban:board-switcher">
+      {/* Page-owned header chrome: exists exactly while this page is mounted. */}
+      <Contribute area={WORKSPACE_PAGE_HEADER_AREA} id="kanban:board-switcher">
         <BoardSwitcher />
       </Contribute>
 

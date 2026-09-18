@@ -72,7 +72,7 @@ class TestPairingAllowlistRead:
 
 class TestAuthzPlatformGateEnv:
     def test_scoped_value_wins(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
         ss.set_multiplex_active(True)
@@ -80,7 +80,7 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "all"
 
     def test_scoped_miss_returns_default_not_env(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")  # another profile's bridge
         ss.set_multiplex_active(True)
@@ -88,14 +88,14 @@ class TestAuthzPlatformGateEnv:
             assert _platform_gate_env("DISCORD_ALLOW_BOTS", "none") == "none"
 
     def test_single_profile_legacy_env(self, monkeypatch):
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
 
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
 
 
 class TestAuthzAuthEnv:
-    """_auth_env must follow _platform_gate_env isolation (no os.environ
+    """_auth_env must follow platform_gate_env isolation (no os.environ
     fallthrough on a scoped miss under multiplex)."""
 
     def test_scoped_value_wins(self, monkeypatch):
@@ -129,8 +129,10 @@ class TestAuthzAuthEnv:
 
 class TestMatrixStartupSecret:
     def _helper(self):
-        mod = pytest.importorskip("plugins.platforms.matrix.adapter")
-        return mod._startup_env_secret
+        pytest.importorskip("plugins.platforms.matrix.adapter")
+        from gateway.platforms._shared import get_scoped_secret
+
+        return lambda name: (get_scoped_secret(name, "") or "").strip()
 
     def test_scoped_value_wins(self, monkeypatch):
         helper = self._helper()

@@ -72,7 +72,8 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
             if name not in effective_env and os.environ.get(name) is not None:
                 effective_env[name] = os.environ[name]
     if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
-        findings += [(name, f"move exporter settings to {RELAY_PLUGINS_CONFIG_ENV}; this variable is now ignored")
+        findings += [(name, f"run `hermes migrate relay` to generate relay-plugins.toml and set {RELAY_PLUGINS_CONFIG_ENV}; "
+                            "this variable is now ignored and no traces are exported")
                      for name in configured_legacy_relay_env_vars(effective_env)]
     return findings
 
@@ -255,7 +256,7 @@ def _validate_model_config(config_path, issues: list) -> None:
         with warn_on_error(""):
             if not _provider_has_credentials(runtime_provider):
                 _fail_and_issue(f"model.provider '{runtime_provider}' is set but no API key is configured",
-                                "(check ~/.hermes/.env or run 'hermes setup')",
+                                f"(add it to {_DHH}/.env or run 'hermes setup')",
                                 f"No credentials found for provider '{runtime_provider}'. Run 'hermes setup' or set the provider's "
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 
@@ -386,8 +387,40 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
         f.issues.append(ci.message)
 
 
+def _endpoint_url(entry: dict) -> str:
+    """Comparable endpoint URL of a legacy list entry (``base_url``/``url``) or a ``providers:`` entry (``api``)."""
+    url = entry.get("api") or entry.get("base_url") or entry.get("url") or ""
+    return str(url).strip().rstrip("/").lower()
+
+
+def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) -> None:
+    """Legacy ``custom_providers`` list entries with no ``providers:`` twin (raw-file diagnostic).
+
+    The v11→v12 migration (config_migrations._migrate_to_12) moves the list into ``providers:`` ONCE, at
+    the version bump; an entry hand-written afterwards lives on in the retired list store (dual-read by the
+    picker and the Custom Endpoints page) instead of the ``providers:`` map every other surface edits.
+    """
+    from hermes_cli.config import read_user_config_raw
+    raw_config = read_user_config_raw(config_path)
+    legacy = raw_config.get("custom_providers")
+    if not isinstance(legacy, list):
+        return
+    providers = raw_config.get("providers")
+    twins = {_endpoint_url(e) for e in (providers.values() if isinstance(providers, dict) else ()) if isinstance(e, dict)}
+    for entry in legacy:
+        if not isinstance(entry, dict) or not _endpoint_url(entry) or _endpoint_url(entry) in twins:
+            continue
+        label = str(entry.get("name") or "").strip() or _endpoint_url(entry)
+        check_warn(f"Legacy custom_providers entry '{label}' has no providers: twin",
+                   "(still read from the retired list store; every other surface edits providers:)")
+        f.manual_issues.append(
+            f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.api: "
+            f"{_endpoint_url(entry)}` and delete it from the list — the v12 list migration ran once and does not re-fire")
+
+
 _CONFIG_DRIFT_STEPS = (
     _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
+    _drift_legacy_custom_providers,
 )
 
 

@@ -67,6 +67,34 @@ class TestFalEditPayload:
         # while nano-banana-pro is edit-capable
         assert FAL_MODELS["fal-ai/nano-banana-pro"].get("edit_endpoint")
 
+    def test_singular_edit_image_param_kling_image_v3(self):
+        """Kling Image v3's i2i endpoint takes a SINGULAR `image_url` string;
+        the catalog opts in via edit_image_param and only the first source
+        image is sent — no `image_urls` list may leak into the payload."""
+        from tools.image_generation_tool import _build_fal_edit_payload
+
+        payload = _build_fal_edit_payload(
+            "fal-ai/kling-image/v3/text-to-image", "make it winter",
+            ["https://x/a.png", "https://x/b.png"], "landscape",
+        )
+        assert payload["prompt"] == "make it winter"
+        assert payload["image_url"] == "https://x/a.png"
+        assert "image_urls" not in payload
+        assert payload.get("aspect_ratio") == "16:9"
+        assert payload.get("resolution") == "2K"
+
+    def test_kling_image_v3_text_payload(self):
+        """t2i payload: whitelist keeps prompt/AR/resolution, defaults 2K."""
+        from tools import image_generation_tool as t
+
+        p = t._build_fal_payload(
+            "fal-ai/kling-image/v3/text-to-image", "a lighthouse", "portrait",
+        )
+        assert p["prompt"] == "a lighthouse"
+        assert p["aspect_ratio"] == "9:16"
+        assert p["resolution"] == "2K"
+        assert p["num_images"] == 1
+
 
 class TestMandatoryKeysSurviveWhitelist:
     """A model whose whitelist forgets the mandatory keys must not produce a

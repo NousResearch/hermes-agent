@@ -237,6 +237,6 @@ class ContextEngine(ABC):
         if not hasattr(self, "_config_threshold_percent"):
             self._config_threshold_percent = self.threshold_percent
         self._base_threshold_percent = resolve_model_threshold(
-            model, getattr(self, "model_thresholds", {}), self._config_threshold_percent)
+            model, getattr(self, "model_thresholds", {}), self._config_threshold_percent, provider)
         self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

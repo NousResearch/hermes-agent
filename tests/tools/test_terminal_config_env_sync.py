@@ -321,3 +321,12 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_snap_compat_is_bridged_everywhere():
+    """#9730: ``terminal.docker_snap_compat`` must reach the container on the CLI, gateway and
+    ``hermes config set`` paths, like every other docker_* key (see docker_extra_args above)."""
+    assert "docker_snap_compat" in _cli_env_map_keys()
+    assert "docker_snap_compat" in _gateway_env_map_keys()
+    assert "docker_snap_compat" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_SNAP_COMPAT" in _terminal_tool_env_var_names()

@@ -5,18 +5,36 @@ manifest_version: 1
 name: asana
 description: >-
   Tasks, projects, and goals from your Asana workspace.
-source: https://developers.asana.com/docs/using-asanas-mcp-server
+source: https://developers.asana.com/docs/integrating-with-asanas-mcp-server
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
-# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
-# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
-# exchange, and refresh.
+# Asana's V2 remote MCP (Streamable HTTP). The V1 beta endpoint
+# https://mcp.asana.com/sse is retired. V2 does not support Dynamic Client
+# Registration: every client must be a user-owned, pre-registered Asana
+# "MCP app" (developer console), so the OAuth block below pins that client
+# and a fixed callback URL that the app must register verbatim. Hermes's MCP
+# client + mcp_oauth_manager still handle discovery, PKCE, token exchange,
+# and refresh with the configured credentials.
 transport:
   type: http
-  url: https://mcp.asana.com/sse
+  url: https://mcp.asana.com/v2/mcp
 
 auth:
   type: oauth
+  # Prompted at install (CLI, dashboard, desktop) and stored in the profile's
+  # .env — config.yaml only ever carries the ${VAR} references below.
+  env:
+    - name: ASANA_CLIENT_ID
+      prompt: "Asana MCP app Client ID (developer console → your MCP app → OAuth)"
+      secret: false
+    - name: ASANA_CLIENT_SECRET
+      prompt: "Asana MCP app Client secret"
+  oauth:
+    client_id: "${ASANA_CLIENT_ID}"
+    client_secret: "${ASANA_CLIENT_SECRET}"
+    # Asana matches the redirect URL exactly; localhost and 127.0.0.1 are not
+    # interchangeable. Register http://localhost:27890/callback on the app.
+    redirect_host: localhost
+    redirect_port: 27890
 
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
@@ -26,6 +44,16 @@ suggest:
     - asana.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Asana (or run `hermes mcp login asana`). Approve access,
-  then restart the session so tools load.
+  Asana V2 has no Dynamic Client Registration: you need your own Asana
+  MCP app. In the developer console (https://app.asana.com/0/my-apps)
+  create an app of type "MCP app", then:
+    - OAuth → Redirect URL: http://localhost:27890/callback (exactly).
+    - Manage distribution → allow the workspace(s) you will use.
+  Its Client ID / Client secret are the ASANA_CLIENT_ID / ASANA_CLIENT_SECRET
+  values prompted above (stored in the profile's .env, never in config.yaml).
+
+  Then run `hermes mcp login asana` (or click Authorize in the dashboard /
+  Desktop: the callback still arrives at http://localhost:27890/callback, so
+  the browser must run on the same machine as Hermes), approve access, and
+  restart (or `/reload-mcp`) the Hermes session or gateway that should
+  expose the Asana tools.

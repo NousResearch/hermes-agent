@@ -12,16 +12,16 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import os
 import threading
 import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from tools.registry import tool_error
+from utils import atomic_json_write, read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,39 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
 
+# sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
+# models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
+# jina-embeddings-v3: 8192), and oversized turns make backend.add() raise — Ollama
+# answers HTTP 500, hosted APIs return INPUT_TOKEN_LIMIT_EXCEEDED — which _try only
+# logs, silently dropping the turn's memory extraction. Cap each message up front.
+# The default fits a 512-token embedder (measured: 450 OK, 600 -> HTTP 500 on
+# bge-small-zh-v1.5:f16); ``sync_max_chars`` in mem0.json raises it for larger windows.
+_SYNC_MSG_MAX_CHARS = 450
+
+
+# Sentence ends recognized when trimming a synced message. Deliberately unordered:
+# the LAST boundary of ANY kind wins, so one CJK stop early in a mixed-script turn
+# cannot outrank a Latin stop near the end of the window. ``".\n"`` is not listed —
+# its index can never exceed the bare ``"."`` it starts with.
+_SYNC_SENTENCE_ENDS = ("。", "！", "？", ".", "!", "?")
+
+
+def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
+    """Cap a synced message at its last sentence boundary within ``max_len``.
+
+    Short messages pass through unchanged; long ones keep the last complete
+    sentence inside the window so fact extraction still sees coherent statements,
+    with a hard cut as fallback when no boundary exists (or one only appears in
+    the first third of the window, which usually means unsegmented input).
+    """
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    cut = max(window.rfind(sep) for sep in _SYNC_SENTENCE_ENDS)
+    if cut > max_len // 3:
+        return text[:cut + 1]
+    return text[:max_len]
+
 
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
@@ -40,24 +73,30 @@ def _is_client_error(exc: Exception) -> bool:
     return type(exc).__name__ in _CLIENT_ERROR_TYPES or any(s in err_str for s in ("404", "not found", "valid uuid"))
 
 
-def _read_mem0_json(config_path: Path) -> dict:
-    """Best-effort read of mem0.json; missing/corrupt file -> {}."""
-    if config_path.exists():
-        with suppress(Exception):
-            return json.loads(config_path.read_text(encoding="utf-8"))
-    return {}
-
-
 def _load_config() -> dict:
     """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
     like ``api_key`` that the user set in ``.env``."""
     from hermes_constants import get_hermes_home
-    config = {"mode": os.environ.get("MEM0_MODE", "platform"), "api_key": get_secret("MEM0_API_KEY", ""), "host": os.environ.get("MEM0_HOST", ""), "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"), "oss": {}}
-    if os.environ.get("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
-        config["user_id"] = os.environ["MEM0_USER_ID"]
-    file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
+    # Identity (user/agent id), host and mode are .env values like the key: read them through the
+    # profile scope too, or a secondary profile's memories land in the default profile's account.
+    # A scope-less multiplex caller raises here on purpose — that is a spawn-site bug, and
+    # swallowing it would silently route the turn's memories to the default profile.
+    config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
+              "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
+    if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+        config["user_id"] = user_id
+    file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+    # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
+    # backend from the local ``oss`` config and has no platform credential to resolve, so a profile
+    # scope WITHOUT the key must still load an OSS config (#99121 as it stands today: the caller is
+    # scoped, the scope is just empty). Decided after mem0.json overrode the env defaults because
+    # the file may be what selects ``oss``. Scope-less callers already raised above.
+    if config.get("mode", "platform") == "oss":
+        config.setdefault("api_key", "")
+    elif not config.get("api_key"):
+        config["api_key"] = get_secret("MEM0_API_KEY", "")
     return config
 
 
@@ -91,6 +130,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
+        self._sync_max_chars = _SYNC_MSG_MAX_CHARS
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -108,9 +148,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def save_config(self, values, hermes_home):
         """Merge-write config to $HERMES_HOME/mem0.json."""
-        from utils import atomic_json_write
         config_path = Path(hermes_home) / "mem0.json"
-        atomic_json_write(config_path, {**_read_mem0_json(config_path), **values}, mode=0o600)
+        atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def get_config_schema(self):
         api_key_required = _load_config().get("mode", "platform") != "oss"
@@ -196,6 +235,7 @@ class Mem0MemoryProvider(MemoryProvider):
         _rr = cfg.get("rerank", False)
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
+        self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -245,7 +285,7 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._prefetch_query == query and (self._prefetch_done or (self._prefetch_thread and self._prefetch_thread.is_alive())):
                 return
             self._prefetch_query, self._prefetch_result, self._prefetch_done = query, "", False
-            self._prefetch_thread = t = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
+            self._prefetch_thread = t = spawn_context_thread(_run, name="mem0-prefetch")
         t.start()
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -266,7 +306,10 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _sync():
             if self._backend is not None:
-                messages = [{"role": "user", "content": user_content}, {"role": "assistant", "content": assistant_content}]
+                messages = [
+                    {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
+                    {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
+                ]
                 self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
 
         with self._sync_lock:
@@ -275,7 +318,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 prev.join(timeout=5.0)
                 if prev.is_alive():  # still busy after the wait: skip to avoid duplicate ingestion
                     return
-            self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
+            self._sync_thread = spawn_context_thread(_sync, name="mem0-sync")
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

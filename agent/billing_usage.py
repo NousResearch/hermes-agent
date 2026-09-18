@@ -49,9 +49,11 @@ def nous_logged_in() -> bool:
 def fetch_nous_account(timeout: float):
     """Wall-clock-bounded fresh portal account fetch. Raises on failure/timeout."""
     import concurrent.futures
+    import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    context = contextvars.copy_context()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
 
 
 def format_renews(value: Optional[str]) -> Optional[str]:

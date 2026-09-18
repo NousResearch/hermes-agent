@@ -486,6 +486,52 @@ class TestNormalizeConverseStreamEvents:
         assert tc[0].function.name == "read_file"
         assert json.loads(tc[0].function.arguments) == {"path": "/tmp/f"}
 
+    # Real ConverseStream wire shape (captured from global.anthropic.claude-opus-5): a text block gets NO
+    # contentBlockStart, only deltas stamped contentBlockIndex=0; the toolUse block then starts at index 1.
+    _LIVE_TEXT_THEN_TOOL_EVENTS = [
+        {"messageStart": {"role": "assistant"}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I"}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "'ll echo "}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "banana"}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": " now."}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"contentBlockStart": {"contentBlockIndex": 1, "start": {"toolUse": {"toolUseId": "tooluse_1", "name": "echo"}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"toolUse": {"input": ""}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"toolUse": {"input": '{"s": "banana"}'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 1}},
+        {"messageStop": {"stopReason": "tool_use"}},
+        {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}},
+    ]
+
+    def test_text_deltas_without_content_block_start_stay_one_block_ahead_of_tool_use(self):
+        """Regression: keying text deltas by a running counter instead of their contentBlockIndex shredded
+        the text into one block per delta and let the toolUse start (index 1) overwrite the second fragment
+        and sort into the middle — a ``[text, toolUse, text...]`` sidecar Claude 5 on Bedrock rejects on
+        replay as "does not support assistant message prefill"."""
+        from agent.bedrock_adapter import normalize_converse_stream_events
+        result = normalize_converse_stream_events({"stream": list(self._LIVE_TEXT_THEN_TOOL_EVENTS)})
+        msg = result.choices[0].message
+        assert msg.content == "I'll echo banana now."
+        assert msg.bedrock_content_blocks == [
+            {"text": "I'll echo banana now."},
+            {"toolUse": {"toolUseId": "tooluse_1", "name": "echo", "input": {"s": "banana"}}},
+        ]
+        assert [tc.function.name for tc in msg.tool_calls] == ["echo"]
+
+    def test_events_without_content_block_index_fall_back_to_arrival_order(self):
+        """Proxies/test doubles may omit contentBlockIndex: deltas continue the current block, a start opens a
+        new one, so text still lands before the toolUse instead of being overwritten by it."""
+        from agent.bedrock_adapter import normalize_converse_stream_events
+        events = [{k: {kk: vv for kk, vv in v.items() if kk != "contentBlockIndex"} for k, v in e.items()}
+                  for e in self._LIVE_TEXT_THEN_TOOL_EVENTS[:-2]]
+        # Text after the tool's stop must open its own slot, not land on the closed tool block.
+        events += [{"contentBlockDelta": {"delta": {"text": "done"}}}, {"contentBlockStop": {}},
+                   {"messageStop": {"stopReason": "tool_use"}}]
+        msg = normalize_converse_stream_events({"stream": events}).choices[0].message
+        assert msg.content == "I'll echo banana now.\ndone"
+        assert [list(b) for b in msg.bedrock_content_blocks] == [["text"], ["toolUse"], ["text"]]
+        assert msg.bedrock_content_blocks[1]["toolUse"]["input"] == {"s": "banana"}
+
 
 # ---------------------------------------------------------------------------
 # build_converse_kwargs
@@ -555,6 +601,24 @@ class TestBuildConverseKwargs:
             max_tokens=None,
         )
         assert "inferenceConfig" not in kwargs
+
+    def test_bedrock_xai_grok_models_never_receive_sampling_params(self):
+        """Bedrock-hosted xAI Grok rejects temperature/topP in Converse with a hard 400
+        (ValidationException: "This model doesn't support the temperature field"); the
+        _forbids_sampling_params guard is Claude-only, so Grok needs its own denylist.
+        Sibling Bedrock models keep receiving sampling params."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        msgs = [{"role": "user", "content": "Hi"}]
+        for model in ("us.xai.grok-4.6", "global.xai.grok-4.6"):
+            cfg = build_converse_kwargs(
+                model=model, messages=msgs, temperature=0.3, top_p=0.9
+            )["inferenceConfig"]
+            assert "temperature" not in cfg and "topP" not in cfg, model
+        for model in ("test-model", "qwen.qwen3-vl-235b-a22b"):
+            cfg = build_converse_kwargs(
+                model=model, messages=msgs, temperature=0.3, top_p=0.9
+            )["inferenceConfig"]
+            assert cfg["temperature"] == 0.3 and cfg["topP"] == 0.9, model
 
     def test_cache_point_added_for_supported_model(self):
         """Claude and Nova on the Converse path get cachePoint markers on

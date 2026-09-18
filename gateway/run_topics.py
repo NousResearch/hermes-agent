@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Optional, Tuple
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, _prefix_within_utf16_limit, utf16_len
+from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from utils import is_truthy_value
 
@@ -434,6 +435,11 @@ class GatewayTopicThreadsMixin:
         copied_source = source
         with suppress(Exception):
             copied_source = dataclasses.replace(source)
+            # Keep the live transport owner; multiplex routes may run under a
+            # profile that does not own the Discord adapter/token.
+            transport_ref = getattr(source, "_transport_adapter_ref", None)
+            if transport_ref is not None:
+                setattr(copied_source, "_transport_adapter_ref", transport_ref)
         future = safe_schedule_threadsafe(
             make_coro(copied_source), loop, logger=logger, log_message=f"{label} failed to schedule",
         )

@@ -15,17 +15,30 @@
       // UA-default white page, and the real theme only lands once the whole
       // module graph has executed — i.e. the "white flash" on every new
       // window. applyTheme() in src/themes/context.tsx keeps these keys fresh.
+      //
+      // OPAQUE WINDOWS ONLY. The `?win=` kinds Electron creates with
+      // `transparent: true` already have a clear canvas, and pre-painting a
+      // theme colour there does not prevent a flash, it IS the flash: an
+      // opaque rectangle standing until that window's module graph executes.
+      // On the full-screen intro cinematic, over the real desktop, on a dev
+      // server that serves the graph unbundled, that read as seconds of white.
+      // The list is TRANSPARENT_WINDOWS in src/main.tsx — keep the two in step.
+      // `secondary` (a session window) and `browser` are opaque and DO want the
+      // pre-paint.
       try {
-        let bg = localStorage.getItem('hermes-boot-background')
-        let scheme = localStorage.getItem('hermes-boot-color-scheme')
-        if (!bg) {
-          const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
-          bg = dark ? '#111111' : '#f7f7f7'
-          scheme = dark ? 'dark' : 'light'
-        }
-        document.documentElement.style.backgroundColor = bg
-        if (scheme === 'dark' || scheme === 'light') {
-          document.documentElement.style.colorScheme = scheme
+        const win = new URLSearchParams(window.location.search).get('win')
+        if (!win || ['hud', 'overlay', 'quick', 'wake', 'intro'].indexOf(win) === -1) {
+          let bg = localStorage.getItem('hermes-boot-background')
+          let scheme = localStorage.getItem('hermes-boot-color-scheme')
+          if (!bg) {
+            const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+            bg = dark ? '#111111' : '#f7f7f7'
+            scheme = dark ? 'dark' : 'light'
+          }
+          document.documentElement.style.backgroundColor = bg
+          if (scheme === 'dark' || scheme === 'light') {
+            document.documentElement.style.colorScheme = scheme
+          }
         }
       } catch {
         // localStorage unavailable — keep UA defaults.

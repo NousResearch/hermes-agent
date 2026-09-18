@@ -62,6 +62,19 @@ describe('resolveStoredSession profile ownership', () => {
     expect($sessions.get()).toEqual([])
   })
 
+  it('routes a moved resolve into its current slice instead of duplicating it', async () => {
+    // Cross-room /resume rewrote the row to source='matrix' (#113827): the
+    // stale regular-sessions copy must go and the row must land in messaging.
+    $sessions.set([session({ id: 's1' })])
+    mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'meta', source: 'matrix' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.source).toBe('matrix')
+    expect($sessions.get()).toEqual([])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['s1'])
+  })
+
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {
     $sessions.set([session({ id: 's1' })])
     mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))

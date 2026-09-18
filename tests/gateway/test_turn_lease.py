@@ -154,7 +154,7 @@ async def test_agent_path_propagates_timed_out_lease_before_loading_transcript(
     transcript loading and agent execution must not start: both would operate
     without the per-session serialization guarantee.
     """
-    from tests.gateway.test_42039_duplicate_user_message import (
+    from tests.gateway.test_duplicate_user_message import (
         _bootstrap,
         _event,
         _source,
@@ -193,7 +193,7 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     The lease wait also has its own clock: a short lease budget must reject
     promptly even while the normal agent inactivity timeout remains long.
     """
-    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
     runner._turn_leases = SessionTurnLeaseRegistry()

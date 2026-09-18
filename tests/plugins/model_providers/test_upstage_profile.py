@@ -100,7 +100,9 @@ class TestUpstageReasoning:
         )
         assert top_level == {}
 
-    @pytest.mark.parametrize("model", ["solar-pro3", "solar-pro", "solar-open2"])
+    @pytest.mark.parametrize(
+        "model", ["solar-pro3", "solar-pro", "solar-open2", "solar-mini4", "solar-mini4-preview"]
+    )
     def test_no_config_defaults_reasoning_on(self, upstage_profile, model):
         # Unset reasoning_config → default ON at medium (matches the /reasoning
         # "medium (default)" label), not Solar's server default of minimal/off.
@@ -108,10 +110,13 @@ class TestUpstageReasoning:
         assert top_level == {"reasoning_effort": "medium"}
 
 
-    @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
+    @pytest.mark.parametrize(
+        "model", ["solar-mini", "solar-mini-250422", "solar-mini-202610", "solar-mini@q4", "syn-pro"]
+    )
     def test_deny_listed_models_never_send_reasoning(self, upstage_profile, model):
         # solar-mini / syn-pro ignore reasoning_effort, so never send it —
-        # even when the user explicitly enables reasoning.
+        # even when the user explicitly enables reasoning. Later mini
+        # generations (solar-mini4) do reason and are not deny-listed.
         extra_body, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"}, model=model
         )

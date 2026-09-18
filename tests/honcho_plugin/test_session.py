@@ -1,10 +1,16 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import json
+import os
+import sys
+import threading
 import time
 
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -1161,8 +1167,10 @@ class TestSetPeerCardNoneGuard:
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)
         mgr._cache = {}
+        mgr._cache_lock = threading.RLock()
         mgr._sessions_cache = {}
         mgr._config = cfg
+        mgr._session_observation = {}
         return mgr
 
     def test_returns_none_when_peer_resolves_to_none(self):
@@ -1199,12 +1207,14 @@ class TestGetSessionContextFallback:
         cfg = HonchoClientConfig(api_key="test-key", enabled=True)
         mgr = HonchoSessionManager.__new__(HonchoSessionManager)
         mgr._cache = {}
+        mgr._cache_lock = threading.RLock()
         mgr._sessions_cache = {}
         mgr._config = cfg
         mgr._dialectic_dynamic = True
         mgr._dialectic_reasoning_level = "low"
         mgr._dialectic_max_input_chars = 10000
         mgr._ai_observe_others = True
+        mgr._session_observation = {}
 
         session = HonchoSession(
             key="test",
@@ -1233,4 +1243,320 @@ class TestGetSessionContextFallback:
         peer_id, target = fetch_calls[0]
         assert peer_id == "user-peer"
         assert target == "user-peer"
+
+
+# ---------------------------------------------------------------------------
+# contextTokens must reach session.context() (salvage of #70951)
+# ---------------------------------------------------------------------------
+
+
+class TestContextTokensForwarded:
+    """Honcho picks the short or long summary from the tokens= budget. get_prefetch_context and
+    get_session_context called context(summary=True) without it, so a configured contextTokens
+    cap was ignored and every turn got the long summary."""
+
+    def _manager(self, context_tokens=4000):
+        mgr = HonchoSessionManager(context_tokens=context_tokens)
+        session = HonchoSession(key="cli:test", user_peer_id="robert", assistant_peer_id="hermes",
+                                honcho_session_id="sess-1")
+        mgr._cache[session.key] = session
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="short summary"), peer_representation="rep", peer_card=["fact"],
+            messages=[])
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        mgr._fetch_peer_context = MagicMock(return_value={"representation": "", "card": []})
+        return mgr, session, honcho_session
+
+    def test_get_prefetch_context_passes_context_tokens_to_summary_call(self):
+        mgr, session, honcho_session = self._manager()
+        result = mgr.get_prefetch_context(session.key)
+        assert result["summary"] == "short summary"
+        honcho_session.context.assert_called_once_with(summary=True, tokens=4000)
+
+    def test_get_session_context_passes_context_tokens_to_cached_session_call(self):
+        mgr, session, honcho_session = self._manager()
+        result = mgr.get_session_context(session.key, peer="user")
+        assert result["summary"] == "short summary"
+        honcho_session.context.assert_called_once_with(
+            summary=True, tokens=4000, peer_target=session.user_peer_id, peer_perspective=session.assistant_peer_id)
+
+
+# ---------------------------------------------------------------------------
+# injection.sessionStart pins which base-context components render
+# ---------------------------------------------------------------------------
+
+
+_FULL_CTX = {
+    "summary": "sum", "representation": "rep", "card": "card",
+    "ai_representation": "ai-rep", "ai_card": "ai-card",
+}
+
+
+def _provider_with_raw(raw, host="hermes"):
+    from plugins.memory.honcho.client import HonchoClientConfig, _host_block, _HostLookup
+
+    provider = HonchoMemoryProvider()
+    look = _HostLookup(_host_block(raw, host), raw)
+    provider._session_start_components = provider._resolve_session_start(look)
+    provider._injection_log_path = provider._resolve_injection_log_path(look)
+    provider._config = HonchoClientConfig(api_key="k", enabled=True, raw=raw, host=host)
+    return provider
+
+
+class TestSessionStartInjection:
+    @pytest.mark.parametrize("raw, headings", [
+        ({}, ["## Session Summary", "## User Representation", "## User Peer Card",
+              "## AI Self-Representation", "## AI Identity Card"]),
+        ({"injection": {"sessionStart": []}}, []),
+        ({"injection": {"sessionStart": ["aiCard", "summary"]}}, ["## Session Summary", "## AI Identity Card"]),
+        ({"injection": {"sessionStart": ["summary"]}, "hosts": {"hermes": {"injection": {"sessionStart": ["peerCard"]}}}},
+         ["## User Peer Card"]),
+    ], ids=["unset-renders-all-in-fixed-order", "empty-list-injects-nothing", "pin-keeps-table-order", "host-block-beats-root"])
+    def test_pin_selects_the_rendered_components(self, raw, headings):
+        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
+        assert [line for line in formatted.splitlines() if line.startswith("## ")] == headings
+
+    @pytest.mark.parametrize("submitted, headings", [
+        ('{"sessionStart": ["peerCard"]}', ["## User Peer Card"]),
+        ('{"sessionStart": []}', []),
+        ("", ["## Session Summary", "## User Representation", "## User Peer Card",
+              "## AI Self-Representation", "## AI Identity Card"]),
+    ], ids=["pin", "empty-list", "blank-clears-the-pin"])
+    def test_desktop_panel_writes_the_pin_the_provider_reads(self, submitted, headings):
+        from hermes_cli.web_routers.memory_providers import _apply_field_values
+        from plugins.memory.honcho.config_schema import CONFIG_SCHEMA
+
+        host_block = {"injection": {"sessionStart": ["summary"]}}
+        _apply_field_values(CONFIG_SCHEMA, {"injection": submitted}, lambda field: host_block)
+        raw = {"hosts": {"hermes": host_block}}
+        formatted = _provider_with_raw(raw)._format_first_turn_context(_FULL_CTX)
+        assert [line for line in formatted.splitlines() if line.startswith("## ")] == headings
+
+    def test_non_list_value_is_treated_as_unset(self):
+        raw = {"injection": {"sessionStart": "summary"}}
+        assert _provider_with_raw(raw)._session_start_components is None
+
+    def test_initialize_reads_the_pin(self):
+        raw = {"injection": {"sessionStart": ["summary"]}}
+        provider = TestDialecticCadenceDefaults._make_provider(cfg_extra={"raw": raw, "host": "hermes"})
+        assert provider._session_start_components == frozenset({"summary"})
+
+
+# ---------------------------------------------------------------------------
+# the logging key switches on the injection audit. It is off by default and never raises
+# ---------------------------------------------------------------------------
+
+
+class TestInjectionAuditLog:
+    @pytest.fixture(autouse=True)
+    def _no_logging_env(self, monkeypatch):
+        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+
+    @pytest.mark.parametrize("raw, env", [
+        ({}, None),
+        ({"logging": True, "hosts": {"hermes": {"logging": False}}}, None),
+        *[({"logging": value}, None) for value in ("false", "0", "no", "off", "")],
+        ({}, "off"),
+    ])
+    def test_stays_off(self, monkeypatch, raw, env):
+        if env is not None:
+            monkeypatch.setenv("HONCHO_LOGGING", env)
+        assert _provider_with_raw(raw)._injection_log_path is None
+
+    @pytest.mark.parametrize("value", [True, "true", "1", "yes", "on"])
+    def test_logging_key_switches_on_the_default_path(self, value):
+        path = _provider_with_raw({"logging": value})._injection_log_path
+        assert path is not None and path.endswith("injection.log")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    def test_log_file_is_owner_only(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "injection.log")
+        provider._log_injection("injected", "payload")
+        assert (tmp_path / "injection.log").stat().st_mode & 0o777 == 0o600
+
+    def test_explicit_path_env_overrides_destination(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HONCHO_INJECTION_LOG", str(tmp_path / "audit.log"))
+        assert _provider_with_raw({})._injection_log_path == str(tmp_path / "audit.log")
+
+    def test_record_carries_reason_turn_and_payload(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "nested" / "injection.log")
+        provider._turn_count = 3
+        provider._session_key = "cli:test"
+        assert provider._log_injection("injected", "## User Peer Card\nName: Eri") == "## User Peer Card\nName: Eri"
+        assert provider._log_injection("trivial-prompt") == ""
+        records = [json.loads(line) for line in (tmp_path / "nested" / "injection.log").read_text().splitlines()]
+        assert [r["reason"] for r in records] == ["injected", "trivial-prompt"]
+        assert records[0]["turn"] == 3 and records[0]["session_key"] == "cli:test"
+        assert records[0]["bytes"] == len("## User Peer Card\nName: Eri".encode()) and records[1]["bytes"] == 0
+
+    def test_unwritable_path_never_raises(self, tmp_path):
+        provider = _provider_with_raw({})
+        blocker = tmp_path / "file"
+        blocker.write_text("x")
+        provider._injection_log_path = str(blocker / "injection.log")
+        assert provider._log_injection("injected", "payload") == "payload"
+
+    def test_tools_mode_prefetch_logs_its_reason(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "injection.log")
+        provider._recall_mode = "tools"
+        assert provider.prefetch("hello") == ""
+        record = json.loads((tmp_path / "injection.log").read_text().splitlines()[0])
+        assert record["reason"] == "cron-or-tools-mode" and record["payload"] == ""
+# Observation flags are scoped per session, not manager-wide (#98936)
+# ---------------------------------------------------------------------------
+
+
+class _FakeServerPeerConfig:
+    """SessionPeerConfig stand-in for both the local build and the server read.
+
+    None means "leave unchanged", mirroring the SDK's optional fields. Doubles
+    as the injected ``honcho.session`` module's SessionPeerConfig so the test
+    runs even without the optional honcho-ai extra installed.
+    """
+
+    def __init__(self, observe_me=None, observe_others=None):
+        self.observe_me = observe_me
+        self.observe_others = observe_others
+
+
+class _FakeSdkSession:
+    """Records add_peers calls and serves per-peer server configs."""
+
+    def __init__(self, server_user_cfg, server_ai_cfg):
+        self.add_peers_calls = []
+        self._server_user_cfg = server_user_cfg
+        self._server_ai_cfg = server_ai_cfg
+
+    def add_peers(self, entries):
+        self.add_peers_calls.append(entries)
+
+    def get_peer_configuration(self, peer):
+        return self._server_user_cfg if peer == "user-peer" else self._server_ai_cfg
+
+    def context(self, summary=True, tokens=None):
+        class _Ctx:
+            messages = []
+
+        return _Ctx()
+
+
+class TestObservationPerSessionScoping:
+    """One session's server sync must not retune another session's routing."""
+
+    def _make_manager(self):
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._session_observation = {}
+        mgr._cache_lock = threading.RLock()
+        mgr._context_tokens = 1000
+        # Config snapshot defaults — manager fields must stay at these values.
+        mgr._user_observe_me = True
+        mgr._user_observe_others = True
+        mgr._ai_observe_me = True
+        mgr._ai_observe_others = True
+        mgr._authed_call = lambda label, op: op()
+        return mgr
+
+    def _session(self, mgr, key):
+        session = HonchoSession(
+            key=key,
+            honcho_session_id=f"sid-{key}",
+            user_peer_id="user-peer",
+            assistant_peer_id="ai-peer",
+        )
+        mgr._cache[key] = session
+        return session
+
+    def _setup_session(self, mgr, session_id, fake_sdk):
+        fake_module = SimpleNamespace(SessionPeerConfig=_FakeServerPeerConfig)
+        mgr._sdk_session = lambda sid: fake_sdk
+        with patch.dict(sys.modules, {"honcho.session": fake_module}):
+            return mgr._get_or_create_honcho_session(
+                session_id, "user-peer", "ai-peer"
+            )
+
+    def test_sync_back_scopes_flags_per_session(self):
+        """Server flags come back per session; manager snapshot untouched."""
+        mgr = self._make_manager()
+
+        # Session A's server config disables user observe_others...
+        _, _, flags_a = self._setup_session(
+            mgr, "sid-a",
+            _FakeSdkSession(_FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()),
+        )
+        # ...session B's server leaves everything at the synced-in defaults.
+        _, _, flags_b = self._setup_session(
+            mgr, "sid-b",
+            _FakeSdkSession(_FakeServerPeerConfig(), _FakeServerPeerConfig()),
+        )
+
+        assert flags_a["user_observe_others"] is False
+        assert flags_b["user_observe_others"] is True
+        # The config snapshot on the manager must survive both syncs — this is
+        # the regression: last-session-wins used to overwrite it (#98936).
+        assert mgr._user_observe_others is True
+
+    def test_add_peers_reuses_synced_flags_for_existing_session(self):
+        """A re-initialized session re-applies its own synced values, not the defaults."""
+        mgr = self._make_manager()
+
+        fake = _FakeSdkSession(
+            _FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()
+        )
+        _, _, flags = self._setup_session(mgr, "sid-a", fake)
+        mgr._session_observation["sid-a"] = flags  # what get_or_create stores next to the cache entry
+
+        # Force the full setup path again (cache cleared, e.g. after re-auth).
+        mgr._sessions_cache = {}
+        fake2 = _FakeSdkSession(
+            _FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()
+        )
+        self._setup_session(mgr, "sid-a", fake2)
+
+        user_cfg = fake2.add_peers_calls[0][0][1]
+        assert user_cfg.observe_others is False
+
+    def test_resolve_observer_target_uses_own_session_flags(self):
+        """Recall routing reads each session's flags, so diverging sessions diverge."""
+        mgr = self._make_manager()
+        session_a = self._session(mgr, "a")
+        session_b = self._session(mgr, "b")
+        mgr._session_observation["sid-a"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": False,
+        }
+        mgr._session_observation["sid-b"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": True,
+        }
+
+        # Without AI cross-observation the target peer queries its own context.
+        assert mgr._resolve_observer_target(session_a, "user") == ("user-peer", None)
+        # With it, the assistant peer observes the user peer.
+        assert mgr._resolve_observer_target(session_b, "user") == ("ai-peer", "user-peer")
+
+    def test_unsynced_session_falls_back_to_config_snapshot(self):
+        """A session that never completed setup routes with the config defaults."""
+        mgr = self._make_manager()
+        session_c = self._session(mgr, "c")
+        mgr._session_observation["sid-other"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": False,
+        }
+
+        assert mgr._ai_observes_others(session_c) is True
 

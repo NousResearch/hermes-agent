@@ -105,3 +105,19 @@ test('an invalidated attempt cannot attach a late-spawned process', () => {
   assert.equal(state.attachProcess(staleAttempt, { id: 'late' }), null)
   assert.equal(state.getProcess(), null)
 })
+
+test('distinguishes a pending connection attempt from a cached settled descriptor', async () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const connection = deferred<string>()
+  const attempt = state.startAttempt()
+
+  state.setPromise(attempt, connection.promise)
+  assert.equal(state.getPendingPromise(), connection.promise)
+
+  connection.resolve('https://remote.example')
+  await connection.promise
+  await Promise.resolve()
+
+  assert.equal(state.getPromise(), connection.promise)
+  assert.equal(state.getPendingPromise(), null)
+})

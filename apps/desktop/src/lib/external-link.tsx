@@ -113,8 +113,18 @@ export function urlSlugTitleLabel(value: string): string {
   return hostPathLabel(value)
 }
 
+/** Authorization URLs must never be consumed by link-title previews. */
+export function isConnectorAuthorizationLink(value: string): boolean {
+  const url = parseUrl(value)
+
+  // Composio links are single-use; keep previews away until the gateway exposes authorization URL metadata.
+  return (
+    !!url && url.protocol === 'https:' && url.hostname === 'connect.composio.dev' && url.pathname.startsWith('/link/')
+  )
+}
+
 export function isTitleFetchable(value: string): boolean {
-  if (!value || SKIP_PROTO_RE.test(value)) {
+  if (!value || SKIP_PROTO_RE.test(value) || isConnectorAuthorizationLink(value)) {
     return false
   }
 
@@ -243,7 +253,12 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || hudForcesNativeLinks() || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  if (
+    options.native ||
+    isConnectorAuthorizationLink(target) ||
+    hudForcesNativeLinks() ||
+    !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
+  ) {
     openExternalLink(target)
 
     return

@@ -39,6 +39,68 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": False, "effort": "none"},
+            request_overrides={
+                "temperature": 0.4,
+                "top_p": 0.9,
+                "top_logprobs": 5,
+                "logprobs": True,
+                "reasoning": {"effort": "none"},
+                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+                "prompt_cache_retention": "24h",
+            },
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+        assert kw["include"] == ["reasoning.encrypted_content"]
+        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+            assert unsupported not in kw
+
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            request_overrides={"reasoning": {"effort": effort}},
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_astra_accepts_complete_effort_ladder(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == effort
+
+    @pytest.mark.parametrize("base_url", ["https://responses.example.com/v1", "https://evil.api.openai.com/v1"])
+    def test_astra_contract_is_exact_host_only(self, transport, base_url):
+        """Proxies and lookalike subdomains keep the generic Responses contract (effort passes through)."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url=base_url,
+            reasoning_config={"enabled": True, "effort": "none"},
+            request_overrides={"temperature": 0.4},
+        )
+
+        assert kw["reasoning"]["effort"] == "none"
+        assert kw["temperature"] == 0.4
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must
@@ -166,6 +228,35 @@ class TestCodexBuildKwargs:
         )
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
+
+    def test_codex_backend_drops_foreign_message_item_id_end_to_end(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
 
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
@@ -320,6 +411,112 @@ class TestCodexBuildKwargs:
         assert "function_call" in item_types
         assert "function_call_output" in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    @classmethod
+    def _two_turn_messages(cls):
+        """Two answered turns, each assistant row sealed by its own response, then a fresh user message."""
+        return [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "one",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-1", "summary": []}],
+            },
+            {"role": "user", "content": "second"},
+            {
+                "role": "assistant",
+                "content": "two",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-2", "summary": []}],
+            },
+            {"role": "user", "content": "third"},
+        ]
+
+    def test_azure_foundry_new_turn_replays_only_newest_reasoning(self, transport):
+        """Two sealed prior responses on the wire is the 400 "Conflicting authenticated
+        continuation identities" shape (#105369); one is accepted."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=self._two_turn_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1",
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assistant_text = [item for item in kw["input"] if item.get("role") == "assistant"]
+        assert len(assistant_text) == 2
+
+    @pytest.mark.parametrize("base_url", [
+        "https://placeholder.openai.azure.com/openai/v1",
+        "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1",
+    ])
+    def test_azure_host_without_provider_replays_only_newest_reasoning(self, transport, base_url):
+        """Both Azure hosts are detected without ``provider``; the rejection is not gateway-specific."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=self._two_turn_messages(), tools=[], base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+
+    def test_default_responses_new_turn_replays_all_reasoning(self, transport):
+        """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=self._two_turn_messages(), tools=[], replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-1", "sealed-2"]
+
+    def test_azure_foundry_newest_reasoning_pruning_leaves_canonical_messages_untouched(self, transport):
+        messages = self._two_turn_messages()
+        transport.build_kwargs(
+            model="gpt-6-astra", messages=messages, tools=[], provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
+        )
+        assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
+        assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
+
+    def test_normalize_response_stamps_wire_model_and_replay_drops_it_for_another_model(self, transport):
+        """The wire model from build_kwargs (``-900k`` stripped) is what normalize_response stamps, and a
+        later build_kwargs for another model on the same endpoint replays none of it (sealed blob → 400)."""
+        transport.build_kwargs(model="gpt-5.6-sol-900k", messages=[{"role": "user", "content": "hi"}], tools=[])
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_1", encrypted_content="sealed-sol", summary=[]),
+                SimpleNamespace(type="message", role="assistant", status="completed", id="msg_1",
+                                content=[SimpleNamespace(type="output_text", text="done")]),
+            ],
+        ))
+        captured = normalized.codex_reasoning_items[0]
+        assert captured["_issuer_model"] == "gpt-5.6-sol"
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done", "codex_reasoning_items": [captured]},
+            {"role": "user", "content": "next"},
+        ]
+        same = transport.build_kwargs(model="gpt-5.6-sol-900k", messages=history, tools=[], replay_encrypted_reasoning=True)
+        other = transport.build_kwargs(model="gpt-5.7", messages=history, tools=[], replay_encrypted_reasoning=True)
+        assert [i["encrypted_content"] for i in same["input"] if i.get("type") == "reasoning"] == ["sealed-sol"]
+        assert not any(i.get("type") == "reasoning" for i in other["input"])
+
+    def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
+        from agent.transports.codex import _newest_reasoning_only
+
+        checkpoint = {"type": "compaction", "encrypted_content": "ckpt", "summary": []}
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one", "codex_reasoning_items": [checkpoint, self._reasoning_item()]},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two", "codex_reasoning_items": [self._reasoning_item()]},
+            {"role": "user", "content": "third"},
+        ]
+        pruned = _newest_reasoning_only(messages)
+        assert pruned[1]["codex_reasoning_items"] == [checkpoint]
+        assert pruned[3]["codex_reasoning_items"] == [self._reasoning_item()]
+        assert len(messages[1]["codex_reasoning_items"]) == 2
 
     def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
         """The rejected payload shape drops reasoning, keeps tool continuity."""
@@ -748,7 +945,7 @@ class TestCodexBuildKwargs:
 
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
 
@@ -821,10 +1018,9 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
-class TestOpencodeReservedToolAliases:
-    """OpenCode /v1/responses reserves web_search / search_files as function
-    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
-    transport aliases them on the wire and maps them back on dispatch."""
+class TestResponsesReservedToolAliases:
+    """Responses providers may reserve web_search / search_files as function
+    names. The transport aliases them on the wire and maps them back."""
 
     @pytest.fixture
     def transport(self):
@@ -844,6 +1040,12 @@ class TestOpencodeReservedToolAliases:
             "name": "read_file", "description": "Read a file.",
             "parameters": {"type": "object",
                            "properties": {"path": {"type": "string"}}}}},
+    ]
+    _PERPLEXITY_ONLY_TOOLS = [
+        {"type": "function", "function": {
+            "name": name, "description": f"Client {name}.",
+            "parameters": {"type": "object", "properties": {}}}}
+        for name in ("fetch_url", "people_search", "finance_search")
     ]
 
     def _names(self, kw):
@@ -903,6 +1105,73 @@ class TestOpencodeReservedToolAliases:
         assert "web_search" in names
         assert "hermes_search_files" not in names
 
+    def test_perplexity_agent_api_aliases_reserved_names(self, transport, monkeypatch):
+        kw = transport.build_kwargs(
+            model="perplexity/sonar",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS) + list(self._PERPLEXITY_ONLY_TOOLS),
+            provider="custom",
+            base_url="https://api.perplexity.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "hermes_fetch_url" in names
+        assert "hermes_people_search" in names
+        assert "hermes_finance_search" in names
+        assert "fetch_url" not in names
+        assert "people_search" not in names
+        assert "finance_search" not in names
+        assert "read_file" in names
+        assert transport._last_wire_aliases == {
+            "hermes_search_files": "search_files",
+            "hermes_web_search": "web_search",
+            "hermes_fetch_url": "fetch_url",
+            "hermes_people_search": "people_search",
+            "hermes_finance_search": "finance_search",
+        }
+
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[SimpleNamespace(
+                id="call_1", call_id="call_1", response_item_id="fc_1",
+                function=SimpleNamespace(
+                    name="hermes_search_files",
+                    arguments='{"pattern":"README"}',
+                ),
+            )],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
+        assert [tc.name for tc in normalized.tool_calls] == ["search_files"]
+
+    def test_perplexity_lookalike_host_keeps_original_names(self, transport):
+        for base_url in (
+            "https://sub.api.perplexity.ai/v1",
+            "https://api.perplexity.ai.example.com/v1",
+            "https://example.com/api.perplexity.ai/v1?host=api.perplexity.ai",
+        ):
+            kw = transport.build_kwargs(
+                model="perplexity/sonar",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=list(self._TOOLS),
+                provider="custom",
+                base_url=base_url,
+            )
+            names = self._names(kw)
+            assert "search_files" in names
+            assert "web_search" in names
+            assert "hermes_search_files" not in names
+
     def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
         msg = SimpleNamespace(
             content=None,
@@ -930,7 +1199,7 @@ class TestOpencodeReservedToolAliases:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
         names = [tc.name for tc in normalized.tool_calls]
@@ -1034,7 +1303,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         # Pair the response with a real request so provenance is recorded.
         transport.build_kwargs(
@@ -1064,7 +1333,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         return transport.normalize_response(response)
 

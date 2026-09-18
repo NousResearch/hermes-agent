@@ -33,7 +33,7 @@ def _impact(jobs: object, **config: Any) -> dict[str, Any]:
     )
 
 
-def test_drift_axes_match_unpinned_guard_semantics() -> None:
+def test_drift_axes_match_unpinned_snapshot_semantics() -> None:
     assert cron_model_drift_axes(
         _job(), current_provider=" NOUS ", current_model="NEW/MODEL", config={}
     ) == ["provider", "model"]
@@ -51,7 +51,7 @@ def test_drift_axes_match_unpinned_guard_semantics() -> None:
     ) == []
 
 
-def test_fleet_defaults_and_literal_false_guard_suppress_only_intended_axes() -> None:
+def test_fleet_defaults_cover_only_their_own_axis() -> None:
     assert cron_model_drift_axes(
         _job(),
         current_provider="nous",
@@ -64,18 +64,6 @@ def test_fleet_defaults_and_literal_false_guard_suppress_only_intended_axes() ->
         current_model="new/model",
         config={"cron": {"model_provider": "openrouter"}},
     ) == ["model"]
-    assert cron_model_drift_axes(
-        _job(),
-        current_provider="nous",
-        current_model="new/model",
-        config={"cron": {"model_drift_guard": False}},
-    ) == []
-    assert cron_model_drift_axes(
-        _job(),
-        current_provider="nous",
-        current_model="new/model",
-        config={"cron": {"model_drift_guard": "false"}},
-    ) == ["provider", "model"]
 
 
 def test_summary_filters_disabled_no_agent_and_mixed_pins() -> None:
@@ -93,7 +81,6 @@ def test_summary_filters_disabled_no_agent_and_mixed_pins() -> None:
 
     assert impact == {
         "available": True,
-        "guard_enabled": True,
         "affected_count": 2,
         "truncated": False,
         "jobs": [
@@ -127,7 +114,6 @@ def test_summary_handles_legacy_and_malformed_records_without_hiding_valid_sibli
 def test_non_list_job_collection_is_unavailable(jobs: object) -> None:
     assert _impact(jobs) == {
         "available": False,
-        "guard_enabled": True,
         "affected_count": 0,
         "truncated": False,
         "jobs": [],
@@ -160,16 +146,6 @@ def test_fallback_name_respects_the_desktop_code_point_limit() -> None:
 
     assert impact["affected_count"] == 1
     assert impact["jobs"][0]["name"] == (f"Job {job_id}")[:120]
-
-
-def test_guard_disabled_summary_is_available_but_empty() -> None:
-    assert _impact([_job()], cron={"model_drift_guard": False}) == {
-        "available": True,
-        "guard_enabled": False,
-        "affected_count": 0,
-        "truncated": False,
-        "jobs": [],
-    }
 
 
 def test_effective_defaults_match_scheduler_config_over_env_precedence() -> None:

@@ -8,6 +8,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 
@@ -99,6 +101,49 @@ class TestMemoryManagerUserIdThreading:
         assert p2._init_kwargs.get("user_id") == "slack_U12345"
         assert p2._init_kwargs.get("platform") == "slack"
 
+    def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
+        from run_agent import AIAgent
+
+        provider = RecordingProvider()
+        session_db = MagicMock()
+        session_db.get_session_title.return_value = "Generated title"
+        session_db.get_session_title_source.return_value = "llm"
+
+        with patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "model_tools.check_toolset_requirements",
+            return_value={},
+        ), patch(
+            "agent.process_bootstrap.OpenAI",
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"memory": {"provider": "recording"}},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=provider,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                platform="telegram",
+                session_id="session-with-title",
+                session_db=session_db,
+                gateway_session_key="agent:main:telegram:dm:42",
+                cwd=str(tmp_path),
+            )
+
+        assert provider._init_kwargs["session_title"] == "Generated title"
+        assert provider._init_kwargs["session_title_source"] == "llm"
+        assert (
+            provider._init_kwargs["gateway_session_key"]
+            == "agent:main:telegram:dm:42"
+        )
+        assert provider._init_kwargs["cwd"] == str(tmp_path)
+        agent.close()
 
 # ---------------------------------------------------------------------------
 # Mem0 provider user_id tests
@@ -222,7 +267,7 @@ class TestHonchoUserIdScoping:
         with patch.object(manager, "_get_or_create_peer", return_value=MagicMock()), patch.object(
             manager,
             "_get_or_create_honcho_session",
-            return_value=(MagicMock(), []),
+            return_value=(MagicMock(), [], None),
         ):
             session = manager.get_or_create("discord:channel-1")
 

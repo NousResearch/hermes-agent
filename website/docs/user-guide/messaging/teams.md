@@ -8,7 +8,7 @@ description: "Set up Hermes Agent as a Microsoft Teams bot"
 
 Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production).
 
-Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/user-guide/messaging/teams-meetings).
+Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](./teams-meetings.md).
 
 > Run `hermes gateway setup` and pick **Microsoft Teams** for a guided walk-through.
 
@@ -21,6 +21,8 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 | **Channel** | Bot only responds when @mentioned. |
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
+
+Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so no filtering is needed. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message in the conversation — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only answers channel/group-chat messages that @mention it or reply to one of its own messages. Personal chats are never gated, and a gated message is dropped before its attachments are downloaded.
 
 ---
 
@@ -168,6 +170,7 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
+| `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
 
 ### config.yaml
 
@@ -182,6 +185,7 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+    require_mention: false   # true once the app has RSC message-read consent
 ```
 
 ---
@@ -201,7 +205,7 @@ Clicking a button resolves the approval inline and replaces the card with the de
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
-When the [Teams meeting pipeline plugin](/user-guide/messaging/msgraph-webhook) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
+When the [Teams meeting pipeline plugin](./msgraph-webhook.md) is enabled, this adapter also handles outbound delivery of meeting summaries — one Teams integration surface, not two. After a meeting's transcript is summarized, the writer posts the summary into your chosen Teams target.
 
 Pipeline summary delivery is configured under the `teams` platform entry alongside the bot config:
 
@@ -226,7 +230,7 @@ platforms:
 | Mode | Use when | Trade-off |
 |------|----------|-----------|
 | `incoming_webhook` | Simple "post a summary into this channel" with a static Teams-generated URL. | No reply threading, no reactions, shows as the webhook's configured identity. |
-| `graph` | Threaded channel posts or 1:1/group chat posts under the bot's identity via Microsoft Graph. | Requires the [Graph app registration](/guides/microsoft-graph-app-registration) with `ChannelMessage.Send` (channel) or `Chat.ReadWrite.All` (chat) application permissions. |
+| `graph` | Threaded channel posts or 1:1/group chat posts under the bot's identity via Microsoft Graph. | Requires the [Graph app registration](../../guides/microsoft-graph-app-registration.md) with `ChannelMessage.Send` (channel) or `Chat.ReadWrite.All` (chat) application permissions. |
 
 If the `teams_pipeline` plugin is **not** enabled, these settings are inert — they only wire up when the pipeline runtime binds to the Graph webhook ingress.
 
@@ -284,5 +288,5 @@ Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the A
 
 ## Related Docs
 
-- [Teams Meetings](/user-guide/messaging/teams-meetings)
-- [Operate the Teams Meeting Pipeline](/guides/operate-teams-meeting-pipeline)
+- [Teams Meetings](./teams-meetings.md)
+- [Operate the Teams Meeting Pipeline](../../guides/operate-teams-meeting-pipeline.md)

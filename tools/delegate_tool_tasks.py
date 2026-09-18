@@ -1,4 +1,4 @@
-"""delegate_task input validation: tasks=[...] / legacy goal normalisation and per-task output schemas."""
+"""delegate_task input validation: tasks=[...] / legacy goal normalisation, per-task output schemas and images."""
 
 from __future__ import annotations
 
@@ -120,3 +120,43 @@ def _coerce_task_schemas(
             return [], f"Task {i} output_schema invalid: {schema_err}"
         task_schemas.append(coerced_schema)
     return task_schemas, None
+
+# Per-task image ceiling: enough for screenshots/mocks while keeping the child's first request small.
+_MAX_TASK_IMAGES = 8
+
+def _normalize_task_images(task: dict, i: int) -> tuple[Optional[List[str]], Optional[str]]:
+    """``(cleaned_list_or_None, None)`` for a task's optional ``images`` (local paths, http(s) or data: URLs), else
+    ``(None, error)``. A bare string is wrapped into a one-entry list (small models emit scalars for arrays)."""
+    raw = task.get("images")
+    if raw is None:
+        return None, None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None, f"Task {i} 'images' must be an array of local file paths or http(s) URLs."
+    cleaned: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None, f"Task {i} 'images' entries must be non-empty strings (local file paths or http(s) URLs)."
+        cleaned.append(item.strip())
+    if len(cleaned) > _MAX_TASK_IMAGES:
+        return None, (
+            f"Task {i} has {len(cleaned)} images; the per-task limit is {_MAX_TASK_IMAGES}. "
+            "Trim to the images the child actually needs to see."
+        )
+    return (cleaned or None), None
+
+def _coerce_task_images(
+    task_list: List[Dict[str, Any]], images: Optional[List[str]]
+) -> tuple[List[Optional[List[str]]], Optional[str]]:
+    """Per-task validated image lists; a malformed list fails the whole call before any child spawns. The legacy
+    top-level ``images`` applies to a single task only, like ``output_schema``."""
+    task_images: List[Optional[List[str]]] = []
+    for i, task in enumerate(task_list):
+        if task.get("images") is None and len(task_list) == 1 and images is not None:
+            task = {**task, "images": images}
+        cleaned, err = _normalize_task_images(task, i)
+        if err:
+            return [], err
+        task_images.append(cleaned)
+    return task_images, None

@@ -161,15 +161,16 @@ class TestHostResolvedProfile:
         self, transport, seeded_catalog
     ):
         # A providers.my-proxy entry pointed at api.router.com rides the same
-        # host mandate onto this transport; the vocabulary must follow the
-        # host, not the config-entry name.
+        # host mandate onto this transport under the runtime's ``custom:<name>``
+        # identity; the vocabulary must follow the host, not the config-entry
+        # name — and not the generic custom declaration either.
         kw = transport.build_kwargs(
             model="grok-4.6",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             base_url="https://api.router.com/v1",
             session_id="sid",
-            provider="my-proxy",
+            provider="custom:my-proxy",
             reasoning_config={"effort": "max"},
         )
         assert kw["reasoning"]["effort"] == "xhigh"

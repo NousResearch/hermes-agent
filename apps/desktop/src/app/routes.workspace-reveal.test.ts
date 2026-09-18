@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { host } from '@/sdk'
 
 import {
   $workspaceIsPage,
@@ -184,6 +185,37 @@ describe('navigateToWorkspacePage', () => {
     navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
 
     expect(navigate).toHaveBeenCalledTimes(2)
+    expect(revealTreePane).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * `host.navigate` is the only nav door a plugin has (Kanban's ⌘K row, statusbar
+ * count, ⌘⌥N). It writes the hash, which the router follows on a CHANGE — but
+ * re-issuing the current route fires nothing, so it must reveal imperatively
+ * like the sidebar does.
+ */
+describe('host.navigate', () => {
+  it('fronts the workspace pane even when already on the contributed page', () => {
+    const dispose = contributeRoute()
+
+    try {
+      window.location.hash = `#${CONTRIBUTED_ROUTE}`
+      vi.mocked(revealTreePane).mockClear()
+      vi.mocked(noteActiveTreeGroup).mockClear()
+
+      host.navigate(CONTRIBUTED_ROUTE)
+
+      expect(window.location.hash).toBe(`#${CONTRIBUTED_ROUTE}`)
+      expect(fronted()).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('does not front the pane for a chat route', () => {
+    host.navigate(sessionRoute('sess-a'))
+
     expect(revealTreePane).not.toHaveBeenCalled()
   })
 })

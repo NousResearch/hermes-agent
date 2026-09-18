@@ -45,7 +45,7 @@ def _homes(tmp_path: Path) -> tuple[Path, Path]:
 
 def _reset_cfg_cache() -> None:
     server._cfg_cache = None
-    server._cfg_mtime = None
+    server._cfg_sig = None
     server._cfg_path = None
 
 

@@ -7,10 +7,10 @@ behavior measured on real hardware (llama.cpp, discrete NVIDIA on Windows/WDDM, 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, physics_check)
+    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
 
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
@@ -64,7 +64,8 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
     everywhere, capped at native. ``overhead_bytes`` is runtime cost beyond weights+KV; zero keeps
     this pure physics for decision-table tests, production callers pass it.
     """
-    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention)
+    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention,
+                            overhead_bytes=overhead_bytes)
     if refusal:
         return refusal
 
@@ -74,9 +75,13 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
     def kv(rung: int) -> int:
         return ctx_bytes(profile, rung, flash_attention=flash_attention)
 
+    def need(rung: int) -> int:
+        return footprint_bytes(profile, rung, flash_attention=flash_attention,
+                               overhead_bytes=overhead_bytes)
+
     best_zero_spill: int | None = None
     for rung in rungs:
-        if profile.weights_bytes + overhead_bytes + kv(rung) > budget.usable_vram_bytes:
+        if need(rung) > budget.usable_vram_bytes:
             break
         best_zero_spill = rung
 
@@ -91,15 +96,74 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
         for rung in rungs:
             if rung < window:
                 continue
-            if kv(rung) > cap:
+            if (kv(rung) > cap
+                    or need(rung) > budget.usable_vram_bytes + budget.ram_available_bytes):
                 break
             window = rung
         reason = f"floor held at {window // 1024}K; weights spill (deliberate price of the guarantee)"
 
     kv_bytes = kv(window)
     return WindowDecision(window=window, reasons=[reason],
-                          spill_bytes=max(0, profile.weights_bytes + kv_bytes - budget.usable_vram_bytes),
-                          kv_on_gpu=kv_bytes <= budget.usable_vram_bytes)
+                          spill_bytes=max(0, need(window) - budget.usable_vram_bytes),
+                          kv_on_gpu=kv_bytes + overhead_bytes <= budget.usable_vram_bytes)
+
+
+@dataclass
+class LaunchPlan:
+    decision: WindowDecision | PhysicsRefusal
+    mtp_prefill: bool
+    overhead_bytes: int
+
+
+def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
+                fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
+                requested_window: int | None = None) -> LaunchPlan:
+    """Window first, then prefill; price both postures at the effective window.
+
+    A restored window may fit only under lean MTP. Evaluate it before discarding it because
+    stacked exceeds memory, and keep deliberate spill when neither posture is resident.
+    """
+    if mtp_capable and profile.kv_scale == 1.0:
+        profile = replace(profile, kv_scale=1.2)
+
+    initial: dict[bool, WindowDecision | PhysicsRefusal] = {}
+
+    def candidate(stacked: bool) -> LaunchPlan:
+        overhead = fixed_overhead + ub_logits_bytes(
+            profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked)
+        decision = initial_window(profile, budget, overhead_bytes=overhead)
+        initial[stacked] = decision
+        if isinstance(decision, WindowDecision) and requested_window:
+            target = min(requested_window, profile.n_ctx_train or requested_window)
+            if target > decision.window and physics_check(
+                    profile, budget, target, overhead_bytes=overhead) is None:
+                need = footprint_bytes(profile, target, overhead_bytes=overhead)
+                decision = WindowDecision(
+                    window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
+                    kv_on_gpu=ctx_bytes(profile, target) + overhead <= budget.usable_vram_bytes,
+                    reasons=[f"grown window restored ({target // 1024}K)"])
+        return LaunchPlan(decision, stacked, overhead)
+
+    lean = candidate(False)
+    if not mtp_capable:
+        return lean
+    stacked = candidate(True)
+    if isinstance(stacked.decision, PhysicsRefusal):
+        return lean
+    if isinstance(lean.decision, PhysicsRefusal):
+        return stacked
+    if stacked.decision.window < lean.decision.window:
+        return lean
+    if not stacked.decision.spilled:
+        return stacked
+    # A previously granted window keeps its spill policy unless lean can make it resident.
+    stacked_initial, lean_initial = initial[True], initial[False]
+    if (requested_window and isinstance(stacked_initial, WindowDecision)
+            and isinstance(lean_initial, WindowDecision) and not stacked_initial.spilled
+            and stacked_initial.window >= lean_initial.window
+            and stacked.decision.window > stacked_initial.window and lean.decision.spilled):
+        return stacked
+    return lean
 
 
 @dataclass

@@ -58,7 +58,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `AZURE_CLIENT_SECRET` | `EnvironmentCredential` 使用的服务主体密钥 |
 | `AZURE_CLIENT_CERTIFICATE_PATH` | 服务主体证书（`AZURE_CLIENT_SECRET` 的替代方案） |
 | `AZURE_FEDERATED_TOKEN_FILE` | AKS Workload Identity / OIDC 流程的联合 token 文件路径 |
-| `AZURE_AUTHORITY_HOST` | 主权云 authority 覆盖（例如 Azure Government 使用 `https://login.microsoftonline.us`）。参见 [Azure Foundry 指南](/guides/azure-foundry#sovereign-clouds-government-china) |
+| `AZURE_AUTHORITY_HOST` | 主权云 authority 覆盖（例如 Azure Government 使用 `https://login.microsoftonline.us`）。参见 [Azure Foundry 指南](../guides/azure-foundry.md#sovereign-clouds-government-china) |
 | `IDENTITY_ENDPOINT` / `MSI_ENDPOINT` | App Service、Functions 和 Container Apps 的托管标识端点；VM 通常使用 IMDS 而不设置这些变量 |
 | `HF_TOKEN` | Hugging Face Inference Providers token（[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)） |
 | `HF_BASE_URL` | 覆盖 Hugging Face base URL（默认：`https://router.huggingface.co/v1`） |
@@ -116,7 +116,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `HERMES_NOUS_TIMEOUT_SECONDS` | Nous 凭证/token 流程的 HTTP 超时 |
 | `HERMES_DUMP_REQUESTS` | 将 API 请求载荷转储到日志文件（`true`/`false`） |
 | `HERMES_PREFILL_MESSAGES_FILE` | 包含在 API 调用时注入的临时预填消息的 JSON 文件路径 |
-| `HERMES_TIMEZONE` | IANA 时区覆盖（例如 `America/New_York`） |
+| `HERMES_TIMEZONE` | IANA 时区覆盖（例如 `America/New_York`）。在 Linux/macOS 上还会作为 `TZ` 导出给 `execute_code` 子进程；在 Windows 上这些子进程保留操作系统时区，因为 Windows C 运行时只支持 POSIX 形式的 `TZ` 字符串，IANA 名称会被解析成错误的偏移量 |
 
 ## 工具 API
 
@@ -160,7 +160,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Langfuse 可观测性
 
-内置 [`observability/langfuse`](/user-guide/features/built-in-plugins#observabilitylangfuse) 插件的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，还必须启用该插件（`hermes plugins enable observability/langfuse`，或在 `hermes plugins` 中勾选）。
+内置 [`observability/langfuse`](../user-guide/features/built-in-plugins.md#observabilitylangfuse) 插件的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，还必须启用该插件（`hermes plugins enable observability/langfuse`，或在 `hermes plugins` 中勾选）。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -176,7 +176,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Nous Tool Gateway
 
-这些变量为付费 Nous 订阅者或自托管 gateway 部署配置 [Tool Gateway](/user-guide/features/tool-gateway)。大多数用户无需设置——gateway 通过 `hermes model` 或 `hermes tools` 自动配置。
+这些变量为付费 Nous 订阅者或自托管 gateway 部署配置 [Tool Gateway](../user-guide/features/tool-gateway.md)。大多数用户无需设置——gateway 通过 `hermes model` 或 `hermes tools` 自动配置。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -252,6 +252,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TELEGRAM_REQUIRE_MENTION` | 在 Telegram 群组中响应前要求显式触发。等同于 `config.yaml` 中的 `telegram.require_mention`。 |
 | `TELEGRAM_MENTION_PATTERNS` | 启用 Telegram 群组 mention 门控时接受的正则唤醒词模式，JSON 数组、换行分隔列表或逗号分隔列表。等同于 `telegram.mention_patterns`。 |
 | `TELEGRAM_EXCLUSIVE_BOT_MENTIONS` | 启用后，Telegram 群组中的显式 `@...bot` mention 仅路由到被 mention 的 bot 用户名，然后再执行回复或唤醒词回退。默认：`true`。等同于 `telegram.exclusive_bot_mentions`。 |
+| `TELEGRAM_BOTS_REQUIRE_MENTION` | 启用后，其他 bot 发送的消息必须显式 `@本bot` 才会触发回复——仅引用回复会被忽略，从而避免两个 bot 互相回复形成死循环。人类用户的回复不受影响。默认：`false`。等同于 `telegram.bots_require_mention`。 |
 | `TELEGRAM_REPLY_TO_MODE` | 回复引用行为：`off`、`first`（默认）或 `all`。与 Discord 模式一致。 |
 | `TELEGRAM_IGNORED_THREADS` | bot 永不响应的逗号分隔 Telegram 论坛话题/线程 ID |
 | `TELEGRAM_PROXY` | Telegram 连接的代理 URL——覆盖 `HTTPS_PROXY`。支持 `http://`、`https://`、`socks5://` |
@@ -414,7 +415,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `API_SERVER_PORT` | API 服务器端口（默认：`8642`） |
 | `API_SERVER_HOST` | API 服务器主机/绑定地址（默认：`127.0.0.1`）。使用 `0.0.0.0` 开放网络访问——需要 `API_SERVER_KEY` 和严格的 `API_SERVER_CORS_ORIGINS` 白名单。 |
 | `API_SERVER_MODEL_NAME` | `/v1/models` 上公告的模型名称。默认为 profile 名称（默认 profile 为 `hermes-agent`）。适用于 Open WebUI 等前端需要每个连接使用不同模型名称的多用户场景。 |
-| `GATEWAY_PROXY_URL` | 将消息转发到的远程 Hermes API 服务器 URL（[代理模式](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)）。设置后，gateway 仅处理平台 I/O——所有 agent 工作委托给远程服务器。也可通过 `config.yaml` 中的 `gateway.proxy_url` 配置。 |
+| `GATEWAY_PROXY_URL` | 将消息转发到的远程 Hermes API 服务器 URL（[代理模式](../user-guide/messaging/matrix.md#proxy-mode-e2ee-on-macos)）。设置后，gateway 仅处理平台 I/O——所有 agent 工作委托给远程服务器。也可通过 `config.yaml` 中的 `gateway.proxy_url` 配置。 |
 | `GATEWAY_PROXY_KEY` | 代理模式下与远程 API 服务器认证的 Bearer token。必须与远程主机上的 `API_SERVER_KEY` 一致。 |
 | `MESSAGING_CWD` | 消息模式下终端命令的工作目录（默认：`~`） |
 | `GATEWAY_ALLOWED_USERS` | 跨所有平台允许的逗号分隔用户 ID |
@@ -422,7 +423,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Microsoft Graph（Teams 会议）
 
-用于即将推出的 Teams 会议摘要流水线的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration)。
+用于即将推出的 Teams 会议摘要流水线的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](../guides/microsoft-graph-app-registration.md)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -434,7 +435,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Microsoft Graph Webhook 监听器
 
-Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听器。设置和安全加固详见 [Microsoft Graph Webhook 监听器](/user-guide/messaging/msgraph-webhook)。
+Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听器。设置和安全加固详见 [Microsoft Graph Webhook 监听器](../user-guide/messaging/msgraph-webhook.md)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -446,7 +447,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 ### Teams 会议摘要投递
 
-仅在启用 [`teams_pipeline` 插件](/user-guide/messaging/msgraph-webhook)时使用。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](/user-guide/messaging/teams#meeting-summary-delivery-teams-meeting-pipeline)。
+仅在启用 [`teams_pipeline` 插件](../user-guide/messaging/msgraph-webhook.md)时使用。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#meeting-summary-delivery-teams-meeting-pipeline)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -459,7 +460,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 ### LINE Messaging API
 
-由内置 LINE 平台插件（`plugins/platforms/line/`）使用。完整设置详见 [消息 Gateway → LINE](/user-guide/messaging/line)。
+由内置 LINE 平台插件（`plugins/platforms/line/`）使用。完整设置详见 [消息 Gateway → LINE](../user-guide/messaging/line.md)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -478,6 +479,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `LINE_BUTTON_LABEL` | Postback 按钮标签（默认：`Get answer`）。 |
 | `LINE_DELIVERED_TEXT` | 再次点击已投递 postback 时的回复（默认：`Already replied ✅`）。 |
 | `LINE_INTERRUPTED_TEXT` | 点击 `/stop` 孤立 postback 按钮时的回复（默认：`Run was interrupted before completion.`）。 |
+| `LINE_EXPIRED_TEXT` | 点击缓存答案已失效（过期 / 随进程状态丢失）的 postback 按钮时的回复（默认：`That request has expired — send your message again.`）。 |
 
 ### ntfy（推送通知）
 
@@ -495,7 +497,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `NTFY_HOME_CHANNEL` | `deliver: ntfy` 的 cron 任务的默认投递目标。 |
 | `NTFY_HOME_CHANNEL_NAME` | 主频道的人类可读标签（默认为话题名称）。 |
 
-在使用不受信任的话题部署前，请参阅 [ntfy 消息指南](/user-guide/messaging/ntfy)——特别是**身份模型**部分。
+在使用不受信任的话题部署前，请参阅 [ntfy 消息指南](../user-guide/messaging/ntfy.md)——特别是**身份模型**部分。
 
 ### 高级消息调优
 
@@ -572,7 +574,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `HERMES_CORE_TOOLS` | 规范核心工具列表的逗号分隔覆盖（高级；极少需要）。 |
 | `HERMES_BUNDLED_SKILLS` | 启动时加载的内置技能列表的逗号分隔覆盖。 |
 | `HERMES_OPTIONAL_SKILLS` | 首次运行时自动安装的可选技能名称逗号分隔列表。 |
-| `HERMES_DEBUG_INTERRUPT` | 设为 `1` 可将详细的中断/取消追踪记录到 `agent.log`。 |
+| `HERMES_DEBUG_INTERRUPT` | 设为 `1`/`true` 可将详细的中断/取消追踪记录到 `agent.log`；`0`/`false`/`off`（或未设置）则保持关闭。 |
 | `HERMES_DUMP_REQUESTS` | 将 API 请求载荷转储到日志文件（`true`/`false`） |
 | `HERMES_DUMP_REQUEST_STDOUT` | 将 API 请求载荷转储到 stdout 而非日志文件。 |
 | `HERMES_OAUTH_TRACE` | 设为 `1` 可记录 OAuth token 交换和刷新尝试。包含脱敏的时序信息。 |
@@ -611,8 +613,6 @@ export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 
 | 变量 | 描述 |
 |----------|-------------|
-| `SESSION_IDLE_MINUTES` | 不活动 N 分钟后重置会话（默认：1440） |
-| `SESSION_RESET_HOUR` | 24 小时制每日重置时间（默认：4 = 凌晨 4 点） |
 | `HERMES_SESSION_ID` | **自动导出到 Hermes 生成的每个工具子进程**（`terminal`、`execute_code`、持久 shell、Docker/Singularity 后端、委托子 agent 运行）。由 agent 设置为当前会话 ID；从工具调用的用户脚本可读取它，以将其输出、遥测或副作用与原始 Hermes 会话关联。**不应手动设置**——从父 shell 覆盖仅在 agent 运行外生效，且 agent 启动会话时会被覆盖。 |
 
 ## 上下文压缩（仅 config.yaml）
@@ -658,7 +658,7 @@ fallback_providers:
 
 旧版顶层 `fallback_model` 单提供商格式仍可向后兼容读取，但新配置应使用 `fallback_providers`。
 
-详见 [回退提供商](/user-guide/features/fallback-providers)。
+详见 [回退提供商](../user-guide/features/fallback-providers.md)。
 
 ## 提供商路由（仅 config.yaml）
 

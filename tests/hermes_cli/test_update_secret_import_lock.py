@@ -117,3 +117,27 @@ def test_dotenv_loading_is_preserved_when_external_secrets_are_skipped(
     assert loaded == [env_file]
     assert os.environ["UPDATE_TEST_VALUE"] == "from-dotenv"
     assert applied == ([home] if external_secrets else [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the 'command' secret source is POSIX-only")
+def test_update_probe_children_skip_external_secret_sources(tmp_path):
+    """The critical-module import probe imports ``run_agent``, whose dotenv load must not run a
+    configured secret helper: a slow helper (op/bws/command, 120s budget) inside the 120s probe
+    surfaced as ``timed out before reporting import health`` on a healthy install (#110823)."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    hit = tmp_path / "helper_hit"
+    (home / "config.yaml").write_text(
+        f"secrets:\n  command:\n    enabled: true\n    command: 'touch {hit}'\n", encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.argv = ['hermes', 'update']\n"
+         "from hermes_cli.update_cmd_deps import _validate_critical_modules_import\n"
+         "print('PROBE=' + repr(_validate_critical_modules_import(__import__('os').getcwd())))"],
+        capture_output=True, text=True, timeout=180, cwd=REPO_ROOT,
+        env={**os.environ, "HERMES_HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PROBE=(True, None, None)" in result.stdout, result.stdout + result.stderr
+    assert not hit.exists(), "the import probe resolved external secret sources"

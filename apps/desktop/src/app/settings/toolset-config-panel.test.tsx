@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
 
+// Collect the component graph before the behavioral test deadline starts.
+import { ToolsetConfigPanel } from './toolset-config-panel'
+
 // EnvVarField navigates to Settings → Keys via useNavigate, so every render
 // needs a router context. The navigate spy asserts the deep-link target.
 const navigateSpy = vi.fn()
@@ -42,6 +45,7 @@ const pollOAuthSession = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
+const saveHermesConfigRecord = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -62,7 +66,14 @@ vi.mock('@/hermes', () => ({
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfigRecord(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  // use-config-record keys its query cache by scope via profileScopeKey; a
+  // scoped panel reaches it, so the full-replacement mock must provide it.
+  profileScopeKey: (scope?: { profile?: string; connectionId?: string } | string) =>
+    typeof scope === 'object' && scope
+      ? `${scope.connectionId ?? ''}::${scope.profile ?? 'default'}`
+      : (scope ?? 'default'),
   // @/store/profile (pulled in transitively via use-config-record's
   // normalizeProfileKey import) calls this at module-init; the full-replacement
   // mock must provide it or the module graph throws on load.
@@ -149,6 +160,7 @@ beforeEach(() => {
   })
   getHermesConfigSchema.mockResolvedValue({ fields: {}, category_order: [] })
   saveHermesConfig.mockResolvedValue({ ok: true })
+  saveHermesConfigRecord.mockResolvedValue({ ok: true })
   getElevenLabsVoices.mockResolvedValue({ available: false, voices: [] })
 })
 
@@ -183,7 +195,6 @@ describe('ToolsetConfigPanel', () => {
       })
     )
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     expect(await screen.findByText('OpenAI TTS Model')).toBeTruthy()
@@ -193,13 +204,49 @@ describe('ToolsetConfigPanel', () => {
     // closed Select.
     const voiceInput = screen.getByDisplayValue('alloy')
     fireEvent.change(voiceInput, { target: { value: 'marin' } })
-    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled(), { timeout: 3000 })
-    const saved = saveHermesConfig.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
+    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
     expect(saved.tts.openai.voice).toBe('marin')
+    // Unscoped panel (no Capabilities override) → profile rides as undefined,
+    // preserving the active-profile default. A scoped panel forwards its scope.
+    expect(saveHermesConfigRecord.mock.calls.at(-1)?.[1]).toBeUndefined()
+  })
+
+  it('autosaves the inline voice fields into the profile the panel is scoped to', async () => {
+    // The bug: a scoped Capabilities panel (scope selector → profile B) rendered
+    // these fields unscoped, so editing B's voice PUT the ACTIVE profile's config.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        active_provider: 'OpenAI TTS',
+        providers: [
+          {
+            name: 'OpenAI TTS',
+            badge: 'paid',
+            tag: 'High quality voices',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            tts_provider: 'openai'
+          }
+        ]
+      })
+    )
+
+    const scope = { profile: 'scout', connectionId: 'gw-2' }
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={scope} toolset="tts" />)
+
+    fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
+    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
+      Record<string, Record<string, Record<string, string>>>,
+      unknown
+    ]
+    expect(saved.tts.openai.voice).toBe('marin')
+    expect(forwarded).toEqual(scope)
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     await screen.findByText('Microsoft Edge TTS')
@@ -208,7 +255,6 @@ describe('ToolsetConfigPanel', () => {
   })
 
   it('lists providers from the config endpoint', async () => {
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     expect(await screen.findByText('Microsoft Edge TTS')).toBeTruthy()
@@ -217,7 +263,6 @@ describe('ToolsetConfigPanel', () => {
   })
 
   it('expands a provider on row click and activates it via the explicit button', async () => {
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     // Row click only expands — browsing details must not rewrite config.
@@ -240,7 +285,6 @@ describe('ToolsetConfigPanel', () => {
         })
     )
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     // Edge auto-expands (first configured provider); activate it explicitly.
@@ -292,7 +336,6 @@ describe('ToolsetConfigPanel', () => {
       default: 'z-image-turbo'
     })
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="image_gen" />)
 
     // Both catalog rows render with their picker metadata.
@@ -306,7 +349,6 @@ describe('ToolsetConfigPanel', () => {
   })
 
   it('does not fetch model catalogs for toolsets without them', async () => {
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     await screen.findByText('Microsoft Edge TTS')
@@ -314,7 +356,6 @@ describe('ToolsetConfigPanel', () => {
   })
 
   it('saves an API key for a provider env var', async () => {
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     // Select the keyed provider so its env vars render.
@@ -373,7 +414,6 @@ describe('ToolsetConfigPanel', () => {
       })
     )
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
     // The active provider's env-var field only renders when it's the expanded
@@ -420,7 +460,6 @@ describe('ToolsetConfigPanel', () => {
         running: false
       })
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
@@ -454,7 +493,6 @@ describe('ToolsetConfigPanel', () => {
     // Spawn failed server-side — must NOT proceed to poll a non-existent action.
     runToolsetPostSetup.mockResolvedValue({ ok: false, pid: 0, name: 'tools-post-setup' })
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
@@ -493,7 +531,6 @@ describe('ToolsetConfigPanel', () => {
       running: false
     })
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
@@ -531,7 +568,6 @@ describe('ToolsetConfigPanel', () => {
       })
     )
 
-    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
     // Installed confirmation replaces the contradictory install prompt…
@@ -585,7 +621,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       await screen.findByText('Microsoft Edge TTS')
@@ -623,7 +658,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       await screen.findByText('ElevenLabs')
@@ -637,7 +671,6 @@ describe('ToolsetConfigPanel', () => {
       // Older backend (no `status` field): keyless rows keep the legacy
       // Ready pill, keyed-and-unset rows keep no pill. Narrow compat path —
       // desktop and backend update on separate clocks.
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       await screen.findByText('Microsoft Edge TTS')
@@ -674,7 +707,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       expect(await screen.findByText('ELEVENLABS_API_KEY')).toBeTruthy()
@@ -717,7 +749,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
@@ -754,7 +785,6 @@ describe('ToolsetConfigPanel', () => {
         running: false
       })
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       fireEvent.click(await screen.findByRole('button', { name: /Re-run setup/ }))
@@ -782,7 +812,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByText('Local Browser')
@@ -830,7 +859,6 @@ describe('ToolsetConfigPanel', () => {
         feature: 'browser'
       })
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       // The single Nous row auto-expands; activate via the explicit button.
@@ -875,7 +903,6 @@ describe('ToolsetConfigPanel', () => {
       const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
 
       try {
-        const { ToolsetConfigPanel } = await import('./toolset-config-panel')
         render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
         await screen.findByRole('button', { name: /Nous Subscription/ })
@@ -918,7 +945,6 @@ describe('ToolsetConfigPanel', () => {
         provider: 'Nous Subscription (Browser Use cloud)'
       })
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
 
       await screen.findByRole('button', { name: /Nous Subscription/ })
@@ -957,7 +983,6 @@ describe('ToolsetConfigPanel', () => {
         })
       )
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       const trigger = await screen.findByRole('button', { name: /^Actions$/ })
@@ -970,7 +995,6 @@ describe('ToolsetConfigPanel', () => {
     it('hides "Manage in API Keys" while the key is unset', async () => {
       // Default config(): ElevenLabs key is not set. An unset key is managed
       // right here via Set — no point bouncing the user to another page.
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       // Expand the keyed provider so its env row renders. Wait for the
@@ -1029,7 +1053,6 @@ describe('ToolsetConfigPanel', () => {
     it('shows the resolved per-capability backends as badges', async () => {
       getToolsetConfig.mockResolvedValue(webConfig())
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
 
       expect(await screen.findByText('Search: searxng')).toBeTruthy()
@@ -1043,7 +1066,6 @@ describe('ToolsetConfigPanel', () => {
       getToolsetConfig.mockResolvedValue(webConfig())
       selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'SearXNG', capability: 'search' })
 
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
 
       // Active/expanded provider is search-only SearXNG.
@@ -1062,7 +1084,6 @@ describe('ToolsetConfigPanel', () => {
     })
 
     it('does not render capability chrome for non-web toolsets', async () => {
-      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
       await screen.findByText('Microsoft Edge TTS')

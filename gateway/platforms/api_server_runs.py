@@ -9,13 +9,17 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+try:
+    from aiohttp.web_request import RequestKey
+except ImportError:
+    # Separate block: aiohttp < 3.14 lacks RequestKey, and a shared except
+    # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
@@ -43,6 +47,18 @@ _FIXED_EVENT_FIELDS = {
     "tool.completed": lambda tool, preview, kw: {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+_TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
+
+
+def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
+    """Bounded, secret-redacted result summary for the public run stream — redacted BEFORE
+    truncation so a cut never leaves a secret's prefix on the wire."""
+    if result is None:
+        return ""
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    preview = redact_sensitive_text(text, force=True)
+    limit = _TOOL_COMPLETED_PREVIEW_MAX_CHARS
+    return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 
 def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
@@ -64,6 +80,28 @@ def _room_retention_until(request: "web.Request") -> float:
 def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
     """Build one SSE event payload (key order is part of the wire format)."""
     return {"event": name, "run_id": run_id, "timestamp": time.time(), **fields}
+
+
+def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Map a ``run_conversation`` result to its terminal run status and the wire fields every
+    terminal event/status carries. An interrupted turn is ``cancelled``; a turn that ended
+    without finishing (``failed``, ``partial``, or ``completed=False`` such as the iteration
+    budget) is ``failed``, so ``completed: true`` never rides next to ``partial: true``."""
+    interrupted = bool(result.get("interrupted"))
+    finished = (
+        not interrupted and not result.get("failed") and not result.get("partial")
+        and result.get("completed") is not False
+    )
+    status = "cancelled" if interrupted else "completed" if finished else "failed"
+    fields: Dict[str, Any] = {
+        "completed": finished, "partial": bool(result.get("partial")), "interrupted": interrupted,
+    }
+    if not finished and result.get("turn_exit_reason"):
+        fields["turn_exit_reason"] = str(result["turn_exit_reason"])
+    if result.get("pending_steer"):
+        # Undelivered steer text rides on every terminal event/status for client replay.
+        fields["pending_steer"] = result["pending_steer"]
+    return status, fields
 
 
 def _run_not_found(_openai_error, run_id: str) -> "web.Response":
@@ -90,6 +128,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    self._shutdown_interrupted_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -144,6 +183,18 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
     return current
 
 
+def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
+    """Publish the shutdown outcome before cooperative interruption can race teardown."""
+    for run_id in run_ids:
+        self._shutdown_interrupted_run_ids.add(run_id)
+        self._set_run_status(
+            run_id,
+            "interrupted",
+            error="Gateway shutdown interrupted the run.",
+            last_event="run.interrupted",
+        )
+
+
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):
     """Return a callback that pushes structured events to the run SSE queue."""
     redact_sensitive_text = _api_server.redact_sensitive_text
@@ -161,7 +212,11 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         # lifecycle boundaries must land so clients can observe delegate_task failures.
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
-            _push(_run_event(run_id, event_type, **fields(tool_name, preview, kwargs)))
+            event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.completed":
+                event_fields["preview"] = _tool_completed_preview(
+                    kwargs.get("result"), redact_sensitive_text)
+            _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
             if preview is not None:
@@ -318,10 +373,16 @@ class _RunLaunch:
     declared_selected: bool
     user_message: str
     conversation_history: List[Dict[str, str]]
+    # #98619: only continuation paths that reload session history may grant wake authority —
+    # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
+    # caller-supplied conversation_history is authoritative for the turn; neither consumes a
+    # SessionDB delivery row, so both stay default-denied.
+    session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
 
     @property
     def approval_session_key(self) -> str:
@@ -344,11 +405,93 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(self, run_id, self._run_streams, self._run_streams_created)
+
+
+async def _resolve_live_session_id(self, session_id: str) -> str:
+    """Adopt the live compression-continuation tip for a client-addressed session (#98619):
+    a /v1/runs run bound to a pre-rotation id would otherwise load a stale history slice and
+    write its turn into the closed parent (CompressionSessionClosedError). Same canonical
+    resolution ``/api/sessions/{id}/messages`` reads use; fails open to the original id."""
+    db = await self._ensure_session_db_async()
+    resolver = getattr(db, "resolve_resume_session_id", None) if db is not None else None
+    if not callable(resolver):
+        return session_id
+    try:
+        resolved = await asyncio.to_thread(resolver, session_id)
+        return str(resolved) if resolved else session_id
+    except Exception:
+        logger.debug("/v1/runs live-session resolve failed for %s", session_id, exc_info=True)
+        return session_id
+
+
+async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                notification_category: str = "result", _api_server) -> None:
+    """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
+
+    The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
+    the shared listener authenticates with that profile's own ``API_SERVER_KEY`` — which a
+    route-only profile legitimately does not have — while an unprefixed self-post would resume
+    the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
+    inside the owner profile's runtime scope (the session DB, model resolution and tool policy
+    all follow the ambient scope), with ``profile`` naming the profile the caller proved owns
+    the session — never derived here, so a missing proof cannot silently become the default.
+    Raises on failure so the caller can rewind its cursor: a draining gateway fails at once
+    (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
+    backoff the HTTP self-post uses for a 429.
+    """
+    from gateway.wake import _RETRY_DELAYS_SECONDS
+    profile = (profile or "").strip()
+    if not profile:
+        raise ValueError("run_internal_session_turn requires the owning profile")
+    token = _api_server._api_request_profile.set(profile)
+    attempts = 1 + len(_RETRY_DELAYS_SECONDS)
+    last_err: Optional[BaseException] = None
+    try:
+        for attempt in range(attempts):
+            if attempt:
+                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+            if self._draining_response() is not None:
+                raise RuntimeError(
+                    f"internal wake refused for session {session_id}: the gateway is draining")
+            # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
+            if self._concurrency_limited_response() is not None:
+                last_err = RuntimeError(
+                    "internal wake deferred: the API server is at its concurrent-run cap")
+                logger.warning("%s; attempt %d/%d", last_err, attempt + 1, attempts)
+                continue
+            # #98619/#13437: adopt the live continuation tip first, the same canonical
+            # resolution the HTTP self-post consumes — a compressed origin must be woken on the
+            # transcript that is actually live, never the retired parent slice.
+            resolved = await _resolve_live_session_id(self, session_id)
+            session, err = await self._get_existing_session_or_404(resolved)
+            if err is not None or not session:
+                raise RuntimeError(
+                    f"internal wake target session {resolved!r} is not in the active profile store")
+            history = await self._conversation_history_for_session(resolved)
+            # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
+            # alias for the virtual model applies to the wake turn too.
+            route, overrides, err = self._select_request_route(
+                {"model": self._model_name}, session_id=resolved, gateway_session_key=None,
+                model_alias=self._model_name)
+            if err is not None:
+                raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
+            await self._run_agent(
+                user_message=text, conversation_history=history, session_id=resolved,
+                gateway_session_key=None, **overrides, route=route, requested_runtime={},
+                route_source="global", session_history_delivery="1",
+                notification_category=notification_category,
+            )
+            return
+        raise RuntimeError(
+            f"internal wake gave up for session {session_id} after {attempts} attempts: {last_err}")
+    finally:
+        if token is not None:
+            _api_server._api_request_profile.reset(token)
 
 
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -390,6 +533,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
     if not user_message:
         return _json_error(_openai_error, "No user message found in input", status=400)
+    try:
+        turn_author = _api_server._request_turn_author(body)
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
     conversation_history, instructions, stored_session_id, history_err = (
         _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
     if history_err is not None:
@@ -416,15 +563,32 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
-    if not conversation_history and session_id and not previous_response_id:
-        conversation_history = await self._conversation_history_for_session(str(session_id))
     run_id = f"run_{uuid.uuid4().hex}"
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
     # An explicit or chained session owns its routing key and is never rebound to the header.
     _declared_selected = not session_id and bool(gateway_session_key)
-    session_id = session_id or self._declared_conversation_session(gateway_session_key) or run_id
+    selected_session_id = session_id or (
+        await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
+        if _declared_selected else None)
+    # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
+    # history loads from it, the turn writes to it, and a detached delivery row persisted to it
+    # is what the next same-id run consumes below.
+    if selected_session_id:
+        selected_session_id = await _resolve_live_session_id(self, str(selected_session_id))
+    session_id = selected_session_id or run_id
+    # History loads for the session the request actually selected — including one resolved from
+    # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
+    # same-key run's context (#98619).  previous_response_id continuations keep their
+    # ResponseStore snapshot as history (they cannot consume a SessionDB delivery row and are
+    # accordingly denied wake capability in _run_agent_sync); the fresh run_id fallback has
+    # nothing persisted to load yet.  Wake authority is fixed here, before the load can
+    # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
+    # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
+    session_history_delivery = not previous_response_id and not conversation_history
+    if not conversation_history and selected_session_id and not previous_response_id:
+        conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = asyncio.Queue()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
@@ -443,14 +607,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history,
+        conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        turn_author=turn_author)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -485,8 +650,19 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
+                profile=run.request_profile or "",
                 browser_control_principal=run.browser_control_principal,
-                browser_control_transport_family=run.browser_control_transport_family)
+                browser_control_transport_family=run.browser_control_transport_family,
+                # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
+                # own continuation path reloads session history — an explicit body/chained
+                # session id or a declared X-Hermes-Session-Key conversation (both load
+                # SessionDB in _handle_runs), or the run_id fallback the client can post back
+                # as body.session_id.  A previous_response_id continuation consumes its
+                # ResponseStore snapshot instead and can never see a SessionDB delivery row,
+                # so it stays default-denied until a merge contract exists for that chain;
+                # likewise a caller-supplied conversation_history is authoritative for the
+                # turn and never reads the delivery row, so it is denied the same way.
+                session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:
@@ -496,9 +672,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
+            # Passed only when set: a human turn keeps today's call shape.
+            author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id)
+                task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -553,11 +731,20 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
+        if run_id in self._shutdown_interrupted_run_ids:
+            status = "interrupted"
+            fields = {"error": "Gateway shutdown interrupted the run."}
+            extra = {}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
 
     try:
+        # Shutdown landed between admission and the task's first tick: nothing to
+        # interrupt yet, and starting a turn now would outlive the gateway.
+        if run_id in self._shutdown_interrupted_run_ids:
+            _finish("interrupted")
+            return
         self._set_run_status(run_id, "running")
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
@@ -572,15 +759,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
-        if run_id in self._stopping_run_ids and result.get("interrupted") is True:
-            _finish("cancelled")
+        status, fields = terminal_run_status(result)
+        if status == "cancelled":
+            _finish("cancelled", fields)
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
-            _finish("failed", error=_redact_api_error_text(result.get("error") or "agent run failed"))
+            _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            # Undelivered steer text rides on the terminal event/status for client replay.
-            extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -685,7 +871,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     try:
         while True:
             try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                event = await asyncio.wait_for(
+                    q.get(), timeout=_api_server.CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
                 await response.write(b": keepalive\n\n")
                 continue

@@ -146,7 +146,7 @@ def _get_firecrawl_client() -> Any:
     managed fallback billed to Nous); never-configured → direct when present, else managed. Raises ValueError
     when the resolved path is unusable."""
     wt = _wt()
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error, selection_exists
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error
     selected = read_selection("web")
     direct_config = _get_direct_firecrawl_config()
 
@@ -166,8 +166,11 @@ def _get_firecrawl_client() -> Any:
     if selected == NOUS_MANAGED_PROVIDER:
         resolved, log, message = _managed(), "the Nous Subscription web selection is stored but the tool gateway is unavailable.", lambda: selection_error(
             "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)")
-    elif selected is not None or selection_exists("web"):
-        # Stored vendor selection: direct only (no credentials → explicit selection unlocks keyless cloud mode).
+    elif selected is not None or _is_explicit_firecrawl_selection():
+        # Stored vendor selection (shared name, or a per-capability key naming firecrawl): direct only (no
+        # credentials → explicit selection unlocks keyless cloud mode). A per-capability key naming ANOTHER
+        # vendor is not a firecrawl selection: the other capability's ladder reached firecrawl on its own,
+        # so it resolves exactly like a never-configured install (#113017).
         resolved, log, message = direct_config, "direct Firecrawl selected but FIRECRAWL_API_KEY/FIRECRAWL_API_URL is not set.", lambda: selection_error(
             "web", selected or "firecrawl", "neither FIRECRAWL_API_KEY nor FIRECRAWL_API_URL is set")
     elif direct_config is not None:

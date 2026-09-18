@@ -79,7 +79,7 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
+            m_claim.assert_called_once_with("job-bg-01", manual=True, return_job=True)
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
@@ -326,5 +326,5 @@ class TestCronjobRunToolIntegration:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
+        m_claim.assert_called_once_with("job-bg-13", manual=True, return_job=True)
         m_run.assert_called_once()

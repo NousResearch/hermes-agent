@@ -1,4 +1,7 @@
-import { useCallback, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+
+import { $uiState, getUiState } from '../app/uiStore.js'
 
 export interface QueueItem {
   display: string
@@ -40,25 +43,89 @@ export function removeAtInPlace<T>(arr: T[], i: number): T[] {
   return arr
 }
 
+interface PendingQueue {
+  edit: number | null
+  items: QueueItem[]
+}
+
 export function useQueue() {
-  const queueRef = useRef<QueueItem[]>([])
-  const [queuedDisplay, setQueuedDisplay] = useState<string[]>([])
-  const queueEditRef = useRef<number | null>(null)
-  const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
+  useStore($uiState)
+  const queues = useRef(new Map<string, PendingQueue>())
+  const unbound = useRef<PendingQueue>({ edit: null, items: [] })
+  const [, refresh] = useState(0)
 
-  const syncQueue = useCallback(() => setQueuedDisplay(queueRef.current.map(item => item.display)), [])
+  const getQueue = useCallback(() => {
+    const { sid, info } = getUiState()
 
-  const setQueueEdit = useCallback((idx: number | null) => {
-    queueEditRef.current = idx
-    setQueueEditIdx(idx)
+    if (!sid) {
+      return unbound.current
+    }
+
+    const key = JSON.stringify([info?.profile_name || 'default', sid])
+    let queue = queues.current.get(key)
+
+    if (!queue) {
+      queue = { edit: null, items: [] }
+      queues.current.set(key, queue)
+    }
+
+    // Input typed before any session exists belongs to the next attachment,
+    // unlike a bound session's queue, which must never migrate on navigation.
+    if (unbound.current.items.length) {
+      const offset = queue.items.length
+      queue.items.push(...unbound.current.items)
+
+      if (unbound.current.edit !== null) {
+        queue.edit = offset + unbound.current.edit
+      }
+
+      unbound.current = { edit: null, items: [] }
+    }
+
+    return queue
   }, [])
+
+  // Resolve on access, not in an effect: navigation and a drain can happen
+  // before React renders again, including through an older input callback.
+  const queueRef = useMemo(
+    () => ({
+      get current() {
+        return getQueue().items
+      }
+    }),
+    [getQueue]
+  )
+
+  const queueEditRef = useMemo(
+    () => ({
+      get current() {
+        return getQueue().edit
+      },
+      set current(value: number | null) {
+        getQueue().edit = value
+      }
+    }),
+    [getQueue]
+  )
+
+  const queuedDisplay = queueRef.current.map(item => item.display)
+  const queueEditIdx = queueEditRef.current
+  const syncQueue = useCallback(() => refresh(version => version + 1), [])
+
+  const setQueueEdit = useCallback(
+    (idx: number | null) => {
+      queueEditRef.current = idx
+      syncQueue()
+    },
+    [queueEditRef, syncQueue]
+  )
 
   const enqueue = useCallback(
     (text: string, display = text) => {
       queueRef.current.push(queueItem(text, display))
       syncQueue()
     },
-    [syncQueue]
+    [queueRef, syncQueue]
   )
 
   const prependQ = useCallback(
@@ -66,7 +133,7 @@ export function useQueue() {
       prependQueueItem(queueRef.current, item)
       syncQueue()
     },
-    [syncQueue]
+    [queueRef, syncQueue]
   )
 
   const dequeue = useCallback(() => {
@@ -74,7 +141,7 @@ export function useQueue() {
     syncQueue()
 
     return head
-  }, [syncQueue])
+  }, [queueRef, syncQueue])
 
   const takeQ = useCallback(
     (i: number, editedDisplay?: string) => {
@@ -86,7 +153,7 @@ export function useQueue() {
 
       return item
     },
-    [syncQueue]
+    [queueRef, syncQueue]
   )
 
   const removeQ = useCallback(

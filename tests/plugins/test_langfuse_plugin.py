@@ -1741,6 +1741,55 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
         assert mod._get_langfuse() is not None
         assert mod._finalize_all_traces in registered
 
+    def test_finalize_flushes_every_profile_without_an_ambient_scope(self, monkeypatch, tmp_path):
+        """Multiplex gateway: every turn ran inside a profile scope (home override + secret scope),
+        so only the per-home slots hold clients and the launch slot stays empty. atexit has no
+        scope, and a credential read there raises UnscopedSecretError. The finalizer must not read
+        credentials at all — it ends the open roots and flushes each settled client, so neither
+        profile loses its pending traces."""
+        from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setattr(mod, "_end_observation", lambda obs, **k: None)
+        mod._LANGFUSE_CLIENT = None
+        mod._TRACE_STATE.clear()
+        mod._LANGFUSE_CLIENT_BY_HOME.clear()
+
+        flushed: list = []
+        fake_client = self._fake_client
+
+        def _sdk(**kw):
+            client = fake_client([])
+            client.flush = lambda pk=kw["public_key"]: flushed.append(pk)
+            return client
+
+        monkeypatch.setattr(mod, "Langfuse", _sdk)
+
+        for profile in ("alpha", "beta"):
+            home = tmp_path / profile
+            home.mkdir()
+            home_token = set_hermes_home_override(home)
+            scope_token = secret_scope.set_secret_scope({
+                "HERMES_LANGFUSE_PUBLIC_KEY": f"pk-lf-{profile}-0123456789",
+                "HERMES_LANGFUSE_SECRET_KEY": f"sk-lf-{profile}-0123456789",
+            })
+            try:
+                self._run_turn(mod, session=f"{profile}-turn", turn_n=0, finalize=False)
+            finally:
+                secret_scope.reset_secret_scope(scope_token)
+                reset_hermes_home_override(home_token)
+
+        assert len(mod._TRACE_STATE) == 2 and len(mod._LANGFUSE_CLIENT_BY_HOME) == 2
+        assert mod._LANGFUSE_CLIENT is None and secret_scope.current_secret_scope() is None
+
+        mod._finalize_all_traces()  # no scope: must not raise, must not build a client
+
+        assert sorted(flushed) == ["pk-lf-alpha-0123456789", "pk-lf-beta-0123456789"]
+        assert mod._TRACE_STATE == {} and mod._LANGFUSE_CLIENT is None
+
+
 class TestSystemPromptInGenerationInput:
     """The generation input must carry the system prompt even for providers
     that move it out of ``messages``: Anthropic Messages (``system`` kwarg)

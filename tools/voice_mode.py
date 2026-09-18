@@ -729,16 +729,25 @@ class AudioRecorder(_RecorderBase):
                 self._on_audio_block(np, indata)
 
         stream = None
-        try:  # may block on CoreAudio (first call only)
-            stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                    callback=_callback)
-            stream.start()
-        except Exception as e:
-            with suppress(Exception):
-                stream.close()
-            raise RuntimeError(
-                f"Failed to open audio input stream: {e}. "
-                "Check that a microphone is connected and accessible.") from e
+        for attempt in range(2):
+            try:  # may block on CoreAudio (first call only)
+                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                        callback=_callback)
+                stream.start()
+                break
+            except Exception as e:
+                with suppress(Exception):
+                    stream.close()
+                stream = None
+                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
+                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
+                # failed open itself wakes the bridge, so one immediate retry succeeds
+                # where the user's second key press would have (#109303).
+                if attempt or "timed out" not in str(e).lower():
+                    raise RuntimeError(
+                        f"Failed to open audio input stream: {e}. "
+                        "Check that a microphone is connected and accessible.") from e
+                logger.info("Audio input stream start timed out; retrying once")
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:

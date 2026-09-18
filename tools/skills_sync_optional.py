@@ -38,9 +38,36 @@ def _safe_rel_install_path(path: Path, base: Path) -> str:
     return "/".join(parts)
 
 
+# Only generated runtime state, never generic cache/ or arbitrary dotfiles. This
+# is updater ownership, not the security scanner's content-integrity policy.
+_RUNTIME_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+
+
+def _is_runtime_cache(path: Path, skill_dir: Path) -> bool:
+    """Whether a skill-relative path is disposable Python/tool runtime state.
+
+    Install prefixes may themselves contain a cache directory name. Legacy
+    sibling bytecode is ignored only alongside its source; source-less .pyc
+    files can be deliberately shipped or user-owned content.
+    """
+    relative = path.relative_to(skill_dir)
+    if any(part in _RUNTIME_CACHE_DIRS for part in relative.parts[:-1]):
+        return True
+    if path.name in _RUNTIME_CACHE_DIRS and path.is_dir():
+        return True
+    return path.suffix in {".pyc", ".pyo"} and path.with_suffix(".py").is_file()
+
+
+def _ignore_runtime_cache(directory: str, names: List[str]) -> List[str]:
+    """copytree callback: don't seed generated caches into managed packages."""
+    root = Path(directory)
+    return [name for name in names if _is_runtime_cache(root / name, root)]
+
+
 def _skill_file_list(skill_dir: Path) -> List[str]:
-    """List files inside a skill directory in lock-file format."""
-    return [f.relative_to(skill_dir).as_posix() for f in sorted(skill_dir.rglob("*")) if f.is_file()]
+    """List package files for provenance/diff, excluding generated runtime caches."""
+    return [f.relative_to(skill_dir).as_posix() for f in sorted(skill_dir.rglob("*"))
+            if not _is_runtime_cache(f, skill_dir) and f.is_file()]
 
 
 def _load_hub_lock() -> Optional[dict]:

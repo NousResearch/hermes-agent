@@ -38,6 +38,7 @@ class UnscopedAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+        event._gateway_accepted = True
 
 
 def _slack_adapter(channel_team=None):
@@ -47,7 +48,7 @@ def _slack_adapter(channel_team=None):
     adapter._app.client = AsyncMock()
     adapter._running = True
     adapter.send = AsyncMock()
-    adapter.handle_message = AsyncMock()
+    adapter.handle_message = AsyncMock(side_effect=lambda event: setattr(event, "_gateway_accepted", True))
     if channel_team:
         adapter._channel_team.update(channel_team)
     return adapter

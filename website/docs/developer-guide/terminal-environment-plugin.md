@@ -7,7 +7,7 @@ sandbox vendors integrate as **plugins** instead — a standalone plugin repo
 installed under `~/.hermes/plugins/`, registering a backend the user selects
 exactly like a built-in one via `terminal.backend` in `config.yaml`.
 
-This page mirrors the [Browser Provider Plugins](/developer-guide/browser-provider-plugin)
+This page mirrors the [Browser Provider Plugins](./browser-provider-plugin.md)
 guide — same registration flow, same scope semantics.
 
 ## What a provider controls

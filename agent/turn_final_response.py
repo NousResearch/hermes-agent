@@ -72,7 +72,35 @@ def finish_text_response(
             result=result,
         )
 
-    final_response = assistant_message.content or ""
+    # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
+    # prompt tokens) file the whole answer as reasoning when the model omits the closing
+    # delimiter. ``finish_reason == "stop"`` means the provider considers generation
+    # complete, so the empty-response ladder would only re-bill the same input to arrive
+    # at a truncated preview of this text; promote the reasoning to the visible answer
+    # BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
+    # The promoted text is RETURNED as the answer but never written into the assistant
+    # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
+    # from a real reply on every history surface (#111761). The row keeps ``content``
+    # empty with the text in its reasoning fields and carries the promoted text as the
+    # ``api_content`` sidecar, so the next turn still replays it byte-identically.
+    _content = assistant_message.content
+    _promoted = None
+    if (
+        finish_reason == "stop"
+        and not assistant_message.tool_calls
+        and (_content is None or (isinstance(_content, str) and not _content.strip()))
+    ):
+        _promoted = agent._extract_reasoning(assistant_message) or None
+        if _promoted:
+            # WARNING, not INFO: a model that keeps ending turns this way is stalled
+            # (planning monologue, zero tool calls) while the turn reports "complete".
+            logger.warning(
+                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
+                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+                len(_promoted), agent.model, agent.provider, api_call_count,
+                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+            )
+    final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
@@ -114,17 +142,25 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, trailing_continue_intent
+        intent_ack_continuation_mode, promoted_reasoning_announces_action, trailing_continue_intent
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
     # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
+    # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
+    # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
+    # stalled model, and returning it as the answer aborts the tool loop while reporting
+    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
+    _stall_text = agent._strip_think_blocks(final_response or "")
     _stall_continue_intent = (
         bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
         and codex_ack_continuations < 2
-        and trailing_continue_intent(agent._strip_think_blocks(final_response or ""))
+        and (
+            trailing_continue_intent(_stall_text)
+            or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
+        )
     )
     if _stall_continue_intent or (
         _ack_mode != "off"
@@ -143,6 +179,10 @@ def finish_text_response(
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+        if _promoted:
+            # Same sidecar as the final row: the wire copy must carry the promoted text, not only
+            # ``reasoning_content``, or the continuation replays an empty assistant turn.
+            interim_msg["api_content"] = final_response
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})
@@ -167,6 +207,10 @@ def finish_text_response(
     final_response = agent._strip_think_blocks(final_response).strip()
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    if _promoted:
+        # Replay sidecar only: ``content`` stays empty so the row is never mistaken for a
+        # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
+        final_msg["api_content"] = final_response
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
@@ -182,7 +226,7 @@ def finish_text_response(
             "(retry %d/3, model=%s provider=%s)",
             agent._dropped_toolcall_retries, agent.model, agent.provider,
         )
-        agent._emit_status(
+        agent._emit_diagnostic_status(
             "↻ Model signaled a tool call but sent none — "
             f"re-prompting ({agent._dropped_toolcall_retries}/3)"
         )

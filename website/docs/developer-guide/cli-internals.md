@@ -14,6 +14,23 @@ The stage-by-stage contract (`plan → snapshot → apply → restart-per-kind �
 field failure each stage guards are documented in `hermes_cli/AGENTS.md`; user-facing behaviour
 (receipts, `--plan`, snapshot modes) is in [Updating](../getting-started/updating.md).
 
+The systemd blunt-restart fallback waits for the unit's `TimeoutStopUSec` plus
+`TimeoutStartUSec`, with 15 seconds of client-side slack. It reads the target unit
+in the same manager scope as the restart; both the initial attempt and retry use
+this budget, including the catch-up restart after an interrupted update.
+A start after a graceful drain uses only the start budget plus slack.
+A missing, unparseable, or infinite phase limit falls back to 90 seconds
+for that phase, keeping unattended updates bounded. Timing out the `systemctl`
+client does **not** cancel the manager's transaction. Custom multi-command stop
+chains or `EXTEND_TIMEOUT_USEC` can still outlast this estimate; a real timeout
+remains an incomplete restart, and successful commands still require the existing
+service-health and fleet-version verification. Raw numeric `*USec` values are
+microseconds, while formatted values use systemd's fixed units, including days,
+weeks, months and years. The combined timeout is capped below the native signed
+32-bit millisecond poll limit (with rounding headroom), so exceptionally long
+unit limits cannot overflow subprocess polling. Zero/unknown/infinite phase
+limits use the bounded fallback. This does not change active-turn drain settings.
+
 ## Process identity: never infer it from argv substrings
 
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089, #76129, #91964, ...):
@@ -54,9 +71,14 @@ User skins are `~/.hermes/skins/<name>.yaml` with the same keys, activated with 
 ## Profiles: multi-instance support
 
 Hermes supports profiles — fully isolated instances, each with its own `HERMES_HOME` (config, API
-keys, memory, sessions, skills, gateway). `_apply_profile_override()` in `hermes_cli/main.py` sets
-`HERMES_HOME` before any module imports, so every `get_hermes_home()` reference scopes to the active
-profile. Profile operations are HOME-anchored (`_get_profiles_root()` returns
+keys, memory, sessions, skills, gateway). For single-profile commands (`hermes -p x <cmd>`),
+`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module imports, so
+every `get_hermes_home()` reference scopes to the active profile. The multiplex gateway and the
+Desktop/dashboard `serve` backend serve several profiles from one process instead: the active
+profile is a contextvar override bound per activity, `os.environ["HERMES_HOME"]` stays the launch
+profile's, and a module-level constant derived from the home freezes to that launch profile (see
+[Gateway Internals § Multiplexed profiles](./gateway-internals.md#multiplexed-profiles)). Profile
+operations are HOME-anchored (`_get_profiles_root()` returns
 `Path.home() / ".hermes" / "profiles"`, not `get_hermes_home() / "profiles"`) so
 `hermes -p coder profile list` sees all profiles regardless of which one is active — intentional.
 Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope rules in

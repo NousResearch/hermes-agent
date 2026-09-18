@@ -23,6 +23,7 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
 import { openPreview } from '@/store/preview'
+import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -572,6 +573,12 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         key="shell-statusbar"
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
+      />,
+      <Item
+        icon="organization"
+        key="shell-profile-rail"
+        label={t.keybinds.actions['view.toggleProfileRail']}
+        onSelect={toggleProfileRailVisible}
       />,
       // The pointer-only way back to a hidden tab strip: right-clicking the
       // shell reaches this menu from anywhere, including a zone that has no

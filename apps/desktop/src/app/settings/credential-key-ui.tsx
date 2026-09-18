@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -71,7 +72,7 @@ export function KeyField({
   const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))
 
   const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && dirty) {
+    if (isSubmitEnter(e) && dirty) {
       void onSave(varKey)
     } else if (e.key === 'Escape' && editing) {
       e.preventDefault()
@@ -121,7 +122,6 @@ export function KeyField({
               disabled={busy}
               onClick={() => void onClear(varKey)}
               size="icon-xs"
-              title={t.settings.credentials.remove}
               type="button"
               variant="ghost"
             >

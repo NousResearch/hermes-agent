@@ -326,7 +326,7 @@ async def test_fallback_disabled_excludes_configured_ips_from_proxy_targets(monk
 
     proxy_targets = []
 
-    def resolve_proxy(_env_name, *, target_hosts):
+    def resolve_proxy(_env_name, *, target_hosts, configured=None):
         proxy_targets.append(list(target_hosts))
         return "http://127.0.0.1:8080"
 

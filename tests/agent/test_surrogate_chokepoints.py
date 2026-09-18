@@ -183,7 +183,7 @@ def test_conversation_loop_sanitizes_api_kwargs_after_build():
 
     src = inspect.getsource(rq.build_api_request)
     build_idx = src.index("api_kwargs = agent._build_api_kwargs(api_messages)")
-    sanitize_idx = src.index("_sanitize_structure_surrogates(api_kwargs)")
+    sanitize_idx = src.index("sanitize_outbound_kwargs(agent, api_kwargs)")
     assert build_idx < sanitize_idx
     loop_src = inspect.getsource(cl._run_api_retry_loop)
     assert loop_src.index("build_api_request,") < loop_src.index("perform_api_call,")

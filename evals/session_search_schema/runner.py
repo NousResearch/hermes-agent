@@ -85,21 +85,7 @@ def load_arm(path: Path, name: str, work_db_path: Path):
             return SessionDB(db_path=work_db_path, read_only=True)
         raise ValueError(f"profile '{profile}' does not exist")
 
-    def _fake_locate_session_db(session_id):
-        try:
-            db = SessionDB(db_path=work_db_path, read_only=True)
-            row = db._conn.execute(
-                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            if row:
-                return db, "work"
-            db.close()
-        except Exception:
-            pass
-        return None, None
-
     mod._resolve_profile_db = _fake_resolve_profile_db
-    mod._locate_session_db = _fake_locate_session_db
     return mod
 
 

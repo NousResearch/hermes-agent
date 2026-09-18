@@ -19,11 +19,10 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     SendResult,
     build_auto_tts_output_path,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from tools.tts_tool import OPUS_VOICE_PLATFORMS
 

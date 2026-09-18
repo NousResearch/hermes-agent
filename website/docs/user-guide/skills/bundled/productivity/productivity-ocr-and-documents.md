@@ -21,7 +21,7 @@ Extract text from PDFs/scans (pymupdf, marker-pdf).
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `PDF`, `Documents`, `Research`, `Arxiv`, `Text-Extraction`, `OCR` |
-| Related skills | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) |
+| Related skills | [`pdf`](./productivity-pdf.md), [`docx`](./productivity-docx.md), [`powerpoint`](./productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

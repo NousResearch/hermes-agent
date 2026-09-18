@@ -2,6 +2,7 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { Slot } from 'radix-ui'
 import * as React from 'react'
 
+import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // Text+icon actions underline the label on hover, not the glyph.
@@ -25,6 +26,11 @@ const buttonVariants = cva(
         secondary:
           'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
         ghost: 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+        // A control floating free of any surface (fan-menu discs, detached
+        // chips): the menu/popover treatment — opaque popover fill + the
+        // shared `shadow-md` ring-and-drop. Hover only lifts the glyph; a fill
+        // change on a lone disc reads as a toggle flipping.
+        floating: 'bg-popover text-(--ui-text-secondary) shadow-md hover:text-(--ui-text-primary)',
         link: `text-primary underline-offset-4 decoration-current/20 hover:underline ${TEXT_ACTION_ICON}`,
         // Boxless inline-text action (no bg/border). Quiet by default — reads as
         // muted label text, underlines on hover (e.g. "Cancel", "Clear").
@@ -73,21 +79,47 @@ function Button({
   variant = 'default',
   size = 'default',
   asChild = false,
+  loading = false,
+  children,
+  disabled,
   ...props
 }: React.ComponentProps<'button'> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    /** Working. The label stays in flow but goes invisible and a spinner
+     *  sits over it, so the button keeps its exact width and height — a
+     *  label swapped for a glyph reflows every sibling on the row. */
+    loading?: boolean
   }) {
   const Comp = asChild ? Slot.Root : 'button'
 
   return (
     <Comp
-      className={cn(buttonVariants({ variant, size }), className)}
+      aria-busy={loading || undefined}
+      className={cn(buttonVariants({ variant, size }), loading && 'relative', className)}
       data-size={size}
       data-slot="button"
       data-variant={variant}
+      disabled={disabled || loading}
       {...props}
-    />
+    >
+      {loading ? (
+        <>
+          {/* Same flex + gap as the button itself, so the ghost label measures
+              exactly what the live one did. The spinner sits in a wrapper so
+              it is never a direct-child svg — the size variants' `has-[>svg]`
+              would otherwise switch to icon padding and shave the width. */}
+          <span aria-hidden className="invisible inline-flex items-center gap-[inherit]">
+            {children}
+          </span>
+          <span aria-hidden className="absolute inset-0 grid place-items-center">
+            <Loader2 className="animate-spin" />
+          </span>
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   )
 }
 

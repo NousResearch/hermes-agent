@@ -428,27 +428,63 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
-  it('block_loop_detected notifies (routed-to-triage handoff)', async () => {
+  it('block_loop_detected notifies that a decision is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'block_loop_detected', { reason: 'same cause 3x' })])
 
     expect(fired).toBe(true)
-    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'same cause 3x' })
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task routed to triage — needs a decision',
+      message: 'same cause 3x'
+    })
   })
 
-  it('gave_up carries the payload error; crashed and timed_out fall back to the task id', async () => {
+  it('gave_up: plain-words body, raw payload error only in detail; crashed and timed_out fall back to the task id', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed' })])
-    expect(lastNotify()).toMatchObject({ kind: 'error', message: 'spawn failed' })
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed: ECONNREFUSED 127.0.0.1:9999' })])
+    const gaveUp = lastNotify()
+    expect(gaveUp.kind).toBe('error')
+    expect(gaveUp.title).toBe('Task stopped')
+    expect(gaveUp.message).toBe('Hermes couldn’t finish this task. Open Kanban to see why and reassign it.')
+    expect(gaveUp.message).not.toContain('spawn failed')
+    expect(gaveUp.detail).toContain('spawn failed: ECONNREFUSED 127.0.0.1:9999')
+    expect(gaveUp.detail).toContain('t101')
+    expect(gaveUp.action?.label).toBe('Open Kanban')
 
     await m.onKanbanEventsFrame('smoke', [ev(102, 'crashed'), ev(103, 'timed_out', { limit_seconds: 900 })])
     expect(hostMock.notify).toHaveBeenCalledTimes(3)
     expect(hostMock.notify.mock.calls[1][0]).toMatchObject({ kind: 'error', message: 't102' })
     expect(hostMock.notify.mock.calls[2][0]).toMatchObject({ kind: 'warning', message: 't103' })
+  })
+
+  it('gave_up without a payload error still gets the plain-words body and no empty detail noise', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', null)])
+    expect(lastNotify()).toMatchObject({
+      kind: 'error',
+      message: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
+      detail: 't101'
+    })
+  })
+
+  it('retrying kinds (crashed/timed_out) say Hermes will retry and never expose worker/gateway vocabulary', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'crashed'), ev(102, 'timed_out', { limit_seconds: 900 })])
+
+    for (const call of hostMock.notify.mock.calls) {
+      const toast = call[0] as NotifyInput
+      expect(toast.title).toMatch(/Hermes will retry it automatically/)
+      expect(`${toast.title} ${toast.message}`).not.toMatch(/worker|gateway|backend/i)
+    }
   })
 
   it('silent kinds (status/archived/unblocked) advance the cursor but never notify', async () => {
@@ -550,6 +586,6 @@ describe('i18n routing', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'timed_out')])
 
-    expect(lastNotify().title).toBe('Task timed out — will retry')
+    expect(lastNotify().title).toBe('Task took too long — Hermes will retry it automatically')
   })
 })

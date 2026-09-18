@@ -1,9 +1,7 @@
 """Detect xAI models retired on May 15, 2026 and migrate config.yaml references."""
 from __future__ import annotations
 
-import datetime as _dt
 import io
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -130,7 +128,7 @@ def apply_migration(
     config_path: Path, issues: List[RetirementIssue], backup: bool = True) -> ApplyResult:
     """Rewrite ``config_path`` in place (ruamel round-trip: comments, order, type literals kept).
 
-    Unless ``backup=False`` a copy goes to ``<config_path>.bak-pre-migrate-xai-YYYYMMDD-HHMMSS``.
+    Unless ``backup=False`` a copy goes to ``backups/config/`` (reason ``pre-migrate-xai``).
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
     config_path = Path(config_path)
@@ -162,9 +160,8 @@ def apply_migration(
 
     backup_path: Optional[Path] = None
     if backup:
-        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = config_path.with_name(f"{config_path.name}.bak-pre-migrate-xai-{ts}")
-        shutil.copy2(config_path, backup_path)
+        from hermes_cli.config_backups import backup_config
+        backup_path = backup_config(config_path, "pre-migrate-xai")
 
     from hermes_cli.config import require_readable_config_before_write
     from utils import atomic_write_text

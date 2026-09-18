@@ -23,6 +23,7 @@ import {
   botSelectionKey,
   clearBotAttention,
   filterBots,
+  isDefaultBot,
   mentionNameForms,
   noteBotAttention,
   preferReachableSameNameRows,
@@ -193,6 +194,16 @@ describe('source-qualified keys', () => {
   it('leaves an unscoped legacy row on its bare name', () => {
     expect(botSelectionKey(row({ name: 'ops' }))).toBe('ops')
     expect(botMetaKey(row({ name: 'ops' }))).toBe('ops')
+  })
+
+  it('reads a row whose connection was deleted as a settled state, not an exception', () => {
+    // A persisted group roster keeps an orphaned member (connection removed) with no route
+    // (group-membership.ts::durableGroupChatMembers); rendering it must not throw (#110002).
+    const orphan = row({ name: 'ops', remoteSource: true, sourceScoped: true })
+
+    expect(botMetaKey(orphan)).toBe(botSelectionKey(orphan))
+    expect(isDefaultBot(orphan)).toBe(false)
+    expect(isDefaultBot(row({ name: 'default', remoteSource: true, sourceScoped: true }))).toBe(true)
   })
 })
 

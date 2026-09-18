@@ -234,6 +234,9 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     class _FakeDB:
+        def __init__(self, **_kwargs):
+            pass
+
         def list_gateway_sessions(self, active_only=True):
             return [
                 {"id": "gw-old", "last_active": time.time() - 7200},

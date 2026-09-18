@@ -1,3 +1,5 @@
+import { types } from 'node:util'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId } from '@/store/layout'
@@ -98,6 +100,65 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     await actOnActivePreview({ kind: 'elements' })
 
     expect(injected).toContain('0 <= 0')
+  })
+
+  it('awaits page-owned thenables for inventories and settled actions before crossing Electron IPC', async () => {
+    // Zone.js replaces Promise with a non-native thenable. Electron awaits
+    // native V8 promises only; otherwise IPC delivers the object's state,
+    // losing its prototype and then() instead of delivering the result.
+    class PagePromise<T> {
+      private pending: Promise<T>
+
+      constructor(executor: ConstructorParameters<typeof Promise<T>>[0]) {
+        this.pending = new Promise(executor)
+      }
+
+      static resolve<T>(value: T) {
+        return new PagePromise<T>(resolve => resolve(value))
+      }
+
+      then(onFulfilled: (value: T) => unknown, onRejected?: (reason: unknown) => unknown) {
+        return new PagePromise((resolve, reject) => {
+          this.pending.then(onFulfilled, onRejected).then(resolve, reject)
+        })
+      }
+    }
+
+    document.body.innerHTML = '<button id="save">Save</button>'
+    const clicked = vi.fn()
+    document.getElementById('save')!.addEventListener('click', clicked)
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+
+    withRunner(async code => {
+      const raw = new Function('Promise', 'return ' + code)(PagePromise)
+
+      return types.isPromise(raw) ? await raw : JSON.parse(JSON.stringify(raw))
+    })
+
+    try {
+      const inventory = await actOnActivePreview({ kind: 'elements' })
+      expect(inventory.success).toBe(true)
+      const save = inventory.elements!.find(element => element.label === 'Save')!
+      expect(save).toBeDefined()
+      expect(await actOnActivePreview({ kind: 'click', ref: save.ref })).toMatchObject({ success: true })
+      expect(clicked).toHaveBeenCalledOnce()
+      expect(await actOnActivePreview({ kind: 'click', ref: 'missing-ref' })).toMatchObject({ success: false })
+    } finally {
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
   })
 
   it('reports a page that answers with nothing', async () => {

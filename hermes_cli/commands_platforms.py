@@ -32,10 +32,24 @@ def _requires_argument(args_hint: str) -> bool:
 
 
 def _sanitize_telegram_name(raw: str) -> str:
-    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, strip the rest,
-    collapse/strip ``_``."""
-    name = _TG_INVALID_CHARS.sub("", raw.lower().replace("-", "_"))
+    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, collapse/strip ``_``.
+    A name that would lose letters (``中文helper`` -> ``helper``) is omitted (``""``): the menu
+    entry could not resolve back to the registered ``/中文helper`` and would answer
+    "Unknown command"."""
+    lowered = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", lowered)
+    if any(ch.isalnum() for ch in _TG_INVALID_CHARS.findall(lowered)):
+        return ""
     return _TG_MULTI_UNDERSCORE.sub("_", name).strip("_")
+
+
+_TG_DASHES = re.compile("[\u2012\u2013\u2014\u2015\u2212]")
+
+
+def _normalize_telegram_desc(desc: str) -> str:
+    """Fold Unicode dashes (em/en/figure/horizontal-bar/minus) to ASCII ``-``.
+    BotFather rejects setMyCommands descriptions containing them (#2925)."""
+    return _TG_DASHES.sub("-", desc)
 
 
 def _truncate_desc(desc: str, limit: int) -> str:
@@ -80,7 +94,7 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, desc) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    return [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill
@@ -279,7 +293,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
                    for name, desc, cmd_key, raw in entries]
     candidates = _prioritize_telegram_menu_candidates(candidates)
     overflow_count = max(0, len(candidates) - max_commands)
-    menu = [(name, desc) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    menu = [(name, _normalize_telegram_desc(desc)) for name, desc, _source, _raw_name in candidates[:max_commands]]
     return menu, hidden_count + overflow_count
 
 
@@ -368,7 +382,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

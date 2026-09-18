@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -25,6 +26,7 @@ import {
   endAnnotateMode,
   flushAnnotateStack
 } from '@/lib/preview-annotate'
+import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -799,7 +801,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     return registerPreviewInput(tabId, {
-      focus: () => webviewRef.current?.focus?.(),
+      focus: () => {
+        const webview = webviewRef.current
+
+        // Trusted input still reaches the guest while hidden. Focusing the
+        // webview element would steal the host's composer focus even when inert.
+        if (webview && !isElementInHiddenPane(webview)) {
+          webview.focus?.()
+        }
+      },
       send: event => {
         const webview = webviewRef.current
 
@@ -1026,6 +1036,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
+    // The guest preload (main.ts installs it on this partition) forwards a
+    // clicked `_blank` anchor here. Admission is our side of the contract —
+    // http/https only, so a guest page can never reach the local-file
+    // opener — and the open itself goes through the audited
+    // `hermes:openExternal` channel, never a popup side effect.
+    const onGuestExternal = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (detail.channel !== PREVIEW_EXTERNAL_CHANNEL) {
+        return
+      }
+
+      const url = String(detail.args?.[0] ?? '')
+
+      if (admitPreviewExternalUrl(url)) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    }
+
     const onConsole = (event: Event) => {
       const detail = event as Event & {
         level?: number
@@ -1206,6 +1235,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1223,6 +1253,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     return () => {
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
+      webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
@@ -1303,7 +1334,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
+                ? undefined
+                : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}

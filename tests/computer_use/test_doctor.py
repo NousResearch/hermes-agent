@@ -144,6 +144,17 @@ class TestDoctorExitCodes:
             code = doctor.run_doctor()
         assert code == 1
 
+    def test_spawn_denied_exits_2_with_diagnosis(self, capsys):
+        """The runtime interpreter cannot execute the resolved binary (Windows WinError 5 on a
+        `WindowsApps` install): a diagnosis + exit 2, never a raw traceback."""
+        from tools.computer_use import doctor
+
+        with patch("shutil.which", return_value="/protected/cua-driver"), \
+             patch("subprocess.Popen", side_effect=PermissionError(13, "Access is denied")):
+            code = doctor.run_doctor()
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "Access is denied" in err and "HERMES_CUA_DRIVER_CMD" in err
 
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a

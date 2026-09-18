@@ -67,9 +67,11 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             try:
                 dispatcher.callback(**payload)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", dispatcher.hook_name, _callback_name(dispatcher.callback), exc
-                )
+                # Fires once per streaming delta: a mis-declared callback fails identically every
+                # time, so it goes through the manager's warn-once reporter (#111922).
+                from hermes_cli.plugins import get_plugin_manager
+
+                get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
         finally:
             dispatcher.events.task_done()
 

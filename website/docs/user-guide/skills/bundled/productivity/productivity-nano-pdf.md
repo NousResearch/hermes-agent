@@ -21,7 +21,7 @@ Edit text in existing PDFs via natural-language prompts.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `PDF`, `Documents`, `Editing`, `NLP`, `Productivity` |
-| Related skills | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) |
+| Related skills | [`pdf`](./productivity-pdf.md), [`ocr-and-documents`](./productivity-ocr-and-documents.md) |
 
 ## Reference: full SKILL.md
 

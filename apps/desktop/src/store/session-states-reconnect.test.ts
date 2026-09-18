@@ -13,6 +13,7 @@ import {
 } from './session'
 import {
   $attentionSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
@@ -205,5 +206,37 @@ describe('reconcileBusyStatesOnReconnect', () => {
     publishSessionState('rt2', state({ busy: true, storedSessionId: 's1' }))
 
     expect($workingSessionIds.get()).toContain('s1')
+  })
+
+  // #113029: the reconcile downgrade is blind (live turns included), so it must
+  // not light the completed-unread dot — that is the green flash mid-turn. An
+  // authoritative busy→idle afterwards still does.
+  it('does not mark a live turn completed-unread on a routine reconnect', () => {
+    publishSessionState('rt1', state({ busy: true, sawAssistantPayload: true, storedSessionId: 's1', turnLive: true }))
+
+    reconcileBusyStatesOnReconnect()
+    expect($unreadFinishedSessionIds.get()).not.toContain('s1')
+
+    // The turn is alive: its next stream event re-asserts busy, then finishes.
+    publishSessionState('rt1', { ...$sessionStates.get().rt1, busy: true })
+    expect($workingSessionIds.get()).toContain('s1')
+    expect($unreadFinishedSessionIds.get()).not.toContain('s1')
+
+    publishSessionState('rt1', { ...$sessionStates.get().rt1, busy: false })
+    expect($unreadFinishedSessionIds.get()).toContain('s1')
+  })
+
+  // The only confirm producer for a parked completion is the ACTIVE profile's
+  // session.active_list poll, which never lists a background socket's
+  // runtimes. Parking a scoped downgrade would therefore lose the dot for a
+  // turn that ended while that socket was down; it lights at once instead.
+  it('a scoped reconcile lights the unread dot immediately — no poll can confirm it', () => {
+    publishSessionState('rtA', state({ busy: true, sawAssistantPayload: true, storedSessionId: 'sA' }))
+    recordSessionEventScope({ connectionId: 'connA', profile: 'default', session_id: 'rtA' })
+
+    reconcileBusyStatesOnReconnect(registryBackendScopeKey('connA', 'default'))
+
+    expect($workingSessionIds.get()).not.toContain('sA')
+    expect($unreadFinishedSessionIds.get()).toEqual(['sA'])
   })
 })

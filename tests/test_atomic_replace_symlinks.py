@@ -224,6 +224,7 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
 
 
 
+@pytest.mark.require_symlinks
 def test_atomic_replace_copy_fallback_preserves_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -506,6 +507,7 @@ def test_in_place_rewrite_never_exposes_a_truncated_file(
     assert observed == [5000]
 
 
+@pytest.mark.require_symlinks
 def test_symlinked_target_survives_a_contended_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_replace_retries: None
 ) -> None:

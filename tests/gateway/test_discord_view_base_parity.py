@@ -49,25 +49,30 @@ def _views():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "name,call,expected",
+    "name,call",
     [
-        ("exec", lambda v, i: v._resolve(i, "once", None, "x"), "You're not authorized to approve commands~"),
-        ("slash", lambda v, i: v._resolve(i, "once", None, "x"), "You're not authorized to answer this prompt~"),
-        ("update", lambda v, i: v._respond(i, "y", None, "x"), "You're not authorized~"),
-        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a"), "You're not authorized to answer this prompt~"),
-        ("clarify", lambda v, i: v._on_other(i), "You're not authorized to answer this prompt~"),
-        ("model", lambda v, i: v._on_provider_selected(i), "You're not authorized~"),
-        ("model", lambda v, i: v._on_back(i), "You're not authorized~"),
-        ("choice", lambda v, i: v._on_select(i), "⛔ You are not authorized to change this setting."),
+        ("exec", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("slash", lambda v, i: v._resolve(i, "once", None, "x")),
+        ("update", lambda v, i: v._respond(i, "y", None, "x")),
+        ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
+        ("clarify", lambda v, i: v._on_other(i)),
+        ("model", lambda v, i: v._on_provider_selected(i)),
+        ("model", lambda v, i: v._on_back(i)),
+        ("choice", lambda v, i: v._on_select(i)),
     ],
 )
-async def test_unauthorized_click_strings_preserved(monkeypatch, name, call, expected):
+async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call):
+    """Every view refuses a stranger with the ONE gateway-wide sentence that names the fix command."""
+    from gateway.platforms.base import unauthorized_action_notice
+
     monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     view = _views()[name]
     interaction = _interaction()
     await call(view, interaction)
+    expected = unauthorized_action_notice("discord")
+    assert "hermes pairing approve discord" in expected
     interaction.response.send_message.assert_awaited_once_with(expected, ephemeral=True)
     interaction.response.edit_message.assert_not_called()
     assert view.resolved is False

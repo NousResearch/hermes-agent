@@ -1,7 +1,7 @@
 """Per-job ``failure_deliver`` routing (NS-788).
 
-A job's FAILURE notices (run failed, escaped scheduler exception, drift-skip /
-blocked-config alerts) resolve their delivery targets from ``failure_deliver``
+A job's FAILURE notices (run failed, escaped scheduler exception, blocked-config
+alerts) resolve their delivery targets from ``failure_deliver``
 when the job sets it, falling back to ``deliver`` when unset — so existing
 jobs behave byte-identically. ``failure_deliver: local`` is structural silence
 for failures: nothing is sent, but state (last_status, run history, output
@@ -380,7 +380,7 @@ class TestOutcomeBookkeeping:
         """deliver=origin (unresolvable) + failure_deliver=explicit target:
         the notice IS delivered — outcome must say so, not 'not_configured'."""
         alerted = []
-        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(s, "_mark_incident_alerted", lambda incident_id, execution_id=None: alerted.append(incident_id))
         monkeypatch.setattr(
             s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, "inc-b1")
         )

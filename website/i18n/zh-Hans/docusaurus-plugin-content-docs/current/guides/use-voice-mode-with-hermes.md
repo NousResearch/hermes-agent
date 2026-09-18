@@ -6,7 +6,7 @@ description: "在 CLI、Telegram、Discord 及 Discord 语音频道中设置和�
 
 # 在 Hermes 中使用语音模式
 
-本指南是[语音模式功能参考](/user-guide/features/voice-mode)的实用配套文档。
+本指南是[语音模式功能参考](../user-guide/features/voice-mode.md)的实用配套文档。
 
 功能页面介绍语音模式能做什么，本指南则说明如何真正用好它。
 
@@ -462,8 +462,8 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 
 ## 下一步阅读
 
-- [语音模式功能参考](/user-guide/features/voice-mode)
-- [消息 Gateway](/user-guide/messaging)
-- [Discord 设置](/user-guide/messaging/discord)
-- [Telegram 设置](/user-guide/messaging/telegram)
-- [配置](/user-guide/configuration)
+- [语音模式功能参考](../user-guide/features/voice-mode.md)
+- [消息 Gateway](../user-guide/messaging/index.md)
+- [Discord 设置](../user-guide/messaging/discord.md)
+- [Telegram 设置](../user-guide/messaging/telegram.md)
+- [配置](../user-guide/configuration.md)

@@ -84,6 +84,8 @@ def test_multiplex_housekeeping_scopes_primary_and_drains_each_profile(
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    from gateway import run_profile_reconcile
+    monkeypatch.setattr(run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None)
     monkeypatch.setattr(
         scheduler,
         "drain_delivery_queue",

@@ -33,6 +33,7 @@ from hermes_constants import (
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
+    @pytest.mark.linux_only
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -54,6 +55,17 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_expanded_custom_profile_returns_custom_root(self, tmp_path, monkeypatch):
+        custom_root = tmp_path / "deployment"
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(
+            "HERMES_HOME", f"{home_token}/deployment/profiles/research"
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+
+        assert get_default_hermes_root() == custom_root
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
@@ -68,9 +80,8 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — every
-        _load_global_auth_store() (per provider row in the /model picker),
-        kanban, backup, gateway, update. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — kanban,
+        backup, gateway, update, profile enumeration. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the
@@ -151,6 +162,26 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_process_and_context_homes_expand_environment_and_user_syntax(
+        self, tmp_path, monkeypatch
+    ):
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        for syntax in (home_token, "~"):
+            process_home = tmp_path / "process-home"
+            monkeypatch.setenv("HERMES_HOME", f"{syntax}/process-home")
+            assert get_process_hermes_home() == process_home
+
+            override_home = tmp_path / "override-home"
+            token = set_hermes_home_override(f"{syntax}/override-home")
+            try:
+                assert get_hermes_home() == override_home
+                assert get_process_hermes_home() == process_home
+            finally:
+                reset_hermes_home_override(token)
 
 
 
@@ -363,6 +394,29 @@ class TestIsContainer:
 
 
 
+    def test_cgroup_v2_fallback_inspects_only_the_root_mount(self, tmp_path):
+        """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
+        (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
+        says whether *this* process lives in a runtime overlay."""
+        from hermes_constants import _root_mount_has_marker
+
+        markers = ("kubepods", "containerd", "crio")
+        host = tmp_path / "host"
+        host.write_text(
+            "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime shared:247 - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+        )
+        container = tmp_path / "container"
+        container.write_text(
+            "1 0 0:50 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
+            "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
+        )
+        assert _root_mount_has_marker(str(host), markers) is False
+        assert _root_mount_has_marker(str(container), markers) is True
+        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)
@@ -450,8 +504,23 @@ class TestResolvePerModelReasoningEffort:
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
 
+    def test_prefixed_key_matches_bare_model(self):
+        """A custom-provider prefixed key (``ollama-local/qwen3.6:27b``) applies to the bare runtime slug.
 
+        Fallback entries and named custom providers feed ``agent.model`` without the provider
+        prefix while the documented key spelling keeps ``provider/model``; a key for a different
+        model must still miss.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"ollama-local/qwen3.6:27b-q4_k_m": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b-q4_k_m", overrides) == {"enabled": True, "effort": "low"}
+        assert resolve_per_model_reasoning_effort("llama3.2:3b", overrides) is None
 
+    def test_direct_match_wins_over_reverse_lookup(self):
+        """A direct/variant key match keeps priority over a prefixed reverse match."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"qwen3.6:27b": "medium", "ollama-local/qwen3.6:27b": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b", overrides) == {"enabled": True, "effort": "medium"}
 
 
 class TestResolveReasoningConfig:
@@ -725,6 +794,7 @@ class TestGetHermesDir:
 
 
 
+    @pytest.mark.require_symlinks
     def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
         """A dangling legacy symlink must NOT shadow populated new-layout data.
 
@@ -743,6 +813,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at a populated directory is honoured."""
         self._set_home(tmp_path, monkeypatch)

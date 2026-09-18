@@ -77,6 +77,10 @@ class TestIsTimeoutError:
 
 
 # ---------------------------------------------------------------------------
+# _is_rate_limited_error
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # _send_with_retry — success on first attempt
 # ---------------------------------------------------------------------------
 
@@ -206,3 +210,87 @@ class TestSendWithRetryAfter:
         second_sleep = mock_sleep.call_args_list[1][0][0]
         assert second_sleep >= 29.0  # 30 - 1 (max jitter)
 
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — rate-limited sends (flood control) without retry_after
+# ---------------------------------------------------------------------------
+# Platforms like Weixin surface a rate limit as a bare error with NO retry_after
+# field.  These must still be treated as transient (back off / retry) rather than
+# falling through to the truncating plain-text fallback, which would re-enter the
+# server ban and drop the tail of the message.
+
+class TestSendWithRetryRateLimited:
+
+    @pytest.mark.asyncio
+    async def test_long_server_retry_after_returns_typed_failure_without_sleeping(self):
+        """A retry_after past the inline cap must not pin the coroutine (#91969): the
+        typed failure goes back to the delivery ledger, no sleep, no fallback, no notice."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="flood_control:5820", retry_after=5820.0),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("c", "hello")
+        assert result.success is False
+        assert result.retry_after == 5820.0
+        mock_sleep.assert_not_called()
+        assert len(adapter._send_calls) == 1  # the original send only
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_exhausted_returns_typed_failure_not_fallback(self):
+        """When retries on a rate-limited send are exhausted, return the typed
+        failure for ledger redelivery. Never the truncating plain-text fallback,
+        and — because the final failure is still inside the flood penalty — never
+        a delivery-failure notice send that would re-enter the ban. 1 initial + 2
+        retries = 3 sends, no fourth notice send."""
+        adapter = _StubAdapter()
+        flood = SendResult(success=False, error="flood control exceeded, retry in 60 seconds")
+        adapter._send_results = [flood, flood, flood]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert not result.success
+        # 1 initial + 2 retries = 3 sends; NO delivery-failure notice (4th send)
+        # is sent inside the active flood penalty
+        assert len(adapter._send_calls) == 3
+        # The only sends are the retries — no truncating "plain text" fallback and
+        # no notice triggered inside the flood penalty
+        for chat_id, content in adapter._send_calls:
+            assert "plain text" not in content.lower(), \
+                f"rate-limited send must not fall through to plain-text fallback, got: {content[:40]!r}"
+            assert "delivery failed" not in content.lower() and \
+                   "Message delivery failed" not in content, \
+                "no notice send inside active flood penalty"
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — failure-kind transitions between attempts
+# ---------------------------------------------------------------------------
+# is_rate_limited is recomputed from the refreshed error_str on every retry, so
+# the loop's continue/break decision reflects the CURRENT attempt, not the
+# initial send's classification. These cover the two transitions that a stale
+# classification would get wrong.
+
+class TestSendWithRetryFailureTypeTransitions:
+    @pytest.mark.asyncio
+    async def test_rate_limited_then_formatting_error_stops_retrying_and_falls_back(self):
+        """A rate-limited first attempt followed by a PERMANENT formatting error
+        on retry must stop retrying that permanent error and reach the existing
+        plain-text fallback — not keep retrying it (as a stale, still-true
+        is_rate_limited would)."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="flood control exceeded, retry in 60 seconds"),
+            SendResult(success=False, error="Bad Request: can't parse entities"),
+            # fallback send (auto-succeeds via _next_result)
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "**bold**", max_retries=3, base_delay=0)
+        # The formatting error was not retried further: exactly 1 retry then the
+        # plain-text fallback. 1 initial + 1 retry + 1 fallback = 3 sends.
+        assert len(adapter._send_calls) == 3
+        # The permanent formatting error switched attempts to non-transient:
+        # we fall through to (and return) the plain-text fallback.
+        assert "plain text" in adapter._send_calls[-1][1].lower()
+        assert result.success  # fallback succeeded
+        # No delivery-failure notice was sent (this is a formatting fallback, not network exhaustion)
+        assert "delivery failed" not in adapter._send_calls[-1][1].lower()

@@ -72,8 +72,9 @@ class TestWriteFileCrossProfileGuard:
         the same OS user owns every profile dir and the terminal tool
         always could write them. Cross-profile writes now succeed; the
         system prompt's profile hint is the only steering."""
-        from tools.file_tools import write_file_tool
+        from tools.file_tools import read_file_tool, write_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
+        assert not json.loads(read_file_tool(str(target))).get("error")
         result_json = write_file_tool(str(target), "cross-profile write, allowed")
         result = json.loads(result_json)
         assert not result.get("error"), f"guard retired; write must succeed: {result}"

@@ -134,12 +134,12 @@ def describe_holder(holder: UpdateHolder) -> str:
     minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
-        f"started {elapsed} ago).\n"
+        f"✗ Another Hermes update is already running (started {elapsed} ago, "
+        f"process {holder.pid}).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Running two at once would corrupt the install. Wait for it to finish\n"
+        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+        "  started it, then run `hermes update` again."
     )
 
 

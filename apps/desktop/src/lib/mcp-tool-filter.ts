@@ -28,22 +28,30 @@ export function readToolsFilter(server: ServerConfig | null | undefined): McpToo
 export function isToolEnabled(server: ServerConfig | null | undefined, name: string): boolean {
   const { exclude, include } = readToolsFilter(server)
 
-  return include?.length ? include.includes(name) : !exclude?.includes(name)
+  // An explicit `include` (even []) is a whitelist — the runtime registers nothing for `[]`
+  // (tools/mcp_tool_registration.py), so the desktop must not show every tool as enabled (#12865).
+  if (include !== undefined) {
+    return include.includes(name)
+  }
+
+  return !exclude?.includes(name)
 }
 
-// Toggle one tool, preserving the config's mode (include if present, else an
-// exclude denylist). Empty lists — and an emptied `tools` — are dropped.
+// Toggle one tool, preserving the config's mode (include if the key is present, even empty, else
+// an exclude denylist). An emptied exclude is dropped; an emptied include is kept (block-all).
 export function toggleToolInServer(server: ServerConfig, name: string): ServerConfig {
   const { exclude, include } = readToolsFilter(server)
-  const key = include?.length ? 'include' : 'exclude'
+  const key = include !== undefined ? 'include' : 'exclude'
   const current = (key === 'include' ? include : exclude) ?? []
   const names = current.includes(name) ? current.filter(n => n !== name) : [...current, name]
   const tools = { ...toolsObject(server) }
 
-  if (names.length) {
-    tools[key] = names
+  if (key === 'include') {
+    tools.include = names
+  } else if (names.length) {
+    tools.exclude = names
   } else {
-    delete tools[key]
+    delete tools.exclude
   }
 
   const next = { ...server }

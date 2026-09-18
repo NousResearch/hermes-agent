@@ -70,7 +70,14 @@ def _lazy_ensure_quietly(dep: str) -> None:
 
 def _process_error_detail(exc: "subprocess.CalledProcessError") -> str:
     """stderr > stdout > str(exc) for a failed helper binary."""
-    return exc.stderr.strip() or exc.stdout.strip() or str(exc)
+    for output in (exc.stderr, exc.stdout):
+        if isinstance(output, bytes):
+            detail = output.decode("utf-8", errors="replace").strip()
+        else:
+            detail = str(output or "").strip()
+        if detail:
+            return detail
+    return str(exc)
 
 
 def _log_prompt_unsupported(label: str) -> None:

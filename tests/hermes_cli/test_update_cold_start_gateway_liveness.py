@@ -30,6 +30,9 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
         "find_gateway_pids",
         lambda all_profiles=False: [] if all_profiles else surviving_pids,
     )
+    # This fixture exercises a standalone cold start, not Desktop ownership.
+    # A live Desktop for this install must not short-circuit the liveness poll.
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
     # Avoid the real 6s/0.4s poll loop in _report_gateway_start.
     monkeypatch.setattr(
@@ -46,6 +49,20 @@ def test_cold_start_raises_when_process_does_not_survive(monkeypatch, capsys):
         _run_cold_start(monkeypatch, capsys, surviving_pids=[])
 
     assert "✓ Starting Windows gateway after update" not in capsys.readouterr().out
+
+
+def test_failed_readiness_keeps_the_dead_attestation_for_the_retry(monkeypatch, tmp_path, capsys):
+    """#110020 review: the attestation is the retry's only authority to spawn under Desktop
+    ownership, so a spawn that returns a PID but never becomes ready must NOT consume it —
+    otherwise the registered retry sees ownership with no marker and "succeeds" with no gateway."""
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    gateway_windows._write_start_attestation([555], "direct spawn (PID 555)")
+    marker = tmp_path / "state" / "gateway.start-attestation.json"
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        _run_cold_start(monkeypatch, capsys, surviving_pids=[])
+    assert marker.exists()
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):

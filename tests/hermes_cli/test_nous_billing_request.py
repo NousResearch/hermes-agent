@@ -48,7 +48,7 @@ def _http_error(status: int, body: bytes | dict[str, object] = b"{}", headers=No
 def _sequence(monkeypatch, *outcomes, resolver=None):
     """Stub urlopen with ordered outcomes and record each Request."""
     seen: list[dict[str, object]] = []
-    monkeypatch.setattr(nb, "_token_cache", None, raising=False)
+    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(
         nb,
         "_resolve_token_and_base",
@@ -77,7 +77,7 @@ def _sequence(monkeypatch, *outcomes, resolver=None):
 def _stub(monkeypatch, body: bytes, status: int = 200):
     # Bypass auth/token resolution entirely — we only exercise response parsing.
     monkeypatch.setattr(nb, "_resolve_token_and_base", lambda **kw: ("tok", "https://portal.example"))
-    monkeypatch.setattr(nb, "_token_cache", None, raising=False)
+    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(nb.urllib.request, "urlopen", lambda req, timeout=None: _FakeResp(body, status))
     yield
 
@@ -212,3 +212,26 @@ def test_404_get_charge_status_maps_to_generic_billing_error(monkeypatch):
 
 
 
+
+
+def test_billing_token_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
+    """The 30s (token, base) memo must not hand profile A's Portal bearer to profile B under a
+    multiplex gateway, where the per-turn HERMES_HOME override selects the auth.json."""
+    import hermes_constants
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
+    monkeypatch.setattr(auth, "get_provider_auth_state", lambda provider: {})
+    monkeypatch.setattr(
+        auth, "resolve_nous_access_token",
+        lambda **kw: f"tok-{hermes_constants.get_hermes_home().name}")
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    seen = []
+    for home in (a, b):
+        tok = hermes_constants.set_hermes_home_override(str(home))
+        try:
+            seen.append(nb._resolve_token_and_base()[0])
+        finally:
+            hermes_constants.reset_hermes_home_override(tok)
+    assert seen == ["tok-a", "tok-b"]

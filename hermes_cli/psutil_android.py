@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import shutil
-import tarfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+from hermes_cli.archive_safe import safe_extract_targz
 
 # Pinned to a version whose marker line patches cleanly; bump when upstream changes its shape.
 PSUTIL_URL = (
@@ -20,40 +20,12 @@ class PsutilAndroidInstallError(RuntimeError):
     """Raised when the pinned psutil sdist is missing or unsafe."""
 
 
-def _normalize_member_parts(member_name: str) -> tuple[str, ...]:
-    path = PurePosixPath(member_name)
-    parts = tuple(part for part in path.parts if part not in ("", "."))
-    if path.is_absolute() or ".." in parts or not parts:
-        raise PsutilAndroidInstallError(f"Unsafe archive member path: {member_name!r}")
-    return parts
-
-
-def _safe_extract_tar_gz(archive: Path, destination: Path) -> None:
-    """Extract a tar.gz without allowing traversal or link members."""
-    with tarfile.open(archive, "r:gz") as tf:
-        for member in tf.getmembers():
-            parts = _normalize_member_parts(member.name)
-            target = destination.joinpath(*parts)
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
-                raise PsutilAndroidInstallError(f"Unsupported archive member type: {member.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            extracted = tf.extractfile(member)
-            if extracted is None:
-                raise PsutilAndroidInstallError(f"Cannot read archive member: {member.name}")
-            with extracted, open(target, "wb") as dst:
-                shutil.copyfileobj(extracted, dst)
-            try:
-                target.chmod(member.mode & 0o777)
-            except OSError:
-                pass
-
-
 def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:
     """Safely extract the pinned psutil sdist and patch it for Android."""
-    _safe_extract_tar_gz(archive, destination)
+    try:
+        safe_extract_targz(archive, destination)  # rejects traversal, links and device nodes
+    except ValueError as exc:
+        raise PsutilAndroidInstallError(str(exc)) from exc
     src_roots = [path for path in destination.iterdir() if path.is_dir() and path.name.startswith("psutil-")]
     if not src_roots:
         raise PsutilAndroidInstallError("psutil sdist did not contain a psutil-* directory")

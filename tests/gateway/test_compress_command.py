@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -105,11 +105,15 @@ async def test_compress_command_works_when_auto_compaction_disabled():
 
 
 @pytest.mark.asyncio
-async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
+@pytest.mark.parametrize("warning_notifications", [True, False])
+async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(tmp_path, monkeypatch, warning_notifications):
     """When the user's configured ``auxiliary.compression.model`` errors out
     but compression recovers by retrying on the main model, /compress must
     STILL inform the user.  Silent recovery hides broken config the user
     needs to fix."""
+    import gateway.run as gateway_run
+    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(warning_notifications).lower()}}}")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     history = _make_history()
     # Compressed transcript — normal successful compression, no placeholder.
     compressed = [

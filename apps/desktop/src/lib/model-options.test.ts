@@ -3,14 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import {
-  firstSelectableCatalogModel,
-  manualPickRemoved,
-  modelOptionsQueryKey,
-  reconcileSelectionAfterCatalogRefresh,
-  requestModelOptions,
-  selectionInCatalog
-} from './model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -215,73 +208,18 @@ describe('modelOptionsQueryKey', () => {
   })
 })
 
-describe('manualPickRemoved', () => {
-  const providers = [
-    { name: 'OpenRouter', slug: 'openrouter', models: ['owl-alpha', 'gpt-5.5'] },
-    { name: 'Nous', slug: 'nous', models: [] } // present but unconfigured / re-auth
-  ]
-
-  it('flags a pick whose model was dropped from a populated provider', () => {
-    expect(manualPickRemoved(providers, 'openrouter', 'nemotron-removed')).toBe(true)
-  })
-
-  it('keeps a pick that is still in the catalog', () => {
-    expect(manualPickRemoved(providers, 'openrouter', 'gpt-5.5')).toBe(false)
-  })
-
-  it('matches the provider by name as well as slug', () => {
-    expect(manualPickRemoved(providers, 'OpenRouter', 'gpt-5.5')).toBe(false)
-    expect(manualPickRemoved(providers, 'OpenRouter', 'gone')).toBe(true)
-  })
-
-  it('never clobbers when the provider is absent (ambiguous / deauth)', () => {
-    expect(manualPickRemoved(providers, 'anthropic', 'claude-sonnet-4.6')).toBe(false)
-  })
-
-  it('never clobbers when the provider has an empty model list (re-auth)', () => {
-    expect(manualPickRemoved(providers, 'nous', 'hermes-4')).toBe(false)
-  })
-
-  it('never clobbers on a not-yet-loaded or empty catalog', () => {
-    expect(manualPickRemoved(undefined, 'openrouter', 'gpt-5.5')).toBe(false)
-    expect(manualPickRemoved([], 'openrouter', 'gpt-5.5')).toBe(false)
-  })
-
-  it('never clobbers when there is no pick', () => {
-    expect(manualPickRemoved(providers, '', '')).toBe(false)
-  })
-})
-
-describe('reconcileSelectionAfterCatalogRefresh', () => {
-  const zhipu = { name: '智谱2', slug: 'zhipu', models: ['glm-4.5-air', 'glm-5-turbo'] }
-
-  const bytea = {
-    name: '字节A',
-    slug: 'byteplus',
-    models: ['deepseek-v4-flash', 'doubao-seed-2.0-pro']
+describe('catalogProviderMatches', () => {
+  const cloudflare = {
+    aliases: ['custom:cloudflare', 'cloudflare'],
+    models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast'],
+    name: 'Cloudflare',
+    slug: 'cloudflare'
   }
 
-  const moa = { name: 'Mixture of Agents', slug: 'moa', models: ['default'] }
-
-  it('switches to the first new-group model when the current pick is gone', () => {
-    expect(selectionInCatalog([bytea], 'glm-4.5-air')).toBe(false)
-    expect(firstSelectableCatalogModel([moa, bytea])).toEqual({
-      model: 'deepseek-v4-flash',
-      provider: 'byteplus'
-    })
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa, bytea])).toEqual({
-      model: 'deepseek-v4-flash',
-      provider: 'byteplus'
-    })
-  })
-
-  it('keeps the current pick when it is still in the refreshed catalog', () => {
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [zhipu, moa])).toBeNull()
-  })
-
-  it('does not wipe the pick when the refreshed catalog has no selectable models', () => {
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa])).toBeNull()
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [])).toBeNull()
-    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', undefined)).toBeNull()
+  it('matches slug, display name, and custom-provider aliases', () => {
+    expect(catalogProviderMatches(cloudflare, 'cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
+    expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
   })
 })

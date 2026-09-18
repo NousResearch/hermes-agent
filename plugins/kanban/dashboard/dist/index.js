@@ -1263,6 +1263,10 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onSettingsClick: function () { setShowBoardSettings(true); },
+          onUnbindProject: function () {
+            updateBoard(board, { project_id: "" })
+              .catch(function (e) { setError(String(e.message || e)); });
+          },
           onDeleteBoard: deleteBoard,
           requestDialog: function (req) { return kanbanDialogs.request(req); },
         }),
@@ -2065,6 +2069,30 @@
     );
   }
 
+  // Readout of the board's project binding (GET /boards annotates every
+  // board with project_id + project_name). The × sends PATCH
+  // {project_id: ""} — the same clear the settings dialog uses — so the
+  // binding is visible and removable without opening Settings.
+  function BoardProjectBadge(props) {
+    const { t } = useI18n();
+    const b = props.board;
+    if (!b || !b.project_id) return null;
+    return h(Badge, {
+      variant: "outline",
+      className: "hermes-kanban-board-project text-xs font-normal gap-1",
+      title: tx(t, "boardProjectBadgeTitle", "New tasks on this board inherit this project"),
+    },
+      tx(t, "boardProjectBadge", "Project: {name}", { name: b.project_name || b.project_id }),
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-board-project-unbind",
+        "aria-label": tx(t, "unbindProject", "Unbind project"),
+        title: tx(t, "unbindProject", "Unbind project"),
+        onClick: props.onUnbind,
+      }, "×"),
+    );
+  }
+
   function BoardSwitcher(props) {
     const { t } = useI18n();
     const list = props.boardList || [];
@@ -2097,6 +2125,7 @@
           title: tx(t, "boardSettingsTitle",
             "Board settings — name, description, and the default project directory new tasks inherit"),
         }, tx(t, "boardSettings", "Settings")),
+        h(BoardProjectBadge, { board: current, onUnbind: props.onUnbindProject }),
         h(DocsLink, null),
       );
     }
@@ -2122,6 +2151,7 @@
             ),
             h("span", { className: "text-xs text-muted-foreground" },
               `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+            h(BoardProjectBadge, { board: current, onUnbind: props.onUnbindProject }),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -2169,6 +2199,24 @@
     );
   }
 
+  // Live (non-archived) Hermes projects available for board scoping,
+  // fetched from GET /projects on mount. On failure the list stays empty
+  // and both dialogs omit the project_id field from their payloads, so a
+  // projects-store hiccup can never clear an existing binding.
+  function useBoardProjects() {
+    const [projects, setProjects] = useState([]);
+    useEffect(function () {
+      let cancelled = false;
+      SDK.fetchJSON(`${API}/projects`)
+        .then(function (res) {
+          if (!cancelled) setProjects((res && res.projects) || []);
+        })
+        .catch(function () { /* optional field; keep the list empty */ });
+      return function () { cancelled = true; };
+    }, []);
+    return projects;
+  }
+
   function NewBoardDialog(props) {
     const { t } = useI18n();
     const [slug, setSlug] = useState("");
@@ -2176,6 +2224,8 @@
     const [description, setDescription] = useState("");
     const [icon, setIcon] = useState("");
     const [projectDirectory, setProjectDirectory] = useState("");
+    const projects = useBoardProjects();
+    const [projectId, setProjectId] = useState("");
     const [switchTo, setSwitchTo] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [err, setErr] = useState(null);
@@ -2201,6 +2251,9 @@
         description: description.trim() || undefined,
         icon: icon.trim() || undefined,
         default_workdir: projectDirectory.trim() || undefined,
+        // Only send the binding when the selector was actually rendered
+        // (projects loaded) and one was picked.
+        project_id: (projects.length && projectId) || undefined,
         switch: switchTo,
       }).catch(function (e) {
         setErr(String(e && e.message ? e.message : e));
@@ -2277,6 +2330,25 @@
               tx(t, "projectDirectoryExplanation",
                 "Sets the default location for task files so project output is preserved.")),
           ),
+          projects.length ? h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "boardProject", "Project"), " ",
+              h("span", { className: "text-muted-foreground" },
+                tx(t, "boardProjectHint", "(optional)"))),
+            h(Select, Object.assign({
+              value: projectId,
+              className: "h-8",
+            }, selectChangeHandler(setProjectId)),
+              h(SelectOption, { value: "" },
+                tx(t, "boardProjectNone", "No project binding")),
+              projects.map(function (p) {
+                return h(SelectOption, { key: p.id, value: p.id },
+                  p.name || p.slug || p.id);
+              }),
+            ),
+            h("div", { className: "text-xs text-muted-foreground" },
+              tx(t, "boardProjectExplanation",
+                "Tasks created on this board inherit the bound project.")),
+          ) : null,
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs" }, tx(t, "icon", "Icon"), " ",
               h("span", { className: "text-muted-foreground" },
@@ -2314,16 +2386,19 @@
     );
   }
 
-  // Board settings dialog — edit display name, description, and the
-  // board-level default project directory (default_workdir). The workdir
-  // is the board-level setting every new task's workspace kind/path is
-  // seeded from; task-level values in the create dialog override it.
+  // Board settings dialog — edit display name, description, the
+  // board-level default project directory (default_workdir), and the
+  // board's project binding (project_id). The workdir is the board-level
+  // setting every new task's workspace kind/path is seeded from;
+  // task-level values in the create dialog override it.
   function BoardSettingsDialog(props) {
     const { t } = useI18n();
     const b = props.board || {};
     const [name, setName] = useState(b.name || "");
     const [description, setDescription] = useState(b.description || "");
     const [projectDirectory, setProjectDirectory] = useState(b.default_workdir || "");
+    const projects = useBoardProjects();
+    const [projectId, setProjectId] = useState(b.project_id || "");
     const [submitting, setSubmitting] = useState(false);
     const [err, setErr] = useState(null);
 
@@ -2333,10 +2408,19 @@
       setErr(null);
       // Send default_workdir unconditionally: "" clears it on the server,
       // a path sets it (validated server-side: absolute + existing dir).
+      // Exception: a blank directory next to a chosen project is omitted
+      // so the server mirrors the project's primary folder into
+      // default_workdir — the same seeding the create dialog gets.
+      // project_id mirrors that only when the selector was rendered
+      // (projects loaded): "" clears the binding, an id scopes the board.
+      // When the projects store is unreachable the field is omitted so
+      // saving unrelated settings never wipes an existing binding.
+      const boundProject = projects.length ? projectId : undefined;
       props.onSave({
         name: name.trim() || undefined,
         description: description.trim() || undefined,
-        default_workdir: projectDirectory.trim(),
+        default_workdir: projectDirectory.trim() || (boundProject ? undefined : ""),
+        project_id: boundProject,
       }).catch(function (e) {
         setErr(parseApiErrorMessage(e));
         setSubmitting(false);
@@ -2391,6 +2475,26 @@
               tx(t, "projectDirectoryOverrideHint",
                 "New tasks inherit this as their workspace default; each task can still override it in the create dialog.")),
           ),
+          projects.length ? h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" },
+              tx(t, "boardProject", "Project")),
+            h(Select, Object.assign({
+              value: projectId,
+              className: "h-8",
+            }, selectChangeHandler(setProjectId)),
+              h(SelectOption, { value: "" },
+                tx(t, "boardProjectClear", "No binding (clears on save)")),
+              projects.map(function (p) {
+                return h(SelectOption, {
+                  key: p.id,
+                  value: p.id,
+                }, p.name || p.slug || p.id);
+              }),
+            ),
+            h("div", { className: "text-xs text-muted-foreground" },
+              tx(t, "boardProjectSettingsExplanation",
+                "Bound project tasks inherit the project. Select “No binding” to clear it.")),
+          ) : null,
         ),
         err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
         h("div", { className: "hermes-kanban-dialog-actions" },

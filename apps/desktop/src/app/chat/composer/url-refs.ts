@@ -13,6 +13,11 @@ import { textBeforeCaret } from './text-utils'
 // (a filename, a version, a sentence). Brackets and quotes fence a URL in prose;
 // parens don't, so they stay in and an unbalanced tail is trimmed below.
 const URL_RE = /https?:\/\/[^\s<>[\]{}"'`]+/gi
+// Anchored, non-global twin for the whole-payload check: `exec` on the shared
+// global `URL_RE` would leave its `lastIndex` past the match, and `matchAll`
+// inherits that offset, so the `linkifyUrls` call later in the same paste
+// handler would start scanning after the link and chip nothing.
+const EXACT_URL_RE = /^https?:\/\/[^\s<>[\]{}"'`]+$/i
 const TYPED_URL_RE = /(?:^|\s)(https?:\/\/[^\s<>[\]{}"'`]+)$/i
 
 /** A URL at the end of a sentence carries the punctuation that ended it. */
@@ -57,6 +62,67 @@ export function linkifyUrls(text: string) {
   }
 
   return out + text.slice(cursor)
+}
+
+/** The href to apply when a clipboard payload is exactly ONE supported link —
+ *  a bare or `<…>`-wrapped `http(s)` URL with a host and nothing else. Null for
+ *  anything that isn't a lone link (prose, multiple links, trailing text), so
+ *  callers fall through to the normal paste pipeline. Ported from
+ *  block/buzz#6684's `resolveExactLinkPaste`. */
+export function resolveExactLinkPaste(raw: string): string | null {
+  const text = raw.trim()
+  const unwrapped = text.startsWith('<') && text.endsWith('>') && text.length > 2 ? text.slice(1, -1).trim() : text
+
+  if (!EXACT_URL_RE.test(unwrapped)) {
+    return null
+  }
+
+  const { trailing, url } = splitUrlTail(unwrapped)
+
+  // Trailing sentence punctuation means the user copied prose, not a link.
+  if (trailing || !hasHost(url)) {
+    return null
+  }
+
+  return url
+}
+
+/** The selected composer text a link paste should hyperlink, or null when the
+ *  selection can't take a link mark: collapsed, outside `editor`, spanning
+ *  chips or line breaks, or whitespace-only. */
+export function selectionLinkLabel(editor: HTMLElement): string | null {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  if (!editor.contains(range.commonAncestorContainer)) {
+    return null
+  }
+
+  const probe = document.createElement('div')
+
+  probe.append(range.cloneContents())
+
+  // A chip inside the selection is a directive, not prose — linking over it
+  // would destroy the reference. Multi-line selections don't read as a label.
+  if (probe.querySelector('[data-ref-text], br')) {
+    return null
+  }
+
+  const label = probe.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+
+  return label || null
+}
+
+/** Markdown link for a paste-over-selection: the label the user selected, the
+ *  URL they pasted. Square brackets in the label are escaped so the link
+ *  survives markdown parsing downstream. */
+export function markdownLinkFor(label: string, url: string): string {
+  return `[${label.replace(/([[\]])/g, '\\$1')}](${url})`
 }
 
 /** A plain space finishing a typed link commits it as a chip (followed by

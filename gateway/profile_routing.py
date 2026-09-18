@@ -4,6 +4,11 @@ Matching priority, most specific first (``gateway.profile_routes`` in config.yam
 platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + guild_id (2)
 → default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
 direct parent, so a channel route also matches any thread/post under it.
+
+A route applies only to messages received by the bot of its ``bot_profile`` (default: the
+default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
+this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
+dedicated secondary bot into another profile (#104933).
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ class ProfileRoute:
     chat_id: Optional[str] = None
     thread_id: Optional[str] = None
     enabled: bool = True
+    bot_profile: Optional[str] = None  # None = the default profile's bot
 
     @property
     def specificity(self) -> int:
@@ -67,13 +73,18 @@ class ProfileRoute:
     def matches(
         self, platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
         thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+        adapter_profile: Optional[str] = None,
     ) -> bool:
         """True if every discriminator the route declares holds (AND).
 
         ``chat_id`` matches the channel directly or as the parent of a thread/forum post; WhatsApp
         ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
+        ``adapter_profile`` is the profile owning the receiving bot (``None`` = default); it must equal
+        the route's ``bot_profile``.
         """
         if not self.enabled or self.platform != platform:
+            return False
+        if _bot_profile_key(self.bot_profile) != _bot_profile_key(adapter_profile):
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
@@ -85,6 +96,12 @@ class ProfileRoute:
         ):
             return False
         return not (self.guild_id and self.guild_id != guild_id)
+
+
+def _bot_profile_key(name: Optional[str]) -> Optional[str]:
+    """``None`` for the default profile, else the profile name (mirrors ``set_owner_profile``)."""
+    name = (name or "").strip()
+    return None if not name or name == "default" else name
 
 
 def _coerce_route_id(value: Any) -> Optional[str]:
@@ -139,6 +156,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             chat_id=_coerce_route_id(entry.get("chat_id")),
             thread_id=_coerce_route_id(entry.get("thread_id")),
             enabled=entry.get("enabled", True),
+            bot_profile=_bot_profile_key(entry.get("bot_profile")),
         ))
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
@@ -148,9 +166,11 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 def match_profile_route(
     routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+    adapter_profile: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
     """Return the first (most specific) matching route, or None."""
     for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id, parent_chat_id=parent_chat_id):
+        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+                         parent_chat_id=parent_chat_id, adapter_profile=adapter_profile):
             return route
     return None

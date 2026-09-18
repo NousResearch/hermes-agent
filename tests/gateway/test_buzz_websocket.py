@@ -140,21 +140,97 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
 
     Reproduces the #98097 shape: a socket stuck in CLOSE_WAIT yields no
     frame and no error, so without a read-side bound the loop would wait
-    forever while the gateway keeps reporting "connected".
+    forever while the gateway keeps reporting "connected". The receive here
+    also ignores cancellation (#112049), which held the bound hostage as long
+    as it was an ``asyncio.wait_for``.
     """
     import logging
 
     adapter = _make_adapter()
     monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
     caplog.set_level(logging.WARNING)
+    states = []
+    monkeypatch.setattr(adapter, "_write_runtime_status_safe", lambda status, **kw: states.append(kw["platform_state"]))
 
     sockets = []
+    release_parked_receive = asyncio.Event()
 
     async def dead_anext():
-        await asyncio.Event().wait()  # never yields, never raises
+        # Some transports do not acknowledge cancellation while their receive
+        # call is parked.  ``asyncio.wait_for`` then waits for this coroutine
+        # to finish, so its own timeout cannot return.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release_parked_receive.wait()
+            raise
 
     def fake_connect(*args, **kwargs):
         ws = _ScriptedWebSocket(dead_anext)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(sockets) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+    finally:
+        release_parked_receive.set()
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
+    assert sockets[0].exited, "the silent connection was not closed before reconnecting"
+    assert any("went silent" in record.message for record in caplog.records)
+    assert states[:2] == ["retrying", "connected"], f"health must flip to retrying and back, got {states}"
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_reconnects_when_discovery_send_sees_closed_socket(monkeypatch):
+    """A send-side ConnectionClosed proves the socket is dead even while the read is parked.
+
+    #112049: the discovery sweep logged ``ConnectionClosedError`` for hours while
+    ``_ws_read_loop`` sat on a receive that never returned; the sweep must end the
+    connection so the reconnect path runs instead of retrying next tick forever.
+    """
+    from websockets.exceptions import ConnectionClosedError
+
+    adapter = _make_adapter()
+    adapter.poll_interval = 0.02
+    monkeypatch.setattr(_buzz_mod, "_MIN_POLL_INTERVAL", 0.02)
+    monkeypatch.setattr(_buzz_mod, "_DM_DISCOVERY_EVERY", 1)
+    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 30.0)  # far away: only the send side can end this
+
+    sockets = []
+
+    async def silent_anext():
+        sockets[-1].dead = True  # the read loop is now parked; the relay side is gone
+        await asyncio.Event().wait()
+
+    async def rediscover(websocket, subscriptions):
+        await websocket.send(json.dumps(["REQ", "hermes-buzz-dm-1", {}]))
+
+    monkeypatch.setattr(adapter, "_rediscover_and_subscribe", rediscover)
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(silent_anext)
+        ws.dead = False
+        real_send = ws.send
+
+        async def send(raw):
+            if ws.dead:
+                raise ConnectionClosedError(None, None)
+            await real_send(raw)
+
+        ws.send = send
         sockets.append(ws)
         return ws
 
@@ -174,9 +250,48 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
 
-    assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
-    assert sockets[0].exited, "the silent connection was not closed before reconnecting"
-    assert any("went silent" in record.message for record in caplog.records)
+    assert len(sockets) >= 2, "a closed socket seen by the discovery sweep did not force a reconnect"
+    assert sockets[0].exited, "the dead connection was not closed before reconnecting"
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_backs_off_and_publishes_retrying_on_clean_relay_close(monkeypatch):
+    """A relay that accepts, then cleanly closes after subscribe, is a disconnect like any other.
+
+    StopAsyncIteration used to return from the read loop without raising, so the
+    loop reconnected in a hot loop with no backoff and health stayed "connected".
+    """
+    adapter = _make_adapter()
+    states = []
+    monkeypatch.setattr(adapter, "_write_runtime_status_safe", lambda status, **kw: states.append(kw["platform_state"]))
+
+    async def clean_close():
+        raise StopAsyncIteration
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(clean_close)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) == 1, f"clean close must back off before reconnecting, got {len(sockets)} connects in 0.3s"
+    assert sockets[0].exited, "the closed connection was not exited before backing off"
+    assert states == ["retrying"], f"a clean relay close must publish retrying, got {states}"
 
 
 @pytest.mark.asyncio

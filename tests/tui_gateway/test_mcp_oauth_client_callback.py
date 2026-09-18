@@ -16,6 +16,7 @@ import threading
 
 import pytest
 
+from hermes_constants import get_hermes_home
 from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from tui_gateway import mcp_oauth_sessions
 from tui_gateway.mcp_oauth_sessions import (
@@ -106,7 +107,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     )
 
     result = mcp_oauth_sessions.start_flow(
-        "/tmp/hermes-test-home",
+        str(get_hermes_home()),
         "clicky",
         {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
         client_redirect_uri="http://127.0.0.1:8412/callback",
@@ -131,7 +132,7 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     _fake_worker_publishes_url(monkeypatch)
     with pytest.raises(ValueError):
         mcp_oauth_sessions.start_flow(
-            "/tmp/hermes-test-home",
+            str(get_hermes_home()),
             "clicky2",
             {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
             client_redirect_uri="https://evil.example.com/callback",
@@ -152,7 +153,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
         flow_id=session_id,
         server_name=server,
         profile=None,
-        hermes_home="/tmp/hermes-test-home",
+        hermes_home=str(get_hermes_home()),
         redirect_uri="http://127.0.0.1:9000/callback",
     )
     # Pin the expected state the way publish_authorization_url does.
@@ -166,7 +167,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
     rec = {
         "session_id": session_id,
         "server_name": server,
-        "hermes_home": "/tmp/hermes-test-home",
+        "hermes_home": str(get_hermes_home()),
         "flow": flow,
         "httpd": None,
         "created_at": __import__("time").time(),
@@ -185,7 +186,41 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", None)
+
+
+def test_oauth_callback_rpc_relays_iss():
+    """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
+    and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""
+    import tui_gateway.server as srv
+    from tui_gateway.contracts import registry as contracts
+
+    flow = _make_session()
+    contract = contracts.METHODS["mcp.servers.oauth.callback"]
+    params = {"session_id": "sess-relay-1", "name": "hosp", "code": "abc", "state": "s3cr3tstate",
+              "iss": "https://as.example.com"}
+    params, problem = contracts.validate_params(contract, params)
+    assert problem is None
+    out = srv._methods["mcp.servers.oauth.callback"](1, params)
+    assert out["result"]["ok"] is True
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
+
+
+def test_loopback_listener_forwards_iss():
+    """The gateway-hosted loopback listener parses ``iss`` off the redirect rather than dropping it."""
+    import urllib.request
+
+    flow = _make_session(session_id="sess-relay-loop", server="loopy", state="loopstate")
+    httpd = mcp_oauth_sessions._start_loopback_listener(flow)
+    try:
+        port = httpd.server_address[1]
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/callback?code=abc&state=loopstate&iss=https%3A%2F%2Fas.example.com",
+            timeout=5,
+        ).read()
+    finally:
+        httpd.shutdown()
+    assert flow._callback == ("abc", "loopstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

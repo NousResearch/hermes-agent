@@ -254,7 +254,7 @@ describe('downloadGatewayMediaFile', () => {
 
     expect(saveGatewayFile).toHaveBeenCalledWith({
       connectionId: 'work-ssh',
-      path: '/Users/me/project/a b.md',
+      path: 'file:///Users/me/project/a%20b.md',
       profile: 'docker-gw',
       suggestedName: 'a b.md'
     })

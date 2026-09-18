@@ -14,6 +14,10 @@ its Anthropic translation, with a hard 400:
     translated ``output_config`` field with
     ``output_config: Extra inputs are not permitted`` (the documented case is
     the ``bedrock-mantle`` Messages endpoint).
+  * OpenAI-compatible gateways that validate the body with a strict pydantic
+    model reject the OBJECT-form ``response_format.json_schema`` by shape --
+    ``422 ... body.response_format.json_schema: str type expected`` -- instead
+    of naming the feature, so the error never mentions an unsupported option.
 
 Callers tolerate an unconstrained reply: the title prompt demands bare JSON
 and ``_extract_title_text`` has a loose-JSON fallback. The fix is reactive,
@@ -68,6 +72,10 @@ class TestIsStructuredOutputRejection:
         # Generic unsupported-parameter phrasings for both field names
         "Unsupported parameter: response_format",
         "output_config is not supported",
+        # Strict pydantic gateway rejecting the object-form json_schema by SHAPE
+        # (422, verbatim body from the gateway) -- no unsupported-parameter wording
+        'HTTP 422: {"detail":[{"loc":["body","response_format","json_schema"],'
+        '"msg":"str type expected","type":"type_error.str"}]}',
     ])
     def test_matches_real_provider_messages(self, message):
         assert _is_structured_output_rejection(RuntimeError(message)) is True

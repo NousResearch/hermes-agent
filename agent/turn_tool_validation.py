@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
+from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -56,14 +57,14 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
     This path never reaches finalize_turn, so persist here."""
     close_interrupted_tool_sequence(messages, final_response)
     agent._persist_session(messages, conversation_history)
-    return {
+    return stamp_failure({
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
         "completed": False,
         "partial": True,
         "error": final_response,
-    }
+    }, "truncated", True)
 
 
 def validate_tool_calls(
@@ -92,7 +93,8 @@ def validate_tool_calls(
         if tc.function.name not in valid_names:
             repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
-                print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
+                              force=True, diagnostic=True)
                 tc.function.name = repaired
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
@@ -116,7 +118,7 @@ def validate_tool_calls(
 
         if agent._invalid_tool_retries >= 3:
             agent._flush_status_buffer()
-            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
+            agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True, diagnostic=True)
             agent._invalid_tool_retries = 0
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
@@ -171,13 +173,12 @@ def validate_tool_calls(
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
                 f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                force=True,
+                force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count,
-                "Response truncated due to output length limit",
+                agent, messages, conversation_history, api_call_count, site_copy("truncated"),
             ))
 
         agent._invalid_json_retries += 1

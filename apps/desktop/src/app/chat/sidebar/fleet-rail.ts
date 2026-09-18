@@ -1,5 +1,6 @@
 import type { DesktopAgentRoster, DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { sortByProfileOrder } from '@/lib/profile-order'
 
 // Pure grouping for the fleet profile rail: which gateways sit "at rest"
 // beside the active one, and which agents each of them carries. Kept free of
@@ -24,7 +25,7 @@ export interface FleetGroup {
   /** The gateway's default profile — every Hermes home has one, so a group
    *  always carries it even before the roster has been enumerated. */
   defaultAgent: FleetAgent
-  /** Named (non-default) profiles, alphabetical for a stable strip. */
+  /** Named (non-default) profiles in the user's rail order, like the active strip. */
   named: FleetAgent[]
 }
 
@@ -33,8 +34,6 @@ export const DEFAULT_PROFILE = 'default'
 export function fleetRouteKey(connectionId: string, profile: string): string {
   return `${connectionId}::${profile}`
 }
-
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 /**
  * Groups for every registered gateway EXCEPT the active one, in the same order
@@ -51,10 +50,12 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 export function buildRestGroups({
   activeConnectionId,
   connections,
+  order = [],
   roster
 }: {
   activeConnectionId: null | string
   connections: readonly DesktopRegistryConnection[]
+  order?: readonly string[]
   roster: DesktopAgentRoster | null
 }): FleetGroup[] {
   const groups: FleetGroup[] = []
@@ -82,10 +83,11 @@ export function buildRestGroups({
 
     const defaultRow = rows.find(row => row.profile === DEFAULT_PROFILE)
 
-    const named = rows
-      .filter(row => row.profile !== DEFAULT_PROFILE)
-      .map(row => toAgent(row.profile, row.handle))
-      .sort((left, right) => collator.compare(left.profile, right.profile))
+    const named = sortByProfileOrder(
+      rows.filter(row => row.profile !== DEFAULT_PROFILE).map(row => toAgent(row.profile, row.handle)),
+      order,
+      agent => agent.profile
+    )
 
     groups.push({
       connectionId: connection.id,

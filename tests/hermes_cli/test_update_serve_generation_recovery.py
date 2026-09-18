@@ -78,6 +78,21 @@ def _gateway_only_success():
     }
 
 
+def test_desktop_owned_serve_survivor_does_not_hold_the_flag():
+    """#111494: the recovery pass may not restart a Desktop-supervised serve, so it
+    cannot be the reason recovery stays incomplete; an operator-owned survivor
+    alongside it still blocks."""
+    desktop = {"pid": 6161, "kind": "serve", "profile": "default", "supervisor": "desktop"}
+    manual = {"pid": 4242, "kind": "serve", "profile": "default", "supervisor": "manual-serve"}
+    kwargs = dict(
+        planned_gateway_profiles={"default"},
+        covered_gateway_profiles={"default"},
+        recovery_result=_gateway_only_success(),
+    )
+    assert update_cmd._abort_recovery_is_complete(stale_runtime_rows=[desktop], **kwargs) is True
+    assert update_cmd._abort_recovery_is_complete(stale_runtime_rows=[desktop, manual], **kwargs) is False
+
+
 def test_full_gateway_recovery_does_not_clear_the_flag_while_serve_is_stale():
     """The reported bug as a predicate: gateway green, serve still generation N."""
     assert (
@@ -905,7 +920,7 @@ def test_stale_serve_warning_names_the_process_and_the_fix(capsys):
     out = capsys.readouterr().out
     assert "4242" in out
     assert "serve" in out
-    assert "systemctl --user restart hermes-serve.service" in out
+    assert "systemctl --user restart hermes-serve.service" not in out
 
 
 def test_no_survivors_prints_nothing(capsys):

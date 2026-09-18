@@ -21,7 +21,7 @@ Create meme PNGs from templates with Pillow text overlay.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `creative`, `memes`, `humor`, `images` |
-| Related skills | [`ascii-art`](/docs/user-guide/skills/optional/creative/creative-ascii-art) |
+| Related skills | [`ascii-art`](./creative-ascii-art.md) |
 
 ## Reference: full SKILL.md
 

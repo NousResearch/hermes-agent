@@ -321,6 +321,17 @@ def list_active_loops() -> List[Tuple[str, LoopState]]:
     return out
 
 
+def store_has_active_loop(db: Any) -> bool:
+    """True when *db* holds an ACTIVE ``loop:*`` row — or a row that cannot be parsed (unknown, so the
+    caller keeps its full scan). Unlike :func:`list_active_loops` this takes the store explicitly and
+    propagates read errors, so an idle gate can tell "empty" from "unavailable"."""
+    for key, raw in db.list_meta_prefix(_META_PREFIX):
+        state = _parse_state(raw, key[len(_META_PREFIX):]) if raw else None
+        if state is None or state.status == "active":
+            return True
+    return False
+
+
 def migrate_loop_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
     """Carry a /loop from a parent session to its continuation. Best-effort, never raises.
 

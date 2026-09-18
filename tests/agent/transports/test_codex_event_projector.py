@@ -101,6 +101,49 @@ class TestCommandExecutionProjection:
 
 
 
+def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
+    """exitCode=0 is preserved in the persisted envelope, so a success whose last line is an
+    executor interrupt marker replays as data instead of an UNKNOWN-effect recovery notice."""
+    from types import SimpleNamespace
+
+    from agent.codex_runtime import _persist_projected_messages
+    from agent.replay_cleanup import canonicalize_replay_history
+    from agent.session_persistence import SessionPersistenceMixin
+    from hermes_state import SessionDB
+
+    output = "Documentation example:\n[Command interrupted]\n"
+    item = {"type": "commandExecution", "id": "child", "command": "cat doc", "cwd": str(tmp_path),
+            "status": "completed", "exitCode": 0, "aggregatedOutput": output}
+    projected = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}}).messages
+    store = SessionPersistenceMixin()
+    store._session_db = SessionDB(tmp_path / "session.db")
+    store.session_id = "command-replay"
+    store._session_db.create_session(store.session_id, source="cli")
+    store._session_db_created = True
+    store._last_flushed_db_idx = 0
+    turn = SimpleNamespace(projected_messages=projected + [{"role": "assistant", "content": "Done."}],
+                           submitted_user_text=None)
+    try:
+        _persist_projected_messages(store, turn, [{"role": "user", "content": "Print documentation."}])
+        raw, _display = store._session_db.get_resume_conversations(store.session_id)
+    finally:
+        store._session_db.close()
+    replay_tool = next(m for m in canonicalize_replay_history(raw) if m["role"] == "tool")
+    assert replay_tool.get("effect_disposition") is None
+    assert json.loads(replay_tool["content"]) == {"exit_code": 0, "output": output}
+
+
+@pytest.mark.parametrize("exit_fields", [{"exitCode": 130}, {}])
+def test_interrupted_or_unknown_exit_stays_conservative(exit_fields):
+    """A real interrupt (non-zero exit) or a missing exit status is still recovered as UNKNOWN."""
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    item = {"type": "commandExecution", "id": "interrupted", "command": "sleep 100", "cwd": "/tmp",
+            "status": "failed", "aggregatedOutput": "[Command interrupted]\n", **exit_fields}
+    projected = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}}).messages
+    assert canonicalize_replay_history(projected)[1]["effect_disposition"] == "unknown"
+
+
 class TestAgentMessageProjection:
     """assistant text → final_text + assistant message."""
 

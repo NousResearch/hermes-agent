@@ -286,18 +286,21 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
+  it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
+    // The cached record is a default-expanded snapshot; a CLI pin made after it
+    // loaded is not in it. Echoing the whole record back would reset that
+    // auxiliary slot to auto/'' (#95460) — only the edited key may be sent.
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      auxiliary: { curator: { provider: 'auto', model: '', reasoning_effort: 'high' } }
+    })
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     const fastSwitch = await screen.findByRole('switch')
     fireEvent.click(fastSwitch)
 
-    await waitFor(() =>
-      expect(saveHermesConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
-      )
-    )
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
@@ -323,7 +326,45 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     expect(await screen.findByText('Vision')).toBeTruthy()
+    // #97297 — the three canonical slots the backend serves must have rows too.
+    expect(screen.getByText('Triage specifier')).toBeTruthy()
+    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
+    expect(screen.getByText('Profile describer')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('edits auxiliary reasoning effort below the selected model and applies it with the assignment', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
+    })
+
+    await renderModelSettings()
+
+    expect(screen.queryByRole('combobox', { name: 'Vision reasoning effort' })).toBeNull()
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
+
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Vision reasoning effort' })
+    expect(reasoningSelect.compareDocumentPosition(await screen.findByRole('combobox', { name: 'Vision model' }))).toBe(
+      Node.DOCUMENT_POSITION_PRECEDING
+    )
+
+    fireEvent.click(reasoningSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'High' }))
+
+    const applyButtons = await screen.findAllByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButtons.at(-1)!)
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'auxiliary',
+        task: 'vision',
+        reasoning_effort: 'high'
+      })
+    )
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
@@ -409,6 +450,50 @@ describe('ModelSettings', () => {
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
+
+  it('does not warn when an aux slot uses the main alias', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
+    })
+
+    await renderModelSettings()
+    await screen.findAllByRole('button', { name: 'Set to main' })
+
+    // 'main' is a backend-supported alias that tracks the active main provider
+    // (auxiliary_client._normalize_aux_provider) — it can never be a stale pin. #97310
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
+
+  it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'ollama-cloud', model: 'glm-5.3-flash' },
+      tasks: [
+        {
+          task: 'title_generation',
+          provider: 'openai',
+          model: 'llama3.2:3b',
+          base_url: 'http://byron.local:11434/v1',
+          local_endpoint: true
+        },
+        {
+          task: 'vision',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          base_url: 'https://api.example.com/v1',
+          local_endpoint: false
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    // The public custom endpoint still bills a provider, so the banner stays —
+    // but it names only that one task, not the free LAN pin.
+    expect(await screen.findByText(/1 auxiliary task \(/)).toBeTruthy()
+    // The row shows where the pinned task actually points.
+    expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
+  })
 })
 
 describe('ModelSettings MoA preset editor', () => {
@@ -424,7 +509,7 @@ describe('ModelSettings MoA preset editor', () => {
         aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
         reference_temperature: 0,
         aggregator_temperature: 0,
-        max_tokens: 4096,
+
         enabled: true
       }
     },
@@ -435,7 +520,7 @@ describe('ModelSettings MoA preset editor', () => {
     aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
     reference_temperature: 0,
     aggregator_temperature: 0,
-    max_tokens: 4096,
+
     enabled: true
   })
 
@@ -591,6 +676,13 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('labels the aggregator row as the acting model billed for the run', async () => {
+    await openReferenceEditor()
+
+    // The aggregator row is the slot that pays for the whole tool loop (#112359).
+    expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
   })
 })
 

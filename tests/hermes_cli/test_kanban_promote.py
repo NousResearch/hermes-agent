@@ -64,10 +64,22 @@ def test_promote_stuck_todo_succeeds(conn):
     assert kb.get_task(conn, child).status == "ready"
 
 
+def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
+    # #106195: promotion must never report a 'ready' that the first claim reverts.
+    child, (parent,) = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(conn, child, actor="tester", reason="recovery")
+    assert not ok
+    assert parent in err and "--force" not in err and f"unlink <parent_id> {child}" in err
+    assert kb.get_task(conn, child).status == "todo"
+    assert kb.claim_task(conn, child) is None  # still gated; nothing pretended
 
 
-
-
+def test_cli_promote_has_no_force_flag(kanban_home):
+    from hermes_cli import kanban_parser
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kanban_parser.build_parser(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["kanban", "promote", "t_x", "--force"])
 
 
 # ---------------------------------------------------------------------------

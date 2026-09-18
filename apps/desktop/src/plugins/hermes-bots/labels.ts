@@ -63,12 +63,54 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   return raw.replace(/\b\w/g, ch => ch.toUpperCase())
 }
 
-export function slugify(value: string) {
+export function slugify(value: string, max = 64) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
+    .slice(0, max)
+}
+
+/** The profile id the backend accepts (`hermes_cli.profiles._PROFILE_ID_RE`
+ *  is ASCII-only), derived from whatever the user typed as the bot's name.
+ *  Accented Latin folds to its base letters (`Résumé` → `resume`); every other
+ *  letter or digit becomes a deterministic `u<hex>` token per NFC code point —
+ *  `小助手` → `u5c0f-u52a9-u624b`, `한글` → `ud55c-uae00` — so a CJK name no
+ *  longer slugs to '' and leaves Create disabled (#96153). 7-bit ASCII names
+ *  slug exactly as before; a name past the 64-char cap is cut at the last
+ *  token boundary so no `u<hex>` token is split into a different code point. */
+export function slugifyProfileName(value: string) {
+  const folded = value
+    .normalize('NFC')
+    .replace(/[\p{L}\p{N}]/gu, ch => {
+      const base = ch.normalize('NFKD').replace(/\p{M}+/gu, '')
+
+      return /^[a-zA-Z0-9]+$/.test(base) ? base : `-u${ch.codePointAt(0)!.toString(16)}-`
+    })
+    .replace(/-+/g, '-')
+
+  const slug = slugify(folded, Infinity)
+
+  if (slug.length <= 64) {
+    return slug
+  }
+
+  const cut = slug.slice(0, 64)
+  const boundary = slug[64] === '-' ? 64 : cut.lastIndexOf('-')
+
+  return (boundary > 0 ? cut.slice(0, boundary) : cut).replace(/-+$/, '')
+}
+
+/** Split the dialog's Name field into the backend id and the display title.
+ *  A non-ASCII name cannot be the profile id, so the entered string survives
+ *  as the title when the user left Title empty. */
+export function botProfileIdentity(name: string, title: string) {
+  const enteredName = name.trim()
+
+  return {
+    slug: slugifyProfileName(enteredName),
+    title: title.trim() || (/[^\u0020-\u007e]/.test(enteredName) ? enteredName : '')
+  }
 }
 
 /** Flatten markdown syntax out of a one-line roster preview so rows read

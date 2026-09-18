@@ -289,6 +289,38 @@ describe('backfillOlderTranscriptPage', () => {
     expect(transcriptTailState('stored-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
   })
 
+  it('discards an older page when the same session tail was replaced during the fetch', async () => {
+    truncatedTail()
+    let resolvePage!: (value: unknown) => void
+    vi.mocked(getOlderSessionMessages).mockReturnValue(
+      new Promise(resolve => {
+        resolvePage = resolve
+      }) as never
+    )
+    const applyOlderPage = vi.fn()
+
+    const pending = backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })
+
+    // Rewind/revalidation replaced the display tail without changing the route.
+    recordTranscriptTail('stored-1', {
+      messages: [row(900, 'replacement')],
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 1 }
+    })
+    resolvePage({
+      messages: [row(1, 'stale older row')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    })
+
+    expect(await pending).toBe(false)
+    expect(applyOlderPage).not.toHaveBeenCalled()
+    expect(transcriptTailState('stored-1')).toMatchObject({ nextOffset: 1, possiblyTruncated: false })
+  })
+
   it('shares one in-flight fetch per stored session', async () => {
     truncatedTail()
 

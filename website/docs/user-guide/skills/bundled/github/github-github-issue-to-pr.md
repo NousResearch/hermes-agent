@@ -21,7 +21,7 @@ Carry a GitHub issue to a verified PR with honest CI state.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Issues`, `Coding`, `Pull-Requests`, `CI` |
-| Related skills | [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues), [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow), [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
+| Related skills | [`github-issues`](./github-github-issues.md), [`github-pr-workflow`](./github-github-pr-workflow.md), [`systematic-debugging`](../software-development/software-development-systematic-debugging.md), [`test-driven-development`](../software-development/software-development-test-driven-development.md), [`requesting-code-review`](../software-development/software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 

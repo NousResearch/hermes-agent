@@ -21,7 +21,7 @@ Create, read, edit Excel .xlsx workbooks and CSVs.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `spreadsheet`, `xlsx`, `csv`, `openpyxl`, `productivity` |
-| Related skills | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) |
+| Related skills | [`docx`](./productivity-docx.md), [`pdf`](./productivity-pdf.md), [`powerpoint`](./productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

@@ -32,7 +32,9 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,8 @@ def _ack():
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
@@ -90,7 +94,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)
         self._runner = self._site = self._app = self._http_client = self._poll_task = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._user_app_map: Dict[str, str] = {}
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
 
@@ -116,14 +120,16 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         if not check_wecom_callback_requirements():
             logger.warning("[WecomCallback] aiohttp/httpx not installed")
             return False
-        try:  # quick port-in-use check
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                sock.connect(("127.0.0.1", self._port))
-            logger.error("[WecomCallback] Port %d already in use", self._port)
-            return False
-        except (ConnectionRefusedError, OSError):
-            pass
+        from gateway.platforms.shared_ingress import bind_listener, shared_ingress_profile
+        if not shared_ingress_profile(self):
+            try:  # quick port-in-use check
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+                    sock.settimeout(1)
+                    sock.connect(("127.0.0.1", self._port))
+                logger.error("[WecomCallback] Port %d already in use", self._port)
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
@@ -133,13 +139,12 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
             self._app.router.add_post(self._path, self._handle_callback)
-            self._runner = web.AppRunner(self._app)
-            await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self._host, self._port)
-            await self._site.start()
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<path>.
+            self._runner = await bind_listener(self, self._app, self._host, self._port, self._path)
             self._poll_task = asyncio.create_task(self._poll_loop())
             self._mark_connected()
-            logger.info("[WecomCallback] HTTP server listening on %s:%s%s", self._host, self._port, self._path)
+            if self._runner is not None:
+                logger.info("[WecomCallback] HTTP server listening on %s:%s%s", self._host, self._port, self._path)
             for app in self._apps:
                 try:
                     await self._refresh_access_token(app)
@@ -229,7 +234,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 event = self._build_event(app, self._decrypt_request(app, body, msg_signature, timestamp, nonce))
                 if event is not None:
                     # WeCom retries callbacks on timeout → duplicate inbound messages.
-                    if event.message_id and self._is_duplicate(event.message_id):
+                    if event.message_id and self._dedup.is_duplicate(event.message_id):
                         logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
                         return _ack()
                     if event.source and event.source.user_id:
@@ -246,17 +251,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     @staticmethod
     def _signature_params(request: web.Request):
         return tuple(request.query.get(k, "") for k in ("msg_signature", "timestamp", "nonce"))
-
-    def _is_duplicate(self, message_id: str) -> bool:
-        # Deduplicate: WeCom retries callbacks on timeout, producing duplicate inbound messages (#10305).
-        now = time.time()
-        if now - self._seen_messages.get(message_id, float("-inf")) < MESSAGE_DEDUP_TTL_SECONDS:
-            return True
-        self._seen_messages[message_id] = now
-        if len(self._seen_messages) > 2000:  # prune expired entries
-            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-        return False
 
     async def _poll_loop(self) -> None:
         while True:

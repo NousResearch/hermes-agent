@@ -82,7 +82,14 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         for axis in CAPABILITY_AXES:
             self.assertIn(axis, caps, f"deepinfra missing {axis}")
         checked += 1
-        self.assertGreaterEqual(checked, 3)
+        # openrouter
+        from plugins.video_gen.openrouter import OpenRouterVideoGenProvider
+
+        caps = OpenRouterVideoGenProvider().capabilities()
+        for axis in CAPABILITY_AXES:
+            self.assertIn(axis, caps, f"openrouter missing {axis}")
+        checked += 1
+        self.assertGreaterEqual(checked, 4)
 
     def test_abc_default_fails_closed(self):
         from agent.video_gen_provider import VideoGenProvider

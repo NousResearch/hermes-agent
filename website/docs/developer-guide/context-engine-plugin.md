@@ -212,7 +212,7 @@ Only one engine can be registered. A second plugin attempting to register is rej
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway expiry)
+6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
@@ -267,6 +267,6 @@ Your engine must therefore assume:
 
 ## See also
 
-- [Context Compression and Caching](/developer-guide/context-compression-and-caching) — how the built-in compressor works
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — analogous single-select plugin system for memory
-- [Plugins](/user-guide/features/plugins) — general plugin system overview
+- [Context Compression and Caching](./context-compression-and-caching.md) — how the built-in compressor works
+- [Memory Provider Plugins](./memory-provider-plugin.md) — analogous single-select plugin system for memory
+- [Plugins](../user-guide/features/plugins.md) — general plugin system overview

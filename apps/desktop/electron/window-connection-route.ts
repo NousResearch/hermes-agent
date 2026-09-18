@@ -40,6 +40,30 @@ export function registrySshScopeForWindowRoute(
   return backendScopeKey(route.connectionId, route.profile)
 }
 
+export interface RegistrySshPoolEntry {
+  registryConnectionId?: null | string
+  ssh?: unknown
+}
+
+// The sshConnections pool has a single writer that publishes every tunnel under
+// its per-profile bootstrap key while stamping the entry with the registry
+// connection that owns it. A registry-scoped lookup under the composite
+// backendScopeKey can therefore miss a live tunnel; this recovers the writer's
+// actual key from the stamped identity, the same match managedSshScopeRole
+// applies to pool entries.
+export function registrySshPoolScopeByConnectionId(
+  entries: Iterable<readonly [string, RegistrySshPoolEntry | undefined]>,
+  connectionId: string
+): null | string {
+  for (const [scope, entry] of entries) {
+    if (entry?.ssh && entry.registryConnectionId === connectionId) {
+      return scope
+    }
+  }
+
+  return null
+}
+
 export class WindowConnectionRouteRegistry {
   private readonly routes = new Map<number, WindowConnectionRoute>()
 

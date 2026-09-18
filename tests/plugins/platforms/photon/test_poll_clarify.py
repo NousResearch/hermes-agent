@@ -18,7 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 

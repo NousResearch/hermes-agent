@@ -121,7 +121,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 位于 `$HERMES_HOME/plugins/model-providers/<name>/` 的用户插件会覆盖同名的捆绑插件（`register_provider()` 中后写者获胜）——因此第三方可以在不编辑本仓库的情况下对任何内置 profile 进行 monkey-patch 或替换。
 
-参见 `plugins/model-providers/nvidia/` 或 `plugins/model-providers/gmi/` 作为模板，以及完整的 [Model Provider Plugin 指南](/developer-guide/model-provider-plugin)，了解字段参考、hook 用法和端到端示例。
+参见 `plugins/model-providers/nvidia/` 或 `plugins/model-providers/gmi/` 作为模板，以及完整的 [Model Provider Plugin 指南](./model-provider-plugin.md)，了解字段参考、hook 用法和端到端示例。
 
 ## 完整路径：OAuth 和复杂 provider
 

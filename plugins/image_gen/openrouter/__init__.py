@@ -62,9 +62,11 @@ _load_image_gen_config = load_image_gen_config
 _IMAGE_API_ENV_PREFIX = "OPENROUTER_IMAGE_API_"
 # Separate connect budget: no TLS in 20s means the endpoint is down — don't wait out the read budget.
 _IMAGE_API_CONNECT_TIMEOUT = 20.0
-# ``/images/models`` probes keyed by base URL: ``(fetched_at, ids)``; empty sets cached too.
+# ``/images/models`` probes keyed by (base URL, key fingerprint): ``(fetched_at, ids)``; empty sets
+# are cached too, so the key must include the credential or one profile's 401 would pin a sibling
+# profile (same base URL, different key) to chat-completions for the whole TTL.
 _CATALOG_TTL_SECONDS = 900.0
-_CATALOG_CACHE: Dict[str, Tuple[float, frozenset]] = {}
+_CATALOG_CACHE: Dict[Tuple[str, Optional[str]], Tuple[float, frozenset]] = {}
 
 _GEMINI_RATIOS = (
     "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9",
@@ -271,9 +273,12 @@ def _fetch_catalog(
 
 
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
-    """Model ids from ``GET {base_url}/images/models``, cached per base URL. Any failure caches an
-    empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
-    cached = _CATALOG_CACHE.get(base_url)
+    """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
+    an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
+    from agent.credential_persistence import fingerprint_secret_value
+
+    cache_key = (base_url, fingerprint_secret_value(api_key))
+    cached = _CATALOG_CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CATALOG_TTL_SECONDS:
         return cached[1]
     ids: set = set()
@@ -283,7 +288,7 @@ def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
     except Exception as exc:  # noqa: BLE001 - probe must never break generation
         logger.debug("image API catalog probe failed for %s: %s", base_url, exc)
     resolved = frozenset(ids)
-    _CATALOG_CACHE[base_url] = (time.monotonic(), resolved)
+    _CATALOG_CACHE[cache_key] = (time.monotonic(), resolved)
     return resolved
 
 
@@ -500,7 +505,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def __init__(
         self, *, provider_name: str, display_name: str, runtime_name: str, config_key: str,
-        model_env_var: str, setup_schema: Dict[str, Any], supports_image_api: bool = False,
+        model_env_var: str, setup_schema: Optional[Dict[str, Any]], supports_image_api: bool = False,
     ) -> None:
         self._name = provider_name
         self._display = display_name
@@ -592,8 +597,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         # The catalog default, not the effective runtime model (_resolve_model_chain).
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
-        return dict(self._setup_schema)
+    def get_setup_schema(self) -> Optional[Dict[str, Any]]:
+        return dict(self._setup_schema) if self._setup_schema else None
 
     def _resolve_model(self, explicit: Optional[str] = None) -> str:
         return self._resolve_model_chain(explicit)[0]
@@ -810,16 +815,12 @@ def _build_providers() -> List[OpenRouterCompatImageProvider]:
                     "key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys",
                 }],
             }),
+        # No picker row: Portal models are offered inside the single managed "Nous Subscription" row
+        # (tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
+        # read "active" alongside the managed FAL row while the runtime routed its pick to FAL.
         OpenRouterCompatImageProvider(
             provider_name="nous", display_name="Nous Portal", runtime_name="nous", config_key="nous",
-            model_env_var="NOUS_IMAGE_MODEL",
-            setup_schema={
-                "name": "Nous Portal (image)",
-                "badge": "subscription",
-                "tag": "Reference-grounded image generation via Nous Portal (OpenRouter-backed)",
-                "env_vars": [],
-                "requires_nous_auth": True,
-            }),
+            model_env_var="NOUS_IMAGE_MODEL", setup_schema=None),
     ]
 
 

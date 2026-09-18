@@ -43,7 +43,7 @@ class InternalSessionRPC(Protocol):
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
     ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
@@ -593,7 +593,8 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
+                    member_id=_member_id(task))
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
                 receipt = self._wait_for_terminal(

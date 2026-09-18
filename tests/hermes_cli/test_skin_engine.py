@@ -258,6 +258,9 @@ class TestCliBrandingHelpers:
         assert overrides["status-bar-strong"] == (
             f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_strong')} bold"
         )
+        assert overrides["status-bar-session-title"] == (
+            f"bg:{skin.get_color('status_bar_strong')} {skin.get_color('status_bar_bg')} bold"
+        )
         assert overrides["status-bar-critical"] == (
             f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_critical')} bold"
         )

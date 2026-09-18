@@ -31,6 +31,13 @@ describe('isToolEnabled', () => {
     expect(isToolEnabled(server, 'a')).toBe(true)
     expect(isToolEnabled(server, 'b')).toBe(false)
   })
+
+  it('empty include blocks every tool (block-all, not all-on)', () => {
+    const server = { tools: { include: [] as string[] } }
+    expect(isToolEnabled(server, 'a')).toBe(false)
+    expect(isToolEnabled(server, 'b')).toBe(false)
+    expect(countEnabledTools(server, ['a', 'b', 'c'])).toBe(0)
+  })
 })
 
 describe('toggleToolInServer', () => {
@@ -47,6 +54,12 @@ describe('toggleToolInServer', () => {
   it('respects include mode: toggling removes from include', () => {
     const next = toggleToolInServer({ tools: { include: ['a', 'b'] } }, 'a')
     expect(next.tools).toEqual({ include: ['b'] })
+  })
+
+  it('retains empty include when last include tool is toggled off', () => {
+    const next = toggleToolInServer({ tools: { include: ['a'] } }, 'a')
+    expect(next.tools).toEqual({ include: [] })
+    expect(isToolEnabled(next, 'a')).toBe(false)
   })
 
   it('respects include mode: re-enabling adds back to include', () => {

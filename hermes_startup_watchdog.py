@@ -304,16 +304,16 @@ class StartupWatchdogHandle:
                 "exit_code": self.exit_code,
             }
         )
-        try:
-            faulthandler.dump_traceback(all_threads=True)
-        except Exception:
-            logger.debug("Startup watchdog faulthandler dump failed", exc_info=True)
-        # Also dump into the log file: detached/windowless runs (pythonw, some
-        # service managers) may have no stderr, and forensics are the point.
+        # Write the durable copy first. A detached service can have a blocked
+        # stderr, and the exit escort bounds the whole forensic path to 10s.
         _append_dump(
             lambda fh: faulthandler.dump_traceback(file=fh, all_threads=True),
             "Startup watchdog file-based faulthandler dump failed",
         )
+        try:
+            faulthandler.dump_traceback(all_threads=True)
+        except Exception:
+            logger.debug("Startup watchdog faulthandler dump failed", exc_info=True)
         # Ledger write on a helper thread (it imports application code; the
         # wedged main thread may hold the import lock). Bounded join, then exit
         # regardless — NS-608 classification is best-effort; the respawn is not.

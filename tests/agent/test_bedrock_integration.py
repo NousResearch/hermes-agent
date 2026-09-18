@@ -127,6 +127,9 @@ class TestResolveProvider:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 
+        # The Nous free tier counts as a configured provider and sits above the Bedrock chain
+        # (NS-829); this test's contract is the chain itself, so switch the free tier off.
+        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: False)
         # Mock the auth store to have no active provider
         with patch("hermes_cli.auth._load_auth_store", return_value={}):
             result = resolve_provider("auto")

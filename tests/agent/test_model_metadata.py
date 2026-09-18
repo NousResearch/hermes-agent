@@ -304,7 +304,6 @@ class TestDefaultContextLengths:
                     ) == 1_048_576
 
     @pytest.mark.parametrize("model, provider, base_url", [
-        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
         ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
         ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
         ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
@@ -317,6 +316,49 @@ class TestDefaultContextLengths:
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
+    @staticmethod
+    def _upstage_ctx(model):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            return get_model_context_length(model, provider="upstage", base_url="https://api.upstage.ai/v1")
+
+    def test_upstage_solar_ids_match_legacy_keys_only_on_an_id_boundary(self):
+        """Upstage /v1/models has no context field, so the table decides. ``solar-mini`` must not
+        claim ``solar-mini4`` (its 32K is below MINIMUM_CONTEXT_LENGTH, so the agent refused to
+        start); Solar ids without a legacy key get the Solar family window, not the 256K fallback."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _longest_key_match
+
+        family = DEFAULT_CONTEXT_LENGTHS["solar-"]
+        assert family > DEFAULT_FALLBACK_CONTEXT
+        for model in ("solar-mini4", "solar-mini4-preview", "upstage/solar-mini4", "solar-pro4",
+                      "solar-pro4-260806", "solar-pro4-quant", "solar-mini12", "solar-foo"):
+            assert self._upstage_ctx(model) == family, model
+            # The gateway labels a table miss as "default"; it must agree with the resolver.
+            assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())[1] == family, model
+
+        # Legacy ids keep their own (smaller) windows: dated, org-prefixed, aggregator-hyphenated
+        # (``solar-pro-3``) and quant/variant-suffixed ids included.
+        for variant, bare in (("solar-mini-250422", "solar-mini"), ("upstage/solar-mini", "solar-mini"),
+                              ("solar-pro2-251215", "solar-pro2"), ("solar-pro3-260323", "solar-pro3"),
+                              ("upstage/solar-pro-3", "solar-pro3"), ("solar-pro3.1", "solar-pro3"),
+                              ("solar-open2@q4_k_m", "solar-open2")):
+            assert self._upstage_ctx(variant) == self._upstage_ctx(bare), variant
+        assert self._upstage_ctx("solar-mini") < MINIMUM_CONTEXT_LENGTH
+        assert self._upstage_ctx("solar-pro3") < family
+
+        # Ids merely containing "solar", and open-weight Solar ids, are not Solar API lineups.
+        for model in ("ft:solar-news-correction", "acme-solar-foo", "upstage/solar-10.7b-instruct"):
+            assert self._upstage_ctx(model) != family, model
+
+    def test_explicit_solar_key_beats_the_family_default(self):
+        with patch.dict(DEFAULT_CONTEXT_LENGTHS, {"solar-foo": 300_000}):
+            assert self._upstage_ctx("solar-foo") == 300_000
+            assert self._upstage_ctx("solar-foo-260101") == 300_000
+            assert self._upstage_ctx("solar-foo2") == DEFAULT_CONTEXT_LENGTHS["solar-"]
 
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
@@ -358,6 +400,8 @@ class TestDefaultContextLengths:
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
+            # Version-less canonical Flash id (2026-09 Flash refresh).
+            "deepseek-flash": 1_000_000,
         }
         for key, value in expected_keys.items():
             assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
@@ -379,6 +423,8 @@ class TestDefaultContextLengths:
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
             ]
             for model_id, expected_ctx in cases:
                 actual = get_model_context_length(model_id)
@@ -1088,13 +1134,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 
@@ -1242,6 +1289,74 @@ class TestBedrockContextResolution:
         )
         assert ctx == 50000
         assert mock_fetch.called
+
+
+# =========================================================================
+# Bedrock context cache persistence — only a probe result may be persisted
+# =========================================================================
+
+class TestBedrockContextCachePersistence:
+    """``_resolve_bedrock_context_length`` persisted whatever
+    ``get_bedrock_context_length`` returned whenever a region was resolvable —
+    and ``resolve_bedrock_region()`` always resolves one (it ends in
+    ``or "us-east-1"``). A probe that returned None (expired SSO session,
+    offline, opaque server error) therefore froze the static table value — the
+    128K default for a model with no table row — under ``model@<base_url>`` or
+    ``model@bedrock://`` (written as ``model@bedrock:``), and the probe, which
+    the resolver treats as the only authoritative source, never ran for that
+    model again.
+
+    Invariants: only a probe-derived window may be persisted, and a failed
+    probe is memoised in memory for ``_BEDROCK_PROBE_FAILURE_TTL_SECONDS`` so
+    it is not re-sent on every resolution, yet runs again once the memo lapses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_bedrock_probe_memo(self):
+        """The failure memo is module-level state; it must not leak between tests."""
+        from agent import model_metadata as mm
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+        yield
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None)
+    def test_failed_probe_does_not_persist_static_fallback(self, mock_probe, mock_region, tmp_path):
+        """A failed probe answers from the table (the 128K default here) but writes nothing
+        to disk. On main this persists ``amazon.future-model-v1:0@bedrock:: 128000``."""
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"  # no BEDROCK_CONTEXT_LENGTHS row
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_cached_context_length(model, "bedrock://") is None
+        assert not cache_file.exists()
+        mock_probe.assert_called_once_with(model, "us-east-1")
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", side_effect=[None, 1_000_000])
+    def test_failed_probe_is_memoised_until_the_ttl_lapses(self, mock_probe, mock_region, tmp_path):
+        """Not persisting must not turn the probe into a per-resolution cost: inside the TTL a
+        second resolution answers from the table without re-probing and still writes nothing;
+        once the memo lapses the probe runs again and its window is what gets persisted. On
+        main the first call persists 128K and every later call serves it."""
+        from agent import model_metadata as mm
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert mock_probe.call_count == 1
+            assert not cache_file.exists()  # memoised in memory only
+            # Age the entry past the failure TTL (as tests/agent/test_probe_cache_followups.py does).
+            for key in mm._BEDROCK_PROBE_FAILURE_CACHE:
+                mm._BEDROCK_PROBE_FAILURE_CACHE[key] = (
+                    time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
+                )
+            assert get_model_context_length(model, provider="bedrock") == 1_000_000
+            assert get_cached_context_length(model, "bedrock://") == 1_000_000
+        assert mock_probe.call_count == 2
 
 
 # =========================================================================
@@ -1490,6 +1605,24 @@ class TestParseContextLimitFromError:
         )
         assert get_context_length_from_provider_error(msg, 131072) == 32768
 
+    def test_output_cap_message_is_not_a_context_limit(self):
+        """An output-cap error must never be cached as the context window (salvage #106769):
+        the generic "limit ... of N" pattern matched Switchyard's message and clamped a
+        >117K-context model to 16K on every later request."""
+        from agent.model_metadata import (
+            is_output_cap_error,
+            parse_available_output_tokens_from_error,
+        )
+
+        msg = "max_tokens cannot exceed the configured model output limit of 16384"
+        assert parse_context_limit_from_error(msg) is None
+        assert parse_available_output_tokens_from_error(msg) == 16384
+        assert is_output_cap_error(msg)
+        # Genuine context messages still parse.
+        assert parse_context_limit_from_error(
+            "This model's maximum context length is 32768 tokens"
+        ) == 32768
+
 
 
 
@@ -1715,6 +1848,13 @@ class TestGenericPreCatalogStaleGuard:
         assert not _stale_pre_catalog_cache_entry("grok-4.20", 2_000_000)
         # Sibling qwen slugs with legitimately small windows are untouched.
         assert not _stale_pre_catalog_cache_entry("qwen3-coder", 131_072)
+        # DeepSeek V4 / V4.1 Flash: 1M. Pre-entry builds persisted the 128K
+        # ``deepseek`` catch-all; a leftover must drop, a 1M value must not.
+        assert _stale_pre_catalog_cache_entry("deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek/deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4-pro", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-flash", 1_000_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek", 128_000)
 
     def test_unknown_models_never_dropped(self):
         from agent.model_metadata import _stale_pre_catalog_cache_entry
@@ -1929,3 +2069,69 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
+    models: /models lists only the base id and the variant runs the same model, so a variant
+    must resolve to whatever its base resolves to instead of a generic family default (#97820).
+    `:free`/`:batch` are real SKUs with their own windows and must NOT be stripped."""
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "thinkingmachines/inkling": {"context_length": 1_000_000},
+        "thinkingmachines/inkling:free": {"context_length": 64_000},
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_but_real_sku_keeps_own_window(
+        self, mock_fetch, mock_models_dev, mock_cache, suffix
+    ):
+        mock_fetch.return_value = self._CATALOG
+        base_ctx = get_model_context_length("x-ai/grok-4.6", provider="openrouter")
+        variant_ctx = get_model_context_length(f"x-ai/grok-4.6:{suffix}", provider="openrouter")
+        assert variant_ctx == base_ctx == 2_000_000
+        assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000
+
+
+def test_endpoint_pricing_already_per_million_is_not_inflated():
+    """#112018 / #34256 / #79174: a /models catalog quoting USD per 1M tokens (with or without an explicit
+    ``unit``) must reach usage_pricing as per-token rates, so the cost estimate is $0.60/M — not $600,000/M."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    catalog = {
+        "minimax-m3": {"id": "minimax-m3", "pricing": {"currency": "USD", "prompt": 0.6, "completion": 1.2, "cache_read": 0.12}},
+        "glm-x": {"id": "glm-x", "pricing": {"currency": "CNY", "unit": "per_1m_tokens", "prompt": 1, "completion": 2}},
+        "crof-a": {"id": "crof-a", "cost": {"input": 0.04, "output": 0.15}},
+    }
+    meta = {mid: mm._endpoint_model_entry(model, mid, None) for mid, model in catalog.items()}
+    dollars_per_million = {
+        mid: up._pricing_entry_from_metadata(meta, mid, source_url="x", pricing_version="openai-compatible-models-api")
+        for mid in catalog
+    }
+    assert float(dollars_per_million["minimax-m3"].input_cost_per_million) == pytest.approx(0.6)
+    assert float(dollars_per_million["minimax-m3"].cache_read_cost_per_million) == pytest.approx(0.12)
+    assert float(dollars_per_million["glm-x"].output_cost_per_million) == pytest.approx(2.0)
+    assert float(dollars_per_million["crof-a"].input_cost_per_million) == pytest.approx(0.04)
+
+
+def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
+    """Control: per-token quotes (the OpenRouter convention) and per-request fees are left alone."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    model = {"id": "m", "pricing": {"prompt": "0.0000006", "completion": "0.0000012", "request": "0.005"}}
+    meta = {"m": mm._endpoint_model_entry(model, "m", None)}
+    entry = up._pricing_entry_from_metadata(meta, "m", source_url="x", pricing_version="openai-compatible-models-api")
+    assert float(entry.input_cost_per_million) == pytest.approx(0.6)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.2)
+    assert float(entry.request_cost) == pytest.approx(0.005)

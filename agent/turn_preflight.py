@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression,
+    conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -90,6 +90,9 @@ def run_preflight_compression(
         and len(v.messages) > 1
         and v.compression_attempts < max_compression_attempts
     )
+    if _eligible:
+        # Aux clamp must land before the first compaction fires on the main-window threshold (#114707).
+        ensure_compression_feasibility_checked(agent, request_pressure_tokens)
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
@@ -263,40 +266,36 @@ def compress_after_tool_results(
         )
 
     _compressor = agent.context_compressor
-    # Use real token counts from the API response to decide compression.  prompt_tokens + completion_tokens
-    # is the actual context size the provider reported plus the assistant turn — a tight lower bound for the
-    # next prompt. Tool results appended above aren't counted yet, but the threshold (default 50%) leaves
-    # ample headroom; if tool results push past it, the next API call will report the real total and trigger
-    # compression then. If last_prompt_tokens is 0 (stale after API disconnect or provider returned no usage
-    # data), fall back to rough estimate to avoid missing compression. Without this, a session can grow
-    # unbounded after disconnects because should_compress(0) never fires. (#2153)
-    if _compressor.last_prompt_tokens > 0:
+    # Real usage decides: the anchor is the provider's last prompt count plus a rough delta for
+    # ONLY the tool results appended since (the raw last_prompt_tokens ignores them). Right after
+    # a compaction (-1 sentinel) there is no real count yet: never treat the schema-heavy rough
+    # figure as pressure. The whole-request rough estimate is the last resort (usage-less
+    # provider, post-disconnect, gateway restart), kept route-aware (#96995/#97602).
+    from agent.usage_anchor import anchored_context_tokens
+
+    _anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    if _anchored is not None:
+        _real_tokens = _anchored
+    elif _compressor.last_prompt_tokens > 0:
         # Only prompt_tokens: thinking models inflate completion_tokens with
-        # reasoning that uses no context → premature compression.
-        # Only use prompt_tokens — completion/reasoning tokens don't consume context window space. (#12026)
+        # reasoning that uses no context → premature compression. (#12026)
         _real_tokens = _compressor.last_prompt_tokens
     elif _compressor.last_prompt_tokens == -1:
-        # Compression just ran, no API prompt count yet: don't treat a rough
-        # schema-heavy post-compression estimate as real context pressure.
         _real_tokens = 0
     else:
-        # Include tool schemas (20-30K tokens the messages-only estimate misses) and
-        # stay route-aware: on a compacted native-Codex session the generic
-        # durable-history figure would false-trigger.
-        # Include tool schemas — with 50+ tools enabled these add 20-30K tokens the messages-only estimate
-        # misses, which can skip compression past the configured threshold (#14695). Route-aware
-        # (#96995/#97602 class): on a compacted native-Codex session the generic durable-history figure
-        # overstates the wire and would false-trigger compression here exactly like the pre-API guard — this
-        # fallback runs precisely when no provider usage is available (post-disconnect / gateway restart),
-        # the unanchored case from #97602's repro.
         _real_tokens = _midturn_request_pressure_tokens(
             agent, messages, active_system_prompt or "",
             estimate_request_tokens_rough(messages, tools=agent.tools or None),
         )
 
+    if agent.compression_enabled and compression_attempts < max_compression_attempts:
+        ensure_compression_feasibility_checked(agent, _real_tokens)
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
+        and not bool(
+            getattr(_compressor, "awaiting_real_usage_after_compression", False)
+        )
         and _compressor.should_compress(_real_tokens)
     ):
         compression_attempts += 1
@@ -380,4 +379,8 @@ def compress_after_tool_results(
             # stale in-place flag the helper could seed unpersisted rows.
             if _pruned_n and _pruned_msgs is not messages:
                 messages = _pruned_msgs
+                # A committed prune is a content-loss boundary like compaction: demoted skill_view /
+                # read_file bodies survive only as one-line markers, so the repeat-read dedup must
+                # stop answering "unchanged" for them or the reload the marker asks for is refused.
+                _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
     return _verdict(False)

@@ -1,15 +1,33 @@
 """Unit tests for the shared session activity observation contract."""
 
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from agent.session_activity import (
     ACTIVITY_DESCRIPTION_MAX,
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
+    format_iteration_progress,
     normalize_activity_provenance,
     reset_session_activity_persist_window,
 )
+
+
+@pytest.mark.parametrize(
+    "max_iterations, expected",
+    [
+        (sys.maxsize, "iteration 3"),  # AIAgent's default: unbounded, so no ceiling is shown
+        (None, "iteration 3"),
+        (250, "iteration 3/250"),  # a real budget (e.g. delegation.max_iterations) keeps N/M
+    ],
+)
+def test_format_iteration_progress_hides_unbounded_ceiling(max_iterations, expected):
+    out = format_iteration_progress(3, max_iterations)
+    assert out == expected
+    assert str(sys.maxsize) not in out
 
 
 def test_bound_activity_description_truncates():

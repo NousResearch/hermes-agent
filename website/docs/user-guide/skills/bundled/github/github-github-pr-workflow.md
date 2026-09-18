@@ -21,7 +21,7 @@ GitHub PR lifecycle: branch, commit, open, CI, merge.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Pull-Requests`, `CI/CD`, `Git`, `Automation`, `Merge` |
-| Related skills | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`github-auth`](./github-github-auth.md), [`github-code-review`](./github-github-code-review.md) |
 
 ## Reference: full SKILL.md
 

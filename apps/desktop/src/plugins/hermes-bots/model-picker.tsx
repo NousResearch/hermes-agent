@@ -65,7 +65,7 @@ interface ModelProviderOption {
   name?: string
   slug: string
 }
-interface ModelOptionsResponse {
+interface ModelOptionsResult {
   providers?: ModelProviderOption[]
 }
 
@@ -76,7 +76,7 @@ function useModelOptions(bot: null | RosterRow = null) {
   const route = resolved?.status === 'resolved' ? resolved.route : null
   const orphaned = resolved?.status === 'owner_removed'
 
-  return useQuery<ModelOptionsResponse>({
+  return useQuery<ModelOptionsResult>({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
     // No forced `refresh`: forcing a network read on EVERY mount bypassed the
     // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
@@ -88,7 +88,7 @@ function useModelOptions(bot: null | RosterRow = null) {
         requestForBot(bot, 'model.options', {
           include_unconfigured: true,
           explicit_only: false
-        }) as Promise<ModelOptionsResponse>
+        }) as Promise<ModelOptionsResult>
       ),
     enabled: !orphaned,
     staleTime: 120000,

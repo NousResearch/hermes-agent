@@ -538,12 +538,13 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     fired = []
 
     class RecordingProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None, force=False):
+        def fire_due(self, job_id, *, adapters=None, loop=None, force=False, manual=False):
             fired.append(
                 {
                     "job_id": job_id,
                     "jobs_file": cron_jobs._current_cron_store().jobs_file,
                     "force": force,
+                    "manual": manual,
                 }
             )
             cron_jobs.mark_job_run(job_id, success=True)
@@ -571,6 +572,8 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
             "job_id": selected["id"],
             "jobs_file": isolated_profiles["worker_alpha"] / "cron" / "jobs.json",
             "force": False,
+            # Off-tick run-now: the claim must not stamp next_run_at as the occurrence (#104790).
+            "manual": True,
         }
     ]
     assert triggered["last_status"] == "ok"
@@ -1190,3 +1193,21 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_profiles):
+    """#114309 — the dashboard must be able to say "scheduler last ticked X hours ago":
+    every listed job carries its own profile's ticker heartbeat age (None = never/unknown)."""
+    import time
+
+    for name, home in isolated_profiles.items():
+        with _web_server_cron._cron_store_scope(home) as cron_jobs:
+            cron_jobs.create_job(prompt=f"{name} hourly", schedule="every 1h")
+    (isolated_profiles["worker_alpha"] / "cron" / "ticker_heartbeat").write_text(
+        str(time.time() - 25 * 3600)
+    )
+
+    ages = {job["profile"]: job["scheduler_heartbeat_age_s"] for job in _rt_cron._list_cron_jobs_sync("all")}
+
+    assert ages["default"] is None  # no heartbeat file: cannot date the last tick
+    assert 25 * 3600 <= ages["worker_alpha"] < 25 * 3600 + 60

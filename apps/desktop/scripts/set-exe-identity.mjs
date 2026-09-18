@@ -42,10 +42,34 @@ import { rcedit } from 'rcedit'
 
 import { isMain } from './utils.mjs'
 
+// A real-time file scanner (AV/EDR) holds a short exclusive handle on a freshly
+// written exe; rcedit's resource commit then fails with "Unable to commit
+// changes" and succeeds seconds later on identical input. Delays sized to the
+// field report: the lock was still held 5 s after a first attempt in some runs.
+const RCEDIT_COMMIT_RETRY_DELAYS_MS = [500, 1000, 2000]
+
+// A failure to spawn the rcedit binary itself (missing or not executable) is
+// permanent; waiting 3.5 s on it only delays after-pack.mjs's warning. The npm
+// rcedit wrapper surfaces the spawn error as `originalError` on its rejection,
+// while a non-zero rcedit exit carries a numeric `code`.
+const RCEDIT_PERMANENT_SPAWN_CODES = new Set(['ENOENT', 'EACCES'])
+
+function isPermanentRceditFailure(err) {
+  return RCEDIT_PERMANENT_SPAWN_CODES.has(err?.originalError?.code ?? err?.code)
+}
+
+function wait(delay) {
+  return new Promise(resolve => setTimeout(resolve, delay))
+}
+
 // Stamp the Hermes icon + identity onto `exe`. Resolves on success, throws on
 // failure. `desktopRoot` defaults to this script's package root so the icon and
 // the rcedit dependency resolve regardless of cwd.
-async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, '..')) {
+async function stampExeIdentity(
+  exe,
+  desktopRoot = resolve(import.meta.dirname, '..'),
+  { rcedit: runRcedit = rcedit, sleep = wait } = {}
+) {
   if (!exe || !existsSync(exe)) {
     throw new Error(`target exe not found: ${exe}`)
   }
@@ -59,7 +83,7 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
 
-  await rcedit(exe, {
+  const options = {
     icon,
     'version-string': {
       ProductName: 'Hermes',
@@ -67,12 +91,26 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
       CompanyName: 'Nous Research',
       LegalCopyright: 'Copyright (c) 2026 Nous Research'
     }
-  })
+  }
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await runRcedit(exe, options)
+      break
+    } catch (err) {
+      const delay = RCEDIT_COMMIT_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined || isPermanentRceditFailure(err)) {
+        throw err
+      }
+      console.warn(`[set-exe-identity] rcedit failed; retrying in ${delay}ms (${err.message})`)
+      await sleep(delay)
+    }
+  }
 
   console.log('[set-exe-identity] done — Hermes icon + identity stamped')
 }
 
-export { stampExeIdentity }
+export { RCEDIT_COMMIT_RETRY_DELAYS_MS, stampExeIdentity }
 
 // CLI entry point: `node scripts/set-exe-identity.mjs <exe>`.
 if (isMain(import.meta.url)) {

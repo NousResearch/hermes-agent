@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from hermes_cli.timefmt import coerce_epoch
+
 _DURATION_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*"
     r"(s|sec|secs|second|seconds|"
@@ -51,8 +53,8 @@ def parse_point_in_time(value: str, flag: str) -> float:
 
 
 def format_epoch(ts: Optional[float]) -> str:
-    """Render an epoch timestamp as a short local-time string."""
-    return "-" if ts is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    """Render an epoch timestamp as a short local-time string; ``-`` when unset or corrupt."""
+    return "-" if (ts := coerce_epoch(ts)) is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 # (filter key, argparse attr, CLI flag, description template) for the four epoch bounds.
@@ -94,8 +96,8 @@ _ARG_FILTERS = (
 def build_prune_filters(args: Any) -> Dict[str, Any]:
     """Translate argparse Namespace flags into SessionDB filter kwargs.
 
-    ``--older-than`` / ``--newer-than`` bound last activity (latest message timestamp, falling back
-    to ``started_at`` for empty sessions); ``--before`` / ``--after`` bound session start time.
+    ``--older-than`` / ``--newer-than`` bound last activity (freshest of ``last_activity_at`` /
+    latest message / ``started_at``); ``--before`` / ``--after`` bound session start time.
     """
     bounds: Dict[str, Optional[float]] = {
         key: None if (raw := getattr(args, attr, None)) is None else parse_point_in_time(raw, flag)

@@ -92,6 +92,71 @@ def test_clean_pushed_worktree_removed(repo: Path) -> None:
     assert (repo / "README.md").exists()
 
 
+def test_cleanup_leaves_a_worktree_cwd_before_removal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows cannot remove a worktree that is the process's current directory."""
+    wt = _make_worktree(repo, "t_cwd112425")
+    real_git = kbw._git
+
+    def windows_git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+        if args[:2] == ("worktree", "remove") and Path.cwd().is_relative_to(wt):
+            return subprocess.CompletedProcess(
+                ["git", *args], 1, stderr="Permission denied: current directory"
+            )
+        return real_git(repo_root, *args, timeout=timeout)
+
+    monkeypatch.setattr(kbw, "_git", windows_git)
+    monkeypatch.chdir(wt)
+    kbw._cleanup_worktree_workspace("t_cwd112425", str(wt))
+
+    assert Path.cwd() == repo
+    assert not wt.exists()
+
+
+def test_cleanup_proceeds_when_cwd_was_deleted(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferred parent cleanup (#33774) runs after the child's scratch cwd was
+    rmtree'd; a dead cwd must not preserve a clean, pushed worktree."""
+    wt = _make_worktree(repo, "t_deadcwd113073")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+    scratch.rmdir()
+
+    kbw._cleanup_worktree_workspace("t_deadcwd113073", str(wt))
+
+    assert not wt.exists()
+    assert not _branch_exists(repo, "wt/t_deadcwd113073")
+
+
+def test_cleanup_retries_worktree_removal_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brief Windows directory-handle delay gets one safe retry."""
+    wt = _make_worktree(repo, "t_retry112425")
+    real_git = kbw._git
+    attempts = 0
+
+    def delayed_remove(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:
+        nonlocal attempts
+        if args[:2] == ("worktree", "remove"):
+            attempts += 1
+            if attempts == 1:
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, stderr="Permission denied: handle pending"
+                )
+        return real_git(repo_root, *args, timeout=timeout)
+
+    monkeypatch.setattr(kbw, "_git", delayed_remove)
+    monkeypatch.setattr(kbw.time, "sleep", lambda _delay: None)
+    kbw._cleanup_worktree_workspace("t_retry112425", str(wt))
+
+    assert attempts == 2
+    assert not wt.exists()
+
+
 def test_dirty_worktree_preserved(repo: Path) -> None:
     wt = _make_worktree(repo, "t_bbbb2222")
     (wt / "wip.txt").write_text("uncommitted\n", encoding="utf-8")

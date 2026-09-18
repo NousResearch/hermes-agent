@@ -332,7 +332,9 @@ class TestToolCallsAlwaysReachATerminalStatus:
             rcts.return_value = MagicMock(spec=Future)
             progress("tool.completed", "read", None, None, result="file body")
             step(2, [{"name": "read", "result": "file body", "arguments": '{"path": "a"}'}])
-        btc.assert_called_once_with("tc-1", "read", result="file body", function_args={"path": "a"}, snapshot=None)
+        btc.assert_called_once_with(
+            "tc-1", "read", result="file body", function_args={"path": "a"}, snapshot=None, is_error=False,
+        )
         assert list(ids["read"]) == ["tc-2"] and "tc-1" not in meta
 
     def test_step_fallback_coerces_wire_arguments_and_turn_end_flush_fails_what_is_still_open(
@@ -357,3 +359,16 @@ class TestToolCallsAlwaysReachATerminalStatus:
         statuses = [c.args[1].status for c in mock_conn.session_update.call_args_list]
         assert statuses == ["completed", "failed"]
         assert ids == {} and meta == {}
+
+    def test_tool_completed_is_error_flag_closes_the_call_as_failed(self, mock_conn, event_loop_fixture):
+        """``tool.completed`` carries the executor's ``is_error``; a cancelled tool's plain-text
+        result trips no heuristic, so dropping the flag showed an interrupted call green."""
+        from collections import deque
+
+        ids = {"terminal": deque(["tc-1"])}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {})
+        with self._patch() as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "terminal", None, None, is_error=True,
+                     result="[Tool execution cancelled — terminal was skipped due to user interrupt]")
+        assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["failed"]

@@ -77,7 +77,7 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
 
 def close_tool_call(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None,
+    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
 ) -> str | None:
     """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
     queue = _upgrade_queue(tool_call_ids, name)
@@ -87,7 +87,7 @@ def close_tool_call(
     meta = tool_call_meta.pop(tc_id, {})
     _send_update(conn, session_id, loop, build_tool_complete(
         tc_id, name, result=str(result) if result is not None else None,
-        function_args=meta.get("args"), snapshot=meta.get("snapshot"),
+        function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
     if not queue:
         tool_call_ids.pop(name, None)
@@ -134,7 +134,11 @@ def make_tool_progress_cb(
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True
-            close_tool_call(conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"))
+            # The executor's verdict: a cancelled/errored tool may return plain text the heuristic misses.
+            close_tool_call(
+                conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
+                is_error=bool(kwargs.get("is_error")),
+            )
             return
         if event_type != "tool.started":
             return

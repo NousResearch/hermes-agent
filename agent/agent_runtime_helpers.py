@@ -2979,6 +2979,54 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
+# Short-reply threshold for the fallback short-reply stall guard. Below this
+# character count (after think-block stripping) the reply is considered
+# "suspiciously terse" — fallbacks sometimes return a one-liner stop without
+# acting, distinct from the trailing-intent and codex-ack detectors.
+SHORT_REPLY_THRESHOLD_CHARS = 200
+
+
+def fallback_short_reply_stall(
+    agent,
+    *,
+    stripped_reply: str,
+    messages: list,
+    continuations_used: int,
+) -> bool:
+    """Whether the fallback short-reply stall guard should re-prompt.
+
+    A fallback provider returned a short reply without acting on a task that
+    the user already started with tool calls. Without this guard the turn
+    ends cleanly and the user has to send another message. With it, the loop
+    re-prompts via the same bounded continuation path used by the
+    trailing-intent and codex-ack detectors (max ``continuations_used`` < 2
+    per turn total across all detectors).
+
+    All five gates must be true:
+      1. ``agent.fallback_short_reply_continue`` (default True)
+      2. ``agent.valid_tool_names`` is truthy
+      3. ``continuations_used < 2``
+      4. ``agent._provider_fallback_active`` is true
+      5. reply is < SHORT_REPLY_THRESHOLD_CHARS chars after stripping
+      6. the conversation has tool history (user invoked a real workflow)
+    """
+    if not bool(getattr(agent, "fallback_short_reply_continue", True)):
+        return False
+    if not getattr(agent, "valid_tool_names", None):
+        return False
+    if continuations_used >= 2:
+        return False
+    if not bool(getattr(agent, "_provider_fallback_active", False)):
+        return False
+    if len(stripped_reply or "") >= SHORT_REPLY_THRESHOLD_CHARS:
+        return False
+    return any(
+        isinstance(m, dict)
+        and m.get("role") == "assistant"
+        and m.get("tool_calls")
+        for m in messages
+    )
+
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
 # and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
 # reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan

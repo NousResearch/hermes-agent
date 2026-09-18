@@ -142,7 +142,10 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, promoted_reasoning_announces_action, trailing_continue_intent
+        fallback_short_reply_stall,
+        intent_ack_continuation_mode,
+        promoted_reasoning_announces_action,
+        trailing_continue_intent,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
@@ -162,7 +165,17 @@ def finish_text_response(
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
         )
     )
-    if _stall_continue_intent or (
+    # Fallback short-reply stall guard: a fallback fired this turn and the
+    # fallback provider returned a short reply without acting. Distinct from
+    # trailing-intent / codex-ack. Shares the same continuations cap.
+    _short_reply_stripped = agent._strip_think_blocks(final_response or "")
+    _short_reply_stall = fallback_short_reply_stall(
+        agent,
+        stripped_reply=_short_reply_stripped,
+        messages=messages,
+        continuations_used=codex_ack_continuations,
+    )
+    if _stall_continue_intent or _short_reply_stall or (
         _ack_mode != "off"
         and agent.valid_tool_names
         and codex_ack_continuations < 2
@@ -176,6 +189,13 @@ def finish_text_response(
                 "Stall guard: turn ending on trailing continue-"
                 "intent with no tool calls — re-prompting to act "
                 "(%d/2)", codex_ack_continuations + 1,
+            )
+        if _short_reply_stall:
+            logger.info(
+                "Fallback short-reply stall guard: fallback "
+                "provider returned short reply (%d chars) with "
+                "no tool calls — re-prompting to act (%d/2)",
+                len(_short_reply_stripped), codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")

@@ -201,6 +201,13 @@ DEFAULT_CONFIG = {
         # (kills the turn) and gateway_notify_interval. 0 = disable.
         # See #76354.
         "session_stall_timeout": 300,
+        # Auto-continue a turn when a model fallback fired and the fallback
+        # provider returned a short reply (< SHORT_REPLY_THRESHOLD_CHARS)
+        # without acting, while tools are still available. Reuses the same
+        # per-turn continuation cap as the trailing-intent / codex-ack
+        # detectors (max 2 per turn total). Set False to revert to the
+        # pre-fix behavior of waiting for the next user message.
+        "fallback_short_reply_continue": True,
         # Transcript-sanitiser heal escalation: after this many pre-send heal passes within a
         # 10-minute window, log one ERROR and queue a ONE-TIME out-of-band notice pointing at /debug
         # share or `hermes doctor` (status channel only; prompt cache untouched). 0 = no escalation

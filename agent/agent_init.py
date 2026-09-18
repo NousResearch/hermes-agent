@@ -1163,6 +1163,20 @@ def _apply_display_config(agent, _agent_cfg, platform):
     # Window (seconds) for the bounded /fast auto|cold modes (agent.fast_mode).
     agent.fast_auto_seconds = (_agent_cfg.get("agent") or {}).get("fast_auto_seconds", 60)
 
+    # Auto-continue on fallback short-reply stall (agent.fallback_short_reply_continue,
+    # default true). When a model fallback fires and the fallback provider returns
+    # a short reply without acting, re-prompt the model so the user doesn't have
+    # to send another message. Set to False to revert to the pre-fix behavior.
+    agent.fallback_short_reply_continue = True
+    try:
+        _agent_section = _agent_cfg.get("agent", {})
+        if isinstance(_agent_section, dict):
+            agent.fallback_short_reply_continue = bool(
+                _agent_section.get("fallback_short_reply_continue", True)
+            )
+    except Exception:
+        agent.fallback_short_reply_continue = True
+
     # lmstudio_load_mode: "explicit" (preload via management API) or "jit" (Auto-Evict path).
     _model_section = _cfg_dict(_agent_cfg, "model")
     _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()

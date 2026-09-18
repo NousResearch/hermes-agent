@@ -98,6 +98,18 @@
   min-height: 0;
 }
 
+.hermes-kanban-card-reason {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+  margin: 0.25rem 0;
+}
+
+.hermes-kanban-block-kind {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .hermes-kanban-done-toggle {
   appearance: none;
   background: transparent;

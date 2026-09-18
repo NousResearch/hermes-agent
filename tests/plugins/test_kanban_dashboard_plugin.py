@@ -67,6 +67,28 @@ def client(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("newest_payload", [{"reason": "<restart> & verify"}, {}, [], "bad", None])
+def test_board_block_reason_uses_latest_matching_event(client, newest_payload):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "blocked fixture"}).json()["task"]
+    other = client.post("/api/plugins/kanban/tasks", json={"title": "other fixture"}).json()["task"]
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='blocked', block_kind='capability', last_failure_error='failure detail' WHERE id=?", (task["id"],))
+            for kind, payload in [("blocked", {"reason": "old"}), ("block_loop_detected", newest_payload), ("comment", {"reason": "not a block"})]:
+                conn.execute("INSERT INTO task_events(task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)", (task["id"], kind, json.dumps(payload), 123))
+            conn.execute("INSERT INTO task_events(task_id, kind, payload, created_at) VALUES (?, 'blocked', ?, ?)", (other["id"], json.dumps({"reason": "historical"}), 124))
+    finally:
+        conn.close()
+    response = client.get("/api/plugins/kanban/board")
+    assert response.status_code == 200
+    tasks = {t["id"]: t for c in response.json()["columns"] for t in c["tasks"]}
+    assert tasks[task["id"]]["block_reason"] == (newest_payload.get("reason") if isinstance(newest_payload, dict) else None)
+    assert tasks[task["id"]]["block_kind"] == "capability"
+    assert tasks[task["id"]]["last_failure_error"] == "failure detail"
+    assert not tasks[other["id"]].get("block_reason")
+
+
 def test_board_empty(client):
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200

@@ -83,4 +83,19 @@ test('Done defaults to a count stub, expands and persists the toggle', async () 
   assert.equal(x.nodes(remount.render()).filter(n=>n.type?.name==='Column').length,1,'expanded preference survives remount');
 });
 
+test('blocked cards expose kind and truncated reason/failure as plain text with full titles', async () => {
+  const x=harness(), page=x.mount(x.Page);
+  const reason='<img src=x onerror=alert(1)> '+ 'long '.repeat(30);
+  x.setData({columns:[{name:'blocked',tasks:[{id:'blocked1',status:'blocked',block_kind:'capability',block_reason:reason,last_failure_error:reason}]}],tenants:[],assignees:[]});
+  page.render(); await x.flush();
+  const bn=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+  const cn=x.nodes(x.mount(bn.type,bn.props).render()).find(n=>n.type?.name==='Column');
+  const card=x.nodes(x.mount(cn.type,cn.props).render()).find(n=>n.type?.name==='TaskCard');
+  const nodes=x.nodes(x.mount(card.type,card.props).render());
+  assert.ok(nodes.some(n=>n.props.children.includes('⛔ capability')));
+  const details=nodes.filter(n=>n.props.title===reason);
+  assert.equal(details.length,2);
+  details.forEach(n=>{assert.equal(n.props.children[0],reason.slice(0,90)+'…'); assert.equal(n.props.dangerouslySetInnerHTML,undefined);});
+});
+
 module.exports = {harness};

@@ -3158,6 +3158,15 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          t.status === "blocked" ? h(Badge, {
+            variant: "outline", className: "hermes-kanban-block-kind",
+          }, `⛔ ${t.block_kind || "blocked"}`) : null,
+          t.status === "blocked" && t.block_reason ? h("div", {
+            className: "hermes-kanban-card-reason", title: t.block_reason,
+          }, t.block_reason.length > 90 ? t.block_reason.slice(0, 90) + "…" : t.block_reason) : null,
+          t.last_failure_error ? h("div", {
+            className: "hermes-kanban-card-reason", title: t.last_failure_error,
+          }, t.last_failure_error.length > 90 ? t.last_failure_error.slice(0, 90) + "…" : t.last_failure_error) : null,
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",

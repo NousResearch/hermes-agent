@@ -297,12 +297,30 @@ def get_board(
         # One window-function query for latest summaries (avoids N+1); cards get a
         # truncated preview, the full text comes from /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        # One read for all blocked tasks. Event ids break timestamp ties and
+        # select the newest matching event, never an older non-empty reason.
+        block_reasons = {}
+        for row in conn.execute(
+            "SELECT e.task_id, e.payload FROM task_events e JOIN ("
+            "SELECT MAX(e.id) AS id FROM task_events e "
+            "JOIN tasks t ON t.id = e.task_id WHERE t.status = 'blocked' "
+            "AND e.kind IN ('blocked', 'block_loop_detected') GROUP BY e.task_id"
+            ") latest ON latest.id = e.id"
+        ):
+            try:
+                payload = json.loads(row["payload"]) if row["payload"] else None
+            except (TypeError, ValueError):
+                payload = None
+            reason = payload.get("reason") if isinstance(payload, dict) else None
+            block_reasons[row["task_id"]] = reason if isinstance(reason, str) else None
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
+            if t.status == "blocked":
+                d["block_reason"] = block_reasons.get(t.id)
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 

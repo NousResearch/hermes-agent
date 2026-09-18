@@ -318,6 +318,32 @@ class TestGatewayRuntimeStatus:
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
 
+    def test_stale_platform_writer_entry_is_dropped_on_ownership_write(self, tmp_path, monkeypatch):
+        """A platform entry stamped by a dead writer (a leaked test pid) must not
+        survive the next ownership write: the top-level pid is re-stamped on every
+        write, and a per-platform writer identity that no longer matches the current
+        process is stale noise and is dropped (the feishu writer_pid=96233 leak)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "platforms": {
+                "feishu": {"state": "connected", "writer_pid": 96233, "writer_start_time": 900.0},
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid()
+        assert "feishu" not in payload["platforms"], (
+            "a stale writer entry must be dropped when the current process claims ownership"
+        )
+
+
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
         """Regression (user report): a stale profile's recycled PID must not be
         reported running just because it now hosts a DIFFERENT profile's gateway.

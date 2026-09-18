@@ -216,7 +216,11 @@ class TestRunIdempotentProfileScope:
 
 
 class TestAdapterInit:
-    def test_default_config(self):
+    def test_default_config(self, monkeypatch):
+        # The gateway test harness forces API_SERVER_PORT to ephemeral (0) so a test
+        # that binds a real listener can't squat the live gateway's port; clear it here
+        # to assert the adapter's true DEFAULT resolution, not the harness override.
+        monkeypatch.delenv("API_SERVER_PORT", raising=False)
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "127.0.0.1"

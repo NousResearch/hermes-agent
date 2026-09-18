@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
+import hermes_state_guard
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
 from utils import atomic_json_write
 
@@ -84,12 +85,64 @@ def record_start_and_check_storm(
         return None
 
 
+#: Test-isolation bypass for the gateway identity files (mirrors
+#: ``hermes_state_guard._STATE_DB_GUARD_BYPASS_ENV``). Test-safety escape hatch, not user config.
+_GATEWAY_STATE_GUARD_BYPASS_ENV = "HERMES_GATEWAY_STATE_GUARD_BYPASS"
+
+
+def _is_production_hermes_home(home: Path) -> bool:
+    """*home* is the real platform-default root or a profile directly under it
+    (``~/.hermes`` or ``~/.hermes/profiles/<name>``). Deeper scratch paths are not matched."""
+    try:
+        root = hermes_state_guard._real_platform_state_root()
+    except Exception:
+        return False
+    if root is None:
+        return False
+    try:
+        resolved = Path(home).expanduser().resolve(strict=False)
+    except Exception:
+        return False
+    if resolved == root:
+        return True
+    try:
+        parts = resolved.relative_to(root).parts
+    except ValueError:
+        return False
+    return len(parts) == 2 and parts[0] == "profiles"
+
+
+def _assert_safe_gateway_state_home(home: Path) -> None:
+    """Fail closed when a test-context process resolves the production home for a
+    gateway identity file (``gateway_state.json``/``.pid``/``.lock``/takeover markers).
+
+    A pytest process — or a child that rebuilt its env and dropped the ``HERMES_HOME``
+    redirect but inherited ``HERMES_TEST_ISOLATION`` — resolving the live home is by
+    definition an isolation escape: writing there leaves a dead test pid as the live
+    gateway's platform writer (the feishu leak) or ``--replace``s the live daemon.
+    Mirrors ``hermes_state_guard`` for the state.db. Production is never under test
+    context, so the resolve() below is skipped on the hot path."""
+    if os.environ.get(_GATEWAY_STATE_GUARD_BYPASS_ENV) == "1":
+        return
+    if not hermes_state_guard._in_test_context():
+        return
+    if _is_production_hermes_home(home):
+        raise RuntimeError(
+            "Refusing to resolve the production Hermes home for gateway identity files "
+            f"under test context: {home}. A gateway test (or a child it spawned) would "
+            "write gateway_state.json / gateway.pid to the live home. Point HERMES_HOME "
+            "at a scratch dir, or set " + _GATEWAY_STATE_GUARD_BYPASS_ENV + "=1 to bypass."
+        )
+
+
 def _get_process_hermes_home() -> Path:
     """Launch-home HERMES_HOME for identity files (PID, lock, status, markers):
     ``get_hermes_home()`` honors the per-session ``_HERMES_HOME_OVERRIDE`` and would misroute
     them."""
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    home = Path(val) if val else _get_platform_default_hermes_home()
+    _assert_safe_gateway_state_home(home)
+    return home
 
 
 def _canonical_hermes_home(path: Path | str) -> Path:
@@ -816,6 +869,37 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
+def _drop_stale_platform_writers(payload: dict[str, Any], current_record: dict[str, Any]) -> None:
+    """Drop per-platform entries stamped by a writer other than THIS process.
+
+    ``write_runtime_status`` re-stamps the top-level identity on every write, so a
+    platform entry carrying a ``(writer_pid, writer_start_time)`` identity that doesn't
+    match the current record was written by a dead predecessor — a prior gateway that
+    crashed, or a test that leaked a write to the live home (the ``feishu.writer_pid=96233``
+    incident). Those entries are stale noise that /api/status clears anyway; pruning on
+    the write side stops a dead test pid from surviving a clean gateway restart as a
+    phantom "preserved" writer one level below the top-level pid re-stamp.
+
+    Legacy entries with no writer identity are PRESERVED: they predate the identity
+    stamp and ``clear_profile_platforms`` already relies on keeping plain entries.
+    """
+    platforms = payload.get("platforms")
+    if not isinstance(platforms, dict):
+        return
+    cur_pid = current_record.get("pid")
+    cur_start = current_record.get("start_time")
+    stale = []
+    for key, entry in platforms.items():
+        if not isinstance(entry, dict):
+            continue
+        if "writer_pid" not in entry and "writer_start_time" not in entry:
+            continue  # legacy preserved entry: no identity to compare
+        if entry.get("writer_pid") != cur_pid or entry.get("writer_start_time") != cur_start:
+            stale.append(key)
+    for key in stale:
+        platforms.pop(key, None)
+
+
 def write_runtime_status(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
@@ -846,6 +930,7 @@ def write_runtime_status(
     payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
     payload["updated_at"] = _utc_now_iso()
     payload.update(_get_code_identity_fields())
+    _drop_stale_platform_writers(payload, current_record)
     _apply_set_fields(payload, (
         ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
         ("restart_requested", restart_requested, bool),

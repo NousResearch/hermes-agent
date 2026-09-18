@@ -322,3 +322,31 @@ def test_streaming_call_resolve_stale_timeout_implicit_default_keeps_floor(monke
     call = _bare_streaming_call(_fake_agent(), _small_kwargs())
     call._resolve_stale_timeout()
     assert call._stream_stale_timeout == 600.0
+
+
+@pytest.mark.parametrize(
+    ("content_chars", "expected"),
+    [(250_000, 240.0), (600_000, 300.0)],  # ~62k / ~150k estimated tokens
+)
+def test_streaming_call_explicit_config_large_context_keeps_context_tiers(
+    monkeypatch, content_chars, expected
+):
+    """Explicit base skips the reasoning floor, not the context-size tiers.
+
+    #115024 reports explicit ``stale_timeout_seconds: 30`` on a 60k-125k-token
+    session: the floor half is this PR's fix, but the large-context scaling
+    (240s / 300s) stays unconditional — parity with the non-stream resolver
+    (``run_agent.AIAgent._compute_non_stream_stale_timeout``), where the tiers
+    likewise apply regardless of how the base was configured. Pinned here so
+    the residual on the carrier #115024 points at the tiers, not at this PR.
+    """
+    import agent.chat_completion_helpers as cch
+    monkeypatch.setattr(cch, "get_provider_stale_timeout", lambda *a, **k: 30.0)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    large_kwargs = {
+        "model": _NEMOTRON,
+        "messages": [{"role": "user", "content": "x" * content_chars}],
+    }
+    call = _bare_streaming_call(_fake_agent(), large_kwargs)
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == expected

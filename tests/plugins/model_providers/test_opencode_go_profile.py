@@ -284,3 +284,178 @@ class TestOpenCodeGoFullKwargsIntegration:
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
 
+
+# Chat Completions' optional top-level ``name`` on a tool result is no longer accepted by the
+# Console Go upstream: every tool-using conversation 400s with
+# ``messages[N]: "name" is not supported by this endpoint``. The tool_call_id already carries
+# the association, so the profile drops the field copy-on-write.
+_TOOL_TURN = [
+    {"role": "system", "content": "You are a bot."},
+    {"role": "user", "content": "hi"},
+    {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "name": "terminal", "content": "ok"},
+]
+
+
+def _wire_tool_messages(messages):
+    return [m for m in messages if m.get("role") == "tool"]
+
+
+class TestOpenCodeGoToolResultNameStripping:
+    """Console Go rejects the top-level ``name`` on tool results (issue repro payload)."""
+
+    def test_prepare_messages_strips_tool_result_name(self, opencode_go_profile):
+        prepared = opencode_go_profile.prepare_messages(_TOOL_TURN)
+
+        assert prepared[3] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "ok",
+        }
+        # Copy-on-write: the caller's history still holds the name for the transports
+        # that do consume it (gemini native, kanban stop), and untouched rows are shared.
+        assert _TOOL_TURN[3]["name"] == "terminal"
+        assert prepared[2] is _TOOL_TURN[2]
+
+    def test_prepare_messages_passthrough_without_tool_result_names(
+        self, opencode_go_profile
+    ):
+        msgs = [
+            {"role": "user", "content": "ping"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        assert opencode_go_profile.prepare_messages(msgs) is msgs
+
+    def test_assistant_and_user_names_are_not_touched(self, opencode_go_profile):
+        """Only the tool role is rewritten; a look-alike key elsewhere is none of our business."""
+        msgs = [
+            {"role": "system", "content": "You are a bot.", "name": "bot"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        assert opencode_go_profile.prepare_messages(msgs) is msgs
+
+    def test_stub_and_compression_tool_results_lose_the_name_too(
+        self, opencode_go_profile
+    ):
+        """Unanswered-call stubs are assembled with a name as well; same 400 without this."""
+        msgs = [
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "call_9",
+                "content": "[Result unavailable — see context summary above]",
+            }
+        ]
+        out = opencode_go_profile.prepare_messages(msgs)
+        assert "name" not in out[0]
+        assert out[0]["tool_call_id"] == "call_9"
+
+    def test_transport_kwargs_carry_no_tool_message_name(self, opencode_go_profile):
+        """End-to-end: what ``build_kwargs`` hands the OpenAI client is name-free."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="omen-alpha",
+            messages=[dict(m) if m.get("role") == "tool" else m for m in _TOOL_TURN],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "terminal", "parameters": {"type": "object"}},
+                }
+            ],
+            provider_profile=opencode_go_profile,
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        tool_msgs = _wire_tool_messages(kwargs["messages"])
+        assert tool_msgs, "the tool result must survive message assembly"
+        assert "name" not in tool_msgs[0], tool_msgs[0]
+        # The association the endpoint does accept is preserved.
+        assert tool_msgs[0]["tool_call_id"] == "call_1"
+        assert tool_msgs[0]["content"] == "ok"
+
+    def test_other_provider_is_untouched(self, opencode_go_profile):
+        """Protection: the guard is opencode-go-scoped — a sibling profile keeps the
+        identity contract, and both providers emit the identical wire row."""
+        import model_tools  # noqa: F401
+        import providers
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        zen = providers.get_provider_profile("opencode-zen")
+        assert zen is not None
+        assert zen.prepare_messages(_TOOL_TURN) is _TOOL_TURN
+        assert _TOOL_TURN[3]["name"] == "terminal"
+
+        transport = ChatCompletionsTransport()
+
+        def wire(profile, base_url):
+            return transport.build_kwargs(
+                model="omen-alpha",
+                messages=[dict(m) if m.get("role") == "tool" else m for m in _TOOL_TURN],
+                tools=None,
+                provider_profile=profile,
+                base_url=base_url,
+            )["messages"]
+
+        go_rows = wire(opencode_go_profile, "https://opencode.ai/zen/go/v1")
+        zen_rows = wire(zen, "https://opencode.ai/zen/v1")
+        assert go_rows == zen_rows
+        assert "name" not in zen_rows[3]
+
+    def test_user_and_assistant_names_survive_the_wire(self, opencode_go_profile):
+        """Protection: ``name`` is schema-valid off the tool role — only tool rows lose it."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        msgs = [
+            {"role": "system", "content": "You are a bot.", "name": "hermes"},
+            {"role": "user", "content": "hi", "name": "sylvain"},
+            _TOOL_TURN[2],
+            dict(_TOOL_TURN[3]),
+        ]
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="omen-alpha",
+            messages=msgs,
+            tools=None,
+            provider_profile=opencode_go_profile,
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        wire = kwargs["messages"]
+        assert [m.get("name") for m in wire[:2]] == ["hermes", "sylvain"]
+        assert "name" not in wire[3]
+
+    def test_nvidia_profile_still_strips_its_own_fields(self):
+        """Protection: the sibling copy-on-write profile keeps stripping name + tool_name."""
+        import model_tools  # noqa: F401
+        import providers
+
+        nvidia = providers.get_provider_profile("nvidia")
+        msgs = [dict(_TOOL_TURN[3], tool_name="terminal")]
+        out = nvidia.prepare_messages(msgs)
+        assert out[0] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+
+    def test_plain_conversation_is_untouched(self, opencode_go_profile):
+        """Protection: the tool-free path (which never 400'd) stays byte-identical."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        msgs = [
+            {"role": "system", "content": "You are a bot."},
+            {"role": "user", "content": "hi"},
+        ]
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="omen-alpha",
+            messages=msgs,
+            tools=None,
+            provider_profile=opencode_go_profile,
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert kwargs["messages"] == msgs

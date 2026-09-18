@@ -49,6 +49,23 @@ class OpenCodeGoProfile(ProviderProfile):
     # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
     _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
 
+    @staticmethod
+    def _has_tool_result_name(msg: Any) -> bool:
+        return isinstance(msg, dict) and msg.get("role") == "tool" and "name" in msg
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Copy-on-write: Console Go 400s ``messages[N]: "name" is not supported by this
+        endpoint`` on a tool-result row (#114663). ``name`` is schema-foreign on
+        ``role: tool`` anyway — ``tool_call_id`` already carries the association — so the
+        provider boundary drops it instead of relying on the caller's own strip. Same
+        shape as the NVIDIA profile; untouched input is returned by identity."""
+        if not any(self._has_tool_result_name(msg) for msg in messages):
+            return messages
+        return [
+            {k: v for k, v in msg.items() if k != "name"} if self._has_tool_result_name(msg) else msg
+            for msg in messages
+        ]
+
     def get_max_tokens(self, model: str | None) -> int | None:
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
         return self.default_max_tokens if cap is None else cap

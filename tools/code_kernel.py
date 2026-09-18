@@ -323,6 +323,12 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        # Set by mark_dirty_for_edit() when patch/patch_replace/patch_v4a/write_file
+        # successfully modify a path under this kernel's cwd. A dirty kernel is torn
+        # down and respawned fresh on its next _acquire_kernel(), same as an explicit
+        # reset=True -- already-imported modules would otherwise keep serving the
+        # pre-edit version of a file the kernel loaded before the on-disk change.
+        self.dirty: bool = False
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -638,7 +644,7 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
         expired = [_KERNELS.pop(k) for k in list(_KERNELS)
                    if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
         kernel = _KERNELS.get(key)
-        state_reset = kernel is not None and (reset or kernel.dead())
+        state_reset = kernel is not None and (reset or kernel.dead() or kernel.dirty)
         if state_reset:
             dropped = _KERNELS.pop(key)
             if dropped.attached == 0:
@@ -654,6 +660,35 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
     for doomed in expired:
         doomed.teardown()
     return kernel, state_reset
+
+
+def mark_dirty_for_edit(task_id: str, edited_paths: List[str]) -> None:
+    """Mark any live session kernel(s) for this task's owner as dirty when
+    patch/patch_replace/patch_v4a/write_file successfully modify a path under that
+    kernel's cwd. A dirty kernel is torn down and a fresh one spawned on its next
+    execute_code call (see _acquire_kernel's ``kernel.dirty`` check) -- without this,
+    an already-imported module keeps serving pre-edit state after the file changes on
+    disk, and the model has no signal that the kernel (not its fix) is stale.
+
+    Deliberately coarse: any edit under a kernel's cwd marks that whole kernel dirty,
+    not just edits to paths it has actually imported (tracking imports per kernel
+    would need runtime introspection this module doesn't have). A respawn for a path
+    the kernel never touched is a wasted-but-safe reset, strictly cheaper than the
+    silent-stale-diagnosis loop this fix targets.
+    """
+    owner = _resolve_owner(task_id)
+    if not owner:
+        return
+    resolved = [os.path.abspath(p) for p in edited_paths if p]
+    if not resolved:
+        return
+    with _REGISTRY.lock:
+        for key, kernel in _KERNELS.items():
+            if key[0] != owner or kernel.dirty:
+                continue
+            kernel_cwd = os.path.abspath(key[3]).rstrip("/") + "/"
+            if any(p == kernel_cwd.rstrip("/") or p.startswith(kernel_cwd) for p in resolved):
+                kernel.dirty = True
 
 
 def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[str, Dict[str, Any]]:

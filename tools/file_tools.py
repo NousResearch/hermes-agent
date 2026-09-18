@@ -804,6 +804,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
                 _note_edited(task_id, [path], path_to_resolved, session_id)
+                from tools.code_kernel import mark_dirty_for_edit
+                mark_dirty_for_edit(task_id, [_resolved or path])
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -901,6 +903,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
+                from tools.code_kernel import mark_dirty_for_edit
+                mark_dirty_for_edit(task_id, _resolved_modified)
         # old_string-not-found hint. Failure escalation is tracked for replace
         # mode only (V4A misses are rare); the generic hint is suppressed when
         # patch_replace already attached a richer "Did you mean?" snippet.

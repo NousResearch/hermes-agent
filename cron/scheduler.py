@@ -3096,23 +3096,6 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
-def _reap_terminal_worker_in_background(process: subprocess.Popen) -> None:
-    """Keep the reap contract when the waiter returns before the worker exits.
-
-    The ledger turning terminal lets the waiter return while the worker is
-    still in final teardown. The gateway remains the worker's parent, so if
-    nobody calls ``wait()`` afterwards the worker lingers as a zombie (STAT=Z)
-    under the gateway until it is restarted (#114509). A short-lived daemon
-    thread holds that single responsibility and ends with the process exit
-    it waits for.
-    """
-    threading.Thread(
-        target=process.wait,
-        name=f"cron-worker-reap-{getattr(process, 'pid', '?')}",
-        daemon=True,
-    ).start()
-
-
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
@@ -3139,7 +3122,9 @@ def _wait_for_external_cron_worker_body(
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             if _is_terminal():
-                _reap_terminal_worker_in_background(process)
+                from cron.scheduler_detached_worker import reap_terminal_worker_in_background
+
+                reap_terminal_worker_in_background(process)
                 return True
             continue
         # The worker can commit its terminal row and exit between the first

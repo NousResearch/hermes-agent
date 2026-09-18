@@ -431,12 +431,12 @@ def cron_status():
                 lock_pid = get_running_pid() if gateway_alive_via_lock else None
                 pids = [lock_pid] if lock_pid else pids
             # Multiplexer identity does not establish the active profile's ticker health.
-            if not pids and not gateway_alive_via_lock:
+            if not gateway_alive_via_lock:
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
         if pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
-                _print_ticker_health(pids, restart_command="hermes --profile default gateway restart")
+                _print_ticker_health([], restart_command="hermes --profile default gateway restart")
             else:
                 _print_ticker_health(pids)
         else:

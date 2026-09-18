@@ -1310,6 +1310,7 @@ class GatewayInboundMixin:
         # passes the "already running" guard and spins up a duplicate agent for the same session.
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
+            setattr(event, "_gateway_completion_refused", True)
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
             return _limit_message
 
@@ -1325,7 +1326,12 @@ class GatewayInboundMixin:
 
         try:
             try:
-                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+                from gateway.completion_admission import handle_completion_event
+                _agent_result = await handle_completion_event(
+                    self,
+                    lambda current: self._handle_message_with_agent(current, source, _quick_key, _run_generation),
+                    event,
+                )
             except TurnLeaseTimeoutError as exc:
                 # A rejected message, not a completed turn: return before the /goal judge so it
                 # cannot consume the resend notice and enqueue a synthetic continuation loop.

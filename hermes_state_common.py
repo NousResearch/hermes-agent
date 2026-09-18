@@ -540,6 +540,8 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_pid INTEGER,
     owner_started_at INTEGER,
     task_json TEXT,
+    delivery_owner_pid INTEGER,
+    delivery_owner_started_at INTEGER,
     delivery_claim TEXT,
     delivery_claimed_at REAL,
     -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py

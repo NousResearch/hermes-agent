@@ -1141,6 +1141,25 @@ class GatewayNotificationsMixin:
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
             )
+            completion_claims = evt.get("_gateway_completion_claims", ())
+            if completion_claims:
+                from tools.async_delegation_admission import queue_completion_deliveries
+                from gateway.completion_admission import attach_completion_receipts
+                try:
+                    queued = queue_completion_deliveries(completion_claims)
+                except Exception as exc:
+                    # Nothing reached the adapter; ownership/storage refusal must not spend
+                    # a delivery attempt or acknowledge any successfully claimed sibling.
+                    raise WakeNotAccepted("durable completion admission failed") from exc
+                evt["_gateway_queued_receipts"] = queued
+                if queued:
+                    owned_ids = {delegation_id for delegation_id, _ in queued}
+                    attach_completion_receipts(
+                        synth_event, queued,
+                        tuple(item for item in evt["_gateway_completion_events"]
+                              if item.get("delegation_id") in owned_ids and not item.get("task_failure_notice")),
+                        adapter,
+                    )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1387,6 +1406,7 @@ class GatewayNotificationsMixin:
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
+        injection_event = dict(evt)
         try:
             claim = await self._preflight_completion_delivery(evt)
             if not claim.proceed:
@@ -1395,11 +1415,19 @@ class GatewayNotificationsMixin:
                 if self._completion_identity_seen(identity, claim=True):
                     return None
                 identity_claimed = True
-            injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
+            completion_claims = ([(claim.delegation_id, claim.claim_id)] if claim.claim_id else [])
+            completion_claims.extend((sibling["delegation_id"], token) for sibling, token in sibling_claims if token)
+            if completion_claims:
+                injection_event["_gateway_completion_claims"] = tuple(completion_claims)
+                injection_event["_gateway_completion_events"] = (evt, *(sibling for sibling, _ in sibling_claims))
+            injection_result = await self._inject_watch_notification(
+                synth_text, injection_event, raise_not_accepted=True,
+            )
             if injection_result is not True:
                 return injection_result
             accepted = True
-            if identity is not None:
+            queued_ids = {item[0] for item in injection_event.get("_gateway_queued_receipts", ())}
+            if identity is not None and claim.delegation_id not in queued_ids:
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
             return True
@@ -1407,17 +1435,26 @@ class GatewayNotificationsMixin:
             refused = True
             return False
         finally:
-            if identity_claimed and not accepted:
+            queued = injection_event.get("_gateway_queued_receipts", ())
+            queued_ids = {delegation_id for delegation_id, _ in queued}
+            # Durable ownership is the dedupe authority. A concurrent cleanup may already
+            # have refunded admission; do not overwrite that retry with an in-memory success.
+            if identity_claimed and (not accepted or claim.delegation_id in queued_ids):
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
             operation = "complete" if accepted else "defer" if refused else "release"
-            if claim.claim_id:
+            if queued and not accepted:
+                from tools.async_delegation_admission import settle_queued_completion_deliveries
+                settle_queued_completion_deliveries(queued, "pending" if refused else "retry")
+            if claim.claim_id and claim.delegation_id not in queued_ids:
                 self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
             for sibling, claim_id in sibling_claims:
-                if claim_id:
+                if claim_id and sibling["delegation_id"] not in queued_ids:
                     self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
             if accepted and sibling_claims:
-                self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
+                self._record_coalesced_completion_siblings([
+                    event for event, _claim_id in sibling_claims if event["delegation_id"] not in queued_ids
+                ])
 
     @staticmethod
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:

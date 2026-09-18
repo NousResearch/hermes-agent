@@ -82,6 +82,13 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Gateway async-delegation receipts are persisted as `queued` before volatile admission. They enter
+the ordinary cold handler (including parent/profile/reset checks), never the recursive follow-up
+shortcut. Exact receipts become `processing` at runner entry and settle after parent handling;
+uncertain processing remains `unknown`, without blind replay. Shutdown/replacement refunds unstarted
+receipts; explicit session cancellation is a separate discard boundary. Do not duplicate these events
+in the ordinary shutdown spool or equate completion handling with outbound transport receipt.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

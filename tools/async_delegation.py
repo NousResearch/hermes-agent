@@ -163,11 +163,13 @@ def _prune_durable_records() -> None:
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
         terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
+            """SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')
+               AND delivery_state NOT IN ('queued','processing')""").fetchone()[0]
         if terminal_count > _MAX_RETAINED_COMPLETED:
             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
                      WHERE state NOT IN ('running','finalizing')
+                       AND delivery_state NOT IN ('queued','processing')
                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                               updated_at ASC LIMIT ?
                    )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
@@ -278,7 +280,10 @@ def restore_undelivered_completions(target_queue) -> int:
     ownership, otherwise a brand-new session adopts a dead session's delegation results seconds after boot
     (#64484).
     """
+    from tools.async_delegation_admission import recover_queued_completion_deliveries
+
     recover_abandoned_delegations()
+    recover_queued_completion_deliveries()
     now, restored = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
@@ -315,7 +320,7 @@ def mark_completion_delivered(delegation_id: str) -> bool:
     now = time.time()
     return _update_delivery(
         """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-           WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
+           WHERE delegation_id=? AND delivery_state NOT IN ('delivered','queued','processing','unknown')""", (now, now, delegation_id))
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:

@@ -67,6 +67,9 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
 
 def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
     """Serialise and write one pending value; return True when a payload was written."""
+    from gateway.completion_admission import completion_receipts
+    if completion_receipts(value):
+        return False  # The delegation ledger is the sole durable recovery owner.
     try:
         serialised = _serialise_value(value)
         if serialised is None:

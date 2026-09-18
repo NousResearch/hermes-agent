@@ -12,13 +12,17 @@ Top-level model calls run in the background automatically. Hermes returns a hand
 
 ## Completion delivery
 
-Messaging gateways acknowledge background completions only after their adapter actually
-schedules the event or inserts it into the session's queue. Missing handlers, mismatched
-session routes, and full queues leave the completion pending for retry; these admission
-refusals do not consume the durable delivery-attempt budget. A successful admission suppresses
-repeat delivery within the running gateway, but is not proof that a model turn or outbound
-reply completed. Crash/restart delivery remains at least once, subject to the existing replay
-age limit; actual transport failures retain their bounded retry policy.
+Messaging gateways persist completed delegations as `queued` before their adapters schedule
+or enqueue them. Missing handlers, mismatched routes and full queues leave them pending for
+retry without spending an admission attempt. Busy sessions keep running their current tools;
+the completion enters through a later normal turn with its original parent and route checked.
+
+The receipt becomes `processing` when the parent runner starts, and `delivered` only after
+successful parent handling. Outbound receipt is separate. A dead gateway's unstarted queued
+work is restored subject to the existing replay age and ownership checks. Interrupted or
+uncertain processing is retained as `unknown` without reinjection by delegation recovery.
+Normal interrupted-turn continuation is separate. Repeated admission cannot steal work from
+a live gateway merely because time passed.
 
 An unavailable API-server route stays pending without repeated missing-route warnings.
 Malformed messaging routes still produce diagnostics. On the API server, an async delegation
@@ -220,16 +224,18 @@ Synchronous single-task delegation from an orchestrator runs directly without th
 
 When a background delegation finishes, Hermes stores its completion event in
 the active profile's `state.db` before publishing it to the normal fresh-turn
-queue. If Hermes restarts after completion but before delivery, the pending
-event is restored and routed through the same ownership checks. Competing
-consumers use a durable claim, so only the consumer that successfully accepts
-the synthetic turn acknowledges delivery; failed attempts release the claim for
-retry.
+queue. Pending and durably queued events can be restored after restart through
+the same ownership checks. The gateway admission stores a process/start-time
+owner separately from the child execution owner. Competing consumers cannot
+claim queued or processing events owned by that gateway.
 
 This does not resume child execution after a crash. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because
-Hermes cannot prove whether its external side effects happened. Pending and
-delivered records are bounded and profile-local.
+Hermes cannot prove whether its external side effects happened. Completion
+processing has the same conservative rule: uncertain work remains queryable,
+but is not automatically reinjected. Existing acknowledged history is not replayed
+retroactively. Records remain profile-local; active queued/processing receipts
+are protected from completed-history pruning.
 
 ### Child background-process notifications
 
@@ -551,7 +557,7 @@ Top-level model-facing `delegate_task` calls run in the background automatically
 - Normal follow-up messages do not cancel background children. `/stop` cancels running background delegations, and closing or resetting the owning session discards its active children.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
-- A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
+- A completed child's result that was still pending or queued before parent handling started can be restored through the owning session's normal checks. An interrupted parent handling attempt remains `unknown` for inspection rather than being blindly repeated.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 
 For **durable execution** that must survive session closure or process restart, use:

@@ -170,7 +170,7 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
-| `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
+| `TEAMS_REQUIRE_MENTION` | Set `true` to answer only targeted messages, @mentions, or replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
 
 ### config.yaml
 
@@ -187,6 +187,10 @@ platforms:
       port: 3978
     require_mention: false   # true once the app has RSC message-read consent
 ```
+
+### Targeted delivery
+
+Explicitly targeted activities (`recipient.is_targeted: true` in the Teams SDK), including Teams targeted/slash-command delivery, also satisfy the `require_mention` gate without a mention entity. This signal does not grant the sender access: normal Hermes user authorization still applies. It changes inbound filtering only; it does not make Hermes replies private. `require_mention` remains opt-in (default `false`), and an explicit `TEAMS_REQUIRE_MENTION` overrides the YAML value.
 
 ---
 

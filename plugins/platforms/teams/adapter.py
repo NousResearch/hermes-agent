@@ -500,9 +500,11 @@ class TeamsAdapter(BasePlatformAdapter):
         text = activity.text if hasattr(activity, "text") and activity.text else ""
         if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
             # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
-            # @mention the bot or reply to one of its own messages; drop the rest BEFORE the
+            # target/@mention the bot or reply to one of its own messages; drop the rest BEFORE the
             # attachment loop so a gated post never downloads anything onto the host.
-            if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
+            targeted = getattr(getattr(activity, "recipient", None), "is_targeted", None) is True
+            if (not targeted and not self._activity_mentions_bot(activity, bot_ids, text)
+                    and getattr(activity, "reply_to_id", None) not in self._sent_ids):
                 logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
@@ -529,6 +531,10 @@ class TeamsAdapter(BasePlatformAdapter):
         """True when a ``mention`` entity points at the bot (``mentioned.id`` is ``28:<app id>`` on the
         wire; ``bot_ids`` carries both spellings). A payload with no mention entities at all falls back
         to the rendered ``<at>`` tag; one that mentions only other people does not."""
+        recipient_mentioned = getattr(activity, "is_recipient_mentioned", None)
+        if callable(recipient_mentioned) and recipient_mentioned() is True:
+            return True
+        # The SDK checks recipient.id only; retain alternate bot IDs and legacy payload support.
         mentions = [e for e in getattr(activity, "entities", None) or [] if getattr(e, "type", None) == "mention"]
         if not mentions:
             return "<at>" in text

@@ -1,0 +1,15 @@
+[Unit]
+Description=CloakBrowser stealth Chromium CDP endpoint for Hermes
+Documentation=https://github.com/CloakHQ/CloakBrowser
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloakserve-hermes
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

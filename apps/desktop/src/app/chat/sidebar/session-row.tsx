@@ -167,8 +167,15 @@ function SidebarSessionRowImpl({
   // hover, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
   // The default profile has no mark worth spending a row slot on — a chip on
-  // every row that says "the normal one" is noise. Named profiles only.
-  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
+  // every row that says "the normal one" is noise. Named profiles only —
+  // except in flat cross-profile lists, where every row must be attributable:
+  // there the default profile's chip is the `home` glyph (ProfileGlyph's
+  // isDefault mark), so ownership reads uniformly without a text chip.
+  const isDefaultProfile = normalizeProfileKey(session.profile) === 'default'
+  // showProfile → flat cross-profile lists (All profiles, search): every row,
+  // default included, gets the ownership glyph. rowMeta 'profile' → the opt-in
+  // Show ▾ → Profile toggle: named profiles only, as before.
+  const hasProfileTag = showProfile || (!isDefaultProfile && rowMeta.includes('profile'))
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on

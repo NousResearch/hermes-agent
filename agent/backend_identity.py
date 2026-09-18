@@ -206,14 +206,19 @@ def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:
     """
     if not (a.provider and b.provider and a.provider == b.provider):
         # Same-host different-label shims: same URL + same model IS the same
-        # deployment even when the alias labels differ (#22548) — unless both
-        # labels are first-class registry providers (#70893).
+        # deployment even when the alias labels differ (#22548), unless both
+        # labels are first-class registry providers (#70893), or both sides
+        # carry DISTINCT explicit credentials: a second account configured as
+        # a second label on one user-defined provider (sensenova /
+        # sensenova2 behind one endpoint) is a deployment pool exactly like
+        # the same-label shape (#91078 review, SenseTime repro).
         if (
             a.base_url
             and a.base_url == b.base_url
             and a.model
             and a.model == b.model
             and not _both_first_class(a, b)
+            and not (a.credential and b.credential and a.credential != b.credential)
         ):
             return True
         return False

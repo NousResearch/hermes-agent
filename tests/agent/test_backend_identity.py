@@ -202,3 +202,39 @@ class TestCredentialAxis:
             provider="custom-b", model="m", base_url="https://r/v1",
             credential="sha:aaaa")
         assert same_credential_surface(b, a)
+
+
+class TestCredentialAxisDifferentLabels:
+    """The #91078 review repro (SenseTime): a second account configured as a
+    second provider label on one endpoint (sensenova vs sensenova2) must not
+    be swallowed by the #22548 shim branch once both sides fingerprint."""
+
+    def test_second_label_second_account_is_two_deployments(self):
+        a = BackendIdentity.build(
+            provider="sensenova", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1", credential="sha256:aaaa1111")
+        b = BackendIdentity.build(
+            provider="sensenova2", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1", credential="sha256:bbbb2222")
+        assert not same_deployment(b, a)
+        assert not should_skip_candidate(b, a, FailureScope.MODEL)
+
+    def test_shim_semantics_kept_when_credentials_unknown(self):
+        """Different labels, same URL+model, no fingerprints: still one
+        deployment (#22548 shim unchanged)."""
+        a = BackendIdentity.build(
+            provider="sensenova", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1")
+        b = BackendIdentity.build(
+            provider="sensenova2", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1")
+        assert same_deployment(b, a)
+
+    def test_shim_semantics_kept_with_same_fingerprint(self):
+        a = BackendIdentity.build(
+            provider="sensenova", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1", credential="sha256:aaaa1111")
+        b = BackendIdentity.build(
+            provider="sensenova2", model="glm-5.2",
+            base_url="https://token.sensenova.cn/v1", credential="sha256:aaaa1111")
+        assert same_deployment(b, a)

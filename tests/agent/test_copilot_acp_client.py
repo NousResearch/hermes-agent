@@ -491,3 +491,94 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
     )
 
     assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]
+
+
+# --- issue #114313: Cursor-backed ACP auth + permission/cursor/* handling ---
+
+
+def _dispatch_to_client(client, message):
+    process = _FakeProcess()
+    handled = client._handle_server_message(
+        message, process=process, cwd="/tmp", text_parts=[], reasoning_parts=[],
+    )
+    assert handled
+    payload = process.stdin.getvalue().strip()
+    assert payload
+    return json.loads(payload)
+
+
+def test_permission_request_returns_allow_once_for_copilot():
+    client = CopilotACPClient(acp_cwd="/tmp")
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {}},
+    )
+    assert "error" not in response
+    assert response["result"] == {"outcome": {"outcome": "allow_once"}}
+
+
+def test_permission_request_selects_allow_once_for_cursor():
+    client = CopilotACPClient(command="cursor-agent", args=["--acp", "--stdio"], acp_cwd="/tmp")
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {}},
+    )
+    assert "error" not in response
+    assert response["result"] == {"outcome": {"outcome": "selected", "optionId": "allow-once"}}
+
+
+def test_cursor_prefixed_method_is_acknowledged_not_rejected():
+    client = CopilotACPClient(command="cursor-agent", args=["--acp", "--stdio"], acp_cwd="/tmp")
+    response = _dispatch_to_client(
+        client, {"jsonrpc": "2.0", "id": 7, "method": "cursor/readFile", "params": {}},
+    )
+    assert "error" not in response
+    assert "result" in response
+
+
+def _write_method_logging_server(path, log_path):
+    path.write_text(
+        "import json, sys\n"
+        f"log = open({str(log_path)!r}, 'a', encoding='utf-8')\n"
+        "for line in sys.stdin:\n"
+        "    try:\n"
+        "        req = json.loads(line)\n"
+        "    except Exception:\n"
+        "        continue\n"
+        "    if not isinstance(req, dict) or 'method' not in req:\n"
+        "        continue\n"
+        "    method = req.get('method')\n"
+        "    log.write(method + '|' + json.dumps(req.get('params') or {}) + chr(10))\n"
+        "    log.flush()\n"
+        "    if method == 'initialize':\n"
+        "        result = {'protocolVersion': 1}\n"
+        "    elif method == 'authenticate':\n"
+        "        result = {}\n"
+        "    elif method == 'session/new':\n"
+        "        result = {'sessionId': 'cursor-session'}\n"
+        "    else:\n"
+        "        result = {}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': req.get('id'), 'result': result}), flush=True)\n",
+        encoding="utf-8",
+    )
+
+
+def test_cursor_backend_authenticates_with_cursor_login_after_initialize(tmp_path):
+    log_path = tmp_path / "methods.log"
+    server = tmp_path / "fake_cursor_acp.py"
+    _write_method_logging_server(server, log_path)
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    assert client.list_models(timeout_seconds=30) == []
+    entries = [line.split('|', 1) for line in log_path.read_text(encoding='utf-8').splitlines()]
+    methods = [entry[0] for entry in entries]
+    assert methods.index('authenticate') > methods.index('initialize')
+    auth_params = json.loads(entries[methods.index('authenticate')][1])
+    assert auth_params.get('methodId') == 'cursor_login'
+
+
+def test_copilot_backend_skips_authenticate(tmp_path):
+    log_path = tmp_path / "methods.log"
+    server = tmp_path / "fake_copilot_acp_noauth.py"
+    _write_method_logging_server(server, log_path)
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    assert client.list_models(timeout_seconds=30) == []
+    methods = [line.split('|', 1)[0] for line in log_path.read_text(encoding='utf-8').splitlines()]
+    assert 'authenticate' not in methods

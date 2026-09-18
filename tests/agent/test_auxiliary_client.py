@@ -505,7 +505,7 @@ def test_egress_blocked_fallback_continues_to_later_local_candidate(monkeypatch)
     )
     route = _LadderRoute(
         object(), "compression", "", False, "https://primary.example/v1", "custom",
-        None, "https://primary.example/v1", None, "chat_completions", "primary-model", None, {},
+        None, "https://primary.example/v1", None, "chat_completions", "primary-model", None, {}, None,
     )
     ladder = _ladder_provider_fallback(ConnectionError("primary unavailable"), route)
 

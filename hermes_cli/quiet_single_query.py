@@ -31,6 +31,16 @@ def bind_quiet_session_key(session_id: str):
         reset_current_session_key(token)
 
 
+def _diagnostic_only_wake_muted(events) -> bool:
+    """True when every drained event is an automatic diagnostic AND the CLI policy suppresses them."""
+    from agent.notification_presentation import diagnostic_process_event
+    from gateway.warning_notifications import warning_notifications_enabled
+
+    if not events or not all(diagnostic_process_event(e) for e in events if isinstance(e, dict)):
+        return False
+    return not warning_notifications_enabled("cli")
+
+
 def quiet_notify_linger_seconds() -> float:
     """Total linger budget for one quiet run: the shared ``terminal.oneshot_completion_wait_seconds``.
 
@@ -86,7 +96,12 @@ def continue_quiet_notify_completions(
         # async_delegation results. Keep everything that rendered.
         texts = [text for _event, text in drained if text]
         if texts:
-            last = run_turn("\n\n".join(texts))
+            follow = run_turn("\n\n".join(texts))
+            # Same admission rule as the interactive CLI turn: a wake made ONLY of automatic
+            # diagnostics (early failure / watch notices) still runs, but under suppression its
+            # reply never displaces the requested one-shot answer on stdout.
+            if not _diagnostic_only_wake_muted([event for event, text in drained if text]):
+                last = follow
         if wait.get("timed_out"):
             break
         if not texts:

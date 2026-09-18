@@ -31,7 +31,7 @@ DELIVERY_DB: Optional[Path] = None
 _PROCESS_ID = uuid.uuid4().hex
 _lock = threading.RLock()
 _ACTIVE_DELIVERIES: set[str] = set()
-_TERMINAL = ("delivered", "failed", "unknown")
+_TERMINAL = ("delivered", "failed", "unknown", "suppressed")
 MAX_TERMINAL_DELIVERIES = 1000
 DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS = 300.0
 
@@ -40,14 +40,14 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
     """Redact terminal payloads and retain only bounded outcome metadata."""
     conn.execute(
         """UPDATE deliveries SET job_json='{}', content=''
-           WHERE status IN ('delivered','failed','unknown')
+           WHERE status IN ('delivered','failed','unknown','suppressed')
              AND (job_json != '{}' OR content != '')"""
     )
     keep = max(0, int(MAX_TERMINAL_DELIVERIES))
     terminal_count = int(
         conn.execute(
             "SELECT COUNT(*) FROM deliveries "
-            "WHERE status IN ('delivered','failed','unknown')"
+            "WHERE status IN ('delivered','failed','unknown','suppressed')"
         ).fetchone()[0]
     )
     excess = terminal_count - keep
@@ -56,7 +56,7 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
             """INSERT OR IGNORE INTO delivery_tombstones
                (execution_id, terminal_status, finished_at)
                SELECT execution_id, status, finished_at FROM deliveries
-               WHERE status IN ('delivered','failed','unknown')
+               WHERE status IN ('delivered','failed','unknown','suppressed')
                ORDER BY finished_at, created_at, execution_id
                LIMIT ?""",
             (excess,),
@@ -64,7 +64,7 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
         conn.execute(
             """DELETE FROM deliveries WHERE execution_id IN (
                  SELECT execution_id FROM deliveries
-                 WHERE status IN ('delivered','failed','unknown')
+                 WHERE status IN ('delivered','failed','unknown','suppressed')
                  ORDER BY finished_at, created_at, execution_id
                  LIMIT ?
                )""",
@@ -79,6 +79,23 @@ def _path() -> Path:
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_cli.sqlite_util import add_column_if_missing
 
+    # SQLite cannot widen a CHECK in place. Preserve all old rows atomically,
+    # including claimed sends, while admitting a distinct never-sent disposition.
+    for table in ("deliveries", "delivery_tombstones"):
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        if row and "'suppressed'" not in row[0]:
+            conn.execute("SAVEPOINT notification_disposition")
+            try:
+                conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+                conn.execute(row[0].replace("'unknown'", "'unknown','suppressed'"))
+                conn.execute(f"INSERT INTO {table} SELECT * FROM {table}_old")
+                conn.execute(f"DROP TABLE {table}_old")
+                conn.execute("RELEASE notification_disposition")
+            except BaseException:
+                conn.execute("ROLLBACK TO notification_disposition")
+                conn.execute("RELEASE notification_disposition")
+                raise
+
     conn.execute(
         """CREATE TABLE IF NOT EXISTS deliveries (
              execution_id TEXT PRIMARY KEY,
@@ -86,7 +103,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              content TEXT NOT NULL,
              for_failure INTEGER NOT NULL DEFAULT 0,
              status TEXT NOT NULL CHECK(status IN
-               ('pending','delivering','delivered','failed','unknown')),
+               ('pending','delivering','delivered','failed','unknown','suppressed')),
              owner_process_id TEXT,
              owner_pid INTEGER,
              owner_started_at INTEGER,
@@ -99,7 +116,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS delivery_tombstones (
              execution_id TEXT PRIMARY KEY,
              terminal_status TEXT NOT NULL CHECK(terminal_status IN
-               ('delivered','failed','unknown')),
+               ('delivered','failed','unknown','suppressed')),
              finished_at TEXT
            )"""
     )
@@ -226,8 +243,8 @@ def claim_next() -> Optional[dict]:
     return result
 
 
-def _finish(execution_id: str, *, error: Optional[str]) -> bool:
-    status = "failed" if error else "delivered"
+def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False) -> bool:
+    status = "failed" if error else "suppressed" if suppressed else "delivered"
     safe_error = (
         redact_sensitive_text(str(error), force=True, redact_url_credentials=True)
         if error
@@ -306,7 +323,8 @@ def drain(
                 )
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
-            _finish(row["execution_id"], error=error)
+            _finish(row["execution_id"], error=error,
+                    suppressed=bool(row["job"].get("_notification_all_targets_suppressed")))
         finally:
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])
@@ -353,7 +371,7 @@ def _terminalize_wait_timeout(execution_id: str) -> str:
         _prune_terminal_unlocked(conn)
     if row is None:
         return "timed out waiting for live gateway delivery"
-    if row["status"] == "delivered":
+    if row["status"] in {"delivered", "suppressed"}:
         return ""
     return str(row["error"] or f"delivery {row['status']}")
 
@@ -369,7 +387,7 @@ def enqueue_and_wait(
     """Queue delivery and wait for a gateway's terminal at-most-once outcome."""
     queued = enqueue(execution_id, job, content, for_failure=for_failure)
     if queued["status"] in _TERMINAL:
-        return None if queued["status"] == "delivered" else str(
+        return None if queued["status"] in {"delivered", "suppressed"} else str(
             queued.get("error") or f"delivery {queued['status']}"
         )
     wait_timeout = (
@@ -379,7 +397,7 @@ def enqueue_and_wait(
     while time.monotonic() < deadline:
         row = get_status(execution_id)
         if row and row["status"] in _TERMINAL:
-            return None if row["status"] == "delivered" else str(
+            return None if row["status"] in {"delivered", "suppressed"} else str(
                 row.get("error") or f"delivery {row['status']}"
             )
         time.sleep(1.0)

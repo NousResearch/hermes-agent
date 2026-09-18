@@ -286,6 +286,8 @@ class TestWelcomeRouteCopy:
             _flush_status_buffer=lambda: None,
             _persist_session=lambda *_args: None,
         )
+        from agent.status_output import StatusOutputMixin
+        agent._buffer_diagnostic_status = StatusOutputMixin._buffer_diagnostic_status.__get__(agent)
         verdict = nous_rate_limit_guard(
             agent,
             _retry=None,

@@ -93,6 +93,14 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      // Renderer-drawn min/max/close for WSLg (`custom` true there only), sent
+      // over hermes:window-control; Electron/OS chrome owns them elsewhere.
+      windowControls: {
+        custom: boolean
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       wakeIndicator?: {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void
@@ -813,8 +821,10 @@ export interface DesktopPluginProfileRoute {
 
 export interface HermesConnection {
   baseUrl: string
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
@@ -862,8 +872,10 @@ export interface HermesActiveWork {
 }
 
 export interface HermesWindowState {
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   isMinimized?: boolean
   isVisible?: boolean
   nativeOverlayWidth: number

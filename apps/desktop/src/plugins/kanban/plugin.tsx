@@ -108,7 +108,7 @@ const plugin: HermesPlugin = {
         id: 'page',
         area: ROUTES_AREA,
         data: { path: '/kanban' } satisfies RouteContribution,
-        render: () => <KanbanBoardPage />
+        render: KanbanBoardPage
       },
       {
         id: 'nav',

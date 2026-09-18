@@ -24,13 +24,26 @@ function harness() {
     fetchJSON: async url => url.includes('/boards') ? {boards:[{slug:'default'}],current:'default'} : url.includes('/config') ? {} : data,
     buildWsUrl: async (_, params) => { mints.push(params); return 'ws://fixture/' + mints.length; },
   };
+  function element(attrs={}) {
+    const listeners = new Map();
+    return {style:{}, offsetWidth:200, classList:{add(){},remove(){}},
+      addEventListener(k, fn) { if (!listeners.has(k)) listeners.set(k,new Set()); listeners.get(k).add(fn); },
+      removeEventListener(k, fn) { listeners.get(k)?.delete(fn); },
+      dispatchEvent(e) { for (const fn of listeners.get(e.type) || []) fn(e); },
+      getAttribute:k=>attrs[k], hasAttribute:k=>k in attrs,
+      closest(selector) { return selector==='[data-kanban-column]' && attrs['data-kanban-column'] ? this : null; },
+      cloneNode:()=>element(), remove(){},
+    };
+  }
+  let hit = null;
+  const document = Object.assign(element(), {body:{appendChild(){}}, elementFromPoint:()=>hit});
   const window = {__HERMES_PLUGIN_SDK__: SDK, __HERMES_PLUGINS__: {register: (_, page) => { Page = page; }}, localStorage: {getItem: k => storage.get(k), setItem: (k,v) => storage.set(k,v)}, addEventListener() {}, removeEventListener() {}};
-  const context = vm.createContext({window, console, URLSearchParams, Set, WebSocket: class {constructor(url) {this.url=url; sockets.push(this);} close() {this.onclose?.({code:1000});}}, setTimeout: (fn, ms) => {const id=nextTimer++; timers.set(id,{fn,ms}); return id;}, clearTimeout: id => timers.delete(id), document: {addEventListener(){},removeEventListener(){}}});
+  const context = vm.createContext({window, console, URLSearchParams, Set, WebSocket: class {constructor(url) {this.url=url; sockets.push(this);} close() {this.onclose?.({code:1000});}}, setTimeout: (fn, ms) => {const id=nextTimer++; timers.set(id,{fn,ms}); return id;}, clearTimeout: id => timers.delete(id), document, CustomEvent: class {constructor(type, init) {this.type=type; Object.assign(this,init);}}});
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../../plugins/kanban/dashboard/dist/index.js'),'utf8'),context);
-  function mount(component, props={}) { const a={slots:[],pending:[],i:0}; return {render(next=props) {props=next; active=a; a.i=0; const tree=component(props); a.pending.splice(0).forEach(f=>f()); return tree;}, unmount() {a.slots.forEach(s=>s?.cleanup?.());}}; }
+  function mount(component, props={}) { const a={slots:[],pending:[],i:0}; return {render(next=props) {props=next; active=a; a.i=0; const tree=component(props); for (const n of nodes(tree)) { if (n.props.ref && typeof n.type === 'string') n.props.ref.current ||= element(n.props); } a.pending.splice(0).forEach(f=>f()); return tree;}, unmount() {a.slots.forEach(s=>s?.cleanup?.());}}; }
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree,...(tree.props?.children || []).flatMap(nodes)];
   const flush = async () => { for(let i=0;i<10;i++) await Promise.resolve(); };
-  return {mount, Page, nodes, flush, timers, sockets, mints, storage, setData: d => {data=d;}, runTimer(ms) {const entry=[...timers].find(([,t])=>t.ms===ms); assert.ok(entry,`timer ${ms} scheduled`); timers.delete(entry[0]); entry[1].fn();}};
+  return {mount, Page, nodes, flush, document, setHit: el=>{hit=el;}, timers, sockets, mints, storage, setData: d => {data=d;}, runTimer(ms) {const entry=[...timers].find(([,t])=>t.ms===ms); assert.ok(entry,`timer ${ms} scheduled`); timers.delete(entry[0]); entry[1].fn();}};
 }
 
 test('auth expiry retries with a fresh ticket without reload churn; cleanup cancels retries', async () => {
@@ -96,6 +109,53 @@ test('blocked cards expose kind and truncated reason/failure as plain text with 
   const details=nodes.filter(n=>n.props.title===reason);
   assert.equal(details.length,2);
   details.forEach(n=>{assert.equal(n.props.children[0],reason.slice(0,90)+'…'); assert.equal(n.props.dangerouslySetInnerHTML,undefined);});
+});
+
+test('drag restores empty Ready and collapsed Done using desktop and touch single/bulk moves', async () => {
+  for (const touch of [false,true]) for (const bulk of [false,true]) for (const destination of ['ready','done']) {
+    const x=harness(), page=x.mount(x.Page);
+    x.setData({columns:[{name:'ready',tasks:[]},{name:'running',tasks:[{id:'r1',status:'running'},{id:'r2',status:'running'}]},{name:'blocked',tasks:[]},{name:'done',tasks:[{id:'d1',status:'done'}]}],tenants:[],assignees:[]});
+    page.render(); await x.flush();
+    const bn=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+    const positions={r1:'running',r2:'running'};
+    const props={...bn.props,selectedIds:new Set(bulk?['r1','r2']:[]),
+      onMove:(id,status)=>{positions[id]=status;},
+      onMoveSelected:status=>{for(const id of props.selectedIds) positions[id]=status;}};
+    const board=x.mount(bn.type,props);
+    let tree=board.render();
+    if (touch) {
+      const running=x.nodes(tree).find(n=>n.type?.name==='Column' && n.props.column.name==='running');
+      const cn=x.mount(running.type,running.props).render();
+      const card=x.nodes(cn).find(n=>n.type?.name==='TaskCard');
+      x.mount(card.type,card.props).render().props.ref.current.dispatchEvent({type:'pointerdown',pointerType:'touch',preventDefault(){},clientX:10,clientY:10});
+    } else tree.props.onDragStart({target:{closest:()=>({getAttribute:()=> 'r1'})}});
+    const fresh=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+    assert.equal(fresh.props.draggingTaskId,'r1','actual drag entry updates page state');
+    tree=board.render({...props,draggingTaskId:fresh.props.draggingTaskId});
+    const target=x.nodes(tree).find(n=>n.type?.name==='Column' && n.props.column.name===destination);
+    assert.ok(target,`${destination} is a real Column during drag`);
+    const dom=x.mount(target.type,target.props).render();
+    assert.equal(dom.props['data-kanban-column'],destination);
+    assert.equal(typeof dom.props.onDragOver,'function');
+    assert.equal(typeof dom.props.onDrop,'function');
+    if (touch) {
+      x.setHit(dom.props.ref.current);
+      x.document.dispatchEvent({type:'pointermove',clientX:30,clientY:30});
+      x.document.dispatchEvent({type:'pointerup'});
+    } else {
+      const e={preventDefault(){},dataTransfer:{getData:()=> 'r1'}};
+      dom.props.onDragOver(e); assert.equal(e.dataTransfer.dropEffect,'move');
+      dom.props.onDrop(e); tree.props.onDragEnd();
+    }
+    assert.equal(positions.r1,destination);
+    assert.equal(positions.r2,bulk?destination:'running');
+    const ended=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+    assert.equal(ended.props.draggingTaskId,null);
+    tree=board.render({...props,draggingTaskId:ended.props.draggingTaskId});
+    assert.equal(x.nodes(tree).some(n=>n.type?.name==='Column' && ['ready','done'].includes(n.props.column.name)),false);
+    assert.equal(x.storage.get('hermes-kanban-done-expanded'),undefined,'drag does not persist expansion');
+    page.unmount(); board.unmount();
+  }
 });
 
 module.exports = {harness};

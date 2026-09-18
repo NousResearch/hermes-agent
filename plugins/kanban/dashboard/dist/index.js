@@ -467,7 +467,7 @@
   // standard `drop` event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
 
-  function attachTouchDrag(el, taskId) {
+  function attachTouchDrag(el, taskId, onDragStart, onDragEnd) {
     if (!el) return;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
@@ -475,6 +475,7 @@
       const proxy = el.cloneNode(true);
       proxy.classList.add("hermes-kanban-touch-proxy");
       document.body.appendChild(proxy);
+      if (onDragStart) onDragStart(taskId);
       let lastTarget = null;
 
       function move(ev) {
@@ -492,12 +493,12 @@
           lastTarget = target;
         }
       }
-      function up() {
+      function up(ev) {
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", up);
         document.removeEventListener("pointercancel", up);
-        if (lastTarget) {
-          lastTarget.classList.remove("hermes-kanban-column--drop");
+        if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
+        if (lastTarget && ev.type !== "pointercancel") {
           const status = lastTarget.getAttribute("data-kanban-column");
           const isTrash = lastTarget.hasAttribute("data-kanban-trash");
           if (isTrash) {
@@ -513,6 +514,7 @@
           }
         }
         proxy.remove();
+        if (onDragEnd) onDragEnd();
       }
       // Kick off proxy at the pointer origin.
       proxy.style.position = "fixed";
@@ -2728,7 +2730,7 @@
       }
       window.addEventListener("resize", checkScrollable);
       return function () { window.removeEventListener("resize", checkScrollable); };
-    }, [checkScrollable, props.board, doneExpanded]);
+    }, [checkScrollable, props.board, doneExpanded, props.draggingTaskId]);
 
     const isPanBlockedTarget = useCallback(function (target) {
       if (!target) return true;
@@ -2815,8 +2817,8 @@
       onMouseDown: handleMouseDown,
     },
       props.board.columns.map(function (col) {
-        if (!col.tasks.length && col.name !== "running" && col.name !== "blocked") return null;
-        if (col.name === "done" && !doneExpanded) {
+        if (!props.draggingTaskId && !col.tasks.length && col.name !== "running" && col.name !== "blocked") return null;
+        if (col.name === "done" && !doneExpanded && !props.draggingTaskId) {
           return h("div", { key: col.name, className: "hermes-kanban-column hermes-kanban-column--collapsed" },
             h("button", { type: "button", className: "hermes-kanban-done-toggle",
               "aria-expanded": false, onClick: toggleDone },
@@ -2825,7 +2827,9 @@
         return h(Column, {
           key: col.name,
           column: col,
-          onToggleDone: col.name === "done" ? toggleDone : null,
+          onToggleDone: col.name === "done" && doneExpanded ? toggleDone : null,
+          onDragStart: props.onDragStart,
+          onDragEnd: props.onDragEnd,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -2973,6 +2977,8 @@
                   lane.tasks.map(function (tk) {
                     return h(TaskCard, {
                       key: tk.id, task: tk,
+                      onDragStart: props.onDragStart,
+                      onDragEnd: props.onDragEnd,
                       selected: props.selectedIds.has(tk.id),
                       failed: props.failedIds && props.failedIds.has(tk.id),
                       draggingTaskId: props.draggingTaskId,
@@ -2987,6 +2993,8 @@
             : props.column.tasks.map(function (tk) {
                 return h(TaskCard, {
                   key: tk.id, task: tk,
+                  onDragStart: props.onDragStart,
+                  onDragEnd: props.onDragEnd,
                   selected: props.selectedIds.has(tk.id),
                   failed: props.failedIds && props.failedIds.has(tk.id),
                   draggingTaskId: props.draggingTaskId,
@@ -3031,8 +3039,8 @@
     const cardRef = useRef(null);
 
     useEffect(function () {
-      return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+      return attachTouchDrag(cardRef.current, t.id, props.onDragStart, props.onDragEnd);
+    }, [t.id, props.onDragStart, props.onDragEnd]);
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);

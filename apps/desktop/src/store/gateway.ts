@@ -115,8 +115,6 @@ interface Secondary {
   /** Consecutive automatic dials that stalled (slot wait / dial timeout)
    *  rather than failing fast; see SECONDARY_STALLED_DIAL_BUDGET. */
   stalledDials: number
-  // Wake, polling and relay retention cannot revive a rejected credential.
-  reauthError: Error | null
   reconnecting: boolean
   /** A material connection edit is waiting for live owners to drain. */
   pendingConnectionRedial: boolean
@@ -193,6 +191,8 @@ interface GatewayRegistryState {
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
+  // Auth rejection outlives the disposable socket, including background request leases.
+  reauthFailures: Map<string, { connectionId: string | null; error: Error }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
   /** Routed prompt sockets held until their terminal turn event arrives. */
@@ -215,6 +215,7 @@ function createRegistryState(): GatewayRegistryState {
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
+    reauthFailures: new Map(),
     openedSecondaryScopes: new Set<string>(),
     turnLeases: new Map<string, () => void>(),
     turnLeaseReleaseTimers: new Map<string, ReturnType<typeof setTimeout>>(),
@@ -245,6 +246,7 @@ function gatewayState(): GatewayRegistryState {
     store[STATE_KEY] ??= createRegistryState()
 
     // Existing dev-HMR containers predate whole-turn leases.
+    store[STATE_KEY].reauthFailures ??= new Map()
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
 
@@ -605,8 +607,9 @@ function clearTimer(entry: Secondary): void {
 async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
   const desktop = window.hermesDesktop
 
-  if (entry.reauthError) {
-    throw entry.reauthError
+  const reauthError = g.reauthFailures.get(entry.scope)?.error
+  if (reauthError) {
+    throw reauthError
   }
 
   if (!desktop) {
@@ -745,8 +748,8 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
   try {
     await pending
   } catch (error) {
-    if (isGatewayReauthRequired(error)) {
-      entry.reauthError = error
+    if (isGatewayReauthRequired(error) && g.secondaries.get(entry.scope) === entry) {
+      g.reauthFailures.set(entry.scope, { connectionId: entry.connectionId, error })
       entry.wantOpen = false
       clearTimer(entry)
     }
@@ -781,10 +784,11 @@ function isStalledDialError(error: unknown): boolean {
 }
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
-  if (entry.reauthError && priority !== 'foreground') {
-    throw entry.reauthError
+  const reauthError = g.reauthFailures.get(entry.scope)?.error
+  if (reauthError && priority !== 'foreground') {
+    throw reauthError
   }
-  entry.reauthError = null
+  g.reauthFailures.delete(entry.scope)
 
   if (entry.retiredByPool && priority !== 'foreground') {
     throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
@@ -907,7 +911,6 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectTimer: null,
     reconnectAttempt: 0,
     stalledDials: 0,
-    reauthError: null,
     reconnecting: false,
     pendingConnectionRedial: false,
     retained: false,
@@ -1283,7 +1286,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
-  if (!entry.reauthError) {
+  if (!g.reauthFailures.has(entry.scope)) {
     rearmSecondary(entry)
   }
 
@@ -1801,7 +1804,7 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 
   const entry = g.secondaries.get(g.activeKey)
 
-  if (!entry || entry.reauthError) {
+  if (!entry || g.reauthFailures.has(entry.scope)) {
     return null
   }
 
@@ -1843,7 +1846,7 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     // A backend main retired for a foreground open stays parked: redialing it
     // from a focus/wake nudge would queue a background spawn for the slot the
     // retirement just freed. Its tile still shows; the next click re-arms it.
-    if (entry.retiredByPool || entry.reauthError) {
+    if (entry.retiredByPool || g.reauthFailures.has(entry.scope)) {
       continue
     }
 
@@ -2067,6 +2070,11 @@ function isLegacySecondary(entry: Secondary): boolean {
  * retired because their endpoint is derived from the v1 config being changed.
  */
 export function closeLegacySecondaryGateways(): void {
+  for (const [scope, failure] of g.reauthFailures) {
+    if (failure.connectionId === null) {
+      g.reauthFailures.delete(scope)
+    }
+  }
   closeSecondariesWhere(isLegacySecondary)
 }
 
@@ -2088,6 +2096,7 @@ export function closeSecondaryGateways(): void {
 
   closeSecondariesWhere(() => true)
   openedSecondaryScopes().clear()
+  g.reauthFailures.clear()
 }
 
 // A local profile can have two renderer-owned sockets: the legacy bare
@@ -2146,6 +2155,12 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
 
   if (!id) {
     return
+  }
+
+  for (const [scope, failure] of g.reauthFailures) {
+    if (failure.connectionId === id) {
+      g.reauthFailures.delete(scope)
+    }
   }
 
   for (const [key, entry] of [...g.secondaries]) {

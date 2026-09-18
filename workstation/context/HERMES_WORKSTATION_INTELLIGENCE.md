@@ -78,6 +78,45 @@ Especificação detalhada:
 workstation/context/ADAPTIVE_EXECUTION_COMPILATION.md.
 
 
+## Intake de hardening upstream — 2026-09-18
+
+A varredura das branches/PRs do upstream identificou evidência de campo útil para
+endurecer as bordas do Work sem substituir seus owners canônicos. O plano de
+implementação e a disposição por prioridade estão em
+`workstation/context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
+
+Regras para qualquer agente que use essa evidência:
+
+- upstream PR é **referência**, não autorização para cherry-pick cego;
+- primeiro verificar se o Work já implementa invariante equivalente;
+- quando já existe owner mais forte no Work, importar o cenário de regressão e
+  adaptar somente o patch mínimo;
+- nenhuma correção pode criar segundo SessionDB/Kanban/BrowserTask/ArtifactStore,
+  segundo delivery ledger ou browser paralelo;
+- o cluster imediato é: BrowserTask real hide/park/show, recovery/resync de
+  transcript, writer único de sessão, proveniência/heartbeat/worker truth do
+  Kanban e recovery de browser com orçamento finito.
+
+Estado confirmado no código no momento deste intake:
+
+- BrowserTask já unit-testa `hide -> show`, `park -> show`, página única e
+  destruição somente explícita; falta fechar o cenário de composição real com
+  `WebContentsView`;
+- o browser nativo já produz seu inventário principal por uma única chamada
+  `webContents.executeJavaScript(inventoryScript(...))`; #115056 é otimização
+  de qualidade/benchmark, não nova autoridade de snapshot;
+- `tools/browser_supervisor.py` ainda possui reconnect pós-attach sem orçamento
+  terminal;
+- o journal Desktop ainda contém a seleção antiga do primeiro projection row;
+- background sync ainda não preserva a mensagem otimista local;
+- auto-heartbeat Kanban ainda expressa tentativa, não sucesso persistido;
+- a classificação de exit de worker ainda depende de evidência process-local
+  quando o exit code não é transportado por um artefato durável.
+
+Esses itens são **planejados até seus testes de aceitação passarem**. Só então
+devem migrar desta seção/roadmap para a descrição de arquitetura implementada.
+
+
 Este documento atua como a **base de conhecimento canônica e fonte única da verdade (inteligência centralizada)** sobre o funcionamento, a arquitetura de baixo nível, os contratos de persistência e a integração do **Hermes Workstation (Hermes Work)** nesta branch/fork downstream do repositório Hermes Agent.
 
 Qualquer desenvolvedor ou agente de IA que for trabalhar neste domínio **DEVE** ler este documento para se situar sobre os conceitos, invariantes arquiteturais, armadilhas conhecidas e restrições estabelecidas antes de modificar qualquer código em `apps/desktop/`, `workstation/`, `tools/browser_workstation.py` ou superfícies de integração associadas.

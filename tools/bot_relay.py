@@ -166,14 +166,33 @@ def read_remote_roster(root: Path | str) -> list[dict]:
         return []
 
 
-def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
-    """Matched row for a bare handle/profile (unique across connections) or
-    ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
+def remote_target_matches(raw_target: str, roster: list[dict]) -> list[dict]:
+    """Every roster row ``raw_target`` names — ``<handle|profile>`` or ``<name>@<connection-id>``.
+
+    A teammate's friendly name matches too, on the local rule (``bot_mode_probe.local_alias_map``):
+    handles and profile ids are matched FIRST, so a friendly name colliding with another agent's id
+    never steals it. Without this a renamed agent answered to "Scribe" on its own machine and only to
+    its folder id from another one, though both rosters show it as Scribe (``title`` carries it).
+
+    The rows, not a verdict, because the caller that reports an ambiguous target has to name the
+    forms that resolve it — and a target is ambiguous by whichever of the three it matched."""
     want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
     if not want or (at and not conn):
-        return None
-    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
-               and (not conn or row["connection_id"].lower() == conn.lower())]
+        return []
+    on_connection = [row for row in roster if not conn or row["connection_id"].lower() == conn.lower()]
+    matches = [row for row in on_connection if want.lower() in (row["handle"].lower(), row["profile"].lower())]
+    if matches:
+        return matches
+    from tools.bot_mode_probe import alias_forms
+
+    forms = alias_forms(want)
+    return [row for row in on_connection if forms & alias_forms(row.get("title") or "")]
+
+
+def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
+    """Matched row for a target unique across connections; ``"ambiguous"`` when several rows answer
+    to it; None otherwise. See ``remote_target_matches`` for the grammar."""
+    matches = remote_target_matches(raw_target, roster)
     if not matches:
         return None
     return matches[0] if len(matches) == 1 else "ambiguous"

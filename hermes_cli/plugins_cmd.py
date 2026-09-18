@@ -235,10 +235,11 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
             return git_url + ".git", (subdir.strip("/") or None)
         return identifier, None
 
-    # owner/repo[/subdir...] shorthand
+    # owner/repo[/subdir...] or owner/repo#subdir shorthand (the catalog spells subdirs with ``#``).
+    identifier, _, fragment = identifier.partition("#")
     parts = [p for p in identifier.strip("/").split("/") if p]
     if len(parts) >= 2:
-        subdir = "/".join(parts[2:]).strip("/")
+        subdir = "/".join([*parts[2:], *fragment.split("/")]).strip("/")
         return f"https://github.com/{parts[0]}/{parts[1]}.git", (subdir or None)
     raise ValueError(
         f"Invalid plugin identifier: '{identifier}'. "

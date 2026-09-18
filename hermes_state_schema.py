@@ -655,7 +655,7 @@ class SessionSchemaMixin:
             rebuild_sql += "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');"
             if include_trigram:
                 rebuild_sql += "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild');"
-            rebuild_sql += _CLEAR_REBUILD_MARKERS_SQL + ";"
+            rebuild_sql += _CLEAR_REBUILD_MARKERS_SQL + ";" + _DROP_RETIRED_TOOL_HIGH_WATER_SQL + ";"
         recovery_sql = (
             "BEGIN IMMEDIATE;" + drop_sql + rebuild_sql
             + f"DELETE FROM state_meta WHERE key IN ('{FTS_STALE_KEY}', '{FTS_REBUILD_DEFERRAL_KEY}');COMMIT;"

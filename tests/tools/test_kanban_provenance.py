@@ -86,7 +86,9 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
     state.close()
 
     # Bound the way agent construction publishes it (ContextVar); a bare os.environ value is
-    # masked once a surface has cleared its session vars, so it is not a stand-in here.
+    # masked once a surface has cleared its session vars, so it is not a stand-in here. The env
+    # var is set too so the reporter's unverified-env path (the pre-fix stamping seam) is exercised.
+    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
     with scoped_current_session_id(session_id):
         result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
     with kbc.connect_closing() as conn:

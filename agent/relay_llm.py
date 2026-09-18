@@ -695,24 +695,13 @@ def _complete_logical(
         output.update({"model": model_name, "provider": provider_name})
         if response_model_name is not None:
             output["response_model"] = response_model_name
-    with turn.finalize_lock:
-        with turn.logical_llm_lock:
-            if turn.logical_llm_calls.get(request_id) is not handle:
-                return
-        if lease.session is None:
-            return
-        try:
-            (operation_lease or lease.host).run_in_session(
-                lease.session, relay_runtime.pop_relay_scope, lease.host.relay, handle,
-                output=output, metadata=relay_runtime.runtime_metadata(lease.host.runtime_id),
-            )
-        except Exception:
-            # Provider result is authoritative; retain the handle so turn finalization can retry.
-            logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
-            return
-        with turn.logical_llm_lock:
-            if turn.logical_llm_calls.get(request_id) is handle:
-                del turn.logical_llm_calls[request_id]
+    relay_runtime.SESSION_COORDINATOR.complete_logical_call(
+        turn,
+        request_id=request_id,
+        handle=handle,
+        output=output,
+        operation_lease=operation_lease,
+    )
 
 
 def _is_cancellation(error: BaseException) -> bool:

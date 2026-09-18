@@ -815,6 +815,7 @@ class RelayTurnContext:
     task_id: str
     handle: Any = None
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
+    logical_llm_outputs: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     logical_llm_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     finalize_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _previous_turn: RelayTurnContext | None = field(default=None, repr=False)
@@ -1070,30 +1071,86 @@ class RelaySessionCoordinator:
             if not turn.closed:
                 self._finish_logical_calls(turn, outcome=outcome)
 
+    def complete_logical_call(
+        self,
+        turn: RelayTurnContext,
+        *,
+        request_id: str,
+        handle: Any,
+        output: dict[str, Any],
+        operation_lease: RelayOperationLease | None = None,
+    ) -> None:
+        """Close completed logical calls once they reach the Relay stack top."""
+        with turn.finalize_lock:
+            with turn.logical_llm_lock:
+                if turn.logical_llm_calls.get(request_id) is not handle:
+                    return
+                turn.logical_llm_outputs[request_id] = dict(output)
+            self._drain_completed_logical_calls(
+                turn,
+                operation_lease=operation_lease,
+            )
+
+    def _finish_logical_calls(self, turn: RelayTurnContext, *, outcome: str) -> None:
+        with turn.logical_llm_lock:
+            for request_id in turn.logical_llm_calls:
+                turn.logical_llm_outputs.setdefault(
+                    request_id,
+                    {"outcome": outcome},
+                )
+        self._drain_completed_logical_calls(turn, allow_orphan_drain=True)
+
     @staticmethod
-    def _finish_logical_calls(turn: RelayTurnContext, *, outcome: str) -> None:
+    def _drain_completed_logical_calls(
+        turn: RelayTurnContext,
+        *,
+        operation_lease: RelayOperationLease | None = None,
+        allow_orphan_drain: bool = False,
+    ) -> None:
         lease = turn.lease
         host = lease.live_runtime()
-        if host is None:
+        session = lease.session
+        if host is None or session is None:
             return
-        with turn.logical_llm_lock:
-            logical_calls = list(turn.logical_llm_calls.items())
-            turn.logical_llm_calls.clear()
-        while logical_calls:
-            _request_id, logical_handle = logical_calls[-1]
-            failure = host._close_scope_handle(
-                lease.session, logical_handle, output={"outcome": outcome},
-                failure_label="logical LLM scope close failed",
-            )
-            if failure is None:
-                logical_calls.pop()
-                continue
+        while True:
             with turn.logical_llm_lock:
-                # Stack-owned: if the newest handle cannot close even after drain, older ones cannot either.
-                for pending_request_id, pending_handle in logical_calls:
-                    turn.logical_llm_calls.setdefault(pending_request_id, pending_handle)
-            logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
-            break
+                if not turn.logical_llm_calls:
+                    turn.logical_llm_outputs.clear()
+                    return
+                request_id = next(reversed(turn.logical_llm_calls))
+                output = turn.logical_llm_outputs.get(request_id)
+                if output is None:
+                    return
+                logical_handle = turn.logical_llm_calls[request_id]
+            if allow_orphan_drain:
+                failure = host._close_scope_handle(
+                    session,
+                    logical_handle,
+                    output=output,
+                    failure_label="logical LLM scope close failed",
+                )
+                if failure is not None:
+                    logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
+                    return
+            else:
+                try:
+                    (operation_lease or host).run_in_session(
+                        session,
+                        pop_relay_scope,
+                        host.relay,
+                        logical_handle,
+                        output=output,
+                        metadata=runtime_metadata(host.runtime_id),
+                    )
+                except Exception:
+                    # Provider results are authoritative. Retain the completion
+                    # so turn finalization can retry without changing the result.
+                    logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
+                    return
+            with turn.logical_llm_lock:
+                if turn.logical_llm_calls.get(request_id) is logical_handle:
+                    del turn.logical_llm_calls[request_id]
+                    turn.logical_llm_outputs.pop(request_id, None)
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:

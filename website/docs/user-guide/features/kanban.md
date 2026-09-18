@@ -237,8 +237,11 @@ body and hoping it finds them.
   tool access, so it reads attachments directly (`read_file`, or shell
   tools like `pdftotext`).
 - **Download / remove** — the drawer lists each attachment with a download
-  link and a remove (×) control. Removing an attachment deletes both the
-  metadata row and the on-disk file.
+  link and a remove (×) control. Removing an attachment deletes its
+  metadata row; the on-disk file is deleted only when no other attachment
+  row still references it (a file shared by several tasks stays until its
+  last reference is removed). From the CLI, `hermes kanban attach-rm
+  ATTACHMENT_ID` removes an attachment the same way.
 
 :::note Remote terminal backends
 Attachment paths resolve directly on the **local** terminal backend, which

@@ -395,8 +395,8 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
 
     # DIRECT_ALIASES (config.yaml ``model_aliases:``) map a user alias to (model, provider,
     # base_url) for endpoints outside any catalog (local servers, custom proxies, ...).
+    from hermes_cli import model_switch as _ms
     try:
-        from hermes_cli import model_switch as _ms
         _ms._ensure_direct_aliases()
         direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
     except Exception:
@@ -406,6 +406,15 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
         if isinstance(model_cfg, dict):
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         current_provider = cfg_provider or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+        # Same owner as HermesCLI startup: a provider-qualified string (``custom:<name>:<model>``,
+        # ``<provider>/<model>``) selects that provider before auto-detection can hand the unsplit
+        # string to the configured default (#73943).
+        route = _ms.resolve_startup_model_route(
+            explicit_model, current_provider=current_provider,
+            user_providers=cfg.get("providers"), custom_providers=cfg.get("custom_providers"))
+        if route is not None:
+            choice.provider, choice.model = route.provider, route.model
+            return choice
         detected = detect_provider_for_model(explicit_model, current_provider)
         if detected:
             choice.provider, choice.model = detected

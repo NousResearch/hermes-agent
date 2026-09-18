@@ -17,6 +17,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
+from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -24,6 +25,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -181,7 +183,7 @@ class GatewayTurnMixin:
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -412,8 +414,12 @@ class GatewayTurnMixin:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
             # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index).
-            switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
+            # awaits above are a window for /new or /resume to move the route; the CAS on the
+            # snapshot id lets that win instead of being clobbered by a stale binding.
+            switched = await self.async_session_store.switch_session(
+                session_key, bound_session_id, expected_session_id=session_entry.session_id,
+            )
             if switched is not None:
                 session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:
@@ -822,7 +828,8 @@ class GatewayTurnMixin:
         try:
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
-                await _adapter.send(source.chat_id, message, metadata=meta)
+                await _adapter.emit_warning(source.chat_id, message, metadata=meta,
+                                            logical_platform=source.platform)
         except Exception as _werr:
             logger.warning("Failed to deliver %s to user: %s", what, _werr)
 
@@ -1232,8 +1239,10 @@ class GatewayTurnMixin:
                 # fails closed (UnscopedSecretError) and every hygiene compaction silently degrades to a
                 # lossy truncation (#100849 bundle).
                 copy_context().run,
+                # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
+                    task_id=session_entry.session_id or "default",
                 ),
             )
             attempt.wait_started = time.monotonic()
@@ -1387,9 +1396,11 @@ class GatewayTurnMixin:
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript
-        clean (strip any leading timestamp prefix) regardless of the toggle; only the in-context
+        clean — strip any leading timestamp prefix and the Discord triggering-message note (a
+        model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
+        from gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
@@ -1402,7 +1413,7 @@ class GatewayTurnMixin:
             _evt_tz = _get_evt_tz()
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
-                persist_user_message = _clean_message_text
+                persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -1598,13 +1609,8 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _FAILED_TURN_NOTICE = (
-        "Your request was not processed. Send it again if you still want me to carry it out."
-    )
-    _PARTIAL_FAILED_TURN_NOTICE = (
-        "This turn did not complete. Some actions may already have run; verify their effects "
-        "before resending."
-    )
+    # One owner for the boundary copy (agent/turn_failure_copy.py): the core closer in
+    # agent/conversation_loop.py writes the same row on the paths that never reach this layer.
 
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
@@ -1624,8 +1630,8 @@ class GatewayTurnMixin:
             or (message.get("role") == "assistant" and message.get("tool_calls"))
             for message in turn_messages
         ):
-            return self._PARTIAL_FAILED_TURN_NOTICE
-        return self._FAILED_TURN_NOTICE
+            return PARTIAL_FAILED_TURN_NOTICE
+        return FAILED_TURN_NOTICE
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
         """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
@@ -1842,6 +1848,8 @@ class GatewayTurnMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
+        if diagnostic_wake_muted(event):
+            return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -1877,10 +1885,10 @@ class GatewayTurnMixin:
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
-    # sign-in, `hermes auth add <provider>` the host equivalent).
+    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
     _STATUS_HINTS = {
         401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
-              "Use /login here, or run `hermes auth add <provider>` on the host."),
+              "Use /login here, or run `{relogin}` on the host."),
         402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
         529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
@@ -1908,12 +1916,17 @@ class GatewayTurnMixin:
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
                 # Tool effects are unknown after an exception.
-                await self._hmwa_close_failed_turn(session_entry.session_id, self._PARTIAL_FAILED_TURN_NOTICE)
+                await self._hmwa_close_failed_turn(session_entry.session_id, PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
         status_hint = self._STATUS_HINTS.get(status_code, "")
-        if status_code == 429:
+        if status_code == 401:
+            from agent.turn_failure_copy import relogin_command_hint
+
+            _turn_agent = getattr(self._session_state(session_key).turn, "agent", None)
+            status_hint = status_hint.format(relogin=relogin_command_hint(getattr(_turn_agent, "provider", None)))
+        elif status_code == 429:
             # Plan usage limit (resets on a schedule) vs a transient rate limit
             _err_json = {}
             with suppress(Exception):
@@ -1934,7 +1947,7 @@ class GatewayTurnMixin:
             f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
             "Use /retry to try again, or /new to start a fresh conversation. "
             "Technical details are in the gateway log (`hermes logs`).",
-            self._PARTIAL_FAILED_TURN_NOTICE,
+            PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
@@ -2104,7 +2117,8 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                persist_user_display_metadata={
+                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -2118,6 +2132,10 @@ class GatewayTurnMixin:
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
                     event.ledger_message_id = str(_terminal_inbound)
+                if "queued_terminal_notification_category" in agent_result:
+                    event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
+                if isinstance(agent_result.get("_notification_reply_muted"), bool):
+                    event._notification_reply_muted = agent_result["_notification_reply_muted"]
 
             await self._hmwa_stop_typing_for_turn(event, source)
 
@@ -2417,12 +2435,13 @@ class GatewayTurnMixin:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            # Automatic failure diagnostic (the task produced no requested result to deliver).
             with suppress(Exception):
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=(f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
-                             "Send /bg again to retry, or /agents to see what is still running."),
-                    metadata=_thread_metadata,
+                await adapter.emit_warning(
+                    source.chat_id,
+                    (f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
+                     "Send /bg again to retry, or /agents to see what is still running."),
+                    metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
@@ -2977,6 +2996,8 @@ class GatewayTurnMixin:
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
         turn_runner = TurnRunner(self, turn_ctx)
+        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
+            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
@@ -3385,12 +3406,12 @@ class GatewayTurnMixin:
         if not _warn_adapter:
             return
         try:
-            await _warn_adapter.send(
+            await _warn_adapter.emit_warning(
                 source.chat_id, f"⚠️ I seem to be stuck (no activity for {int(worker.agent_warning // 60) or 1} min). "
                 "If nothing happens in the next "
                 f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min I'll give up on this task. "
                 "You can keep waiting, send /stop to cancel it, or /new to start a fresh conversation.",
-                metadata=_interim_metadata(_status_thread_metadata),
+                metadata=_interim_metadata(_status_thread_metadata), logical_platform=source.platform,
             )
         except Exception as _warn_err:
             logger.debug("Inactivity warning send error: %s", _warn_err)
@@ -3590,6 +3611,8 @@ class GatewayTurnMixin:
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
     ) -> None:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+        if turn_ctx.mute_notification_reply:
+            return
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -3691,6 +3714,8 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        # Queued Discord turns carry the same routing note as first turns; persist the authored text.
+        next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
@@ -3715,6 +3740,8 @@ class GatewayTurnMixin:
             )
             if next_message is None:
                 return result
+            from gateway.run_inbound import strip_discord_triggering_note
+            next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
@@ -3764,7 +3791,9 @@ class GatewayTurnMixin:
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
+                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3788,6 +3817,9 @@ class GatewayTurnMixin:
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_notification_category": (
+                    (pending_event.metadata or {}).get("notification_category", "result")
+                    if pending_event is not None and pending_event.internal else "result"),
             }
         return merged
 
@@ -4126,7 +4158,8 @@ class GatewayTurnMixin:
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
-        if not scheduled_heartbeat:
+        # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
+        if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
             self._run_agent_start_streaming_tts(
                 source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
             )
@@ -4143,7 +4176,7 @@ class GatewayTurnMixin:
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = (
-            None if scheduled_heartbeat
+            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 
@@ -4152,6 +4185,8 @@ class GatewayTurnMixin:
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+            if isinstance(response, dict):
+                response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
             self._run_agent_evict_on_fallback(turn_ctx)
 
             # Interrupted OR queued message (/queue)?

@@ -21,6 +21,7 @@ def agent_for(api_key, base_url):
         _summarize_api_error=lambda e: str(e), _emit_status=lambda *a, **kw: None,
         _persist_session=lambda *a, **kw: None, _plines=lambda *a, **kw: None, _vprint=lambda *a, **kw: None,
         _buffer_status=lambda *a, **kw: None, _buffer_vprint=lambda *a, **kw: None,
+        _emit_diagnostic_status=lambda *a, **kw: None, _buffer_diagnostic_status=lambda *a, **kw: None,
         _try_activate_fallback=lambda: False,
     )
 

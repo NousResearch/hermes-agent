@@ -1071,8 +1071,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Originating chat/agent session id when the task was created from
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
-    -- set the env var. Indexed so per-session list queries stay cheap on
-    -- larger boards.
+    -- set the env var, and for an id with no ``sessions`` row in this
+    -- profile's state.db (kanban_create verifies before stamping). Indexed
+    -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
@@ -2027,7 +2028,11 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
+        # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
+        # a no-op re-assign or an unassign, which must not lift ``active_pr``.
+        _append_event(
+            conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
+        )
     # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
     return True
@@ -2202,10 +2207,22 @@ def update_task(
     return get_task(conn, task_id)
 
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    expected_child_run_id: Optional[int] = None,
+) -> bool:
     """Link ``parent_id -> child_id``. Returns True when the link gated a
     ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
-    callers can surface the demotion instead of a silent status flip."""
+    callers can surface the demotion instead of a silent status flip.
+
+    A running child cannot normally be gated retroactively, so reject the edge
+    rather than record a dependency that did not constrain the active run. The
+    owning worker may link its own active run for a subsequent dependency-block
+    handoff by supplying its trusted ``expected_child_run_id``.
+    """
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     gated = False
@@ -2213,6 +2230,14 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        child = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (child_id,),
+        ).fetchone()
+        if child["status"] == "running" and (
+            expected_child_run_id is None
+            or child["current_run_id"] != expected_child_run_id
+        ):
+            raise ValueError(f"cannot link {parent_id} -> {child_id}: child is already running")
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
@@ -2782,11 +2807,16 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
+        has_remaining_blob_reference = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
+            (att.stored_path,),
+        ).fetchone() is not None
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
-    with contextlib.suppress(OSError):
-        p = Path(att.stored_path)
-        if p.is_file():
-            p.unlink()
+    if not has_remaining_blob_reference:
+        with contextlib.suppress(OSError):
+            p = Path(att.stored_path)
+            if p.is_file():
+                p.unlink()
     return att
 
 
@@ -2971,22 +3001,31 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
-
-    See #28712.
-    Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
-    that path.
+    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
+    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
+    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
+    protocol-violation budget or a systemic same-error wave. Those trip on a
+    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
+    counter check cannot see them — without this the trip is promoted back to
+    ``ready`` in the same tick and the card respawns forever. A plain
+    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
+    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
+    releases it; a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row and row["kind"] == "blocked":
+        return True
+    trip = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
+        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
+        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
+    ).fetchone()
+    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
 
 
 def _latest_event(
@@ -3157,13 +3196,25 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
     return conn.execute(
-        # Check if this task has children that still need the workspace. If any child is not yet
-        # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
         "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
     ).fetchone() is None
+
+
+def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """``(parent_id, status)`` for every direct parent :func:`_parents_satisfied`
+    still counts as open (``done`` / ``archived`` release the child), in id
+    order, so a refusal or a board view can name the blockers instead of the
+    caller guessing. Read-only."""
+    rows = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "ORDER BY p.id", (task_id,),
+    ).fetchall()
+    return [(row["id"], row["status"]) for row in rows]
 
 
 def _claim_and_open_run(
@@ -4328,39 +4379,21 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage`` / ``decision-needed``).
 
-    ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
-    un-typed block) drives routing instead of every block landing in one
-    undifferentiated ``blocked`` bucket:
+    Routing lives in :func:`_route_block`; this function owns the write, the run
+    close and the hooks. ``kind='dependency'`` with no incomplete parent is
+    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot promote
+    it into a context-free respawn. ``transient`` still counts toward the loop
+    breaker so a forever-flaky task escalates.
 
-    * ``dependency`` — the task is only waiting on another task. It does NOT
-      sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
-      ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
-      promotes it automatically once its parents finish. No human, no cron, no
-      retry storm. This is Dale's "Type 2 — dependency blocked".
-
-    * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
-      "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
-
-    * ``transient`` — treated like a generic block for routing, but a worker
-      can use it to signal "this might clear on its own"; it still participates
-      in the loop breaker so a forever-flaky task eventually escalates.
-
-    * ``stakeholder-decision`` / ``escalation`` — decision kinds
-      (subset :data:`DECISION_BLOCK_KINDS`). When the task already has an
-      ``escalation_target`` set, the block routes the task to the
-      ``decision-needed`` terminal status instead of ``blocked`` — surfacing
-      it as human-owned so the auto-unblocker can't churn on it. Without an
-      ``escalation_target`` the block falls through to the regular
-      ``blocked`` routing (the decision-kind alone is not enough; a human
-      must have explicitly escalated the task for it to enter the terminal
-      decision gate).
+    KENSEI CUSTOM (merged): a decision-kind block (``DECISION_BLOCK_KINDS``) on
+    a task that already has an ``escalation_target`` routes to the
+    ``decision-needed`` terminal status instead of ``blocked`` — surfacing it
+    as human-owned so the auto-unblocker can't churn on it. Without an
+    ``escalation_target`` the block falls through to the regular routing (the
+    decision-kind alone is not enough; a human must have explicitly escalated
+    the task for it to enter the terminal decision gate).
 
     Returns True on any successful transition (to ``blocked``, ``todo``,
     ``triage``, or ``decision-needed``), False when the task wasn't in a
@@ -4384,221 +4417,63 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
-        source_status = (
-            _retry_status_for_run(conn, task_id)
-            if cur_row["status"] == "running"
-            else "ready"
-        )
-        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
-        prev_recurrences = (
-            int(cur_row["block_recurrences"])
-            if "block_recurrences" in cur_row.keys()
-            and cur_row["block_recurrences"] is not None
-            else 0
-        )
-        # Pre-compute the decision-gate routing. A decision-kind block with an
+        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        requested_kind = kind
+        rekind_reason = None
+        # ``dependency`` only waits on incomplete parents. A worker filing that
+        # kind with none open would park in ``todo`` and ``recompute_ready``
+        # would promote+respawn it context-free on the next tick. Re-kind to
+        # ``needs_input`` so it is sticky until a human unblocks.
+        if kind == "dependency" and _parents_satisfied(conn, task_id):
+            kind = "needs_input"
+            rekind_reason = "no_open_parent"
+        # KENSEI CUSTOM: decision-gate routing. A decision-kind block with an
         # ``escalation_target`` is the explicit human signal that this task
-        # needs a decision, not another auto-recovery cycle. We evaluate this
-        # once up-front so both the loop-detected (``triage``) and the normal
-        # (``blocked``) branches can fall through to it. The recurrence
-        # counter still increments — a forever-flaky decision-kind task will
-        # still hit BLOCK_RECURRENCE_LIMIT and be routed to ``triage`` so a
-        # human can see "this decision has been bouncing" rather than the
-        # task silently sitting in ``decision-needed`` while the underlying
-        # problem keeps re-asserting itself.
+        # needs a decision, not another auto-recovery cycle.
         is_decision_block = kind in DECISION_BLOCK_KINDS
         is_escalated = (
             "escalation_target" in cur_row.keys()
             and cur_row["escalation_target"] is not None
             and str(cur_row["escalation_target"]).strip() != ""
         )
-
-        # Dependency blocks never enter the human ``blocked`` bucket — they
-        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
-        # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
-        if kind == "dependency":
-            cur = conn.execute(
-                """
+        new_status, event_kind, set_sql, params, payload = _route_block(
+            kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
+            prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+        )
+        if rekind_reason:
+            payload["requested_kind"] = requested_kind
+            payload["rekind_reason"] = rekind_reason
+        # KENSEI CUSTOM: the decision gate wins over the generic destinations
+        # (``blocked`` and the loop-detected ``triage``), so a human sees the
+        # decision surfaced for action rather than re-buried in a triage loop.
+        if is_decision_block and is_escalated:
+            new_status = "decision-needed"
+            payload["decision_gate"] = True
+            payload["routed_to"] = new_status
+        sql = f"""
                 UPDATE tasks
-                   SET status        = 'todo',
+                   SET status        = '{new_status}',
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       {set_sql}
                  WHERE id = ?
                    AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
-            )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="blocked", summary=reason,
-                )
-            _append_event(
-                conn, task_id, "dependency_wait",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "source_status": source_status,
-                },
-                run_id=run_id,
-            )
-            _blocked_task = get_task(conn, task_id)
-            _fire_kanban_lifecycle_hook(
-                "kanban_task_blocked",
-                task_id,
-                board=get_current_board(),
-                assignee=_blocked_task.assignee if _blocked_task else None,
-                run_id=run_id,
-                reason=reason,
-            )
-            return True
-
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
-
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
-            # Loop detected — stop letting the unblocker spin this task. Route
-            # to triage for a human-in-the-loop decision instead of blocked —
-            # UNLESS this is a decision-kind block on an already-escalated
-            # task, in which case the terminal decision gate
-            # (``decision-needed``) wins so the human sees the decision
-            # surfaced for action rather than re-buried in a triage loop.
-            dest_status = (
-                "decision-needed" if is_decision_block and is_escalated
-                else "triage"
-            )
-            cur = conn.execute(
                 """
-                UPDATE tasks
-                   SET status        = ?,
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL,
-                       block_kind    = ?,
-                       block_recurrences = ?
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (dest_status, kind, recurrences, task_id)
-                if expected_run_id is None
-                else (dest_status, kind, recurrences, task_id, int(expected_run_id)),
-            )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="blocked", summary=reason,
-                )
-            _append_event(
-                conn, task_id, "block_loop_detected",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
-                    "decision_gate": is_decision_block and is_escalated,
-                    "routed_to": dest_status,
-                    "source_status": source_status,
-                },
-                run_id=run_id,
-            )
-            routed_to = dest_status
-        else:
-            # Decision-gate routing: a decision-kind block with an
-            # ``escalation_target`` set on the task lands the task in the
-            # ``decision-needed`` terminal status (human-owned, unblocker
-            # refuses to touch it). Without ``escalation_target`` the regular
-            # ``blocked`` bucket is used so the human escalation flow remains
-            # the explicit signal.
-            dest_status = (
-                "decision-needed" if is_decision_block and is_escalated
-                else "blocked"
-            )
-            if expected_run_id is None:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = ?,
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                    """,
-                    (dest_status, kind, recurrences, task_id),
-                )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = ?,
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                       AND current_run_id = ?
-                    """,
-                    (dest_status, kind, recurrences, task_id, int(expected_run_id)),
-                )
-            if cur.rowcount != 1:
-                return False
-            run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
-            )
-            # Synthesize a run when blocking a never-claimed task so the
-            # reason is preserved in attempt history.
-            if run_id is None and reason:
-                run_id = _synthesize_ended_run(
-                    conn, task_id,
-                    outcome="blocked",
-                    summary=reason,
-                )
-            _append_event(
-                conn, task_id, "blocked",
-                {
-                    "reason": reason,
-                    "kind": kind,
-                    "recurrences": recurrences,
-                    "decision_gate": is_decision_block and is_escalated,
-                    "routed_to": dest_status,
-                    "source_status": source_status,
-                },
-                run_id=run_id,
-            )
-            routed_to = dest_status
-        # Loop-diagnostics: attach the failure report for this terminal
-        # attempt failure (a worker block = a terminal non-success attempt).
-        # Dependency-wait blocks return early above, so this covers the
-        # normal / loop-detected / decision-gate routes. Only when a real
-        # run was closed — synthesized runs (never claimed) have no trace.
+        params = (*params, task_id)
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params = (*params, int(expected_run_id))
+        if conn.execute(sql, params).rowcount != 1:
+            return False
+        run_id = _end_or_synthesize_run(
+            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+        )
+        _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        # KENSEI CUSTOM: loop-diagnostics for a terminal non-success attempt.
+        # Dependency-wait blocks return early below; this covers the normal /
+        # loop-detected / decision-gate routes. Only when a real run was
+        # closed — synthesized runs (never claimed) have no trace to diagnose.
         if run_id is not None and reason:
             _attach_loop_diagnosis(
                 conn, task_id,
@@ -4606,15 +4481,12 @@ def block_task(
                 outcome="blocked",
                 error=reason,
             )
-        _blocked_task = get_task(conn, task_id)
-    _fire_kanban_lifecycle_hook(
-        "kanban_task_blocked",
-        task_id,
-        board=get_current_board(),
-        assignee=_blocked_task.assignee if _blocked_task else None,
-        run_id=run_id,
-        reason=reason,
-    )
+        blocked_task = get_task(conn, task_id)
+        if kind == "dependency":
+            # Historical ordering: the dependency lane fires inside the txn.
+            _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+            return True
+    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     # ── KENSEI governance: record block event ──
     task = get_task(conn, task_id)
     record_event_if_enabled(
@@ -4627,9 +4499,9 @@ def block_task(
         # Follow the actual destination so dashboards and event consumers see
         # the right landing state (``decision-needed`` for decision gates,
         # ``triage`` for loop-detected, ``blocked`` for normal).
-        status_to=routed_to,
+        status_to=new_status,
         summary=reason or f"Blocked kanban task {task_id}",
-        payload={"reason": reason, "run_id": run_id, "routed_to": routed_to},
+        payload={"reason": reason, "run_id": run_id, "routed_to": new_status},
     )
     return True
 
@@ -4665,7 +4537,9 @@ def _route_block(
 
     ``dependency`` never enters the human ``blocked`` bucket: it waits in
     ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Every other kind counts unblock-loop
+    as something to "unblock". Callers that pass ``dependency`` with no
+    incomplete parent are re-kinded to ``needs_input`` before this runs
+    (see :func:`block_task`). Every other kind counts unblock-loop
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause

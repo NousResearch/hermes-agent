@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
 import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -169,6 +170,19 @@ describe('useDesktopIntegrations', () => {
 
       // sessionRoute('remembered-session') = '/remembered-session'
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
     })
 
     it('waits for sessions before validating a remembered session route', () => {
@@ -641,10 +655,10 @@ describe('useDesktopIntegrations', () => {
         settleConfirm(true)
         await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
         expect(installs()).toEqual([[{
-          connectionId: connection, profile, path: '/api/skills/hub/install', method: 'POST', body: { identifier }
+          connectionId: connection, profile, priority: 'foreground', path: '/api/skills/hub/install', method: 'POST', body: { identifier }
         }]])
         expect(api).toHaveBeenCalledWith({
-          connectionId: connection, profile, path: '/api/actions/skill-link-test/status?lines=200'
+          connectionId: connection, profile, priority: 'foreground', path: '/api/actions/skill-link-test/status?lines=200'
         })
       }
 

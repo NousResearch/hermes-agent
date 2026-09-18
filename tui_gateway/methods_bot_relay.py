@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 # Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_failure_reasons import delivery_failure_reason
 from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
 from .method_ctx import HandlerRegistry
@@ -57,7 +58,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 
 @method("bot_relay.deliver")
-def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
+def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
+      _failure_reason=delivery_failure_reason) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
     GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
     ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
@@ -112,6 +114,22 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
             return _ok(rid, {"reply": reply})
 
+        # This process's _sessions is not the ownership authority: the Desktop pools one backend per
+        # (connection, profile) and an SSH source runs one remote dashboard per profile, so the
+        # target's Bot Chat can be live in a sibling process on this host while the relay RPC lands
+        # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
+        # lease (#113753). Hand the DM to the live owner through the same mailbox local DMs use
+        # (tools/bot_mode_dm.py::_run_delivery); its poller admits it at the next idle boundary.
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+        owner_home = live_home if live_home is not None else Path(_hermes_home)
+        owner = find_canonical_live_owner(owner_home)
+        if owner is not None:
+            deliver_to_live_owner(owner_home, owner, message, author=author)
+            # The owner's poller admits the mailbox record at its next idle boundary; this
+            # process only queued it, so say so (the in-process branch above really submitted).
+            reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
+            return _ok(rid, {"reply": reply})
+
         def _detail(p) -> str:
             from tools.bot_failure_reasons import turn_failure_text
             return turn_failure_text(p.stdout, p.stderr)
@@ -156,10 +174,14 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         reply = _bot_mode_delivery_text((proc.stdout or "").strip(), successful=True)
         return _ok(rid, {"reply": reply})
     except subprocess.TimeoutExpired:
-        return _err(rid, 5093, "delivery turn timed out")
+        # Every classified refusal has to ride `data.reason`: the Desktop forwards only that field,
+        # and the sender re-classifies from free text, which cannot name these. This branch is also
+        # `delivery_timeout`'s only producer.
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+        return _err(rid, 5093, "delivery turn timed out", data={"reason": DELIVERY_TIMEOUT})
     except Exception as e:
-        # 'target_busy' extends the structured refusal enum.
-        return _err(rid, 5096 if getattr(e, "reason", "") == "target_busy" else 5094, str(e))
+        reason = _failure_reason(e)
+        return _err(rid, 5096 if reason == "target_busy" else 5094, str(e), data={"reason": reason})
 
 
 @method("bot_relay.reply")

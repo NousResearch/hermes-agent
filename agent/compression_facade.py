@@ -106,13 +106,16 @@ def _sync_persisted_markers(target_messages, source_messages) -> None:
 
 
 def _run_under_progress_timeout(
-    agent, run, messages, system_message, *, active_fence, fence_registration_lock, idle_timeout, total_ceiling
+    agent, run, messages, system_message, *, active_fence, fence_registration_lock, idle_timeout, total_ceiling,
+    approx_tokens=None,
 ):
     """Run ``run(fence, target_messages=snapshot)`` on the pool under the progress-aware timeout.
     The pooled worker must NEVER share the caller's live transcript — a late engine after a host timeout could
     rewrite it. It deep-snapshots on the worker and publishes only via an ADMITTED commit; a no-op/abort
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
-    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+    from agent.conversation_compression import (
+        CompressionCommitFence, request_exceeds_model_window, run_compress_context_with_progress_timeout,
+    )
 
     def _snapshot_worker(fence=None, *, same_turn_fallback_recovery=False):
         # #76354 review F3: the pooled worker must NEVER share the caller's live transcript. Plugin/legacy
@@ -160,6 +163,7 @@ def _run_under_progress_timeout(
         on_timeout_cause=_on_timeout_cause,
         on_commit_overrun=lambda waited, ceiling: _warn_commit_overrun(agent, waited, ceiling), fence=active_fence,
         telemetry_agent=agent, new_fence=_publish_new_fence, fallback_worker=_same_turn_fallback_worker,
+        request_exceeds_window=request_exceeds_model_window(agent, approx_tokens) is True,
     )
 
 
@@ -271,7 +275,7 @@ class CompressionFacadeMixin:
                 result = _run_under_progress_timeout(
                     self, _run, messages, system_message,
                     active_fence=active_fence, fence_registration_lock=fence_registration_lock,
-                    idle_timeout=idle_timeout, total_ceiling=total_ceiling,
+                    idle_timeout=idle_timeout, total_ceiling=total_ceiling, approx_tokens=approx_tokens,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
             _rebind_caller_session_context(self)

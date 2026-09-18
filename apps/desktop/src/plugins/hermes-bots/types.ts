@@ -63,6 +63,11 @@ export interface BotMeta {
    *  the assignment rides the same profile.yaml sync every other bot setting
    *  already uses — so sections follow the profile to another machine. */
   sectionId?: null | string
+  /** The section's display name, written beside `sectionId` on every filing.
+   *  Section RECORDS live in the creating desktop's plugin storage; carrying
+   *  the name with the membership lets another desktop on the same backend
+   *  rebuild a section it never created instead of drawing a flat list. */
+  sectionName?: null | string
   color?: string
   /** Set when the user has customized the avatar, so defaults stop applying. */
   custom?: boolean

@@ -265,6 +265,7 @@ async def search_sessions(
     if not q or not q.strip():
         return {"results": []}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
+        row_profile = _serving_profile(profile)
         db = _open_session_db_for_profile(profile, read_only=True)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
@@ -326,6 +327,8 @@ async def search_sessions(
                 sid = lineage_tip(root)
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
+                payload["profile"] = row_profile
+                payload["is_default_profile"] = row_profile == "default"
                 try:
                     row = db.get_session_rich_row(sid)
                 except Exception:

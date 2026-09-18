@@ -106,20 +106,60 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     return found
 
 
-def _hermes_home_for_pid(pid: int) -> str | None:
-    """Best-effort ``HERMES_HOME`` from *pid*'s environment (psutil, then /proc)."""
+def _pid_environ(pid: int) -> dict[str, str] | None:
+    """Exec-time environment of *pid* (psutil, then /proc); ``None`` when unreadable."""
     with contextlib.suppress(Exception):
         import psutil
-        if home := psutil.Process(pid).environ().get("HERMES_HOME"):
-            return home
+        return dict(psutil.Process(pid).environ())
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
     except OSError:
         return None
+    env: dict[str, str] = {}
     for part in raw.split(b"\x00"):
-        if part.startswith(b"HERMES_HOME="):
-            return part.split(b"=", 1)[1].decode("utf-8", errors="replace") or None
-    return None
+        key, sep, value = part.partition(b"=")
+        if sep:
+            env[key.decode("utf-8", errors="replace")] = value.decode("utf-8", errors="replace")
+    return env
+
+
+def _hermes_home_for_pid(pid: int) -> str | None:
+    """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
+    (another user, hardened ``/proc``) — callers spare those, never guess.
+
+    A readable environment always resolves, replaying ``_apply_profile_override`` on the target's
+    exec-time env + argv (``hermes -p X serve`` rewrites ``HERMES_HOME`` in ``os.environ`` AFTER
+    startup, which ``/proc/<pid>/environ`` never reflects): a profile-shaped ``HERMES_HOME``
+    without a flag is the home; otherwise the root is ``HERMES_HOME`` (its grandparent when
+    profile-shaped) or the platform default of the process's own ``HOME`` / ``LOCALAPPDATA``, and
+    the profile is the ``--profile``/``-p`` flag, else the root's sticky ``active_profile`` unless
+    the process has a fixed identity (supervised child, post-swap updater, Desktop SSH backend).
+    """
+    env = _pid_environ(pid)
+    if env is None:
+        return None
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    argv = _dashboard_cmdline_for_pid(pid) or []
+    env_home = env.get("HERMES_HOME", "").strip()
+    profile = _profile_flag_value(argv)
+    if profile is None and env_home and (
+        Path(env_home).parent.name == "profiles" or env.get("HERMES_UPDATE_POST_SWAP") == "1"
+    ):
+        return env_home
+    if sys.platform == "win32":
+        local_appdata = env.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
+        default_home = base / "hermes"
+    else:
+        default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
+    root = profile_root_for_env_home(env_home, default_home)
+    fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv
+    if profile is None and not fixed_identity:
+        profile = get_active_profile(root)
+    canon = normalize_profile_name(profile) if profile else "default"
+    return str(root) if canon == "default" else str(root / "profiles" / canon)
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
@@ -181,6 +221,23 @@ def _normalized_home_for_compare(home: str) -> str:
     See #94030.
     """
     return os.path.normcase(str(_resolved_home(home)))
+
+
+def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
+    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``.
+
+    Dashboard argv is discovery-only: it is not an ownership proof because
+    several Hermes installs and profiles can run the same command on one
+    machine.  An unreadable process environment is deliberately not treated
+    as a match, so a stop request fails closed rather than taking down an
+    unrelated backend.
+    """
+    target = _normalized_home_for_compare(home)
+    return [
+        pid for pid in pids
+        if (pid_home := _hermes_home_for_pid(pid))
+        and _normalized_home_for_compare(pid_home) == target
+    ]
 
 
 def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
@@ -252,6 +309,79 @@ def _exclude_pids_from_env() -> set[int]:
     return out
 
 
+#: Executables that only *carry* a hermes command line. A process headed by one of these
+#: never serves traffic itself; when its argv matches the dashboard patterns it is a
+#: wrapper around the command (``bash -c 'hermes dashboard --stop'``), not a backend.
+_WRAPPER_HEAD_COMMANDS = frozenset({
+    "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh",
+    "env", "nohup", "nice", "stdbuf", "timeout", "watch", "xargs",
+    "screen", "tmux", "sudo",
+})
+
+
+def _caller_ancestor_pids() -> set[int]:
+    """PIDs of THIS process's ancestors (self excluded), best-effort; empty on any failure.
+
+    ``--stop`` and the update sweep must never kill the process tree they were invoked
+    from. psutil is primary; the ``/proc`` walk keeps the answer when psutil is unusable.
+    """
+    try:
+        import psutil
+
+        return {p.pid for p in psutil.Process().parents()}
+    except Exception:
+        pass
+    ancestors: set[int] = set()
+    cur = os.getpid()
+    for _ in range(2048):  # cycle / corrupt-PPid guard
+        try:
+            status_text = Path(f"/proc/{cur}/status").read_text(
+                encoding="utf-8", errors="replace")
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    cur = int(line.split()[1])
+                    break
+            else:
+                return ancestors
+        except (OSError, ValueError, IndexError):
+            return ancestors
+        if cur <= 1:
+            return ancestors
+        ancestors.add(cur)
+    return ancestors
+
+
+def _argv_head_command(pid: int) -> str | None:
+    """Basename of *pid*'s first argv token, best-effort; ``None`` when unreadable."""
+    try:
+        import psutil
+
+        argv = psutil.Process(pid).cmdline()
+        if argv:
+            return os.path.basename(str(argv[0]))
+    except Exception:
+        pass
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    head = raw.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    return head.rsplit("/", 1)[-1] or None
+
+
+def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
+    """True when *pid* is a caller ancestor headed by a wrapper executable.
+
+    Root selection is a substring match, so the shell a ``--stop`` was typed into (or a
+    ``bash -c 'hermes dashboard --stop'`` wrapper) matches on its own argv. Ancestor alone
+    is not a spare: the backend hosting a shell-escaped TUI is also the caller's ancestor
+    and must stay stoppable — only a wrapper-headed ancestor is spared.
+    """
+    if pid not in ancestors:
+        return False
+    return (_argv_head_command(pid) or "") in _WRAPPER_HEAD_COMMANDS
+
+
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
     """``taskkill /F`` each PID after re-verifying its identity."""
     from gateway.status import get_process_start_time
@@ -286,14 +416,104 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 # DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
 # is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
 _POSIX_TERM_GRACE_SECONDS = 10.0
+# Grace for a descendant that outlived the backend's own teardown. It already got the backend's
+# SIGTERM forwarded (or SIGHUP from its PTY master closing); anything still up is wedged, and a
+# wedged ui-tui keeps the deleted state.db-wal inode open until the next start refuses with
+# DeletedWalGenerationError (#112631) — no finite root grace can cover an unbounded teardown.
+_POSIX_DESCENDANT_GRACE_SECONDS = 2.0
+_NO_TTY = ("?", "??", "-")  # Linux / macOS / BSD spellings of "no controlling terminal"
 
 
-def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors."""
-    import signal as _signal
+def _is_detached_session_leader(pid: int, tty: str) -> bool:
+    """True for a process the dashboard launched with ``start_new_session`` (own session, no tty).
+
+    Messaging-gateway bots and profile actions started from ``/api/gateway/*`` are such processes:
+    they are the user's, not the dashboard's, and must survive a dashboard stop. A hosted
+    ``hermes --tui`` child is a session leader too (``pty.fork``) but owns the pts whose master the
+    dashboard held, so its tty column is set and it stays in the sweep.
+
+    Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
+    launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
+    ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
+    their own ppid watchdogs (``compute_host._parent_guard_loop``,
+    ``slash_worker._start_parent_death_watchdog``), not on this sweep. Discriminating by WAL-holder
+    identity (``iter_deleted_sqlite_sidecar_holders``) was deliberately not done in this change.
+    """
+    if tty not in _NO_TTY:
+        return False
+    try:
+        return os.getsid(pid) == pid
+    except OSError:
+        return False
+
+
+def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
+    """``{pid: (root, start_time)}`` of every dashboard-owned descendant of *roots*, snapshotted
+    BEFORE the kill: once the root dies its children are reparented and the PPID link is gone.
+    Detached session leaders (see ``_is_detached_session_leader``) are pruned together with their own
+    subtrees. So is the calling process with its subtree and its ancestor chain: ``hermes dashboard
+    --stop`` / ``hermes update`` run from a shell escape inside the hosted Chat TUI are same-session
+    descendants of the backend, and sweeping them would SIGTERM the caller mid-run (POSIX twin of the
+    Windows #98814 hazard). The start-time fingerprint is the PID-reuse guard (same one
+    ``_kill_pids_windows`` uses). Empty on scan failure → root-only kill, the historical behaviour.
+    """
+    from gateway.status import get_process_start_time
+    try:
+        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    children: dict[int, list[tuple[int, str]]] = {}
+    parent: dict[int, int] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2]))
+            parent[int(parts[0])] = int(parts[1])
+    me = os.getpid()
+    ancestors: set[int] = set()
+    cur = me
+    while (cur := parent.get(cur, 0)) > 1 and cur not in ancestors:
+        ancestors.add(cur)
+    found: dict[int, tuple[int, int | None]] = {}
+    pending = [(root, root) for root in roots]
+    while pending:
+        root, cur = pending.pop()
+        for pid, tty in children.get(cur, ()):
+            if pid in found or pid in roots or pid == me or _is_detached_session_leader(pid, tty):
+                continue
+            if pid not in ancestors:  # an ancestor of the caller is spared, but its other children are not
+                found[pid] = (root, get_process_start_time(pid))
+            pending.append((root, pid))
+    return found
+
+
+def _wait_gone(pids: list[int], seconds: float) -> list[int]:
+    """Poll up to *seconds*; return the PIDs still alive (zombies count as gone)."""
     import time as _time
 
     from gateway.status import _pid_exists
+
+    deadline = _time.monotonic() + seconds
+    alive = list(pids)
+    while alive and _time.monotonic() < deadline:
+        _time.sleep(0.1)
+        alive = [p for p in alive if _pid_exists(p)]  # os.kill(pid, 0) breaks on Windows
+    return alive
+
+
+def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
+    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors, then
+    sweep the dashboard-owned descendants that outlived the root and wait for the tree to be gone.
+
+    *killed* reports the roots only; swept descendants are the roots' own teardown debt. A descendant
+    still alive after its SIGKILL grace is appended to *failed*: the stop must not be declared
+    complete while a wedged ui-tui still holds the deleted state.db-wal inode (#112631).
+    """
+    import signal as _signal
+
+    from gateway.status import get_process_start_time
+
+    descendants = _posix_descendants(pids)
 
     def _send(pid: int, sig) -> None:
         try:
@@ -307,20 +527,28 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     for pid in pids:
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
-    while pending and _time.monotonic() < deadline:
-        _time.sleep(0.1)
-        alive = [p for p in pending if _pid_exists(p)]  # os.kill(pid, 0) breaks on Windows
-        killed.extend(p for p in pending if p not in alive)
-        pending = alive
-    for pid in pending:
+    alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
+    killed.extend(p for p in pending if p not in alive)
+    for pid in alive:
         _send(pid, _signal.SIGKILL)
+
+    # Snapshot identity must still match: a PID recycled during the grace is not ours to signal.
+    survivors = [p for p, (_root, start) in descendants.items()
+                 if start is not None and get_process_start_time(p) == start]
+    for sig in (_signal.SIGTERM, _signal.SIGKILL):
+        for pid in survivors:
+            with contextlib.suppress(OSError):
+                os.kill(pid, sig)
+        survivors = _wait_gone(survivors, _POSIX_DESCENDANT_GRACE_SECONDS)
+    failed.extend((pid, "descendant of the stopped backend still alive after SIGKILL")
+                  for pid in survivors)
 
 
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -328,6 +556,10 @@ def _kill_stale_dashboard_processes(
     kill (systemd treats our SIGTERM as a clean stop, so ``Restart=on-failure`` never fires) and
     manual PIDs are respawned from captured argv. PIDs owned by *already_restarted_units* (no
     ``.service`` suffix) are left untouched, not killed twice.
+
+    When *scope_home* is supplied, only processes with that exact live
+    ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
+    used by ``dashboard --stop`` and the per-profile update cleanup.
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
@@ -349,7 +581,7 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
@@ -744,6 +976,7 @@ def _reap_orphaned_desktop_local_serves(
                and _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)]
     if not matched:
         return _empty_result()
+    descendants = _posix_descendants(matched)  # before the kill: the root's death reparents them
     killed: list[int] = []
     failed: list[int] = []
     for pid in matched:
@@ -767,6 +1000,15 @@ def _reap_orphaned_desktop_local_serves(
             killed.append(pid)
         except OSError:
             failed.append(pid)
+    # A SIGKILLed backend never ran PTY_REGISTRY.close_all(): its hosted ui-tui / MCP trees would
+    # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
+    # grace, and these trees already lost their Electron and their backend.
+    # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.
+    from gateway.status import get_process_start_time
+    for pid, (root, start) in descendants.items():
+        if root not in failed and start is not None and get_process_start_time(pid) == start:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal_kill)
     with contextlib.suppress(Exception):
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}

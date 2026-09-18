@@ -174,9 +174,16 @@ class TestGenerate:
 
     def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
         # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+        # codex_backend monkeypatches httpx.Client; build the fetch client from
+        # the unpatched class so the ref-image download gets the PNG responder.
+        real_client = httpx._client.Client
         monkeypatch.setattr(
-            httpx, "get",
-            lambda url, **kw: httpx.Response(200, content=_png_bytes(), request=httpx.Request("GET", url)))
+            "tools.url_safety.create_ssrf_safe_client",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=_png_bytes(), request=request)),
+                **kw))
 
         result = provider.generate("edit", image_url="https://example.com/ref.png")
 

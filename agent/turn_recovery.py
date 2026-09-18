@@ -41,13 +41,16 @@ logger = logging.getLogger("agent.conversation_loop")
 def _vlines(agent: Any, *lines: str) -> None:
     """Force-``_vprint`` each line prefixed with ``agent.log_prefix``."""
     for line in lines:
-        agent._vprint(f"{agent.log_prefix}{line}", force=True)
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
 
 def _plines(agent: Any, *lines: str) -> None:
     """``print`` each line prefixed with ``agent.log_prefix``."""
-    for line in lines:
-        print(f"{agent.log_prefix}{line}")
+    from gateway.warning_notifications import render_notification
+    render_notification(
+        lambda: [print(f"{agent.log_prefix}{line}") for line in lines],
+        platform=getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+        user_config=getattr(agent, "_notification_config", None))
 
 
 def _blines(agent: Any, *lines: str) -> None:
@@ -318,7 +321,8 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
         f"     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens",
         f"     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values",
         "     • For API keys: verify at https://platform.claude.com/settings/keys",
-        "     • For Claude Code: run 'claude /login' to refresh, then retry",
+        "     • Hermes login (OAuth): run 'hermes auth add anthropic' to sign in again, then retry",
+        "     • Inspect what Hermes holds: hermes auth list anthropic",
         "     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"",
         "     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"",
     )
@@ -592,11 +596,13 @@ def recover_after_classification(
             "messages with image parts found; surfacing original error."
         )
 
-    # Reasoning-mandatory route (Nous Portal / OpenRouter, e.g. GLM-5.3) 400s on
-    # ``reasoning: {enabled: false}``. The catalog guard in the provider profile normally swallows
-    # the disable, but a process that warmed its caps cache before the route flipped keeps sending
-    # it. One-shot: never send a disable again this session (the wire builder omits it → upstream
-    # default thinking), queue a catalog refresh so the guard is right next time, retry.
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (Nous Portal / OpenRouter,
+    # e.g. GLM-5.3) 400s on ``reasoning: {enabled: false}``; a chat-only OpenAI-compatible relay
+    # 400s on the ``reasoning_effort: none`` the title/continuation disable projects (#114460).
+    # The catalog guard in the provider profile normally swallows the first, but a process that
+    # warmed its caps cache before the route flipped keeps sending it. One-shot: never send a
+    # disable again this session (the wire builder omits it → route default), queue a catalog
+    # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
         and not _retry.reasoning_mandatory_retry_attempted
@@ -608,8 +614,8 @@ def recover_after_classification(
             refresh_reasoning_caps_async(agent.provider)
         except Exception:
             pass
-        _vlines(agent, f"⚠️  {agent.model} requires reasoning — thinking stays on for this session, retrying...")
-        logger.warning("%sReasoning-mandatory recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
+        _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
+        logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 
     # Provider rejected the image bytes; shrinking can't help, so strip image parts.
@@ -673,12 +679,13 @@ def _print_nonretryable_auth_guidance(
         return
     if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
         if provider == "openai-codex":
+            from agent.turn_failure_copy import oauth_relogin_command
+
             _vlines(
                 agent,
                 "   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been",
-                "      refreshed by another client (Codex CLI, VS Code). To fix:",
-                "      1. Run `codex` in your terminal to generate fresh tokens.",
-                "      2. Then run `hermes auth` to re-authenticate.",
+                "      refreshed by another client (Codex CLI, VS Code) or another Hermes profile.",
+                f"      Sign this profile in again: `{oauth_relogin_command(provider)}`",
             )
         elif provider == "xai-oauth":
             _vlines(
@@ -817,7 +824,7 @@ def nonretryable_client_error_result(
     _nonretryable_summary = agent._summarize_api_error(api_error)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
-    agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
+    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
     # The endpoint/status trace is developer detail: verbose only (the log has it always).
     if getattr(agent, "verbose_logging", False):
         _vlines(
@@ -939,12 +946,12 @@ def max_retries_exhausted_result(
     if _is_billing:
         if classified.billing_unverified:
             # Ambiguous body — hedge the terminal line.
-            agent._emit_status(
+            agent._emit_diagnostic_status(
                 "❌ Provider reported usage/credit exhaustion "
                 f"(unverified — may be a content-filter rejection) — {_final_summary}"
             )
         else:
-            agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
@@ -952,9 +959,9 @@ def max_retries_exhausted_result(
         _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
         _print_billing_or_entitlement_guidance(agent, **_billing_kw)
     elif is_rate_limited:
-        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+        agent._emit_diagnostic_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
     else:
-        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+        agent._emit_diagnostic_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -1108,7 +1115,9 @@ def abort_turn_on_interrupt(
     _vlines(agent, f"⚡ {abort_message}")
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)
-    agent.clear_interrupt()
+    # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
+    # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
+    agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
         "completed": False, "interrupted": True,
@@ -1200,9 +1209,9 @@ def compute_error_backoff(
         _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
         _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
         if _backoff_policy == "zai_coding_overload_long":
-            agent._emit_status(_rate_limit_status)
+            agent._emit_diagnostic_status(_rate_limit_status)
         else:
-            agent._buffer_status(_rate_limit_status)
+            agent._buffer_diagnostic_status(_rate_limit_status)
     else:
         _retry_status = (
             f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
@@ -1211,15 +1220,15 @@ def compute_error_backoff(
             # A 5xx Retry-After can now reach the 600s cap; buffering that wait
             # would leave the user silent for minutes, so surface long provider
             # cooldowns immediately (mirrors the zai_coding_overload_long path).
-            agent._emit_status(_retry_status)
+            agent._emit_diagnostic_status(_retry_status)
         else:
-            agent._buffer_status(_retry_status)
+            agent._buffer_diagnostic_status(_retry_status)
     # The buffered line only replays if every retry fails; the live status
     # line is the one thing the user sees meanwhile. Name the wait there so a
     # 60s backoff after a 5xx is not an anonymous spinner — this is transient
     # (rewritten by the next frame, cleared on recovery), so it does not add
     # the transcript chatter the buffer exists to avoid.
-    agent._emit_wait_notice(
+    agent._emit_diagnostic_wait(
         f"⏳ waiting on provider — retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
@@ -1546,7 +1555,7 @@ def route_classified_error(
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:
-                agent._buffer_status(
+                agent._buffer_diagnostic_status(
                     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
                         new_ctx=_LONG_CONTEXT_TIER_CAP, old_ctx=old_ctx
                     )
@@ -1593,7 +1602,7 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
+            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             if agent._try_activate_fallback(reason=classified.reason):
                 return _fallback_break()
 
@@ -1605,7 +1614,7 @@ def route_classified_error(
         and agent._fallback_index < len(agent._fallback_chain)
     ):
         _retry.auth_failover_attempted = True
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             "🔐 Authentication failed and could not be refreshed — "
             "switching to fallback provider..."
         )

@@ -461,6 +461,7 @@ class GatewayGoalsMixin:
         profile's store is scanned under its own runtime scope (same shape as ``_handoff_watcher``),
         and each hit is fired against that profile's adapters."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes
+        from gateway.run_idle_gates import profile_has_active_loop
         await asyncio.sleep(5)  # let platforms finish connecting
         warned_no_route: set = set()
 
@@ -483,6 +484,11 @@ class GatewayGoalsMixin:
         while self._running:
             try:
                 for profile_name, profile_home in _handoff_watch_scopes(self):
+                    # Idle gate (run_idle_gates): skip the scope entry when the profile's store holds
+                    # no active loop. The root scan (None) is unscoped and stays cheap.
+                    if profile_home is not None and not await self._run_in_executor_with_context(
+                            profile_has_active_loop, profile_home):
+                        continue
                     async with _scope(profile_home):
                         await _scan_one_store(profile_name)
             except Exception as exc:

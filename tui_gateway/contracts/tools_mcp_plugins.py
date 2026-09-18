@@ -204,7 +204,9 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    pass
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+
+    session_id: str | None = None
 
 
 class SkillCommandRef(Result):

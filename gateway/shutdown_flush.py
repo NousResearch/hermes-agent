@@ -132,11 +132,13 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
         return None
 
 
-def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
+def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = False) -> tuple[int, int]:
     """Replay cap-dropped transcript messages spooled for *session_id*; return ``(replayed,
     remaining)``. ``replay(message_dict)`` runs per message in drop order; a spool file is deleted
     only after its replay succeeds. The first failure stops the drain (the DB is likely still
-    unhealthy) and keeps the rest for retry.
+    unhealthy) and keeps the rest for retry. With ``db_known_failing`` (the caller's last write
+    already failed and is being logged/escalated) a replay failure is expected and logs at DEBUG,
+    so a stalled session does not add one WARNING per append on top of its ERROR (#114266).
     """
     try:
         candidates = list(_get_flush_dir().glob("pending-*.json"))
@@ -149,7 +151,10 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if (payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
+        # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
+        # like unparseable JSON instead of letting ``.get`` abort the whole drain.
+        if (not isinstance(payload, dict)
+                or payload.get("reason") != TRANSCRIPT_CAP_DROP_REASON
                 or payload.get("session_key") != session_id):
             continue
         message = (payload.get("data") or {}).get("message")
@@ -163,8 +168,9 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
         try:
             replay(message)
         except Exception as exc:
-            logger.warning("Replay of spooled transcript message %s for %s failed; "
-                           "keeping spool file for retry: %s", path, session_id, exc)
+            (logger.debug if db_known_failing else logger.warning)(
+                "Replay of spooled transcript message %s for %s failed; "
+                "keeping spool file for retry: %s", path, session_id, exc)
             remaining = len(ordered) - idx
             break
         path.unlink(missing_ok=True)
@@ -200,11 +206,15 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
-def recover_pending_to_db(session_db=None) -> int:
+def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
-    Returns the number of messages recovered.
+    ``session_resolver`` (optional ``(session_key, not_after=ts) -> (session_id, db) | None``, e.g.
+    ``SessionStore.resolve_session_id_for_key``) is required for real flush files: adapter
+    ``MessageEvent`` objects carry no ``session_id``, so without it every recovery lands in the skip
+    branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
+    gateways); ``None`` falls back to ``session_db``. Returns the number of messages recovered.
     """
     flush_files = sorted(_get_flush_dir().glob("*.json"))
     if not flush_files:
@@ -216,13 +226,20 @@ def recover_pending_to_db(session_db=None) -> int:
     recovered = 0
     try:
         for path in flush_files:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            # Agent-history snapshots are for manual operator recovery, not automatic DB insertion.
-            if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
-                continue
-            if _recover_one_payload(session_db, path, payload):
-                recovered += 1
-                path.unlink(missing_ok=True)
+            # One unparseable payload or rejected append must only skip THIS file: the file is
+            # never unlinked, so aborting the pass would re-poison every later boot.
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                # Agent-history snapshots are for manual operator recovery, not automatic DB
+                # insertion.
+                if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
+                    continue
+                if _recover_one_payload(session_db, path, payload,
+                                        session_resolver=session_resolver):
+                    recovered += 1
+                    path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Failed to recover pending message from %s: %s", path, exc)
     finally:
         if own_db:  # shutdown cancellation/interrupt must not strand an owned DB
             with contextlib.suppress(Exception):
@@ -233,7 +250,8 @@ def recover_pending_to_db(session_db=None) -> int:
     return recovered
 
 
-def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> bool:
+def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
+                         session_resolver=None) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
     # (#78182). This handles spool files that were never drained before a restart.
@@ -256,15 +274,26 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> boo
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which only the serialised data can supply at this stage.
-    session_id = data.get("session_id", "")
+    # needs the real session_id, which real payloads lack — the resolver supplies it together with
+    # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
+    # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the
+    # ambient root store (a None db from the resolver is not a fallback signal — it is "preserve").
+    session_id, target_db = data.get("session_id", ""), session_db
+    if not session_id and session_resolver is not None:
+        try:
+            resolved = session_resolver(session_key, not_after=payload.get("ts"))
+        except Exception as exc:
+            logger.debug("Session key->id resolution failed for %s: %s", session_key, exc)
+            resolved = None
+        if resolved and resolved[1] is not None:
+            session_id, target_db = resolved
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
-                       "session_key-to-id resolution is not available at this recovery stage. "
+                       "session_key-to-id resolution failed. "
                        "The message text is preserved in %s", session_key, path)
         return False
-    session_db.append_message(session_id=session_id, role="user", content=text,
-                              timestamp=payload.get("ts", int(time.time())))
+    target_db.append_message(session_id=session_id, role="user", content=text,
+                             timestamp=payload.get("ts", int(time.time())))
     return True
 
 

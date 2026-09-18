@@ -93,6 +93,20 @@ def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
     return [(i, w) for i, label in enumerate(items) for w in wrap(label, width, subsequent_indent=indent)]
 
 
+def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
+    """Wrap ``label``, then prefix the rows with ``first_prefix`` / ``indent``.
+
+    The prefix is applied *after* wrapping on purpose. Folding it into the
+    string handed to the wrapper charges those columns against the label's own
+    width budget — so a selected row wraps one line early and strands the ``❯``
+    cursor on a row of its own — and whitespace-trimming wrappers drop the
+    leading indent entirely, leaving long unselected labels flush against the
+    panel border, out of alignment with every other row.
+    """
+    rows = wrap(label, width)
+    return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
+
+
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
@@ -588,7 +602,12 @@ class CLITuiMixin:
         """
         from cli import HermesCLI, _panel_box_width
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
-        inner_text_width = max(8, box_width - 6)
+        # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
+        # body width. Keep the wrap budget in sync with it and reserve the
+        # leading cell for the cursor/indent applied below, rather than the old
+        # blanket ``- 6`` which wrapped long labels two columns early.
+        inner_text_width = max(8, box_width - 2)
+        label_width = max(8, inner_text_width - max(2, len(indent)))
         selected = state.get("selected", 0)
         try:
             from prompt_toolkit.application import get_app
@@ -597,13 +616,17 @@ class CLITuiMixin:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
             selected, state.get("_scroll_offset", 0), len(labels), term_rows)
-        import textwrap
-        wrap = lambda text, width, **kw: textwrap.wrap(text, width=width, break_long_words=True,
-                                                      break_on_hyphens=False, **kw) or ['']
-        hint_lines = wrap(hint, inner_text_width)
-        wrapped_labels = [wrap(('❯ ' if i == selected else '  ') + label,
-                                           inner_text_width, subsequent_indent=indent)
-                          for i, label in enumerate(labels)]
+        from cli import _wrap_panel_text
+        hint_lines = _wrap_panel_text(hint, inner_text_width) or ['']
+        # Same prefix-after-wrap rule the render loop uses, so the scroll budget
+        # counts the physical rows that actually render.
+        wrapped_labels = [
+            _prefix_wrapped_rows(
+                _wrap_panel_text, label, label_width,
+                '❯ ' if i == selected else '  ', indent,
+            )
+            for i, label in enumerate(labels)
+        ]
         budget = max(1, term_rows - _PANEL_RESERVED_BELOW - 5 - len(hint_lines))
         # Count physical rows, not items: metadata labels wrap on narrow terminals.
         while scroll_offset < selected and sum(len(lines) for lines in wrapped_labels[scroll_offset:selected + 1]) > budget:
@@ -624,7 +647,13 @@ class CLITuiMixin:
         panel.blank()
         for idx in range(scroll_offset, end):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            for wrapped in wrapped_labels[idx]:
+            # The cursor cell is always two columns wide, so unselected rows get two spaces
+            # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
+            # the selected label starts two columns left of its neighbours.
+            lead = '❯ ' if idx == selected else '  '
+            for wrapped in _prefix_wrapped_rows(
+                _wrap_panel_text, labels[idx], label_width, lead, indent
+            ):
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()

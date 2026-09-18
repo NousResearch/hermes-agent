@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
+
+vi.mock('@/lib/tour', () => ({
+  runTour: vi.fn(async () => ({ success: true }))
+}))
 
 import { handleServerRequest } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
@@ -42,6 +47,10 @@ describe('connection request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
   it('leaves a scoped action request unanswered in a window showing another session', () => {
     const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
 
@@ -60,10 +69,23 @@ describe('preview action request routing', () => {
       })
     })
   })
+
+  it('answers when the request session is on screen as a tile even if it is not the primary session', async () => {
+    $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' }])
+
+    const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
+
+    expect(handled).toBe(true)
+    expect(fail).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(respond).toHaveBeenCalled()
+    })
+  })
 })
 
 describe('tour request routing', () => {
   afterEach(() => {
+    $sessionTiles.set([])
     $toursEnabled.set(true)
   })
 
@@ -73,6 +95,18 @@ describe('tour request routing', () => {
 
     expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
+  })
+
+  it('answers when the request session is on screen as a tile even if it is not the primary session', async () => {
+    $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' }])
+
+    const { handled, respond, fail } = deliver('tour', { action: 'discover', session_id: 'session-a' }, 'session-b')
+
+    expect(handled).toBe(true)
+    expect(fail).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(respond).toHaveBeenCalled()
+    })
   })
 
   it('fails fast for an unscoped request with no session in view', () => {

@@ -17,6 +17,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $activeSessionId } from '@/store/session'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -39,6 +41,20 @@ const loadPreviewEngine = () => {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+
+/** Same on-screen rule as preview.open/close: primary, focused runtime, or a
+ *  visible tile. JSON-RPC `preview.act` used to require `sessionId ===
+ *  activeSessionId` only, so a tile/focused chat that could open+read the
+ *  pane still dropped drive_preview until the 45s bridge timeout. Keep this
+ *  local — do not extract a shared module that collides with the event-path
+ *  visibility helper. */
+const sessionIsOnScreen = (sessionId: string): boolean =>
+  sessionId === $focusedRuntimeId.get() ||
+  sessionId === $activeSessionId.get() ||
+  $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+
+const sessionCanDriveSurface = (sessionId: string, isActiveSession: boolean): boolean =>
+  isActiveSession || (Boolean(sessionId) && sessionIsOnScreen(sessionId))
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
 const answerValue = (request: ScopedServerRequest, result: unknown) =>
@@ -283,18 +299,22 @@ const previewRead: Handler = ({ request }) => {
 }
 
 const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
-  // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn must never reach into the page the user is
-  // working in (desktop AGENTS.md: offer, don't hijack). Every mounted window can
-  // observe the same request; a scoped mismatch belongs to another window, so
-  // answering here would race the owner — stay silent.
-  if (sessionId && !isActiveSession) {
+  // drive_preview tool: click/type/scroll/press inside the guest page. On-screen
+  // sessions only: a hidden background turn must never reach into the page the
+  // user is working in (desktop AGENTS.md: offer, don't hijack). Tiles and the
+  // focused runtime share this window's handler, so gating on primary
+  // `$activeSessionId` alone left visible chats unanswered until the RPC
+  // deadline. Every mounted WINDOW can still observe the same request; a
+  // session that is not on this screen belongs to another window — stay silent.
+  const canDrive = sessionCanDriveSurface(sessionId, isActiveSession)
+
+  if (sessionId && !canDrive) {
     return
   }
 
   const p = request.params
 
-  if (!isActiveSession) {
+  if (!canDrive) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false
@@ -337,8 +357,10 @@ const windowRead: Handler = ({ request }) => {
 
 const tour: Handler = ({ isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
-  // page. Active session only, same window-ownership rule as preview.act.
-  if (sessionId && !isActiveSession) {
+  // page. Same on-screen window-ownership rule as preview.act.
+  const canDrive = sessionCanDriveSurface(sessionId, isActiveSession)
+
+  if (sessionId && !canDrive) {
     return
   }
 
@@ -352,7 +374,7 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
     return
   }
 
-  if (!isActiveSession) {
+  if (!canDrive) {
     answerValue(request, { error: 'Tours only run in the session the user is looking at.', success: false })
 
     return

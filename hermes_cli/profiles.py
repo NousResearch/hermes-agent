@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1788,7 +1789,13 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
-    top_dirs = archive_root_dirs(archive)
+    if not archive.is_file():
+        raise ValueError(f"Archive is not a file: {archive}")
+    try:
+        top_dirs = archive_root_dirs(archive)
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        # A non-gzip / truncated file surfaces as ReadError, BadGzipFile (OSError) or EOFError.
+        raise ValueError(f"Not a readable .tar.gz profile archive: {archive} ({exc})") from exc
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:

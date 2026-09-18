@@ -1119,6 +1119,18 @@ class TestExportImport:
     # ---------------------------------------------------------------
 
 
+    def test_import_rejects_directory_path(self, profile_env, tmp_path):
+        """A directory handed to import is a clean ValueError, not IsADirectoryError (HTTP 500)."""
+        with pytest.raises(ValueError, match="not a file"):
+            import_profile(str(tmp_path))
+
+    def test_import_rejects_non_archive_file(self, profile_env, tmp_path):
+        """A file that isn't a .tar.gz is a clean ValueError, not a raw tarfile/gzip traceback."""
+        bogus = tmp_path / "notes.tar.gz"
+        bogus.write_text("definitely not gzip")
+        with pytest.raises(ValueError, match="Not a readable"):
+            import_profile(str(bogus))
+
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
         # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the

@@ -5634,7 +5634,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-    def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
+    def _claim_active_session(
+        self,
+        surface: str = "cli",
+        *,
+        stderr: bool = False,
+        allow_observer: bool = True,
+    ) -> bool:
         """Claim a global active-session slot for this CLI process."""
         if self._active_session_lease is not None:
             return True
@@ -5645,7 +5651,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 session_id=self.session_id,
                 surface=surface,
                 config=self.config,
+                mode="writer",
             )
+            # If session is actively owned by another writer, fall back to observer mode
+            # for interactive resumed sessions (not single-query runs).
+            if (
+                lease is None
+                and message
+                and "already owned by another active writer" in message
+                and allow_observer
+                and getattr(self, "_resumed", False)
+                and not getattr(self, "_single_query_mode", False)
+            ):
+                obs_lease, obs_message = try_acquire_active_session(
+                    session_id=self.session_id,
+                    surface=surface,
+                    config=self.config,
+                    mode="observer",
+                )
+                if obs_lease is not None:
+                    self._active_session_lease = obs_lease
+                    self.is_read_only = True
+                    self._read_only = True
+                    # Re-bind session_db in read_only mode if active
+                    if getattr(self, "_session_db", None) is not None:
+                        try:
+                            self._session_db.close()
+                        except Exception:
+                            pass
+                        from hermes_state import SessionDB
+
+                        self._session_db = SessionDB(read_only=True)
+                    notice = (
+                        f"[bold yellow]Session '{self.session_id}' is active in another process. "
+                        f"Opened in read-only observer mode.[/]"
+                    )
+                    self._console_print(notice)
+                    try:
+                        atexit.register(self._release_active_session)
+                    except Exception:
+                        pass
+                    return True
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
@@ -16301,6 +16347,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
+
+        if getattr(self, "is_read_only", False) or getattr(self, "_read_only", False):
+            self._console_print("[bold red]Session is in read-only observer mode; cannot send messages.[/]")
+            return None
 
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip

@@ -15,8 +15,10 @@ _registry = HandlerRegistry()
 
 # ── Live-session slash output ────────────────────────────────────────
 
-# Answered from the live session ONLY when the agent lives on a compute host.
-_ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
+# tools/help are answered from the live session ONLY when the agent lives on a compute host. /context is
+# always live: the slash worker's CLI resumes the session WITHOUT building an agent (lazy init on first
+# chat message), so routing it there could only fork a full MCP-fleet worker to print "no active agent".
+_ISOLATED_SESSION_READ_COMMANDS = frozenset({"tools", "help"})
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
@@ -117,7 +119,37 @@ def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
     return f"Current system prompt:\n{prompt}"
 
 
+def _format_agent_context_breakdown(agent, session: dict, arg: str) -> str:
+    """Full /context view over the in-process agent (grid + category table; ``all`` adds per-skill /
+    per-toolset costs). Read-only — same chars/4 engine as the CLI and desktop popover. Returns "" when
+    it cannot be computed so the caller falls back to the DB/usage summary."""
+    from agent.context_breakdown import (
+        compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    # Bind the session context: on the RPC thread the session cwd is unset, so the prompt build inside
+    # would key its workspace pin on the backend's cwd (session.context_breakdown does the same).
+    tokens = _set_session_context(session.get("session_key") or "")
+    try:
+        payload = compute_session_context_breakdown(agent, history)
+        details = None
+        if (arg or "").strip().lower() in {"all", "full", "details"}:
+            with contextlib.suppress(Exception):
+                details = compute_context_details(agent)
+    except Exception:
+        return ""
+    finally:
+        _clear_session_context(tokens)
+    model = payload.get("model") or _metadata_mirror(session).get("model") or "(unknown)"
+    lines = ["Context Usage", "────────────────────────────────────────", f"Model: {model}"]
+    lines.extend(render_context_breakdown_lines(payload, details=details, grid=True))
+    return "\n".join(lines)
+
+
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
+    if (agent := session.get("agent")) is not None and not _session_uses_compute_host(session):
+        if breakdown := _format_agent_context_breakdown(agent, session, arg):
+            return breakdown
     from collections import Counter
     try:
         messages = _history_to_messages(_live_session_messages(session) or [])

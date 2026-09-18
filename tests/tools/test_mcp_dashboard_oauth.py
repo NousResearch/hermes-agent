@@ -124,11 +124,53 @@ def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     storage = HermesTokenStorage("reports")
     storage._tokens_path().parent.mkdir(parents=True)
-    storage._tokens_path().write_text("OLD")
+    storage._tokens_path().write_text("OLD", encoding="utf-8")
     backup = storage.snapshot()
     storage.remove()
 
-    storage._tokens_path().write_text("FRESH")
+    storage._tokens_path().write_text("FRESH", encoding="utf-8")
     storage.restore(backup, only_if_absent=True)
 
-    assert storage._tokens_path().read_text() == "FRESH"
+    assert storage._tokens_path().read_text(encoding="utf-8") == "FRESH"
+
+
+def test_preregistered_pinned_redirect_port_keeps_loopback_listener_under_dashboard_flow(tmp_path, monkeypatch):
+    """A no-DCR entry (``client_id`` + ``redirect_port``, e.g. the shipped Asana manifest) registered
+    ``http://localhost:<port>/callback`` with the vendor, which matches redirect URLs exactly. The
+    dashboard/Desktop Authorize button must therefore keep that loopback URI and listener — the
+    dashboard flow only publishes the authorization URL — instead of forcing its own callback URL."""
+    import socket
+    import urllib.request
+
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+        _make_callback_waiter,
+        _make_redirect_handler,
+        force_interactive_oauth,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    flow = DashboardOAuthFlow(flow_id="flow-5", server_name="asana", profile=None, hermes_home=str(tmp_path),
+                              redirect_uri="https://agent.example/mcp/oauth/callback/flow-5")
+    cfg = {"client_id": "pre-registered", "client_secret": "s", "redirect_host": "localhost", "redirect_port": port}
+    with dashboard_oauth_flow(flow), force_interactive_oauth():
+        assert _configure_callback_port(cfg, HermesTokenStorage("asana")) == port
+        assert str(_build_client_metadata(cfg).redirect_uris[0]) == f"http://localhost:{port}/callback"
+        asyncio.run(_make_redirect_handler(port)("https://idp.example/authorize?state=state-5"))
+        assert flow.authorization_url == "https://idp.example/authorize?state=state-5"  # dashboard shows the URL
+
+        async def _authorize():
+            waiter = asyncio.ensure_future(_make_callback_waiter(port, timeout=10)())
+            await asyncio.sleep(0.3)  # listener bound
+            await asyncio.to_thread(
+                lambda: urllib.request.urlopen(f"http://127.0.0.1:{port}/callback?code=code-5&state=state-5", timeout=5).read())
+            return await waiter
+
+        result = asyncio.run(_authorize())
+    assert (result.code, result.state) == ("code-5", "state-5")

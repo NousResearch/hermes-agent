@@ -845,8 +845,9 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     """
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
-        if dashboard_flow is not None:
-            # Dashboard flow speaks the legacy tuple; normalize to one shape.
+        if dashboard_flow is not None and not port:
+            # Dashboard flow speaks the legacy tuple; normalize to one shape. A pinned loopback port
+            # (pre-registered client) listens locally instead; the dashboard only shows the URL.
             return _authorization_code_result(*await dashboard_flow.wait_for_callback())
         # The SDK entered the authorization-code flow, so any cached token is unusable. Reject BEFORE
         # binding: binding would block for the full timeout and collide with the TIME_WAIT port on retry.
@@ -864,8 +865,9 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         handler_cls, result = _make_callback_handler()
         server = _start_callback_server(port, handler_cls)
         threading.Thread(target=server.handle_request, daemon=True).start()
-        # Paste fallback races the HTTP listener; whichever fills result first wins.
-        if _is_interactive():
+        # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
+        # under a dashboard flow — the gateway's stdin is not the user's).
+        if _is_interactive() and dashboard_flow is None:
             print(
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
@@ -1005,12 +1007,16 @@ def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = N
     """
     global _oauth_port
     dashboard_flow = get_dashboard_oauth_flow()
-    if dashboard_flow is not None:
+    # A pre-registered client with a pinned ``redirect_port`` (no DCR; the vendor matches the registered
+    # loopback URI exactly) keeps its loopback listener even under the dashboard/Desktop flow: the
+    # dashboard's own callback URL was never registered with the vendor, so that flow could not complete.
+    pinned_loopback = bool(cfg.get("client_id") and cfg.get("redirect_port"))
+    if dashboard_flow is not None and not pinned_loopback:
         cfg["_resolved_port"] = 0
         cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
         return 0
     cached_uri, cached_port = _cached_redirect(storage)
-    if cached_uri and not cfg.get("redirect_uri"):
+    if cached_uri and not cfg.get("redirect_uri") and not pinned_loopback:
         cfg["redirect_uri"] = cached_uri
         cfg["_resolved_port"] = 0
         return 0

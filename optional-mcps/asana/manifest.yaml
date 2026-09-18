@@ -52,6 +52,8 @@ post_install: |
   Its Client ID / Client secret are the ASANA_CLIENT_ID / ASANA_CLIENT_SECRET
   values prompted above (stored in the profile's .env, never in config.yaml).
 
-  Then run `hermes mcp login asana`, approve access in the browser, and
+  Then run `hermes mcp login asana` (or click Authorize in the dashboard /
+  Desktop: the callback still arrives at http://localhost:27890/callback, so
+  the browser must run on the same machine as Hermes), approve access, and
   restart (or `/reload-mcp`) the Hermes session or gateway that should
   expose the Asana tools.

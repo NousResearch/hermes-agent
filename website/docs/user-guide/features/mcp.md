@@ -203,7 +203,13 @@ mcp_servers:
 
 Read the entry's `post_install` notes for the exact app type and redirect URL
 to register, then run `hermes mcp login <name>` and restart (or
-`/reload-mcp`) the session or gateway that should expose the tools.
+`/reload-mcp`) the session or gateway that should expose the tools. The
+dashboard / Desktop **Authorize** button works too: because the client is
+pre-registered with a pinned `redirect_port`, Hermes keeps the registered
+loopback callback (`http://localhost:27890/callback`) instead of the
+dashboard's own callback URL — so the browser you approve in must run on the
+same machine as the Hermes process. For a remote host, use `hermes mcp login`
+over SSH port-forwarding.
 
 ### Updating tool selection later
 

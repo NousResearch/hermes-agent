@@ -187,15 +187,12 @@ def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
     """Publish the shutdown outcome before cooperative interruption can race teardown."""
     for run_id in run_ids:
         self._shutdown_interrupted_run_ids.add(run_id)
-        try:
-            self._set_run_status(
-                run_id,
-                "interrupted",
-                error="Gateway shutdown interrupted the run.",
-                last_event="run.interrupted",
-            )
-        except Exception:
-            logger.exception("[api_server] failed to record shutdown for run %s", run_id)
+        self._set_run_status(
+            run_id,
+            "interrupted",
+            error="Gateway shutdown interrupted the run.",
+            last_event="run.interrupted",
+        )
 
 
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):

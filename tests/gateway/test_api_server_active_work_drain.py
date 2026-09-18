@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
@@ -409,6 +410,15 @@ class TestInterruptActiveRuns:
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
         healthy.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+
+    def test_shutdown_marker_does_not_swallow_status_failures(self):
+        """``_set_run_status`` already contains the only fallible step (store persist);
+        the shutdown marker must not hide a programming error behind a second net."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        with patch.object(adapter, "_set_run_status", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                _api_runs._mark_shutdown_interrupted_runs(adapter, ["run-1"])
+        assert adapter._shutdown_interrupted_run_ids == {"run-1"}
 
 
 class TestShutdownInterruptReachesEveryApiTurn:

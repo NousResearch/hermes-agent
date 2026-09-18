@@ -196,6 +196,7 @@ class TestStartRun:
                 data = await resp.json()
                 assert data["status"] == "started"
                 assert data["run_id"].startswith("run_")
+                assert data["turn_id"].startswith("turn_")
 
                 status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
                 assert status_resp.status == 200
@@ -466,6 +467,119 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+
+    @pytest.mark.asyncio
+    async def test_completed_events_replay_with_cursor_and_turn_correlation(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "events.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "replayed"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+                create.return_value = agent
+                started = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers={"Idempotency-Key": "replay"}
+                )
+                run_id = (await started.json())["run_id"]
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+                assert status["status"] == "completed"
+                turn_id = status["turn_id"]
+                replay = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await replay.text()
+                assert replay.status == 200
+                assert f'"turn_id": "{turn_id}"' in body
+                assert "run.completed" in body
+                assert ": stream closed\n\n" in body
+
+                cursor = status["event_id"] - 1
+                after = await cli.get(f"/v1/runs/{run_id}/events?after={cursor}")
+                after_body = await after.text()
+                assert after.status == 200
+                assert after_body.count("event: run.completed") == 1
+                assert "id: " in after_body
+                assert "event: run.completed" in after_body
+
+    @pytest.mark.asyncio
+    async def test_active_reconnect_replays_gap_then_streams_to_terminal(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "active-reconnect.db")
+        app = _create_runs_app(adapter)
+        started_gate = threading.Event()
+        finish_gate = threading.Event()
+        callback_holder = {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+
+                def run_conversation(**_kwargs):
+                    started_gate.set()
+                    finish_gate.wait(timeout=3)
+                    return {"final_response": "reconnected"}
+
+                def make_agent(**kwargs):
+                    callback_holder["stream"] = kwargs["stream_delta_callback"]
+                    return agent
+
+                agent.run_conversation.side_effect = run_conversation
+                create.side_effect = make_agent
+                response = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await response.json())["run_id"]
+                assert started_gate.wait(timeout=3)
+                while "stream" not in callback_holder:
+                    await asyncio.sleep(0.01)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                first_line = await first.content.readline()
+                assert first_line.startswith(b"id: ")
+                first_cursor = int(first_line.removeprefix(b"id: ").strip())
+                await first.release()
+
+                callback_holder["stream"]("lost-event")
+                finish_gate.set()
+                reconnected = await cli.get(
+                    f"/v1/runs/{run_id}/events", headers={"Last-Event-ID": str(first_cursor)})
+                body = await reconnected.text()
+                assert reconnected.status == 200
+                assert "data: " in body
+                assert "lost-event" in body
+                assert "run.completed" in body
+                ids = [int(line.removeprefix("id: ").strip()) for line in body.splitlines() if line.startswith("id: ")]
+                assert ids == sorted(set(ids))
+
+    @pytest.mark.asyncio
+    async def test_two_active_event_subscribers_each_receive_live_terminal_event(self, adapter):
+        app = _create_runs_app(adapter)
+        started_gate = threading.Event()
+        finish_gate = threading.Event()
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+                def run_conversation(**_kwargs):
+                    started_gate.set()
+                    finish_gate.wait(timeout=3)
+                    return {"final_response": "live"}
+                agent.run_conversation.side_effect = run_conversation
+                create.return_value = agent
+                response = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await response.json())["run_id"]
+                assert started_gate.wait(timeout=3)
+
+                async def consume():
+                    return await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+                first = asyncio.create_task(consume())
+                second = asyncio.create_task(consume())
+                await asyncio.sleep(0.05)
+                finish_gate.set()
+                first_body, second_body = await asyncio.gather(first, second)
+                assert first_body.count("event: run.completed") == 1
+                assert second_body.count("event: run.completed") == 1
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -1165,7 +1279,11 @@ class TestRunIdempotency:
                     "/v1/runs", json={"input": "hello"}, headers=headers
                 )
                 assert first.status == second.status == 202
-                assert (await first.json())["run_id"] == (await second.json())["run_id"]
+                first_data = await first.json()
+                second_data = await second.json()
+                assert first_data["run_id"] == second_data["run_id"]
+                assert first_data["turn_id"].startswith("turn_")
+                assert second_data["turn_id"] == first_data["turn_id"]
                 assert second.headers["Idempotency-Replayed"] == "true"
                 await asyncio.sleep(0.1)
         assert calls == 1
@@ -1255,6 +1373,61 @@ class TestRunIdempotency:
             assert record["run_id"] == run_id
             assert record["status"]["status"] == terminal
             restarted.close()
+
+    def test_non_idempotent_run_records_are_replayable(self, tmp_path):
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        store = RunIdempotencyStore(str(tmp_path / "events.db"))
+        status = {"run_id": "run-no-key", "status": "queued", "turn_id": "turn-no-key"}
+        store.register_run("scope", "run-no-key", status)
+        store.append_event("run-no-key", {"event": "run.completed", "run_id": "run-no-key",
+                                           "turn_id": "turn-no-key"}, dedupe_key="completed")
+        assert store.owns_run("scope", "run-no-key")
+        assert store.status_for_run("scope", "run-no-key")["status"]["turn_id"] == "turn-no-key"
+        assert store.events_after("run-no-key")[-1]["event"] == "run.completed"
+        store.close()
+
+    def test_event_journal_is_ordered_bounded_and_cursor_deduplicated(self, tmp_path):
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        store = RunIdempotencyStore(str(tmp_path / "events.db"))
+        store.EVENT_JOURNAL_LIMIT = 2
+        first = store.append_event("run-events", {"event": "run.started"}, dedupe_key="started")
+        duplicate = store.append_event("run-events", {"event": "run.started"}, dedupe_key="started")
+        store.append_event("run-events", {"event": "message.delta", "delta": "a"}, dedupe_key="delta-a")
+        third = store.append_event("run-events", {"event": "run.completed"}, dedupe_key="completed")
+
+        assert duplicate["event_id"] == first["event_id"]
+        assert [event["event"] for event in store.events_after("run-events", 0)] == [
+            "message.delta", "run.completed"
+        ]
+        assert [event["event_id"] for event in store.events_after("run-events", first["event_id"])] == [
+            first["event_id"] + 1, third["event_id"]
+        ]
+        store.close()
+
+    def test_event_journal_is_pruned_with_expired_terminal_run(self, tmp_path):
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        store = RunIdempotencyStore(str(tmp_path / "retention.db"))
+        with patch("gateway.platforms.api_server_run_idempotency.time.time", return_value=100):
+            store.reserve("scope", "key", "fp", "run-expired", {"status": "completed"})
+            store.append_event("run-expired", {"event": "run.completed"}, dedupe_key="completed")
+        with patch("gateway.platforms.api_server_run_idempotency.time.time", return_value=100 + store.RETENTION_SECONDS + 1):
+            store.lookup("scope", "other", "other-fp")
+        assert store.events_after("run-expired") == []
+        store.close()
+
+    def test_event_journal_survives_store_restart(self, tmp_path):
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        path = tmp_path / "events.db"
+        first = RunIdempotencyStore(str(path))
+        event = first.append_event("run-restart", {"event": "run.completed", "turn_id": "turn-1"})
+        first.close()
+        restarted = RunIdempotencyStore(str(path))
+        assert restarted.events_after("run-restart", 0) == [event]
+        restarted.close()
 
     def test_tenant_isolation_and_retention(self, tmp_path):
         from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore

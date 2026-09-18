@@ -82,6 +82,26 @@ def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
     return {"event": name, "run_id": run_id, "timestamp": time.time(), **fields}
 
 
+def _publish_run_event(self, run_id: str, event: Dict[str, Any], *, dedupe_key: str = None,
+                       loop: "asyncio.AbstractEventLoop" = None) -> Dict[str, Any]:
+    """Persist and fan out a redacted public event to every live subscriber."""
+    status = self._run_statuses.get(run_id, {})
+    if status.get("turn_id") is not None:
+        event.setdefault("turn_id", status["turn_id"])
+    event = self._run_idempotency_store.append_event(run_id, event, dedupe_key=dedupe_key)
+    queues = list(self._run_stream_subscriber_queues.get(run_id, ()))
+    if not queues:
+        q = self._run_streams.get(run_id)
+        queues = [q] if q is not None else []
+    for q in queues:
+        with suppress(Exception):
+            if loop is not None:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+            else:
+                q.put_nowait(event)
+    return event
+
+
 def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Map a ``run_conversation`` result to its terminal run status and the wire fields every
     terminal event/status carries. An interrupted turn is ``cancelled``; a turn that ended
@@ -127,6 +147,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
+    self._run_stream_subscriber_queues: dict[str, set[asyncio.Queue]] = {}
     self._stopping_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
@@ -189,10 +210,7 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     def _push(event: Dict[str, Any]) -> None:
         self._set_run_status(
             run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            with suppress(Exception):
-                loop.call_soon_threadsafe(q.put_nowait, event)
+        _publish_run_event(self, run_id, event, loop=loop)
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
@@ -327,13 +345,15 @@ def _resolve_conversation_history(
     return conversation_history, instructions, stored_session_id, None
 
 
-def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> "web.Response":
+def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool,
+                       turn_id: Optional[str] = None) -> "web.Response":
     """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     if gateway_session_key:
         headers["X-Hermes-Session-Key"] = gateway_session_key
     return web.json_response(
-        {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
+        {"run_id": run_id, "status": status, "replayed": replayed, "turn_id": turn_id},
+        status=202, headers=headers)
 
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
@@ -344,7 +364,9 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
     status = self._durable_run_status(request, original_id) or record["status"]
-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    return _accepted_response(
+        original_id, status.get("status", "queued"), gateway_session_key, replayed=True,
+        turn_id=status.get("turn_id"))
 
 
 @dataclass(slots=True)
@@ -370,6 +392,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    turn_id: Optional[str] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -377,8 +400,12 @@ class _RunLaunch:
         return self.run_id
 
     def put_event(self, event: Optional[Dict]) -> None:
-        """Enqueue only while this run still owns live transport state."""
-        if self.owner._run_streams.get(self.run_id) is self.queue:
+        """Fan out the terminal sentinel without destructively draining a shared queue."""
+        queues = list(self.owner._run_stream_subscriber_queues.get(self.run_id, ()))
+        if queues:
+            for queue in queues:
+                queue.put_nowait(event)
+        elif self.owner._run_streams.get(self.run_id) is self.queue:
             self.queue.put_nowait(event)
 
 
@@ -513,8 +540,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     q = self._run_streams[run_id] = asyncio.Queue()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
+    turn_id = f"turn_{uuid.uuid4().hex}"
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id, turn_id=turn_id,
+        model=body.get("model", self._model_name))
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -526,6 +555,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    else:
+        self._run_idempotency_store.register_run(
+            self._run_idempotency_scope(request), run_id, initial_status,
+            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+            retention_until=_room_retention_until(request))
+        self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -536,14 +571,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, turn_id=turn_id)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+    return _accepted_response(run_id, "started", gateway_session_key, replayed=False, turn_id=turn_id)
 
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
@@ -632,8 +667,7 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
             allow_session=event.get("allow_session") is not False,
             allow_permanent=event.get("allow_permanent") is not False)))
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-        with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+        _publish_run_event(self, run_id, event, dedupe_key=f"approval.request:{event.get('request_id', '')}", loop=loop)
 
     return _approval_notify
 
@@ -647,17 +681,17 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if delta is None or run_id not in self._run_streams:
             return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            _publish_run_event(self, run_id, _run_event(run_id, "message.delta", delta=delta), loop=loop)
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
-        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
-        with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+        event = _publish_run_event(self, run_id, _run_event(run_id, f"run.{status}", **fields, **extra), dedupe_key=f"run.{status}")
+        self._set_run_status(run_id, status, event_id=event["event_id"], **fields, last_event=f"run.{status}", **extra)
 
     try:
         self._set_run_status(run_id, "running")
+        _publish_run_event(self, run_id, _run_event(run_id, "run.started"), dedupe_key="run.started", loop=loop)
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
@@ -756,6 +790,15 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
     return err or web.json_response(status)
 
 
+def _run_sse_frame(event: Dict[str, Any]) -> bytes:
+    """Encode a journal event with the durable cursor in the SSE ``id`` field."""
+    event_name = str(event.get("event") or "message")
+    event_id = event.get("event_id")
+    prefix = f"id: {int(event_id)}\n" if event_id is not None else ""
+    return (f"{prefix}event: {event_name}\n"
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n").encode()
+
+
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":
     """GET /v1/runs/{run_id}/events — stream structured agent lifecycle events."""
     auth_err = self._check_auth(request)
@@ -774,13 +817,28 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             break
         await asyncio.sleep(0.05)
     else:
-        return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
+        durable_status = self._durable_run_status(request, run_id)
+        if durable_status is None or durable_status.get("status") not in TERMINAL_STATUSES:
+            return _run_not_found(_api_server._openai_error, run_id)
+    try:
+        cursor = int(request.query.get("after", request.headers.get("Last-Event-ID", "0")) or 0)
+    except (TypeError, ValueError):
+        return _json_error(_api_server._openai_error, "Invalid event cursor", code="invalid_cursor", status=400)
+    q = asyncio.Queue()
+    self._run_stream_subscriber_queues.setdefault(run_id, set()).add(q)
     self._run_stream_subscribers.add(run_id)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     await response.prepare(request)
     try:
+        replay = self._run_idempotency_store.events_after(run_id, cursor)
+        for event in replay:
+            await response.write(_run_sse_frame(event))
+            cursor = max(cursor, int(event.get("event_id", 0)))
+        status = self._run_statuses.get(run_id) or self._durable_run_status(request, run_id) or {}
+        if status.get("status") in TERMINAL_STATUSES:
+            await response.write(b": stream closed\n\n")
+            return response
         while True:
             try:
                 event = await asyncio.wait_for(
@@ -791,22 +849,30 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             if event is None:  # run finished
                 await response.write(b": stream closed\n\n")
                 break
-            await response.write(_api_server._sse_frame(event))
+            event_id = int(event.get("event_id", 0) or 0)
+            if event_id and event_id <= cursor:
+                continue
+            await response.write(_run_sse_frame(event))
+            cursor = max(cursor, event_id)
     except Exception as exc:
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        subscribers = self._run_stream_subscriber_queues.get(run_id)
+        if subscribers is not None:
+            subscribers.discard(q)
+            if not subscribers:
+                self._run_stream_subscriber_queues.pop(run_id, None)
+                self._run_stream_subscribers.discard(run_id)
+                status = self._run_statuses.get(run_id) or {}
+                if status.get("status") in TERMINAL_STATUSES:
+                    _drop_run_transport(self, run_id)
     return response
 
 
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
     self._set_run_status(run_id, "running", last_event=name)
-    q = self._run_streams.get(run_id)
-    if q is not None:
-        with suppress(Exception):
-            q.put_nowait(_run_event(run_id, name, **fields))
+    _publish_run_event(self, run_id, _run_event(run_id, name, **fields), dedupe_key=f"{name}:{json.dumps(fields, sort_keys=True)}")
 
 
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}

@@ -171,6 +171,25 @@ probe policy:
 Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 `model.options` when you are building a Hermes-aware model picker.
 
+### Run-event recovery and retention
+
+The run event endpoint is designed for clients that may lose a network connection while
+an agent is still working. Each event is durably journaled per run and is emitted as
+SSE `id`, `event`, and `data`; reconnect with `Last-Event-ID` (or the legacy `after`
+query parameter) to replay the bounded gap and then continue receiving live events.
+Subscribers have independent cursors, so one reconnecting dashboard cannot consume
+events from another client. This improves session recovery and makes long-running API
+jobs more reliable without changing idempotency-key admission or non-idempotent runs.
+
+The journal retains at most 256 events per run and expired terminal runs are pruned
+together with their journal rows. It is not an archival audit log: a cursor older than
+the retention window may not have every historical event. Replay remains subject to
+the existing API authentication, run ownership, redaction, and room-grant rules.
+
+Verification covers bounded ordered replay, two simultaneous subscribers, cursor-bearing
+SSE frames, restart durability, terminal retention pruning, and idempotency semantics
+in `tests/gateway/test_api_server_runs.py`.
+
 `POST /v1/runs/{id}/steer` is the HTTP equivalent of Hermes `/steer`: it does not create a new user turn or immediately rewrite the assistant output already in flight. Instead, the text is appended to the live run and becomes visible to the agent after the next tool boundary, so it can course-correct without discarding the current tool-calling loop.
 
 `/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.

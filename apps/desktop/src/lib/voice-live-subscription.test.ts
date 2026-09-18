@@ -141,6 +141,32 @@ describe('native Live explicit billing', () => {
     }
   )
 
+  it('expires subscription transcript context during silence before a delayed delegation', async () => {
+    const wire = media()
+    const onDelegation = vi.fn()
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+
+    vi.mocked(hermesApi).mockResolvedValueOnce({
+      ok: true,
+      auth: 'subscription',
+      session: { id: 'rtc_fixture' },
+      transport: { type: 'webrtc', sdp: 'v=0 answer' }
+    })
+
+    const session = new VoiceLiveSession({ onDelegation, onClosed: vi.fn(), onError: vi.fn() })
+
+    await session.start([])
+    wire.receive({ type: 'input_transcript.added', item: { text: 'An old request.' } })
+    expect(session.contextWindow().map(part => part.text)).toEqual(['An old request.'])
+    clock.mockReturnValue(1_000 + 6 * 60_000)
+    wire.receive({
+      type: 'delegation.created',
+      item: { id: 'delayed-delegation', type: 'delegation', target: 'client' }
+    })
+    expect(onDelegation).toHaveBeenCalledWith('delayed-delegation', [])
+    wire.receive({ type: 'session.closed', reason: 'closed' })
+  })
+
   it('waits for authoritative billing and never selects a fallback for subscription, invalid or unknown status', async () => {
     let resolveStatus!: (value: unknown) => void
     vi.mocked(hermesApi).mockImplementationOnce(

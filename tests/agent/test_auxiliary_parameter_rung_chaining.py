@@ -81,6 +81,23 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
     assert not _is_reasoning_field_rejection(_Bad400("reasoning models: tool_choice 'required' is unsupported"))
 
 
+def test_enum_rejection_with_field_in_structured_param_tail():
+    """commandcode.ai rejects ``reasoning_effort: "none"`` as an enum violation whose message carries
+    no "unsupported" marker at all — the field name appears only in the structured ``'param'`` tail
+    (#115277). The enum wording still fires the strip-and-retry rung, while the same wording against
+    a non-reasoning parameter does not (no reasoning field token anywhere)."""
+    assert _is_reasoning_field_rejection(_Bad400(
+        "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+        "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+        "'param': 'reasoning_effort'}}"
+    ))
+    assert not _is_reasoning_field_rejection(_Bad400(
+        "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+        "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+        "'param': 'temperature'}}"
+    ))
+
+
 def test_fallback_candidate_recovers_from_rejected_temperature():
     client = _rejecting_client("temperature")
     resp = _call_fallback_candidate_sync(

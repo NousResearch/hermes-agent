@@ -254,11 +254,18 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
-        if not session.get("running"):
+        acceptance_gate = session.get("_submit_acceptance_gate")
+        if not session.get("running") and acceptance_gate is None:
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
-        image_paths = list(session.get("attached_images", []))
-        if image_paths:
-            session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
+        if acceptance_gate is not None:
+            image_paths = []
+        else:
+            image_paths = list(session.get("attached_images", []))
+            if image_paths:
+                session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
+    if acceptance_gate is not None:
+        acceptance_gate.wait()
+        return None
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
@@ -273,7 +280,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
     with session["history_lock"]:
-        if not session.get("running"):
+        if not session.get("running") or session.get("_submit_acceptance_gate") is not None:
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None

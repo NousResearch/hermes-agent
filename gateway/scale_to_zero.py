@@ -245,6 +245,10 @@ def suspend_self(environ: Optional[dict] = None, *, socket_path: str = FLY_API_S
         return False
     request = (f"POST /v1/apps/{app}/machines/{machine_id}/suspend HTTP/1.1\r\n"
                "Host: flaps\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    if not hasattr(socket, "AF_UNIX"):
+        # Platform guard: AF_UNIX is POSIX-only (e.g. Windows). Fail-awake.
+        logger.warning("scale-to-zero: unix domain sockets unavailable on this platform")
+        return False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)

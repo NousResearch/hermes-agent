@@ -9,6 +9,7 @@ test without a live gateway.
 from __future__ import annotations
 
 import pytest
+import socket
 
 from gateway.scale_to_zero import (
     DEFAULT_IDLE_TIMEOUT_MINUTES,

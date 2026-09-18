@@ -5,6 +5,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import type { PairingResponse, PairingUser } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -29,6 +30,7 @@ function getUserLabel(user: PairingUser): string {
 }
 
 export default function PairingPage() {
+  const { t } = useI18n();
   const [pending, setPending] = useState<PairingUser[]>([]);
   const [approved, setApproved] = useState<PairingUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,9 +46,11 @@ export default function PairingPage() {
         setPending(res.pending);
         setApproved(res.approved);
       })
-      .catch(() => showToast("Failed to load pairing requests", "error"))
+      .catch(() =>
+        showToast(t.pairing.loadFailed, "error"),
+      )
       .finally(() => setLoading(false));
-  }, [showToast]);
+  }, [showToast, t.pairing.loadFailed]);
 
   useEffect(() => {
     loadPairing();
@@ -54,7 +58,7 @@ export default function PairingPage() {
 
   const handleApprove = async (user: PairingUser) => {
     if (!user.request_id) {
-      showToast("Missing pairing request", "error");
+      showToast(t.pairing.missingRequest, "error");
       return;
     }
     const key = getUserKey(user);
@@ -144,13 +148,16 @@ export default function PairingPage() {
         open={userRevoke.isOpen}
         onCancel={userRevoke.cancel}
         onConfirm={userRevoke.confirm}
-        title="Revoke access"
+        title={t.pairing.revokeAccess}
         description={
           pendingRevokeUser
-            ? `"${getUserLabel(pendingRevokeUser)}" will lose access. This cannot be undone.`
-            : "This user will lose access. This cannot be undone."
+            ? t.pairing.revokeDescription.replace(
+                "{name}",
+                getUserLabel(pendingRevokeUser),
+              )
+            : t.pairing.revokeDescriptionPlain
         }
-        confirmLabel="Revoke"
+        confirmLabel={t.pairing.revoke}
         loading={userRevoke.isDeleting}
       />
 
@@ -256,8 +263,8 @@ export default function PairingPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Revoke"
-                    aria-label="Revoke"
+                    title={t.pairing.revoke}
+                    aria-label={t.pairing.revoke}
                     className="text-destructive"
                     onClick={() => userRevoke.requestDelete(key)}
                   >

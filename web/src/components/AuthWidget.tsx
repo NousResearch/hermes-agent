@@ -25,6 +25,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { ApiError } from "@/lib/api-error";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
@@ -46,6 +47,7 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const { t } = useI18n();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,8 +163,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={t.actions.logOut}
+        title={t.actions.logOut}
       >
         <LogOut className="h-3.5 w-3.5" />
       </button>

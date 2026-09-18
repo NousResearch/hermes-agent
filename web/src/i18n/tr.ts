@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const tr: Translations = {
+export const tr = defineLocale({
   common: {
     save: "Kaydet",
     saving: "Kaydediliyor...",
@@ -783,4 +783,4 @@ export const tr: Translations = {
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },
-};
+});

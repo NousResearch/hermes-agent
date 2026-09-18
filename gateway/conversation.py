@@ -94,6 +94,23 @@ class ConversationMiddleware:
         for handler in self.handlers:
             handler.typing(chat_id)
 
+    async def signal(self, chat_id: str, sender: str, payload: dict) -> None:
+        """Deliver private coordination, with identity authenticated by the adapter.
+
+        Optional handler.signal(chat_id, sender, payload) may be sync or async.
+        Plugins own schema and participation checks; signals never enter receive().
+        """
+        for handler in self.handlers:
+            callback = getattr(handler, "signal", None)
+            if callback is None:
+                continue
+            try:
+                result = callback(chat_id, sender, payload)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.warning("Conversation middleware signal callback failed", exc_info=True)
+
     def output_suppressed(self, event, content, reason):
         """Notify policy plugins when the host suppresses output before send()."""
         for handler in self.handlers:

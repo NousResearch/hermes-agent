@@ -641,6 +641,31 @@ async def test_plain_own_name_is_an_immediate_direct_address(tmp_path):
     await adapter.disconnect()
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("own,peer", [("lena", "felix"), ("felix", "lena")])
+async def test_separate_named_assignments_both_reach_their_agents(tmp_path, own, peer):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._name_pattern_for_room = lambda _room: gate._names_pattern([own])
+    gate._peer_name_pattern = gate._names_pattern([peer])
+    gate._throttled_evaluate = AsyncMock(
+        side_effect=AssertionError("own explicit assignment reached scorer")
+    )
+    text = "lena, zähle alle cafes in klagenfurt auf.\nfelix, zähle alle pizzarias in Villach auf."
+    message = event(Platform.MATRIX, text=text)
+    message.metadata["conversation_mentioned"] = False
+    try:
+        await adapter.handle_message(message)
+        assert len(adapter.delivered) == 1
+        assert adapter.delivered[0].text.startswith(text)
+        assert gate._pending == {}
+    finally:
+        await adapter.disconnect()
+
+
 @pytest.mark.parametrize("enabled,kind,expected", [
     (True, "group", True), (True, "private", False), (False, "group", False),
 ])

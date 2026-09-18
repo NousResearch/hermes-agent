@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
+import json
 from contextlib import suppress
 import logging
 import mimetypes
@@ -54,6 +55,7 @@ except ImportError:
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
         "TYPING": "m.typing",
+        "find": staticmethod(lambda value: value),
         "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
@@ -72,6 +74,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+_COORDINATION_EVENT_TYPE = "org.hermes.groupchat.coordination"
+_COORDINATION_MAX_AGE_SECONDS = 120
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
 
@@ -923,6 +927,27 @@ class MatrixAdapter(BasePlatformAdapter):
         """Return the authenticated Matrix identity for mention ownership."""
         return str(getattr(self._client, "mxid", "") or self._user_id or "")
 
+    async def conversation_send_signal(self, chat_id: str, payload: dict) -> bool:
+        """Send JSON coordination outside chat dispatch, readable by room members.
+
+        The event's authenticated sender is the only identity authority. Payload
+        schema and same-message participation are enforced by the policy plugin.
+        """
+        if self._client is None or chat_id not in self._joined_rooms:
+            return False
+        try:
+            if not await self._is_allowed_matrix_room_event(chat_id):
+                return False
+            if not isinstance(payload, dict):
+                return False
+            content = json.loads(json.dumps(payload, allow_nan=False))
+            event_id = await asyncio.wait_for(self._client.send_message_event(
+                RoomID(chat_id), EventType.find(_COORDINATION_EVENT_TYPE), content), timeout=45)
+            return bool(event_id)
+        except Exception:
+            logger.warning("Matrix: coordination signal send failed", exc_info=True)
+            return False
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -1355,6 +1380,8 @@ class MatrixAdapter(BasePlatformAdapter):
         from mautrix.client.dispatcher import MembershipEventDispatcher
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
+        client.add_event_handler(
+            EventType.find(_COORDINATION_EVENT_TYPE), self._on_coordination_signal, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(getattr(EventType, "TYPING", "m.typing"), self._on_typing, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
@@ -1871,6 +1898,7 @@ class MatrixAdapter(BasePlatformAdapter):
         to-device key shares queued while offline."""
         self._last_sync_ts = time.time()
         rooms_join = sync_data.get("rooms", {}).get("join", {})
+        self._joined_rooms.difference_update(sync_data.get("rooms", {}).get("leave", {}))
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
@@ -1972,6 +2000,39 @@ class MatrixAdapter(BasePlatformAdapter):
                 "the startup grace filter to silently discard every incoming message. Run "
                 "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
             self._clock_skew_warned = True
+
+    async def _on_coordination_signal(self, event: Any) -> None:
+        """Authorize a custom event before delivering it outside the chat path."""
+        room_id = str(getattr(event, "room_id", "") or "")
+        sender = str(getattr(event, "sender", "") or "")
+        if not sender or room_id not in self._joined_rooms or self._is_self_sender(sender):
+            return
+        if not self._is_authorized_user(sender):
+            return
+        if any(pattern.search(sender) for pattern in self._ignored_user_patterns):
+            return
+        try:
+            if not await self._is_allowed_matrix_room_event(room_id):
+                return
+            # GenericEvent keeps origin_server_ts in serialized extras, unlike
+            # RoomMessageEvent.timestamp. Never renew a lease from sync history.
+            raw = event.serialize() if callable(getattr(event, "serialize", None)) else {}
+            timestamp = raw.get("origin_server_ts")
+            event_ts = float(timestamp) / 1000 if timestamp is not None else _matrix_event_timestamp_seconds(event)
+            now = time.time()
+            oldest = max(self._startup_ts - _STARTUP_GRACE_SECONDS, now - _COORDINATION_MAX_AGE_SECONDS)
+            if not oldest <= event_ts <= now + 30:
+                return
+            content = getattr(event, "content", None)
+            # Unknown mautrix event content is Obj, including nested Obj/List.
+            if callable(getattr(content, "serialize", None)):
+                content = content.serialize()
+            if not isinstance(content, dict):
+                return
+            payload = json.loads(json.dumps(content, allow_nan=False))
+            await self.conversation_middleware().signal(room_id, sender, payload)
+        except Exception:
+            logger.warning("Matrix: coordination signal receive failed", exc_info=True)
 
     async def _on_room_message(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))

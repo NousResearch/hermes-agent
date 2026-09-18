@@ -122,6 +122,85 @@ When the outbound guard is active, response streaming and interim assistant
 messages are buffered so rejected text cannot leak through a draft or edit
 before the final decision.
 
+## Work coordination (Matrix)
+
+Enabled Groupchat conversations permit successful intentional-silence replies
+(`NO_REPLY` / `[SILENT]`) without the gateway's "needed a reply" warning.
+Private chats and conversations without an enabled Groupchat policy retain
+the gateway's warning. Failed or empty model responses are not treated as
+intentional silence. The default incoming system-message patterns also ignore
+that warning from peers. If you maintain a custom `system_patterns` list,
+add the new warning pattern there as well; custom lists are not overwritten.
+
+Work coordination is a separate opt-in feature. It is disabled by default,
+including for existing configurations that omit `coordination`. Add this block
+under the existing `groupchat` settings to enable it:
+
+```yaml
+groupchat:
+  coordination:
+    enabled: true                 # Default: false
+    fallback_delay_seconds: 10    # Default: 10; > 0 and <= 300, fractions allowed
+```
+
+The dashboard offers the same checkbox and seconds field in English and German.
+Restart the profile's gateway after saving configuration changes.
+
+Coordination applies when two or more agents process the **same original
+message** in the same room. Agents explicitly declare their intent with
+`groupchat_work`:
+
+```text
+groupchat_work(action="work")        # Retain ownership of the task.
+groupchat_work(action="contribute")  # Add a distinct, useful contribution.
+groupchat_work(action="yield")       # Explicitly leave the task to the others.
+```
+
+Explicit work/contribution declarations from multiple participants trigger
+coordination immediately. The configured delay is a fallback when multiple
+agents process the same message without those declarations. Ordinary chat text
+is not a work declaration, and a colleague's suggestion is not a new user
+instruction. A yielding agent should pass only genuinely new, necessary
+information in the tool's `note`, then stop further work and finish silently.
+
+**The same message does not necessarily mean the same task.** For example,
+"Lena, list cafés in Klagenfurt. Felix, list pizzerias in Villach" assigns two
+independent tasks. Both agents should declare `work`, describe their own task
+in the `note`, and continue in parallel. The notice is advisory: it never
+automatically selects one owner or stops a participant merely because another
+agent is busy. Yielding is an explicit agent decision, not a timer action.
+
+There is only one coordination round per original request. Notices are delivered
+at a noninterrupting tool boundary; a running tool does not need to be cancelled.
+If **all participants explicitly yield and have stopped**, the first-started
+agent resumes the original task once, without another coordination round.
+Completion, failure, cancellation, or an expired participant does **not** count
+as yielding and cannot trigger this all-yielded recovery.
+
+The domain rules live in `plugins/groupchat/coordination.py`. Each profile stores
+its durable coordination state separately at
+`HERMES_HOME/groupchat/coordination.sqlite3`; agents exchange signals through the
+transport rather than sharing that database. Internal coordination prompts are
+written in English. They do not change the language used for public replies.
+
+### Transport and visibility
+
+Only the Matrix transport is currently supported and covered by coordination
+transport tests. It uses native custom room events of type
+`org.hermes.groupchat.coordination`, with participant identity taken from the
+authenticated event sender. “Private” here describes an internal control signal:
+**these events are not encrypted or private from room members. Custom events
+avoid ordinary chat bubbles; they do not provide confidentiality.** Do not put
+secrets in coordination notes. This section does not claim a live Matrix test
+has been completed.
+
+### Coordination logging
+
+The existing profile decision-log directory is `HERMES_HOME/logs`, as displayed
+in the dashboard (see [Decision logs](#decision-logs)). Coordination runtime
+audit records, when emitted, use that directory. The coordination SQLite
+database is persistent working state, separate from audit logs.
+
 ## Pattern semantics
 
 `relevance.system_patterns`, `relevance.multiline_patterns`, and

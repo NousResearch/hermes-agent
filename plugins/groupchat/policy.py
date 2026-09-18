@@ -25,12 +25,13 @@ def requires_buffered_delivery(config, platform):
     from .config import validate_settings
     settings = validate_settings(config.get("groupchat"))
     return (settings["enabled"] and platform in settings["platforms"]
-            and settings["pingpong_guard"]["enabled"])
+            and (settings["pingpong_guard"]["enabled"] or settings["coordination"]["enabled"]))
 
 
 class GroupchatAddon:
     def __init__(self, adapter, *, scope="", shared_room_transcript=None,
-                 shared_passive_context=None, shared_peer_targeted_ids=None):
+                 shared_passive_context=None, shared_peer_targeted_ids=None,
+                 shared_coordination=None):
         self.adapter = adapter
         self._dispatch = adapter._handle_message_after_conversation
         platform = getattr(adapter, "platform", "")
@@ -65,6 +66,7 @@ class GroupchatAddon:
         self._scopes = {}
         self._send_locks = {}
         self._closed = False
+        self.coordination = shared_coordination
         self._load()
 
     def _load(self):
@@ -86,6 +88,11 @@ class GroupchatAddon:
         self.filter_model = settings["filter_model"]
         active = settings["enabled"] and self.platform in settings["platforms"]
         self._active = active
+        if (not self.scope and self.coordination is None and active
+                and settings["coordination"]["enabled"]
+                and callable(getattr(self.adapter, "conversation_send_signal", None))):
+            from .coordination_runtime import CoordinationRuntime
+            self.coordination = CoordinationRuntime(self.adapter, self._profile_home, settings["coordination"])
         relevance = dict(settings["relevance"])
         relevance["_legacy_env"] = False
         relevance["filter_model"] = self.filter_model
@@ -117,9 +124,11 @@ class GroupchatAddon:
 
     @property
     def buffers_output(self):
-        return self.guard_enabled
+        return self.guard_enabled or self.coordination is not None
 
     def processing(self, event, phase, session_id, outcome=None):
+        if self.coordination is not None:
+            self.coordination.processing(event, phase, session_id, outcome)
         source = event.source
         policy = self.for_conversation(source.chat_id, event.metadata, source.thread_id, source.scope_id)
         if policy.relevance is None:
@@ -128,6 +137,10 @@ class GroupchatAddon:
             policy.relevance.agent_turn_started(event, session_id)
         elif phase == "on_processing_complete":
             policy.relevance.agent_turn_completed(event, session_id, outcome)
+
+    async def signal(self, chat_id, sender, payload):
+        if self.coordination is not None:
+            await self.coordination.signal(chat_id, sender, payload)
 
     def typing(self, chat_id):
         # Typing is reported by transports at chat/room level, while inbound
@@ -152,7 +165,7 @@ class GroupchatAddon:
 
     def for_conversation(self, chat_id, metadata=None, thread_id=None, scope_id=None):
         # All transports isolate workspace/thread lanes using normalized identity.
-        if self.scope or not (self.relevance or self.guard_enabled):
+        if self.scope or not (self.relevance or self.guard_enabled or self.coordination):
             return self
         metadata = metadata or {}
         normalized = metadata.get("conversation") or {}
@@ -178,12 +191,15 @@ class GroupchatAddon:
                 shared_room_transcript=room_transcript,
                 shared_passive_context=passive_context,
                 shared_peer_targeted_ids=peer_targeted_ids,
+                shared_coordination=self.coordination,
             )
             self._scopes[key].bind(self._dispatch)
         return self._scopes[key]
 
     async def close(self):
         self._closed = True
+        if not self.scope and self.coordination is not None:
+            await self.coordination.close()
         for policy in self._scopes.values():
             await policy.close()
         if self.relevance is not None:
@@ -198,7 +214,7 @@ class GroupchatAddon:
         source = event.source
         if self._closed:
             return
-        if not (self.relevance or self.guard_enabled):
+        if not (self.relevance or self.guard_enabled or self.coordination):
             return await self._dispatch(event)
         if source is not None:
             scoped = self.for_conversation(source.chat_id, event.metadata, source.thread_id, source.scope_id)
@@ -214,6 +230,8 @@ class GroupchatAddon:
             if authorized is False or (authorized is not True and self.platform != "matrix"):
                 # Let the existing gateway own rejection/DM feedback.
                 return await self._dispatch(event)
+            if self.coordination is not None:
+                self.coordination.observe_event(event)
             self.last_inbound[source.chat_id] = event.text
             if len(self.last_inbound) > 512:
                 self.last_inbound.pop(next(iter(self.last_inbound)))
@@ -246,6 +264,11 @@ class GroupchatAddon:
             )
 
     async def filter_output(self, chat_id, content):
+        if self.coordination is not None:
+            from .coordination_runtime import suppress_yielded_output
+            if suppress_yielded_output():
+                self._audit_outbound(chat_id, decision="suppress", reason_code="work_yielded")
+                return None
         if self.relevance is not None:
             result = self.relevance.outbound_filter(content, chat_id)
             if result is True:
@@ -310,7 +333,7 @@ class GroupchatAddon:
         if _sending.get() is self:
             return await send(chat_id, content, reply_to, metadata)
         policy = self.for_conversation(chat_id, metadata)
-        if not (policy.relevance or policy.guard_enabled):
+        if not (policy.relevance or policy.guard_enabled or policy.coordination):
             return await send(chat_id, content, reply_to, metadata)
         lock = policy._send_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:

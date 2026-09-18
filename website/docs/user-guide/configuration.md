@@ -257,7 +257,13 @@ reports the directory and its size.
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+`terminal.container_persistent: true` keeps the workspace identity stable for a registered project and active Hermes profile when the selected backend supports persistent environments. For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, it means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later. With the default project-scoped identity, separate projects and profiles do not accidentally reuse one workspace. An explicit, non-empty `terminal.docker_shared_container_key` remains authoritative for trusted profiles that intentionally collaborate in one Docker container.
+
+#### Why this matters for teams
+
+Project-persistent workspaces make repeated work more predictable: project files and tool state stay associated with the project, profiles remain isolated by default, and approved teams can opt into one shared container for collaboration. This reduces accidental cross-project reuse without taking away an explicit shared-workspace workflow.
+
+Limits: this is workspace identity and persistence, not a guarantee that live processes survive every restart or Docker daemon interruption. Shared containers are an opt-in trust boundary: profiles using the same key can affect the same files and processes, and their Docker settings should agree. Projects must be registered for project scoping; otherwise Hermes keeps its existing session/CLI fallback.
 
 ### Backend Overview
 

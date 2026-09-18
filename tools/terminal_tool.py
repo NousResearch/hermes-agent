@@ -486,6 +486,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if task_id and scope.session_isolated:
         return _resolve_container_alias(task_id)
 
+    # An explicit shared-container key is authoritative, including when the
+    # workspace is registered to a project. This preserves the opt-in contract
+    # for trusted profiles while project scoping remains the default.
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
+    if shared:
+        return f"shared:{shared}"
+
     # Persistent non-local backends reuse one environment per registered project.
     # Resolve the raw session cwd first so delegation and ACP workspace overrides
     # are honored without consulting the shared container's mutable cwd.
@@ -509,11 +516,6 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # stay authoritative where they apply and this only covers the cases that would otherwise collapse to
     # the shared "default" key (notably SSH).
     session_key = _current_session_key()
-    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
-    if shared:
-        # Explicit opt-in: trusted profiles configuring the same terminal.docker_shared_container_key share
-        # ONE container/cache slot (and sandbox dir) regardless of profile name (#84671).
-        return f"shared:{shared}"
     if not session_key:
         return "default"
     if not scope.docker_profile_scoped:

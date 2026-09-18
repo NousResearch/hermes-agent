@@ -1,0 +1,18 @@
+name: locus
+repo: https://github.com/locus-technologies/locus-pro-plugin
+sha: 6ac99126274072d24e48b2b6b53543c99e5f865f
+subdir: agents/hermes
+description: 'Pay-per-use web research, data lookups, and metered APIs through the OAuth-enabled
+  Locus MCP server, billed to prepaid workspace credits. Portable Agent Plugins v1 package
+  (mcp.json + skills/) with usage, setup, and hosted-workflow skills bundled.'
+maintainer: Locus Technologies
+tier: community
+category: tools
+docs_url: https://github.com/locus-technologies/locus-pro-plugin#readme
+version: "0.3.20"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

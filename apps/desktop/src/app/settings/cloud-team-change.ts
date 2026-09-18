@@ -1,5 +1,7 @@
 import type { DesktopRegistryConnection } from '@/global'
 
+import { normalizeGatewayUrl } from './connections-registry'
+
 // `org` values are the refs NAS echoes (`slug ?? id`) and are compared as
 // opaque strings. If a team gains or changes its slug, a connection saved under
 // the old ref reads as moved once: the reconnect below re-authenticates and
@@ -48,7 +50,7 @@ export async function reconnectMovedCloudAgent(
     return false
   }
 
-  if (config.mode === 'cloud' && config.remoteUrl.replace(/\/+$/, '') === url.replace(/\/+$/, '')) {
+  if (config.mode === 'cloud' && normalizeGatewayUrl(config.remoteUrl) === normalizeGatewayUrl(url)) {
     await desktop.saveConnectionConfig({ mode: 'cloud', remoteUrl: config.remoteUrl, cloudOrg: org })
   }
 

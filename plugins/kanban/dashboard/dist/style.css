@@ -79,7 +79,8 @@
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  flex: 1 1 0;
+  min-width: 220px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);

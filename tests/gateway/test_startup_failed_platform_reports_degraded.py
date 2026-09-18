@@ -86,8 +86,9 @@ def _runner_with_one_parked_platform(monkeypatch, tmp_path) -> GatewayRunner:
 
 
 @pytest.mark.asyncio
-async def test_parked_platform_is_reported_at_error_when_others_serve(monkeypatch, tmp_path, caplog):
-    """The failure is logged at ERROR — not only the WARNING that hid it."""
+async def test_parked_platform_is_logged_at_error_and_the_run_is_degraded(monkeypatch, tmp_path, caplog):
+    """A configured platform that never came up is reported at ERROR (not the WARNING that hid it)
+    and the runtime state says ``degraded`` while the surviving platform keeps the gateway alive."""
     runner = _runner_with_one_parked_platform(monkeypatch, tmp_path)
 
     with caplog.at_level(logging.ERROR):
@@ -98,24 +99,9 @@ async def test_parked_platform_is_reported_at_error_when_others_serve(monkeypatc
         assert any(
             record.levelno >= logging.ERROR and "api_server" in record.getMessage()
             for record in caplog.records
-        ), "a configured platform that never came up must be reported at ERROR, not only a WARNING"
-    finally:
-        await runner.stop()
-
-
-@pytest.mark.asyncio
-async def test_parked_platform_is_not_reported_as_a_normal_run(monkeypatch, tmp_path):
-    """The runtime state must not claim a normal run while a configured platform is unserved."""
-    runner = _runner_with_one_parked_platform(monkeypatch, tmp_path)
-
-    ok = await runner.start()
-    try:
-        assert ok is True
-        assert runner.should_exit_cleanly is False
-        state = read_runtime_status()
-        assert state["gateway_state"] == "degraded", (
-            "the gateway is serving with a configured platform missing — it must not claim a normal run"
         )
+        state = read_runtime_status()
+        assert state["gateway_state"] == "degraded"
         assert state["platforms"]["api_server"]["state"] == "fatal"
         assert state["platforms"]["api_server"]["error_code"] == "api_server_port_in_use"
         assert state["platforms"]["telegram"]["state"] == "connected"

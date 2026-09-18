@@ -102,6 +102,10 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** After a submit, every resume replays the gateway's RETAINED failed turn
+   *  (`inflight: { status: 'error', error }`, `running: false`) instead of a
+   *  reply — the snapshot `_fail_inflight_turn` leaves for reconnecting clients. */
+  retainedErrorAfterSubmit?: string
   turn?: TurnScript
 }
 
@@ -269,8 +273,13 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const clarify = options.clarifyUntil?.[session.profile]
       const approval = options.approvalUntil?.[session.profile]
 
+      const retained =
+        options.retainedErrorAfterSubmit && session.messages.at(-1)?.role === 'user'
+          ? { error: options.retainedErrorAfterSubmit, status: 'error', streaming: false }
+          : null
+
       return {
-        inflight: busy,
+        inflight: retained ?? busy,
         message_count: busy ? 0 : session.messages.length,
         messages: busy || params.omit_messages ? [] : [...session.messages],
         running: false,

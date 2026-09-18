@@ -428,6 +428,19 @@ def _first_truthy(mapping: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
     return None
 
 
+def _slack_error_is(exc: BaseException, code: str) -> bool:
+    """True when a Slack API exception carries ``code`` as its structured ``error`` field.
+
+    Reads ``exc.response["error"]`` (slack_sdk's SlackApiError shape); never matches on the
+    message text, which embeds the whole response body and would match on unrelated codes.
+    """
+    response = getattr(exc, "response", None)
+    try:
+        return bool(response) and response.get("error") == code
+    except Exception:  # noqa: BLE001 - response is a foreign object
+        return False
+
+
 def _slack_str_field(el: dict, name: str) -> str:
     """Read a string field of a Block Kit element; non-strings (text objects) would break ``str.join``."""
     value = el.get(name)
@@ -2050,34 +2063,58 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 client = self._get_client(chat_id, team_id=stream.team_id)
                 if not stream.stream_ts:
-                    start_payload: Dict[str, Any] = {
-                        "channel": chat_id, "thread_ts": stream.thread_ts,
-                        "task_display_mode": "plan"}
-                    md = metadata or {}
-                    recipients = (
-                        ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
-                        ("recipient_user_id", ("recipient_user_id", "user_id")))
-                    for key, sources in recipients:
-                        value = _first_truthy(md, sources)
-                        if value:
-                            start_payload[key] = value
-                    result = await client.api_call("chat.startStream", json=start_payload)
-                    if hasattr(result, "get"):
-                        stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
-                    if not stream.stream_ts:
-                        raise RuntimeError("Slack startStream returned no stream timestamp")
+                    await self._start_native_task_card_stream(client, stream, metadata)
                 chunks: List[Dict[str, Any]] = [{"type": "plan_update", "title": str(title)[:256]}]
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
-                append_payload: Dict[str, Any] = {
-                    "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
                 # chunks-only: Slack rejects markdown_text alongside chunks
                 # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
                 # the editable-text fallback rail that fallback_text feeds when this call fails.
-                await client.api_call("chat.appendStream", json=append_payload)
+                try:
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
+                except Exception as exc:
+                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                        raise
+                    # Slack seals a native stream server-side after a few minutes of a long
+                    # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
+                    # documented). The sealed message is a regular message now, so reopen a
+                    # fresh card in the same thread. Every frame already carries the FULL
+                    # visible projection, so nothing is lost; the user sees the card
+                    # continue instead of degrading to text bubbles. One reopen per update:
+                    # a second rejection is a real failure.
+                    logger.info(
+                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
+                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
+                    stream.stream_ts = ""
+                    await self._start_native_task_card_stream(client, stream, metadata)
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
+
+    @staticmethod
+    async def _start_native_task_card_stream(
+        client, stream: "_NativeTaskCardStream", metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
+        start_payload: Dict[str, Any] = {
+            "channel": stream.channel, "thread_ts": stream.thread_ts,
+            "task_display_mode": "plan"}
+        md = metadata or {}
+        recipients = (
+            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
+            ("recipient_user_id", ("recipient_user_id", "user_id")))
+        for key, sources in recipients:
+            value = _first_truthy(md, sources)
+            if value:
+                start_payload[key] = value
+        result = await client.api_call("chat.startStream", json=start_payload)
+        if hasattr(result, "get"):
+            stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
+        if not stream.stream_ts:
+            raise RuntimeError("Slack startStream returned no stream timestamp")
 
     @staticmethod
     def _task_update_chunk(task: Dict[str, str]) -> Dict[str, Any]:
@@ -3276,8 +3313,8 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]]) -> SendResult:
         """Post ``notice`` (prefixed by the caption) in place of a failed media delivery; the
         host-local path is never echoed into chat."""
-        text = f"{caption}\n{notice}" if caption else notice
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, notice, caption=caption,
+                                             reply_to=reply_to, metadata=metadata, shown_metadata=metadata)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
@@ -6061,7 +6098,9 @@ class SlackAdapter(BasePlatformAdapter):
         ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from tools.url_safety import (
+            create_ssrf_safe_async_client, is_safe_url, redirect_target_from_response,
+        )
         if not is_safe_url(url):
             raise ValueError(
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}")
@@ -6071,18 +6110,41 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:
-                    response = await client.get(
-                        url, headers={"Authorization": f"Bearer {bot_token}"})
+                    download_url = url
+                    redirect_count = 0
+                    while True:
+                        # httpx drops Authorization across origins. Enterprise Grid
+                        # needs it on files-origin, but never send it off Slack's CDN.
+                        response = await client.get(
+                            download_url, headers={"Authorization": f"Bearer {bot_token}"})
+                        if response.status_code not in (301, 302, 303, 307, 308):
+                            break
+                        target = redirect_target_from_response(response)
+                        if not target:
+                            break  # raise_for_status reports the malformed redirect.
+                        if not is_safe_url(target):
+                            raise ValueError(
+                                "Blocked unsafe Slack file redirect (SSRF protection): "
+                                f"{safe_url_for_log(target)}")
+                        if not self._is_slack_cdn_url(target):
+                            raise ValueError(
+                                "Blocked non-Slack-CDN file redirect (token-exfiltration protection): "
+                                f"{safe_url_for_log(target)}")
+                        if redirect_count == 3:
+                            raise ValueError("Too many Slack file redirects (maximum 3)")
+                        download_url = target
+                        redirect_count += 1
                     response.raise_for_status()
                     ct = response.headers.get("content-type", "")
                     if "text/html" in ct:
                         raise ValueError(
                             f"Slack returned HTML instead of {html_label} (content-type: {ct}); "
-                            "check bot token scopes and file permissions")
+                            "check bot token scopes and file permissions, or a cross-origin "
+                            "redirect dropped the token (Enterprise Grid files-origin)")
                     return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:

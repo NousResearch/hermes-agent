@@ -2686,7 +2686,7 @@ class TestModelRoutesAgentCreation:
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-            lambda provider: {
+            lambda provider, target_model=None: {
                 "provider": provider,
                 "api_key": f"sk-{provider}",
                 "base_url": f"https://{provider}.example/v1",

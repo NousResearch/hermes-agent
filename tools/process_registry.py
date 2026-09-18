@@ -818,9 +818,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
-        it — a leaked orphan beats tree-killing someone's browser. POSIX: psutil SIGTERMs
-        children before the parent (so trees aren't reparented to init and survive), then
-        SIGKILLs survivors after ``terminal.daemon_term_grace_seconds``. Windows:
+        it — a leaked orphan beats tree-killing someone's browser. POSIX: snapshot descendants,
+        SIGTERM the parent alone so it can perform an orderly shutdown, then clean up snapshot
+        descendants that survive its grace window. Survivors are SIGKILLed after a second
+        ``terminal.daemon_term_grace_seconds`` window. Windows:
         ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
         is the fallback."""
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
@@ -850,26 +851,52 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except (OSError, PermissionError):
             _sigterm_quietly()
             return
-        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        # Snapshot before signalling: once the parent exits, psutil can no longer
+        # reliably find children that it failed to reap.
         try:
-            targets = parent.children(recursive=True)
+            descendants = parent.children(recursive=True)
         except gone:
-            targets = []
-        targets.append(parent)
-        for proc in targets:
+            descendants = []
+
+        # Let self-managing parents (notably Chromium/Electron) shut down their
+        # tree before touching children. Killing their zygotes first can turn a
+        # graceful browser shutdown into a crash dump.
+        with suppress(gone):
+            parent.terminate()
+
+        grace = cls._daemon_term_grace_seconds()
+
+        def _wait_for_exit(targets) -> None:
+            if grace <= 0:
+                return
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline and any(cls._proc_alive(p) for p in targets):
+                time.sleep(0.05)
+
+        # Preserve descendants during the parent's configured shutdown window.
+        _wait_for_exit([parent])
+
+        # The snapshot is an anti-orphan guarantee: only descendants still alive
+        # after the parent had its chance are asked to terminate themselves.
+        remaining = descendants if grace <= 0 else [
+            proc for proc in descendants if cls._proc_alive(proc)
+        ]
+        for proc in remaining:
             with suppress(gone):
                 proc.terminate()
+
+        # Preserve the existing SIGKILL escalation semantics for every owned
+        # process that remains after its SIGTERM grace window. The parent is
+        # included in case it ignored the first signal.
+        targets = [parent, *remaining]
         # Escalate to SIGKILL for anything that ignored SIGTERM within the grace window.
         # ``psutil.wait_procs``' gone/alive partition is deliberately NOT trusted: it
         # reaps via ``Process.wait()`` and mis-partitions across zombie transitions in a
         # parent/child tree, leaving survivors un-killed. Re-probing every target is
         # deterministic.
-        grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
             return
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and any(cls._proc_alive(_p) for _p in targets):
-            time.sleep(0.05)
+        _wait_for_exit(targets)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):

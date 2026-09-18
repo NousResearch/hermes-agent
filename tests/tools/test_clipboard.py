@@ -114,6 +114,39 @@ class TestMacosOsascript:
             assert _macos_osascript(dest) is False
 
 
+class TestMacosClipboardFileUrl:
+    """Finder / file-copy puts «class furl» on the clipboard, not PNGf/TIFF.
+
+    Other apps still paste the image; Hermes must treat a local image file-url
+    as a clipboard image too.
+    """
+
+    def _furl_run(self, src: Path):
+        def fake_run(cmd, **kw):
+            joined = " ".join(str(part) for part in cmd)
+            if "clipboard info" in joined:
+                return MagicMock(stdout="«class furl», 28", returncode=0)
+            if "«class furl»" in joined:
+                return MagicMock(stdout=f"{src}\n", returncode=0)
+            return MagicMock(stdout="", returncode=1)
+        return fake_run
+
+    @pytest.mark.parametrize("name, expected", [("shot.png", True), ("notes.txt", False)])
+    def test_only_copied_image_files_are_clipboard_images(self, tmp_path, name, expected):
+        src = tmp_path / name
+        src.write_bytes(FAKE_PNG)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_has_image() is expected
+
+    def test_copied_image_file_saves_as_png(self, tmp_path):
+        src = tmp_path / "shot.png"
+        src.write_bytes(FAKE_PNG)
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_osascript(dest) is True
+        assert dest.read_bytes().startswith(b"\x89PNG")
+
+
 # ── WSL detection ────────────────────────────────────────────────────────
 
 class TestIsWsl:

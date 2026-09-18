@@ -382,7 +382,7 @@ CURATOR_REVIEW_PROMPT = (
     "Your toolset:\n"
     "  - skills_list, skill_view        — read the current landscape\n"
     "    READ BEFORE WRITE — enforced, not advisory. Before skill_manage "
-    "action=patch, action=edit, action=write_file on a file that already "
+    "action=patch, action=write_file on a file that already "
     "exists, or action=remove_file, call skill_view on that SAME target in "
     "this review turn — skill_view(name) for SKILL.md, "
     "skill_view(name, file_path=...) for a supporting file — and build the "

@@ -526,7 +526,16 @@ def _batch_status(combined: Dict[str, Any]) -> str:
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
 
-def _dispatch(
+def _dispatch(**kwargs) -> Dict[str, Any]:
+    from hermes_cli.backend_retirement import retirement
+
+    with retirement.work() as admitted:
+        if not admitted:
+            return {"status": "rejected", "error": "backend is retiring; reconnect to continue"}
+        return _dispatch_admitted(**kwargs)
+
+
+def _dispatch_admitted(
     *, delegation_id: str, goal: str, goals: Optional[List[str]], context: Optional[str],
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
@@ -589,10 +598,16 @@ def _dispatch(
         finally:
             _finalize(delegation_id, result, status)
 
+    from hermes_cli.backend_retirement import retirement
+
+    # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
+    # reservation too: the stall monitor may finalize its registry record before it really exits.
+    retirement.acquire()
     try:
-        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
-        executor.submit(propagate_context_to_thread(_worker))
+        future = executor.submit(propagate_context_to_thread(_worker))
+        future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
+        retirement.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         with _DB_LOCK, _transaction() as conn:

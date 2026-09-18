@@ -14,6 +14,8 @@ import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answer
 export interface CardProps {
   /** The directive's raw attrs, written by the model. */
   attrs: Record<string, string>
+  /** Stable transcript identity for one-time application of model-supplied choices. */
+  messageId?: string
   /** True while the surrounding turn is still streaming; the card renders but does not accept clicks. */
   locked: boolean
 }

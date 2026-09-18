@@ -1933,17 +1933,34 @@ _WINDOWS_TASK_SUPERVISOR_STATES = frozenset({"Running", "Ready", "Queued"})
 
 
 def _windows_scheduled_task_state(task_name: str) -> str | None:
-    """English ``Get-ScheduledTask`` State, or None on failure. PowerShell, not ``schtasks``: schtasks
-    localizes its output in the local codepage (utf-8 decoding mangles it); the State enum is stable."""
+    """Locale-independent Task Scheduler state, or None on failure.
+
+    Query the COM API directly: Get-ScheduledTask auto-loads the CIM module,
+    which can stall desktop backend startup for the entire ten-second timeout.
+    Keep the existing supervisor semantics (Ready and Queued count as owned).
+    """
     if not is_windows():
         return None
-    ps_cmd = f"$t = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; if ($t) {{ $t.State }} else {{ 'MISSING' }}"
+    quoted_name = task_name.replace("'", "''")
+    ps_cmd = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$s = [Activator]::CreateInstance([type]::GetTypeFromProgID('Schedule.Service')); "
+        "$s.Connect(); "
+        "try { "
+        f"$t = $s.GetFolder('\\').GetTask('{quoted_name}'); "
+        # TASK_STATE values are stable, unlike localized schtasks.exe output.
+        "@('Unknown', 'Disabled', 'Queued', 'Ready', 'Running')[[int]$t.State] "
+        "} catch { "
+        "$e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; "
+        "if ($e.HResult -in @(-2147024894, -2147024893)) { 'MISSING' } else { throw } "
+        "}"
+    )
     try:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
         result = subprocess.run(
-            [powershell, "-NoProfile", "-Command", ps_cmd],
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
         )
         if result.returncode != 0:

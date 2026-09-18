@@ -67,7 +67,24 @@ def _compute_host_turn_frame(
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),
-        "queued_prompt_generation": queued_prompt_generation}
+        "queued_prompt_generation": queued_prompt_generation,
+        # #101416: vouch that this process already holds the registry lease for this session, so
+        # the child adopts it as an inert token instead of re-claiming and being fenced out by
+        # our own entry ("Session ... already has a live owner"). No lease held = no vouch, and
+        # the child keeps its legacy self-claim path (fail-closed refusal on conflict).
+        "active_session_lease": _active_session_lease_vouch(session)}
+
+
+def _active_session_lease_vouch(session: dict) -> dict | None:
+    """``{lease_id, session_id}`` of the REAL registry lease this process holds for the session's
+    current stored id, else None. Qualified, not a bare bool: after a compression rotation a lease
+    still keyed on the old id must not let a (replacement) child borrow the continuation."""
+    lease = session.get("active_session_lease")
+    if lease is None or getattr(lease, "released", False) or not getattr(lease, "enabled", False):
+        return None
+    if str(lease.session_id) != str(session.get("session_key") or ""):
+        return None
+    return {"lease_id": str(lease.lease_id), "session_id": str(lease.session_id)}
 
 
 def _metadata_mirror(session: dict | None) -> dict:
@@ -80,9 +97,17 @@ def _compute_host_session_info(session: dict) -> dict:
 
 
 def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
-    """Adopt a host frame's session_key / history_version. Caller holds history_lock."""
-    if frame.get("session_key"):
-        session["session_key"] = str(frame.get("session_key"))
+    """Adopt a host frame's session_key / history_version. Caller holds history_lock.
+
+    A rotated ``session_key`` means the child compressed A->B. The child only holds an inert
+    borrowed token (``_install_borrowed_lease``), so the REAL registry lease is re-anchored here,
+    by its owner — never claimed from the child pid (authority stays singular, #103737 review)."""
+    new_key = str(frame.get("session_key") or "")
+    if new_key and new_key != str(session.get("session_key") or ""):
+        if not _transfer_active_session_slot(str(frame.get("sid") or ""), session, new_session_id=new_key):
+            logger.warning("Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+                           frame.get("sid"), session.get("session_key"), new_key)
+        session["session_key"] = new_key
     if frame.get("history_version") is not None:
         with contextlib.suppress(Exception):
             session["history_version"] = max(int(session.get("history_version", 0)),
@@ -212,6 +237,8 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
     _apply_compute_host_metadata_mirror(session, frame)
+    # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
+    _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
         _emit("session.info", sid, info)

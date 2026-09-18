@@ -336,16 +336,20 @@ class TimelineNotification(str):
 
     display_text: str
     display_kind: str
+    notification_category: str
 
-    def __new__(cls, text: str, display_text: str, display_kind: str):
+    def __new__(cls, text: str, display_text: str, display_kind: str, notification_category: str = "result"):
         instance = super().__new__(cls, text)
         instance.display_text = display_text
         instance.display_kind = display_kind
+        instance.notification_category = notification_category
         return instance
 
     @classmethod
     def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
-        return cls(text, async_delegation_display_text(event), "async_delegation_complete")
+        from agent.notification_presentation import diagnostic_process_event
+        return cls(text, async_delegation_display_text(event), "async_delegation_complete",
+                   "diagnostic" if diagnostic_process_event(event) else "result")
 
 
 def _delegation_attribution_line(evt: dict) -> "str | None":

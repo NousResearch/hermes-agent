@@ -4,8 +4,11 @@
  * a card. A step in neither table renders nothing. The cards live in ./cards.
  */
 
+import { useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { FirstBuildCard, HandoffCard, ProgressCard } from '@/components/onboarding-chat/cards/build'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { ConnectorsCard, LayoutCard, LookCard } from '@/components/onboarding-chat/cards/setup'
@@ -45,6 +48,11 @@ function DataDirective({ field, value }: { field: AnswerField; value: string }) 
 }
 
 export function OnboardingChatDirective({ attrs, streaming }: { attrs: Record<string, string>; streaming: boolean }) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const messageId = useAuiState(state => state.message.id)
+  const identity = JSON.stringify([storedId ?? runtimeId, messageId])
   const step = attrs.step ?? ''
 
   const field = DATA_STEPS.get(step)
@@ -57,5 +65,5 @@ export function OnboardingChatDirective({ attrs, streaming }: { attrs: Record<st
 
   // Mount as soon as the directive is parsed. Returning null until the turn settles would grow the transcript by a
   // card when the turn finishes. The card stays inert while streaming so the growing paragraph cannot be clicked.
-  return Card ? <Card attrs={attrs} locked={streaming} /> : null
+  return Card ? <Card attrs={attrs} locked={streaming} messageId={identity} /> : null
 }

@@ -308,7 +308,9 @@ class CLIAgentSetupMixin:
                 continue
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key
-                _fb_kwargs = {"requested": _fb_provider}
+                # target_model: the fallback entry names the model that will be sent; without it the
+                # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
+                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
                 if _fb.get("base_url"):
                     _fb_kwargs["explicit_base_url"] = _fb["base_url"]
                 _fb_api_key = resolve_entry_api_key(_fb)
@@ -318,7 +320,10 @@ class CLIAgentSetupMixin:
                 logger.warning(
                     "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                     primary_exc, _fb_provider, _fb_model)
-                _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
                 return runtime

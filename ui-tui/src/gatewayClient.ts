@@ -135,6 +135,8 @@ export class GatewayClient extends EventEmitter {
   private readonly channel = new JsonRpcRequestChannel({
     onEvent: ev => this.publish(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    onRequestHandlerError: (error, req) =>
+      this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
     onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true

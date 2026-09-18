@@ -69,3 +69,16 @@ def test_session_list_include_hidden(db):
 
     all_rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
     assert {s["id"] for s in all_rows} == {"plain-chat", "bot-chat"}
+
+
+@pytest.mark.parametrize("source", ["oneshot", "kanban", "tool"])
+def test_session_list_hides_internal_sources(db, source):
+    """Finite one-shot runs (`hermes -z`, `chat -q`) and other non-conversation rows never reach the
+    human picker; interactive rows stay (#112550)."""
+    _seed(db, "plain-chat")
+    db.create_session("internal-run", source=source)
+    db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", ("internal-run",))
+    db._conn.commit()
+
+    rows = _call("session.list", {})["result"]["sessions"]
+    assert {s["id"] for s in rows} == {"plain-chat"}

@@ -101,6 +101,9 @@ _BILLING_PATTERNS = (
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
+    # OpenRouter org-level monthly cap arrives as 403 "Budget limit exceeded (monthly limit)" (#107166):
+    # account exhaustion, not a credential problem.
+    "budget limit exceeded",
     *_FREE_TIER_REFUSAL_PATTERNS,
     # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
     # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing
@@ -526,6 +529,7 @@ class _Ctx:
     context_length: int
     num_messages: int
     base_url: str = ""  # the route the call went to; "" when the caller did not say
+    anonymous: bool = False
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -582,6 +586,14 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     from hermes_cli.anon_auth import (
         WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
     status = c.status_code
+    if not c.anonymous:
+        # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
+        # one welcome refusal it does receive is the gateway's mirror 400 on the welcome host; its
+        # reconnect copy stands, only the sign-in card is withheld (``_welcome_surface_kind``).
+        if c.provider == "nous" and status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
+            return _v(_R.format_error, retryable=False, should_fallback=True,
+                      error_context={"welcome_route": "named_on_welcome_host"})
+        return None
     if status == 429:
         refusal = parse_welcome_refusal(c.body)
         if refusal is None:
@@ -594,7 +606,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
     # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
     # or a billing wall on the welcome host keeps its own classification (and its own recovery).
-    plain_403 = c.provider == "nous" and not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
+    plain_403 = not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
     kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None
@@ -732,11 +744,15 @@ def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
     base_url: str = "",
+    api_key: Any = None,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
 
     ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
-    dark-tier 403 on it because that refusal carries no distinguishing message."""
+    dark-tier 403 on it because that refusal carries no distinguishing message.
+    ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
+    The credential is never included in the returned context."""
+    from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
@@ -745,6 +761,7 @@ def classify_api_error(
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages, str(base_url or ""),
+        anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}

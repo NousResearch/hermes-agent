@@ -28,7 +28,12 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  // Session reads keep the ambient dial default (main's background): the
+  // cross-profile probe that resolves a remembered/404'd session id walks every
+  // other profile (resolveStoredSession) and must not cold-start each one on the
+  // pool's reserved foreground slot. The tag belongs to the scope selectors
+  // (Settings, Capabilities, Messaging), not to session lookups.
+  const { priority: _priority, ...scoped } = capabilityScoped(scope)
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }

@@ -1,3 +1,4 @@
+import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -29,7 +30,6 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
@@ -73,8 +73,8 @@ function unquoteMediaValue(value: string): string {
 }
 
 function collectMediaValues(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MEDIA_RE)) {
-    pushValue(unquoteMediaValue(match[1] || ''))
+  for (const value of mediaTagValues(text)) {
+    pushValue(unquoteMediaValue(value))
   }
 }
 

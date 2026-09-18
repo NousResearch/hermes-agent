@@ -162,8 +162,9 @@ class MCPServerTransportMixin:
         # Session is live again: clear any breaker state from a prior outage so the first call after
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # A completed handshake alone is NOT proof of health: a flapping transport can handshake fine and
-        # drop moments later, forever (#62212). The session must prove itself (keepalive success or a
-        # successful tool call) before the reconnect budget is cleared — see _mark_session_proven.
+        # drop moments later, forever (#62212). The session must prove itself (keepalive success, a
+        # successful tool call, or — stdio without a keepalive — surviving a full default interval
+        # idle with the child alive) before the reconnect budget is cleared — see _mark_session_proven.
         # Session is live again: clear any breaker state from a prior outage so the first call after
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).

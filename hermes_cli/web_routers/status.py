@@ -117,6 +117,34 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+@router.get("/api/health/idle")
+async def get_health_idle(request: Request):
+    """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
+    from hermes_cli.web_server_idle_proof import idle_proof
+    _require_token(request)
+    return {"ok": True, **idle_proof()}
+
+
+@router.post("/api/health/retirement")
+async def post_health_retirement(request: Request):
+    from hermes_cli.backend_retirement import retirement
+
+    _require_token(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    if not isinstance(body, dict) or body.get("action") not in ("prepare", "commit", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be prepare, commit, or cancel")
+    action = body["action"]
+    if action == "prepare":
+        return await run_in_threadpool(retirement.prepare)
+    token = body.get("token")
+    if not isinstance(token, str) or not token:
+        raise HTTPException(status_code=400, detail="token required")
+    return getattr(retirement, action)(token)
+
+
 # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
 # Platform enum's normalized values: built-in members plus plugin directory names
 # (lowercased), which allow hyphens as well as underscores (e.g. ``reviewer:foo-bar``).

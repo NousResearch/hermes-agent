@@ -171,7 +171,7 @@ def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
     return owed
 
 
-def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
+def _live_fleet_covers_receipt(expected_sha: str | None, *, accept_states: tuple = ("current",)) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
     A PID changes on restart; the stable identity is (runtime kind, profile).
@@ -187,8 +187,12 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         if not owed:
             return False
         fleet = collect_fleet_versions()
+        # ``current``/``stale`` are labels relative to the checkout. A caller asking about the
+        # code a completed update restarted the fleet onto passes ``accept_states`` with
+        # ``stale`` too: the row's stamped ``code_sha`` is the identity that matters there.
+        # ``unknown``/``down`` rows never cover.
         if not fleet or any(
-            row.get("state") != "current" or row.get("code_sha") != expected_sha
+            row.get("state") not in accept_states or row.get("code_sha") != expected_sha
             for row in fleet
         ):
             return False
@@ -265,8 +269,32 @@ def _marker_only_restart_obsolete() -> bool:
     return True
 
 
+def _receipt_restart_phase_completed(receipt: dict) -> str | None:
+    """``post_update.sha`` when the receipt's restart phase ran to completion, else None.
+
+    A receipt can be ``failed`` for reasons that have nothing to do with the fleet (a
+    post-restart step crashed, a notice raised) after every gateway was already brought to
+    the pulled code. Its pre-pull ``plan.runtimes[].code_sha`` then no longer describes an
+    obligation; the update owed the fleet ``post_update.sha`` and that is what the live
+    fleet must be checked against. Any later drift (a manual ``git pull`` moving the
+    checkout past a running gateway) belongs to ``gateway/code_skew.py``, not to a warning
+    that blames an update which did restart the fleet.
+    """
+    gateway_restart = receipt.get("gateway_restart")
+    if not isinstance(gateway_restart, dict) or not gateway_restart:
+        return None
+    if gateway_restart.get("incomplete") or gateway_restart.get("phase_error"):
+        return None
+    post_sha = (receipt.get("post_update") or {}).get("sha")
+    return str(post_sha) if post_sha else None
+
+
 def _pending_fleet_restart_needed() -> bool:
-    """Reconcile old restart obligations against current, identity-matched gateways."""
+    """Reconcile old restart obligations against current, identity-matched gateways.
+
+    Catch-up semantics (``hermes update`` on a current checkout): the fleet must reach the
+    checkout HEAD, whatever moved it there.
+    """
     from hermes_cli.update_cmd import _current_checkout_sha
 
     # The marker has no runtime inventory and may belong to a newer, killed update
@@ -278,6 +306,26 @@ def _pending_fleet_restart_needed() -> bool:
             return True
     if not _receipt_reports_stale_runtime():
         return False
+    return not _live_fleet_covers_receipt(_current_checkout_sha())
+
+
+def _update_owes_fleet_restart() -> bool:
+    """Startup-warning semantics: does the LAST UPDATE still owe the fleet a restart?
+
+    Same evidence as :func:`_pending_fleet_restart_needed`, except that a receipt whose
+    restart phase completed is held to the code it pulled, not to today's checkout: the
+    update kept its promise, and a checkout moved later by hand is not its unfinished work.
+    """
+    with suppress(OSError):
+        if _fleet_restart_pending_marker_path().is_file():
+            return not _marker_only_restart_obsolete()
+    if not _receipt_reports_stale_runtime():
+        return False
+    from hermes_cli.update_cmd import _current_checkout_sha
+    from hermes_cli.update_receipt import read_latest_receipt
+    restarted_to = _receipt_restart_phase_completed(read_latest_receipt() or {})
+    if restarted_to:
+        return not _live_fleet_covers_receipt(restarted_to, accept_states=("current", "stale"))
     return not _live_fleet_covers_receipt(_current_checkout_sha())
 
 
@@ -293,7 +341,7 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
 def _warn_pending_fleet_restart_on_startup() -> None:
     """Cheap CLI-startup hint. Never restarts; never raises."""
     with suppress(Exception):
-        if _pending_fleet_restart_needed():
+        if _update_owes_fleet_restart():
             _warn_pending_fleet_restart(startup=True)
 
 
@@ -358,8 +406,6 @@ def _run_pending_fleet_restart() -> bool:
     """
     from hermes_cli.update_cmd import _m
     print("→ Restarting gateways left on pre-update code...")
-    with suppress(Exception):
-        _m()._purge_stale_hermes_modules()
     # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a
     # pre-rename install) and the current hermes-gateway.service are enabled, they SIGTERM-fight for the
     # same bot token (see PR #11909). Flagging here means every `hermes update` surfaces the issue until the
@@ -1342,10 +1388,6 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # already-restarted units to ``_finish_dashboard_update_cleanup`` (review on #83595).
     restarted_scoped_units: set = set()
 
-    # Purge stale cached Hermes modules FIRST: the import below loads new gateway
-    # source into this pre-update interpreter, and a cached sibling missing a
-    # symbol the new source expects would ImportError and abort the whole phase.
-    _m()._purge_stale_hermes_modules()
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.

@@ -129,15 +129,23 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt writer runs in
-  the PRE-pull interpreter after the module purge, so `update_receipt.py` may import only stdlib and
-  purge-protected modules (`hermes_constants`) — a `hermes_cli.config` import there re-executed the
-  pulled config against a stale `utils` and silently dropped the whole receipt; a write failure
-  prints `⚠ Update receipt not written` and logs at WARNING, never debug.
-- **Post-update steps are isolated**: everything after the code swap that runs pulled code in the
-  pre-pull process (`_finish_dashboard_update_cleanup`, notices, probes) catches its own failure,
-  prints it, and records a failed receipt step — one stale-symbol `AttributeError` must not abort
-  the fleet matrix, reconciliation and receipt finalize that follow it.
+  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt is opened by
+  the pre-swap process and finished by the post-swap child (below): `detach_update_receipt` /
+  `resume_update_receipt` carry it across, so one run still yields exactly one receipt. A write
+  failure prints `⚠ Update receipt not written` and logs at WARNING, never debug.
+- **Nothing runs pulled code in the pre-pull interpreter** (`update_handoff.py`). The process that
+  started `hermes update` imported the PRE-pull tree; once git (or the ZIP swap) has replaced the
+  checkout it stops, writes the hand-off payload (open receipt, pre-update plan, pre-update
+  version/active features, Windows pause token) and re-executes
+  `hermes update <same flags> --post-swap <file>` under the venv interpreter, which imports only the
+  pulled tree and owns the tail (deps, Node/web/Desktop, maintenance, config migration, fleet
+  restart, verification, receipt); the parent relays the exit code. Every "purge `sys.modules`" /
+  "reload this list of modules" / "isolate this one step" fix was a symptom of the old shape and is
+  gone — do not reintroduce one: a phase that needs new code runs in the child, full stop. Mocked
+  updater tests run the tail in-process via the `_inline_post_swap_handoff` autouse fixture
+  (`@pytest.mark.real_post_swap_handoff` opts out). Live A/B:
+  `evals/update_pipeline/post_swap_handoff_ab.sh`. Post-update steps still isolate their own
+  failures (a crashed notice must not abort the fleet matrix and receipt finalize that follow).
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read

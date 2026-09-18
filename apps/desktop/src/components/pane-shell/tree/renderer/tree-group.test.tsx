@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -67,11 +68,11 @@ describe('TreeGroup', () => {
   describe('top-edge window drag handle', () => {
     const paneIds = ['terminal', 'terminal-2', 'terminal-3', 'terminal-4', 'terminal-5']
 
-    function mountCrowdedStrip(titlebarWidth: number) {
+    function mountCrowdedStrip(titlebarWidth: number, placement = 'main') {
       const disposers = paneIds.map(id =>
         registry.register({
           area: 'panes',
-          data: { placement: 'main' },
+          data: { placement },
           id,
           render: () => <div>{id}</div>,
           title: id
@@ -117,6 +118,60 @@ describe('TreeGroup', () => {
         strip: zone.querySelector<HTMLElement>('[data-zone-tabstrip]')!
       }
     }
+
+    it.each([300, 800])('keeps sidebar tabs below the native band at width %s', width => {
+      const { strip } = mountCrowdedStrip(width, 'left')
+      expect(strip.className).toContain('bottom-0')
+      expect(container!.querySelector<HTMLElement>('[data-panel-header]')!.style.height).toBe('62px')
+    })
+
+    it.each(['zone', 'default'] as const)('preserves the saved %s hide-tabs preference', source => {
+      mountCrowdedStrip(800, 'left')
+      const originalDefault = $tabStripDefault.get()
+
+      const node: GroupNode = {
+        ...terminalGroup(false),
+        panes: paneIds,
+        tabStrip: source === 'zone' ? 'never' : undefined
+      }
+
+      try {
+        if (source === 'default') {
+          act(() => setTabStripDefault('never'))
+        }
+
+        const savedDefault = localStorage.getItem('hermes.desktop.tabStripDefault')
+        render(<TreeGroup leftEdge node={node} rightEdge topEdge />)
+        expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
+        expect(container!.querySelector<HTMLElement>('[data-panel-header]')!.style.height).toBe('34px')
+        expect(node.tabStrip).toBe(source === 'zone' ? 'never' : undefined)
+        expect(localStorage.getItem('hermes.desktop.tabStripDefault')).toBe(savedDefault)
+      } finally {
+        act(() => setTabStripDefault(originalDefault))
+      }
+    })
+
+    it('renders page controls inside their own panel in the normal tab space', () => {
+      mountCrowdedStrip(800)
+      act(() => {
+        registry.register({
+          area: 'panes',
+          id: 'terminal',
+          title: 'Kanban',
+          data: {
+            placement: 'main',
+            headerVeto: true,
+            headerContent: () => <button type="button">Board picker</button>
+          },
+          render: () => <div>Board content</div>
+        })
+      })
+      const header = container!.querySelector<HTMLElement>('[data-panel-page-header]')!
+      expect(header.textContent).toBe('Board picker')
+      expect(header.closest('[data-tree-group]')?.getAttribute('data-tree-group')).toBe('terminal-zone')
+      expect(header.querySelector('[data-slot="pane-tab"]')).not.toBeNull()
+      expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
+    })
 
     it('keeps a fixed drag handle outside the tablist when tabs share the titlebar', () => {
       const { handles, strip } = mountCrowdedStrip(800)

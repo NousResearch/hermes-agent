@@ -535,6 +535,18 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        # Keep only the opening call site, never a frame (which pins caller locals).
+        self._creation_site = "unknown"
+        caller = None
+        try:
+            caller = sys._getframe(1)
+            self._creation_site = (
+                f"{caller.f_globals.get('__name__', '?')}.{caller.f_code.co_name}:{caller.f_lineno}"
+            )
+        except Exception:
+            pass  # Diagnostic metadata must not prevent opening the database.
+        finally:
+            del caller
         self._lock = threading.Lock()
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded

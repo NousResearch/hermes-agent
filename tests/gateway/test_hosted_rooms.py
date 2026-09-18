@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
@@ -1362,3 +1363,129 @@ def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypa
     assert from_profile == from_root, "one coordination file per install"
     assert from_root.parent == root
     assert from_root.name != "state.db"
+
+
+def test_upgrade_keeps_rooms_from_before_the_shared_state_db_split(tmp_path):
+    """Rooms an install already had stay reachable after the move to ``shared-state.db``.
+
+    ``0e422e0ece`` repointed the store at ``shared-state.db`` but left the hosted_room* rows in
+    the root ``state.db``, so every pre-existing room resolved to "hosted room not found" (#109775).
+    This is that upgrade: rooms and their events already in ``state.db``, nothing in the new file.
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+    _append(
+        legacy,
+        room_id="room-1",
+        event_id="event-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "before the upgrade"},
+        now=11,
+    )
+
+    store = tmp_path / "shared-state.db"
+
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    assert rooms.room_state(store, room_id="room-1")["latest_seq"] == 1
+    assert [
+        event["event_id"] for event in rooms.read_events(store, room_id="room-1")["events"]
+    ] == ["event-1"]
+
+
+def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
+    """The copy runs once, never overwrites, and leaves the driver's lease behind (#109775)."""
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+
+    def now() -> float:
+        return 100.0
+
+    driver.admit_task(
+        legacy,
+        driver.TaskIdentity(room_id="room-1", task_id="task-1", thread_id="thread-1", turn_id="turn-1"),
+        payload={"target_profile": "ops", "prompt": "ping", "source_event_seq": 1},
+        clock=now,
+    )
+    driver.acquire_lease(
+        legacy,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=now,
+    )
+
+    store = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    with sqlite3.connect(store) as conn:
+        # Durable work follows the room across; the lease is liveness state and stays behind.
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_leases'"
+        ).fetchone()[0] == 0
+
+    # Forcing a second import (marker cleared) must not replace what this store already owns.
+    rooms.rename_room(store, room_id="room-1", event_id="rename-1", name="Renamed", now=12)
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_room_legacy_imports")
+    assert rooms.room_state(store, room_id="room-1")["name"] == "Renamed"
+
+    # And the record of the import is what keeps a purge from being undone by a later open.
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_rooms")
+    assert rooms.list_rooms(store) == []
+
+
+def test_legacy_import_skips_a_room_this_store_already_owns_as_a_unit(tmp_path):
+    """A room id present in both stores keeps THIS store's history intact and appendable.
+
+    Grafting only the non-colliding legacy events under the store's own room left ``next_seq``
+    behind ``MAX(seq)``, so every later append collided on (room_id, seq).
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy, room_id="same")
+    for index in range(5):
+        _append(legacy, room_id="same", event_id=f"legacy-{index}", kind="message.user", actor=USER,
+                payload={"text": str(index)}, now=11 + index)
+    # The store already has its own "same" before the import runs (a room re-created after "not found").
+    own = tmp_path / "scratch.db"
+    _create(own, room_id="same")
+    _append(own, room_id="same", event_id="own-1", kind="message.user", actor=USER, payload={"text": "s"}, now=11)
+    own.rename(tmp_path / "shared-state.db")
+    store = tmp_path / "shared-state.db"
+
+    assert [event["event_id"] for event in rooms.read_events(store, room_id="same")["events"]] == ["own-1"]
+    _append(store, room_id="same", event_id="own-2", kind="message.user", actor=USER, payload={"text": "t"}, now=30)
+    assert rooms.room_state(store, room_id="same")["latest_seq"] == 2
+
+
+def test_legacy_import_reads_layouts_from_before_the_actor_and_authority_columns(tmp_path):
+    """A legacy store without authority_gateway_id/actor_json imports with the migration's defaults.
+
+    ``INSERT OR IGNORE`` used to swallow the NOT NULL violations, drop every row and still record
+    the marker with rooms=0, losing the rooms permanently.
+    """
+    _create_pre_actor_database(str(tmp_path / "state.db"))
+    store = tmp_path / "shared-state.db"
+
+    assert _read_legacy_state(str(store)) == ("legacy", 1)
+    assert [event["event_id"] for event in rooms.read_events(store, room_id="room-1")["events"]] == ["legacy-event"]
+    with sqlite3.connect(store) as conn:
+        assert conn.execute("SELECT rooms FROM hosted_room_legacy_imports").fetchone() == (1,)
+        assert conn.execute("SELECT event_bytes FROM hosted_rooms").fetchone()[0] > 0
+
+
+def test_unreadable_legacy_store_is_reported_once_per_process(tmp_path, caplog):
+    """A corrupt legacy file leaves the marker unset but does not re-warn on every poll."""
+    (tmp_path / "state.db").write_bytes(b"not a sqlite file" * 100)
+    store = tmp_path / "shared-state.db"
+
+    with caplog.at_level(logging.WARNING, logger="gateway.hosted_rooms_legacy_import"):
+        for _ in range(4):
+            assert rooms.list_rooms(store) == []
+    assert len([record for record in caplog.records if "could not import" in record.message]) == 1
+    with sqlite3.connect(store) as conn:
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_legacy_imports'").fetchone()

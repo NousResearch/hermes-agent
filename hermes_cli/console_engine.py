@@ -599,17 +599,19 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("sessions list", args, (("--limit",), dict(type=int, default=20)))
     if ns.limit < 1 or ns.limit > 200:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         sessions = db.list_sessions_rich(
-            exclude_sources=["kanban", "tool"], limit=ns.limit, order_by_last_active=True)
+            exclude_sources=list(INTERNAL_LISTING_SOURCES), limit=ns.limit, order_by_last_active=True)
     return _format_sessions(sessions)
 
 
 def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=["kanban", "tool"])
+        listable = db.session_count(exclude_children=True, exclude_sources=list(INTERNAL_LISTING_SOURCES))
         lines = [
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",

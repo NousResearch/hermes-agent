@@ -483,6 +483,128 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def _backdate_comments(conn, tid, seconds=60):
+    """Second-granularity timestamps: make the PR comment older than the
+    handoff that follows it in the same test."""
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_comments SET created_at = created_at - ? WHERE task_id = ?",
+            (seconds, tid),
+        )
+
+
+def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ready card whose PR is open spawns the profile it was handed to.
+
+    #111910: ``active_pr`` exists to stop the implementer from opening a
+    duplicate PR; it must not stop the closer/recovery profile an operator
+    assigned AFTER the PR comment — that handoff is why the PR must be worked.
+    The un-reassigned implementer stays guarded; a newer PR comment posted
+    after the handoff (the closer's own run) guards again.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+
+    with kbc.connect() as conn:
+        dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
+        kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
+        closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
+        kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
+        _backdate_comments(conn, closer_id)
+        assert kb.assign_task(conn, closer_id, "closer") is True
+
+        assert kbd.check_respawn_guard(conn, dev_id) == "active_pr"
+        assert kbd.check_respawn_guard(conn, closer_id) is None
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert closer_id in [s[0] for s in res.spawned]
+        assert dict(res.respawn_guarded).get(dev_id) == "active_pr"
+
+        kb.add_comment(
+            conn, closer_id, author="closer",
+            body="Pushed to https://github.com/example/repo/pull/44",
+        )
+        assert kbd.check_respawn_guard(conn, closer_id) == "active_pr"
+
+
+def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a handoff to a DIFFERENT profile lifts ``active_pr``.
+
+    A no-op ``assign dev -> dev`` (CLI, dashboard PATCH, ``reassign --reclaim``)
+    and an unassign both record an ``assigned`` event but change no owner; if
+    they counted as handoffs the implementer would be re-spawned against its own
+    PR — the duplicate-work protection #111910 says must survive.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="same assign", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.assign_task(conn, tid, "dev") is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert kb.reassign_task(conn, tid, "dev", reclaim_first=True) is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.assign_task(conn, tid, None) is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        # The dispatcher's own default_assignee write is not an operator handoff.
+        res = kbd.dispatch_once(conn, dry_run=False, default_assignee="dev")
+        assert tid in res.auto_assigned_default
+        assert dict(res.respawn_guarded).get(tid) == "active_pr"
+        assert tid not in [s[0] for s in res.spawned]
+
+        # A real handoff after all of that still lifts the guard.
+        assert kb.assign_task(conn, tid, "closer") is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
+    kanban_home: Path,
+) -> None:
+    """Reviewer CHANGES_REQUESTED routes the card back to ``ready`` for the
+    implementer to fix the SAME PR; ``active_pr`` must not hold it (#111910).
+    ``recent_success`` is untouched by the handoff exemption."""
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="changes requested", assignee="dev")
+        claimed = kb.claim_task(conn, tid)
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="PR ready", reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        rclaim = kb.claim_review_task(conn, tid)
+        ok, implementer = kb.request_changes(
+            conn, tid, reason="fix tests", expected_run_id=rclaim.current_run_id,
+        )
+        assert (ok, implementer) == (True, "dev")
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        done_id = kb.create_task(conn, title="recent success", assignee="dev")
+        kb.claim_task(conn, done_id)
+        assert kb.complete_task(conn, done_id, summary="done") is True
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
+        assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

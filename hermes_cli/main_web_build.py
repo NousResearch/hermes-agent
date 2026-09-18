@@ -90,16 +90,35 @@ def _web_dist_dir(web_dir: Path) -> Path:
     return _web_project_root(web_dir) / "hermes_cli" / "web_dist"
 
 
+def _source_tree_files(project_root: Path, tree_dir: Path):
+    """Build inputs, in the same order for content hashing and metadata validation."""
+    from pathspec import PathSpec
+    gitignore = project_root / ".gitignore"
+    lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    def _ignored(path: Path, *, directory: bool = False) -> bool:
+        relative = path.relative_to(project_root).as_posix()
+        return spec.match_file(relative + "/" if directory else relative)
+
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file() and not _ignored(p):
+            yield p
+
+    # Prune ignored directories in place so we never descend into them.
+    for dirpath, dirnames, filenames in os.walk(tree_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d, directory=True)]
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            if not _ignored(fp):
+                yield fp
+
+
 def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
-    """SHA-256 over *tree_dir* plus the root ``package.json`` / ``package-lock.json``.
-
-    Ignored paths (``node_modules/``, ``dist/``, ``*.pyc``, ...) are skipped via
-    the repo-root ``.gitignore`` (pathspec) so build output never feeds back into
-    its own staleness check. Filenames are sorted for a deterministic digest.
-    """
+    """SHA-256 over the source tree and workspace manifests, pruning .gitignore matches."""
     h = hashlib.sha256()
-
-    def _hash_file(path: Path) -> None:
+    for path in _source_tree_files(project_root, tree_dir):
         h.update(str(path.relative_to(project_root)).encode())
         h.update(b"\0")
         with contextlib.suppress(OSError):
@@ -107,27 +126,6 @@ def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)
         h.update(b"\0")
-
-    from pathspec import PathSpec
-    gitignore = project_root / ".gitignore"
-    lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
-    spec = PathSpec.from_lines("gitignore", lines)
-
-    def _ignored(path: Path) -> bool:
-        return spec.match_file(str(path.relative_to(project_root)))
-
-    for name in ("package.json", "package-lock.json"):
-        p = project_root / name
-        if p.is_file() and not _ignored(p):
-            _hash_file(p)
-
-    # Prune ignored directories in place so we never descend into them.
-    for dirpath, dirnames, filenames in os.walk(tree_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d)]
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            if not _ignored(fp):
-                _hash_file(fp)
 
     return h.hexdigest()
 

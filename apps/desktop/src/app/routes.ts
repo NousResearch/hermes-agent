@@ -229,7 +229,7 @@ export function appViewForPath(pathname: string): AppView {
 /** Does `to` land on a full page rendered INSIDE the workspace pane
  *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
  *  they float over whatever the workspace is already showing. */
-function isWorkspacePageRoute(to: string): boolean {
+export function isWorkspacePageRoute(to: string): boolean {
   const view = appViewForPath(to)
 
   return view !== 'chat' && !isOverlayView(view)

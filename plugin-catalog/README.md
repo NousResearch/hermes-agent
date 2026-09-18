@@ -84,3 +84,16 @@ is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
 removal. Removals, like additions, land via reviewed PRs.
+
+Delisting is different from removal: an entry that is merely unmaintained, superseded, or
+squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
+users who already installed it are unaffected) and is welcome back under a distinct name.
+
+## Names
+
+The catalog key and the manifest `name:` are what users search, install, and — for memory
+providers — put in `memory.provider`. A `memory` / `exclusive` entry must not reuse the name of
+another provider or of a well-known upstream project it is not affiliated with: two providers
+registering the same `register_memory_provider` name make `memory.provider` ambiguous
+(whichever loads last wins). Reviewers check the registered provider name, not just the file
+name, and the affiliated project gets the bare key.

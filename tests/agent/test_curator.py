@@ -642,7 +642,9 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     ``_background_review_read_before_write_guard`` refuses a background-review
     write whose target was not loaded via ``skill_view`` in the same turn —
-    edit, patch, write_file over an existing file, and remove_file. The forked
+    patch (targeted or full rewrite), write_file over an existing file, and
+    remove_file; ``edit`` is an unadvertised alias of the full-rewrite patch,
+    so the prompt no longer names it. The forked
     reviewer only performs that read if the prompt tells it to, so a guard the
     prompt never mentions is a silently jammed write channel rather than a
     safety net: the run completes, writes nothing, and reads like a pass that
@@ -669,7 +671,7 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     prompt = captured["prompt"]
     assert "skill_view" in prompt
-    for action in ("edit", "patch", "write_file", "remove_file"):
+    for action in ("patch", "write_file", "remove_file"):
         assert f"action={action}" in prompt, (
             "the delivered prompt never tells the reviewer to call skill_view "
             f"before skill_manage action={action}, which the read-before-write "

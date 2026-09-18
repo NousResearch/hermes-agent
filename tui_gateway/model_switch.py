@@ -177,7 +177,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=None)
+    runtime = resolve_runtime_provider(requested=None, target_model=current_model or None)
     # Keep a callable api_key (Azure Entra bearer) unchanged: ``str()`` would
     # yield "<function ...>" and poison switch_model validation.
     key = runtime.get("api_key", "")
@@ -390,7 +390,11 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
+        from gateway.warning_notifications import render_notification
+        render_notification(
+            lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
+            platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

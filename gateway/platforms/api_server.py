@@ -372,6 +372,12 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    if (message.get("display_kind") == "hidden"
+            and (message.get("display_metadata") or {}).get("notification_category") == "diagnostic"):
+        # Retain row identity and execution evidence in storage, not in the notification UI.
+        return {k: v for k, v in message.items() if k in {
+            "id", "session_id", "role", "timestamp", "display_kind", "platform_message_id",
+        }} | {"content": ""}
     projected = project_compaction_message_for_display(message)
     if projected is None:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
@@ -2006,7 +2012,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             with suppress(Exception):
                 from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                return _resolve_runtime_agent_kwargs_for_provider(provider_name)
+                return _resolve_runtime_agent_kwargs_for_provider(provider_name, target_model=target_model or None)
             if required:
                 raise _ProviderAuthResolutionError(str(exc)) from exc
             logger.debug(
@@ -3703,7 +3709,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3728,6 +3734,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
                 agent = None
+                from agent.notification_presentation import notification_turn
+                from gateway.warning_notifications import diagnostic_turn_muted
+                muted = diagnostic_turn_muted({"notification_category": notification_category}, "api_server")
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
@@ -3765,10 +3774,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    result = agent.run_conversation(**conversation_kwargs)
-                    return self._finish_turn_result(
+                    with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                        result = agent.run_conversation(**conversation_kwargs)
+                    result, usage = self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)
+                    if muted and isinstance(result, dict):
+                        # Project presentation only after finishing the source outcome. Keep
+                        # the agent's result, transcript, failure flags and usage intact.
+                        result = {**result, "_notification_presentation_suppressed": True}
+                    return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
@@ -3776,8 +3791,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                    session_id or "", exc)
                     return (
                         {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
-                         "api_calls": 0, "tools": []},
+                         "api_calls": 0, "tools": [],
+                         **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                except Exception as exc:
+                    if muted:
+                        # Keep the original exception/traceback for logs and failure
+                        # handling; the HTTP/SSE boundary suppresses its presentation.
+                        setattr(exc, "_notification_presentation_suppressed", True)
+                    raise
                 finally:
                     # Turn over (any outcome): clear ownership so a late disconnect can't reap
                     # background work this turn deliberately left running.

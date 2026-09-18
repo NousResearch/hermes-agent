@@ -10,7 +10,7 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 import tools.approval as approval_module
-from tools import approval_context
+from tools import approval_context, approval_detection
 from tools import approval_smart
 from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
@@ -1160,6 +1160,30 @@ class TestLaunchctlGatewayLifecycle:
         dangerous, _, desc = detect_dangerous_command(cmd)
         assert dangerous is True, cmd
         assert "launchd" in desc.lower()
+
+
+class TestQuotedCommandWordVariants:
+    """#113535: a heredoc body of quoted lines is hundreds of quoted command words; one full-length
+    detection variant per word made both detection passes O(words * len) and stalled the gateway."""
+
+    def test_many_quoted_command_words_stay_bounded_in_both_passes(self):
+        cmd = "\n".join(f'"key{i}": "line {i} with some text"' for i in range(460))
+        start = time.monotonic()
+        assert detect_hardline_command(cmd) == (False, None)
+        assert detect_dangerous_command(cmd) == (False, None, None)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"detection took {elapsed:.2f}s for a {len(cmd)}-char command"
+
+    def test_obfuscated_command_words_still_detected_when_merged_into_one_variant(self):
+        cmd = 'echo "one"; $(echo rm) -rf ~/.ssh; echo "two"; r\'\'m -rf ~/.gnupg'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc.lower(), desc
+        # Nested spans (the backtick word and the substitution inside it) overlap, so they cannot share a
+        # variant; the inner one must land in a second-round variant instead of being dropped.
+        variants = list(approval_detection._command_detection_variants('echo `$("echo" rm) -rf ~/.ssh`'))
+        assert any("echo `rm -rf ~/.ssh`" in v for v in variants), variants
+        assert any("echo `$(echo rm) -rf ~/.ssh`" in v for v in variants), variants
 
 
 class TestGitDestructiveOps:

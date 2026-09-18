@@ -112,6 +112,22 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
             return _ok(rid, {"reply": reply})
 
+        # This process's _sessions is not the ownership authority: the Desktop pools one backend per
+        # (connection, profile) and an SSH source runs one remote dashboard per profile, so the
+        # target's Bot Chat can be live in a sibling process on this host while the relay RPC lands
+        # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
+        # lease (#113753). Hand the DM to the live owner through the same mailbox local DMs use
+        # (tools/bot_mode_dm.py::_run_delivery); its poller admits it at the next idle boundary.
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+        owner_home = live_home if live_home is not None else Path(_hermes_home)
+        owner = find_canonical_live_owner(owner_home)
+        if owner is not None:
+            deliver_to_live_owner(owner_home, owner, message, author=author)
+            # The owner's poller admits the mailbox record at its next idle boundary; this
+            # process only queued it, so say so (the in-process branch above really submitted).
+            reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
+            return _ok(rid, {"reply": reply})
+
         def _detail(p) -> str:
             from tools.bot_failure_reasons import turn_failure_text
             return turn_failure_text(p.stdout, p.stderr)

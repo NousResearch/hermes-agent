@@ -73,7 +73,7 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
 
 
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
-                      auto_continue: bool = True) -> None:
+                      auto_continue: bool = True, notification_category: str | None = None) -> None:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
     this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
     if not session_key or not prompt:
@@ -81,6 +81,8 @@ def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attemp
     now = time.time()
     entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
              "auto_continue": bool(auto_continue)}
+    if notification_category == "diagnostic":
+        entry["notification_category"] = notification_category
     _update(home, session_key, lambda entries: {**_prune(entries, now), session_key: entry}, "record")
 
 
@@ -101,6 +103,8 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         if not prompt.strip():
             return None
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
-                "auto_continue": bool(entry.get("auto_continue", True))}
+                "auto_continue": bool(entry.get("auto_continue", True)),
+                **({"notification_category": "diagnostic"}
+                   if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:
         return None

@@ -22,6 +22,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -108,8 +109,11 @@ def _configured_display_value(
     ``chats.<chat_id>`` wins over the platform block when a chat-scoped entry exists
     (an entry the operator wrote is explicit intent for that chat, regardless of value).
     """
-    display_cfg = user_config.get("display") or {}
-    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
+    display_cfg = user_config.get("display")
+    if not isinstance(display_cfg, dict):
+        return None
+    platforms = display_cfg.get("platforms")
+    plat_overrides = platforms.get(platform_key) if isinstance(platforms, dict) else None
     if chat_id is not None and isinstance(plat_overrides, dict):
         chat_overrides = (plat_overrides.get("chats") or {}).get(str(chat_id))
         if isinstance(chat_overrides, dict) and chat_overrides.get(setting) is not None:
@@ -169,6 +173,15 @@ def _norm_long_running(value: Any) -> Any:
     return "generic" if isinstance(value, str) and value.strip().lower() == "generic" else _norm_bool(value)
 
 
+def _norm_suppress_warning_notifications(value: Any) -> bool:
+    # Only an explicit, recognized opt-in may hide engine diagnostics.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return False
+
+
 def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
@@ -193,6 +206,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

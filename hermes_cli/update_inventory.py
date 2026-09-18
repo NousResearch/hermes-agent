@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,18 @@ class UpdatePlan:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "UpdatePlan":
+        """Inverse of :meth:`to_dict` (the plan crosses the post-swap hand-off as JSON)."""
+        fields_ = {f.name for f in dataclass_fields(cls)}
+        plan = cls(**{k: v for k, v in data.items() if k in fields_ and k != "runtimes"})
+        record_fields = {f.name for f in dataclass_fields(RuntimeRecord)}
+        plan.runtimes = [
+            RuntimeRecord(**{k: v for k, v in r.items() if k in record_fields})
+            for r in data.get("runtimes") or [] if isinstance(r, dict)
+        ]
+        return plan
 
 
 def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids: set | None = None) -> str:

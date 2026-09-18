@@ -141,6 +141,27 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 
+def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
+    """The managed llama.cpp supervisor may come back on an ephemeral port (18434 busy). The persisted
+    loopback URL is a snapshot of the previous boot, so rehydration must take the live endpoint."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "Local.Model-Q4_K_M", "provider": "llamacpp", "base_url": "http://127.0.0.1:51489/v1"})
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "local-key", "base_url": "http://127.0.0.1:18434/v1",
+                      "provider": "custom", "requested_provider": "llamacpp"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["base_url"] == "http://127.0.0.1:18434/v1"
+    assert override["api_key"] == "local-key"
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

@@ -635,12 +635,16 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+    from agent.notification_presentation import event_presentation_muted
+    if event_presentation_muted(event, sid):
+        return False
     return write_json(_event_frame(event, sid, payload))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
+                            lambda sid: _session_client_answers_requests(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -660,6 +664,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    _server_requests.forget(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
@@ -745,7 +750,15 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
 
     def on_result(result: dict | None) -> None:
-        if result is None:  # withdrawn: the queue entry resolves on its own path
+        if result is None:
+            # No client can answer this prompt: the request was never sent (the only attached client predates
+            # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
+            # queue entry the agent would idle for the whole approvals.timeout with no prompt anywhere
+            # (#112548). A withdrawal, not a deny: nobody refused the command.
+            if request_id:
+                _approval.withdraw_gateway_approval(session_key, request_id,
+                                                    "the attached client cannot answer approval requests "
+                                                    "(update the Hermes app)")
             return
         choice = str(result.get("choice") or "deny")
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
@@ -818,33 +831,6 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     return rid, method, params if params is not None else {}
 
 
-def handle_request(req: dict) -> dict | None:
-    normalized = _normalize_request(req)
-    if isinstance(normalized, dict):
-        return normalized
-    rid, method, params = normalized
-    if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
-                    "(different versions); run `hermes update` and restart both")
-    # Test doubles register straight into ``_methods`` without a contract; every production
-    # handler comes through ``register_method`` and therefore has one.
-    contract = _contracts.METHODS.get(method)
-    if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
-        if problem is not None:
-            return _err(rid, 4000, problem)
-    token = _current_rpc_method.set(method)
-    try:
-        response = fn(rid, params)
-    except ProfileUnavailableError as exc:
-        return _err(rid, 4064, str(exc))
-    finally:
-        _current_rpc_method.reset(token)
-    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
-        _contracts.check_result(contract, response["result"])
-    return response
-
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
     """Unforgeable steering authority for this RPC context: the public session id is only a lookup
@@ -865,41 +851,6 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
             return None, None
         return transport, session
 
-
-def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
-    """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
-    response via the bound transport), everything else inline (returns the response dict).
-    *transport* pins every write of this request — events included — to that transport;
-    omitted → the module stdio transport (``tui_gateway.entry`` behaviour)."""
-    t = transport or _stdio_transport
-    token = bind_transport(t)
-    try:
-        from tui_gateway import server_requests
-        if server_requests.is_response_frame(req):
-            # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
-            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
-                logger.debug("dropping response for unknown server request id=%r", req.get("id"))
-            return None
-        normalized = _normalize_request(req)
-        if isinstance(normalized, dict):
-            return normalized
-        if normalized[1] not in _LONG_HANDLERS:
-            return handle_request(req)
-        ctx = contextvars.copy_context()  # the pool worker must see the bound transport
-        if normalized[1] in _CONNECTOR_RPC_METHODS:
-            ctx.run(_capture_connector_rpc_owner, normalized[2])
-
-        def run():
-            try:
-                resp = handle_request(req)
-            except Exception as exc:
-                resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-            if resp is not None:
-                t.write(resp)
-        _pool.submit(lambda: ctx.run(run))
-        return None
-    finally:
-        reset_transport(token)
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
@@ -2293,6 +2244,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
         return resolution.selected_model, resolution.runtime
+    if resolution.runtime.get("source") == "local-runtime":
+        # Live supervisor beat any persisted loopback URL for this identity.
+        overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
     return model, resolution.runtime
 
@@ -3274,6 +3228,7 @@ from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: 
 from . import (  # noqa: E402
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
+    rpc_dispatch as _rpc_dispatch,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
@@ -3294,7 +3249,7 @@ from . import (  # noqa: E402
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
-    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
+    _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,

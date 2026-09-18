@@ -493,13 +493,15 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path):
+@pytest.mark.parametrize("warning_notifications", [True, False])
+async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path, warning_notifications):
     """A timed-out SessionDB-bound worker cannot compact after the live turn starts.
 
     The worker remains alive long enough to cross the old race window. The
     timeout must fence its eventual commit, continue to the live agent, and
     clean up the temporary agent only after the worker actually returns.
     """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -559,6 +561,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         "  enabled: true\n"
         "  hygiene_timeout_seconds: 0.01\n"
         "  hygiene_failure_cooldown_seconds: 120\n"
+        f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}\n"
     )
 
     gateway_run = importlib.import_module("gateway.run")
@@ -631,7 +634,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     assert _cd_args[0] == "sess-timeout"
     assert _cd_args[1] > time.time()
     timeout_warnings = [s for s in adapter.sent if "took too long" in s["content"]]
-    assert len(timeout_warnings) == 1
+    assert len(timeout_warnings) == int(warning_notifications)
     fake_db.archive_and_compact.assert_not_called()
     assert lease_released.is_set()
     # Event/state assertions prove the host returned before the detached

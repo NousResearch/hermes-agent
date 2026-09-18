@@ -852,6 +852,21 @@
   --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
 }
 
+/* Bot Mode group-room mentions (#91359): a routed @bot reads as an agent
+   reference, @user as a human handoff the room is waiting on, and
+   @everyone/@all as a quieter broadcast. Text, not pills — same contract. */
+[data-ref='agent'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+}
+
+[data-ref='human'] {
+  --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
+}
+
+[data-ref='broadcast'] {
+  --ref-color: color-mix(in srgb, var(--foreground) 70%, var(--ui-accent));
+}
+
 .ref {
   --ref-color: var(--dt-primary);
 

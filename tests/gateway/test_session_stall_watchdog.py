@@ -165,7 +165,9 @@ def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
 
 
 def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
-    source = SimpleNamespace(chat_id=chat_id, thread_id=thread_id, platform=None)
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.TELEGRAM)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
 
 
@@ -528,3 +530,33 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
     assert sent2 == 0  # healthy already latched; wedged timed out again
     assert wedged.send_attempts == 2
     assert wedged_key not in runner._session_stall_notified
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", [None, False, True])
+async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, monkeypatch, caplog, setting):
+    import yaml
+    from gateway.profile_routing import ProfileRouteRejected
+    owner, launch = tmp_path / "owner", tmp_path / "launch"
+    owner.mkdir(); launch.mkdir()
+    (owner / "config.yaml").write_text(yaml.safe_dump({} if setting is None else {"display": {"suppress_warning_notifications": setting}}))
+    (launch / "config.yaml").write_text(yaml.safe_dump({"display": {"suppress_warning_notifications": setting is not True}}))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    for home, muted in [(owner, setting is True), (launch, setting is not True), (owner, setting is True)]:
+        adapter = _FakeAdapter()
+        runner = _runner_for_stall(adapter)
+        runner._resolve_profile_home_for_source = lambda source: home
+        key = "agent:default:telegram:dm:policy"
+        adapter._pending_messages[key] = _pending_event()
+        agent = _FakeAgent(time.time() - 120)
+        runner._running_agents[key] = agent
+        assert await runner._check_session_stalls(60) == (0 if muted else 1)
+        assert runner._session_stall_notified[key] is True
+        assert await runner._check_session_stalls(60) == 0
+        assert "Session stall detected" in caplog.text
+        agent._last_activity_ts = time.time()
+        assert await runner._check_session_stalls(60) == 0
+        assert key not in runner._session_stall_notified
+        agent._last_activity_ts = time.time() - 120
+        assert await runner._check_session_stalls(60) == (0 if muted else 1)
+        assert len(adapter.sent) == (0 if muted else 2)

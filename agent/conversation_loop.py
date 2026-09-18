@@ -465,7 +465,7 @@ def _print_guidance(agent, message: str) -> bool:
     if not message:
         return False
     for line in message.splitlines():
-        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True, diagnostic=True)
     return True
 
 

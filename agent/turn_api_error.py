@@ -111,6 +111,7 @@ def handle_api_error(
         model=getattr(agent, "model", "") or "", approx_tokens=approx_tokens,
         context_length=_ctx_len, num_messages=len(api_messages) if api_messages else 0,
         base_url=str(getattr(agent, "base_url", "") or ""),
+        api_key=getattr(agent, "api_key", None),
     )
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
@@ -325,7 +326,7 @@ def settle_unrecovered_error(
             # before a silent abort.
             if agent._has_pending_fallback():
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-                agent._buffer_status(f"⚠️ {_label} — trying fallback...")
+                agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
             if agent._try_activate_fallback():
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
@@ -354,7 +355,7 @@ def settle_unrecovered_error(
             agent._fallback_activated = False
             return _verdict("continue")
         if agent._has_pending_fallback():
-            agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
         if agent._try_activate_fallback():
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.

@@ -457,6 +457,7 @@ export function BotsPane() {
         b,
         activityToasts,
         activeSourceRoster,
+        roster,
         setCreateOpen,
         setGroupCreateOpen,
         setSectionDialog,

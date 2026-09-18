@@ -74,7 +74,8 @@ Each session is tagged with its source platform:
 
 | Source | Description |
 |--------|-------------|
-| `cli` | Interactive CLI (`hermes` or `hermes chat`), and one-shot runs (`hermes chat -q`, `hermes -z`). A one-shot child launched from inside a TUI or Desktop session is still tagged `cli`, not `tui`/`desktop` — it is not that conversation, so it never shows up in the TUI/WebUI picker as a resumable chat. Pass `--source tool` to keep one-shot integration runs out of session lists entirely. |
+| `cli` | Interactive CLI (`hermes` or `hermes chat`) |
+| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -96,6 +97,10 @@ Each session is tagged with its source platform:
 | `acp` | ACP editor integration |
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
+| `kanban` | Kanban dispatcher workers (read on the board, hidden from session pickers) |
+| `tool` | Third-party integrations (`--source tool`), hidden from session pickers |
+
+A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
 
 ## CLI Session Resume
 
@@ -540,9 +545,9 @@ Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
 duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
 timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
 the upper bound; `--newer-than`/`--after` set the lower bound. The
-`--older-than`/`--newer-than` pair uses latest message activity (falling back
-to session start for empty sessions); `--before`/`--after` explicitly uses
-session start time. Combine either pair for a window.
+`--older-than`/`--newer-than` pair uses last activity — the freshest of live
+activity, latest message, or session start — while `--before`/`--after`
+explicitly use session start time. Combine either pair for a window.
 
 Attribute filters: `--source` (platform, exact), `--title` / `--model` /
 `--branch` (case-insensitive substring), `--provider` (billing provider,
@@ -927,9 +932,10 @@ Existing installs that already set any of these keys explicitly keep their
 values; only unset keys pick up the new defaults.
 
 Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
-regardless of age. Ended sessions are aged from their latest message, so a
-long-lived conversation used recently is not deleted merely because it began
-before the retention window.
+regardless of age. Ended sessions are aged from their last activity — the
+freshest of live activity, latest message, or session start — so a long-lived
+conversation used recently is not deleted merely because it began before the
+retention window.
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their

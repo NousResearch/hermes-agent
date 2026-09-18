@@ -367,6 +367,24 @@
       }
     },
     {
+      "name": "client.capabilities",
+      "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientCapabilitiesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClientCapabilitiesResult"
+        }
+      }
+    },
+    {
       "name": "clipboard.paste",
       "summary": "Save the host clipboard image into the session and queue it for the next turn.",
       "params": [
@@ -7129,6 +7147,35 @@
           "output"
         ],
         "title": "CliExecResult",
+        "type": "object"
+      },
+      "ClientCapabilitiesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "default": false,
+            "title": "Server Requests",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientCapabilitiesParams",
+        "type": "object"
+      },
+      "ClientCapabilitiesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Server Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "server_requests"
+        ],
+        "title": "ClientCapabilitiesResult",
         "type": "object"
       },
       "ClipboardPasteParams": {

@@ -76,7 +76,8 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
 
     # Dashboard update on a catalog install = re-pin. Pin unchanged → no-op.
     assert pc.dashboard_update_user_plugin("cat-plugin") == {
-        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True}
+        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True,
+        "python_dependencies": [], "warnings": []}
     # Bump the catalog pin → the checkout moves to exactly that sha.
     world["state"]["pin"] = world["sha2"]
     assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False

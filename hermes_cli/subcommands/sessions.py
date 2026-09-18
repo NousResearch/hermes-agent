@@ -25,6 +25,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+    sessions_list.add_argument("--with-model", action="store_true",
+        help="Also list persisted gateway /model overrides (session store, not config.yaml)")
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "
@@ -97,6 +99,15 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_export, "--delete-after-verified",
         help="md/qmd only: after verified single-session export, delete that session (needs --yes)")
     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")
+
+    sessions_overrides = sessions_subparsers.add_parser(
+        "overrides", help="List sessions with a persisted /model override")
+    add_json_flag(sessions_overrides, "Emit machine-readable JSON")
+
+    sessions_clear_model = sessions_subparsers.add_parser(
+        "clear-model", help="Clear a session's persisted /model override so it follows config default")
+    sessions_clear_model.add_argument("session", help="Session ID, session key, or unique prefix")
+    add_yes_flag(sessions_clear_model, "Skip confirmation")
 
     sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
     sessions_delete.add_argument("session_id", help="Session ID to delete")

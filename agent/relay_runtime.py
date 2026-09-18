@@ -245,6 +245,12 @@ class _ProcessRelayPluginConfiguration:
                 return _RelayPluginConfigurationState.DISABLED
         except Exception as exc:
             self._activation = None
+            if _is_relay_host_conflict(exc):
+                logger.warning(
+                    "A process-global Relay plugin configuration is already active outside Hermes native "
+                    "ownership; leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
+                )
+                return _RelayPluginConfigurationState.FOREIGN
             logger.warning("Hermes Relay plugin initialization failed: %s", exc, exc_info=True)
             return _RelayPluginConfigurationState.FAILED
         self._relay = relay
@@ -257,41 +263,20 @@ class _ProcessRelayPluginConfiguration:
                 "Hermes Relay plugin cleanup is still pending; refusing to replace the process-global configuration"
             )
             return _RelayPluginConfigurationState.FAILED
-        try:
-            existing_report = relay.plugin.report()
-        except Exception:
-            logger.warning(
-                "Hermes could not determine whether a process-global Relay plugin configuration is already "
-                "active; refusing to replace it", exc_info=True,
-            )
-            return _RelayPluginConfigurationState.FAILED
-        if existing_report is not None:
-            logger.warning(
-                "A process-global Relay plugin configuration is already active outside Hermes native ownership; "
-                "leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
-            )
-            return _RelayPluginConfigurationState.FOREIGN
         return None
 
     def _initialize(self, relay: Any) -> bool:
         """Initialize Relay from the selected plugins.toml; False when none is selected."""
-        configured_inputs = _configured_plugin_inputs(relay)
-        if configured_inputs is None:
+        config_path = _configured_plugin_inputs()
+        if config_path is None:
             return False
-        plugin_config, dynamic_plugins = configured_inputs
-        if dynamic_plugins:
-            try:
-                initialize = relay.plugin.initialize_with_dynamic_plugins
-                activation = _resolve_plugin_awaitable(initialize(plugin_config, dynamic_plugins))
-                if activation is None:
-                    raise RuntimeError("NeMo Relay dynamic plugin initialization returned no activation handle")
-                self._activation = activation
-            except Exception as exc:
-                raise RuntimeError("Hermes Relay dynamic plugin activation failed") from exc
-        if self._activation is None:
-            # Reached only after explicit opt-in. Relay 0.8 no longer layers repository-local
-            # configuration onto this explicitly selected payload.
-            _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
+        # The explicit file is the whole payload, static components and [[plugins.dynamic]]
+        # alike; Relay resolves it in place of user-file discovery and hands back the
+        # activation that owns every plugin it loaded.
+        activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
+        if activation is None:
+            raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
+        self._activation = activation
         return True
 
     def release(self, owner: Any) -> None:
@@ -319,11 +304,9 @@ class _ProcessRelayPluginConfiguration:
             return True
 
         def close_configuration() -> Any:
-            if activation is None:
-                return _resolve_plugin_awaitable(relay.plugin.clear_async())
             if callable(close := getattr(activation, "close", None)):
                 return _resolve_plugin_awaitable(close())
-            raise RuntimeError("NeMo Relay dynamic plugin activation has no close method")
+            raise RuntimeError("NeMo Relay plugin activation has no close method")
 
         for what, step in (
             ("subscriber flush", lambda: _resolve_plugin_awaitable(relay.subscribers.flush_async())),
@@ -1232,8 +1215,8 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
-def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | None:
-    """Load selected plugin inputs, or return ``None`` when none were selected."""
+def _configured_plugin_inputs() -> Path | None:
+    """Return the selected plugins.toml once it parses, or ``None`` when none was selected."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
         if legacy_vars := configured_legacy_relay_env_vars(os.environ):
@@ -1251,12 +1234,23 @@ def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | 
             config = tomllib.load(config_file)
         if "dynamic_plugins" in config:
             raise ValueError("Hermes [[dynamic_plugins]] records are unsupported; use Relay [[plugins.dynamic]] records")
-        dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(config_path) if "plugins" in config else []
-        return {k: v for k, v in config.items() if k != "plugins"}, dynamic_plugins
+        return config_path
     except Exception as exc:
         raise _RelayPluginConfigurationLoadError(
             f"Hermes Relay plugin configuration could not be loaded from {config_path}; continuing without Relay plugins"
         ) from exc
+
+
+# Relay 0.9 has no query for an active plugin host; the only signal is initialize refusing the
+# lease. These are the two PluginError::Conflict messages it raises for that.
+_RELAY_HOST_CONFLICT_MARKERS = (
+    "plugin configuration is already active",
+    "owned by an active dynamic plugin host",
+)
+
+
+def _is_relay_host_conflict(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and any(marker in str(exc) for marker in _RELAY_HOST_CONFLICT_MARKERS)
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:

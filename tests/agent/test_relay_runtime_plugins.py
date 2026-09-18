@@ -14,31 +14,25 @@ import pytest
 from agent import relay_runtime
 
 
+HOST_CONFLICT = RuntimeError(
+    "a static plugin configuration is already active; to combine static and dynamic plugins, "
+    "provide the static components as the base configuration"
+)
+
+
 class _FakeRelay:
     def __init__(
         self,
         *,
         initialize_error: Exception | None = None,
-        dynamic_initialize_error: Exception | None = None,
         activation_close_error: Exception | None = None,
-        active_report: Any = None,
-        report_error: Exception | None = None,
     ) -> None:
         self.events: list[tuple[Any, ...]] = []
         self.initialize_error = initialize_error
-        self.dynamic_initialize_error = dynamic_initialize_error
         self.activation_close_error = activation_close_error
-        self.active_report = active_report
-        self.report_error = report_error
-        self.dynamic_plugin_specs: list[dict[str, Any]] = []
+        self.initialized_from: list[str | None] = []
         self.ScopeType = SimpleNamespace(Agent="agent")
-        self.plugin = SimpleNamespace(
-            initialize=self._initialize_plugins,
-            initialize_with_dynamic_plugins=self._initialize_dynamic_plugins,
-            load_dynamic_plugin_activation_specs=self._load_dynamic_plugin_specs,
-            clear_async=self._clear_plugins_async,
-            report=self._report_plugins,
-        )
+        self.plugin = SimpleNamespace(initialize=self._initialize_plugins)
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -48,42 +42,30 @@ class _FakeRelay:
     def get_scope_stack(self) -> None:
         return None
 
-    async def _initialize_plugins(self, config: dict[str, Any]) -> dict[str, Any]:
-        self.events.append(("plugin.initialize", config))
-        if self.initialize_error is not None:
-            raise self.initialize_error
-        return {"diagnostics": []}
-
-    async def _initialize_dynamic_plugins(
+    async def _initialize_plugins(
         self,
         config: dict[str, Any],
-        dynamic_plugins: list[dict[str, Any]],
+        additional_plugins_toml: Any = None,
     ) -> Any:
-        self.events.append(("plugin.initialize_dynamic", config, dynamic_plugins))
-        if self.dynamic_initialize_error is not None:
-            raise self.dynamic_initialize_error
+        self.events.append(("plugin.initialize", config))
+        self.initialized_from.append(
+            str(additional_plugins_toml) if additional_plugins_toml is not None else None
+        )
+        if self.initialize_error is not None:
+            raise self.initialize_error
 
         relay = self
 
         class _Activation:
+            report = {"config": {"diagnostics": []}, "dynamic_plugins": []}
+            is_active = True
+
             async def close(self) -> None:
                 relay.events.append(("plugin.activation.close",))
                 if relay.activation_close_error is not None:
                     raise relay.activation_close_error
 
         return _Activation()
-
-    def _load_dynamic_plugin_specs(self, config_path: Any) -> list[dict[str, Any]]:
-        self.events.append(("plugin.load_dynamic_specs", str(config_path)))
-        return self.dynamic_plugin_specs
-
-    async def _clear_plugins_async(self) -> None:
-        self.events.append(("plugin.clear_async",))
-
-    def _report_plugins(self) -> Any:
-        if self.report_error is not None:
-            raise self.report_error
-        return self.active_report
 
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
         handle = ("scope", name, len(self.events))
@@ -122,21 +104,13 @@ class _BehavioralFakeRelay(_FakeRelay):
     def get_scope_stack(self) -> Any:
         return self._scope_stack.get()
 
-    async def _initialize_plugins(self, config: dict[str, Any]) -> dict[str, Any]:
-        report = await super()._initialize_plugins(config)
-        self._plugin_source = "static"
-        return report
-
-    async def _initialize_dynamic_plugins(
+    async def _initialize_plugins(
         self,
         config: dict[str, Any],
-        dynamic_plugins: list[dict[str, Any]],
+        additional_plugins_toml: Any = None,
     ) -> Any:
-        activation = await super()._initialize_dynamic_plugins(
-            config,
-            dynamic_plugins,
-        )
-        self._plugin_source = "dynamic"
+        activation = await super()._initialize_plugins(config, additional_plugins_toml)
+        self._plugin_source = "explicit"
         return activation
 
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
@@ -250,8 +224,7 @@ def test_foreign_active_plugin_configuration_is_left_unchanged(
     explicit_static_config,
     caplog,
 ):
-    foreign_report = {"diagnostics": [], "source": "embedding-host"}
-    relay = _FakeRelay(active_report=foreign_report)
+    relay = _FakeRelay(initialize_error=HOST_CONFLICT)
 
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -262,31 +235,30 @@ def test_foreign_active_plugin_configuration_is_left_unchanged(
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FOREIGN
         )
-        assert relay.active_report is foreign_report
-        assert relay.events == []
+        assert relay.events == [("plugin.initialize", {})]
+        assert ("plugin.activation.close",) not in relay.events
         assert "already active outside Hermes native ownership" in caplog.text
         assert "leaving it unchanged" in caplog.text
     finally:
         host.shutdown()
 
+    assert ("subscribers.flush_async",) not in relay.events
 
-def test_unreadable_foreign_plugin_state_fails_safe(
-    explicit_static_config,
-    caplog,
-):
-    relay = _FakeRelay(report_error=RuntimeError("report unavailable"))
+
+def test_dynamic_host_conflict_is_foreign_too(explicit_static_config, caplog):
+    relay = _FakeRelay(
+        initialize_error=RuntimeError(
+            "plugin configuration is owned by an active dynamic plugin host"
+        )
+    )
 
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
-
     try:
-        assert not host.managed_execution_enabled()
         assert (
             host._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.FAILED
+            is relay_runtime._RelayPluginConfigurationState.FOREIGN
         )
-        assert relay.events == []
-        assert "refusing to replace it" in caplog.text
     finally:
         host.shutdown()
 
@@ -431,12 +403,7 @@ def test_present_plugins_section_is_validated_even_when_falsey(
     config = tmp_path / "plugins.toml"
     config.write_text("plugins = []", encoding="utf-8")
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _FakeRelay()
-
-    def reject_invalid_plugins(_config_path):
-        raise ValueError("'plugins' must be a table")
-
-    relay.plugin.load_dynamic_plugin_activation_specs = reject_invalid_plugins
+    relay = _FakeRelay(initialize_error=ValueError("'plugins' must be a table"))
 
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -446,9 +413,10 @@ def test_present_plugins_section_is_validated_even_when_falsey(
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
-        assert relay.events == []
+        # Hermes hands the file to Relay as-is; a falsey section is Relay's to reject.
+        assert relay.initialized_from == [str(config)]
         assert "'plugins' must be a table" in caplog.text
-        assert "continuing without Relay plugins" in caplog.text
+        assert "Hermes Relay plugin initialization failed" in caplog.text
     finally:
         host.shutdown()
 
@@ -483,24 +451,24 @@ def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
         tool_name="terminal",
         args={"profile": "b"},
     )
-    assert rewritten_a["relay_plugin_source"] == "static"
-    assert rewritten_b["relay_plugin_source"] == "static"
+    assert rewritten_a["relay_plugin_source"] == "explicit"
+    assert rewritten_b["relay_plugin_source"] == "explicit"
     assert rewritten_a["relay_scope_stack"] != rewritten_b["relay_scope_stack"]
 
     host_a.shutdown()
-    assert ("plugin.clear_async",) not in relay.events
+    assert ("plugin.activation.close",) not in relay.events
 
     host_b.shutdown()
     assert relay.events[-2:] == [
         ("subscribers.flush_async",),
-        ("plugin.clear_async",),
+        ("plugin.activation.close",),
     ]
     assert relay.events.count(("plugin.initialize", {})) == 1
-    assert relay.events.count(("plugin.clear_async",)) == 1
+    assert relay.events.count(("plugin.activation.close",)) == 1
     pop_index = next(
         index for index, event in enumerate(relay.events) if event[0] == "scope.pop"
     )
-    assert pop_index < relay.events.index(("plugin.clear_async",))
+    assert pop_index < relay.events.index(("plugin.activation.close",))
 
 
 def test_plugin_initialization_inside_running_event_loop(explicit_static_config):
@@ -531,7 +499,7 @@ def test_static_plugin_cleanup_uses_async_apis_inside_running_event_loop(
     assert relay.events == [
         ("plugin.initialize", {}),
         ("subscribers.flush_async",),
-        ("plugin.clear_async",),
+        ("plugin.activation.close",),
     ]
 
 
@@ -565,48 +533,15 @@ manifest = "plugins/worker/relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _BehavioralFakeRelay()
-    relay.dynamic_plugin_specs = [
-        {
-            "plugin_id": "native.policy",
-            "kind": "rust_dynamic",
-            "manifest_ref": str(
-                config.parent / "plugins/native/relay-plugin.toml"
-            ),
-            "config": {"mode": "strict"},
-        },
-        {
-            "plugin_id": "worker.policy",
-            "kind": "worker",
-            "manifest_ref": str(
-                config.parent / "plugins/worker/relay-plugin.toml"
-            ),
-            "environment_ref": str(config.parent / "environments/worker"),
-            "config": {},
-        },
-    ]
 
     host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
     host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
 
     assert host_a.managed_execution_enabled()
     assert host_b.managed_execution_enabled()
-    assert relay.events == [
-        ("plugin.load_dynamic_specs", str(config)),
-        (
-            "plugin.initialize_dynamic",
-            {
-                "version": 1,
-                "components": [
-                    {
-                        "kind": "observability",
-                        "enabled": True,
-                        "config": {"version": 1},
-                    }
-                ],
-            },
-            relay.dynamic_plugin_specs,
-        )
-    ]
+    # Static components and [[plugins.dynamic]] travel together as the explicit file.
+    assert relay.events == [("plugin.initialize", {})]
+    assert relay.initialized_from == [str(config)]
 
     rewritten_a = host_a.apply_tool_request_intercepts(
         session_id="profile-a-session",
@@ -618,8 +553,8 @@ manifest = "plugins/worker/relay-plugin.toml"
         tool_name="terminal",
         args={"profile": "b"},
     )
-    assert rewritten_a["relay_plugin_source"] == "dynamic"
-    assert rewritten_b["relay_plugin_source"] == "dynamic"
+    assert rewritten_a["relay_plugin_source"] == "explicit"
+    assert rewritten_b["relay_plugin_source"] == "explicit"
     assert rewritten_a["relay_scope_stack"] != rewritten_b["relay_scope_stack"]
 
     host_a.shutdown()
@@ -630,7 +565,6 @@ manifest = "plugins/worker/relay-plugin.toml"
         ("subscribers.flush_async",),
         ("plugin.activation.close",),
     ]
-    assert ("plugin.clear_async",) not in relay.events
     assert relay.events.count(("plugin.activation.close",)) == 1
     pop_index = next(
         index for index, event in enumerate(relay.events) if event[0] == "scope.pop"
@@ -652,10 +586,7 @@ manifest = "relay-plugin.toml"
         encoding="utf-8",
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _FakeRelay(
-        dynamic_initialize_error=RuntimeError("worker rejected config")
-    )
-    relay.dynamic_plugin_specs = [{"plugin_id": "worker.policy"}]
+    relay = _FakeRelay(initialize_error=RuntimeError("worker rejected config"))
 
     with caplog.at_level("INFO"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -665,17 +596,14 @@ manifest = "relay-plugin.toml"
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
-        assert [event[0] for event in relay.events] == [
-            "plugin.load_dynamic_specs",
-            "plugin.initialize_dynamic",
-        ]
-        assert "dynamic plugin activation failed" in caplog.text
+        assert [event[0] for event in relay.events] == ["plugin.initialize"]
+        assert "Hermes Relay plugin initialization failed" in caplog.text
         assert "Relay plugins are active process-wide" not in caplog.text
     finally:
         host.shutdown()
 
     assert ("subscribers.flush_async",) not in relay.events
-    assert ("plugin.clear_async",) not in relay.events
+    assert ("plugin.activation.close",) not in relay.events
 
 
 def test_dynamic_activation_lifecycle_inside_running_event_loop(
@@ -692,7 +620,6 @@ manifest = "relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _FakeRelay()
-    relay.dynamic_plugin_specs = [{"plugin_id": "native.policy"}]
 
     async def run_lifecycle() -> None:
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -702,8 +629,7 @@ manifest = "relay-plugin.toml"
     asyncio.run(run_lifecycle())
 
     assert [event[0] for event in relay.events] == [
-        "plugin.load_dynamic_specs",
-        "plugin.initialize_dynamic",
+        "plugin.initialize",
         "subscribers.flush_async",
         "plugin.activation.close",
     ]
@@ -723,7 +649,6 @@ manifest = "relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _FakeRelay()
-    relay.dynamic_plugin_specs = [{"plugin_id": "worker.policy"}]
 
     async def run_lifecycle() -> None:
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -823,7 +748,7 @@ def test_session_close_does_not_flush_during_concurrent_managed_publication(
     assert relay.events.index(("publication.end",)) < relay.events.index(
         ("subscribers.flush_async",)
     )
-    assert relay.events[-1] == ("plugin.clear_async",)
+    assert relay.events[-1] == ("plugin.activation.close",)
 
 
 def test_failed_dynamic_teardown_retains_activation_and_blocks_replacement(
@@ -841,15 +766,6 @@ manifest = "relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _FakeRelay(activation_close_error=RuntimeError("worker still busy"))
-    relay.dynamic_plugin_specs = [
-        {
-            "plugin_id": "worker.policy",
-            "kind": "worker",
-            "manifest_ref": str(tmp_path / "relay-plugin.toml"),
-            "environment_ref": str(tmp_path / "environment"),
-            "config": {},
-        }
-    ]
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
 
     with caplog.at_level("WARNING"):
@@ -867,9 +783,7 @@ manifest = "relay-plugin.toml"
     try:
         assert not replacement.managed_execution_enabled()
         assert relay_runtime._PLUGIN_CONFIGURATION._activation is activation
-        assert relay.events.count(
-            ("plugin.initialize_dynamic", {}, relay.dynamic_plugin_specs)
-        ) == 1
+        assert relay.events.count(("plugin.initialize", {})) == 1
         assert relay.events.count(("plugin.activation.close",)) == 2
         assert "refusing to replace" in caplog.text
     finally:
@@ -880,7 +794,7 @@ manifest = "relay-plugin.toml"
         relay_runtime._PLUGIN_CONFIGURATION.reset_for_tests()
 
 
-def test_standard_dynamic_records_use_relay_toml_loader(
+def test_dynamic_records_are_handed_to_relay_unparsed(
     tmp_path,
     monkeypatch,
 ):
@@ -894,22 +808,12 @@ manifest = "relay-plugin.toml"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     relay = _FakeRelay()
-    relay.dynamic_plugin_specs = [
-        {
-            "plugin_id": "native.policy",
-            "kind": "rust_dynamic",
-            "manifest_ref": str(tmp_path / "relay-plugin.toml"),
-            "config": {},
-        }
-    ]
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert host.managed_execution_enabled()
-        assert relay.events == [
-            ("plugin.load_dynamic_specs", str(config)),
-            ("plugin.initialize_dynamic", {}, relay.dynamic_plugin_specs),
-        ]
+        assert relay.events == [("plugin.initialize", {})]
+        assert relay.initialized_from == [str(config)]
     finally:
         host.shutdown()
 
@@ -950,11 +854,14 @@ manifest_ref = "relay-plugin.toml"
         host.shutdown()
 
 
-def test_real_binding_loads_standard_dynamic_specs_from_explicit_toml(
+def test_real_binding_hands_dynamic_records_to_relay_and_fails_open_on_rejection(
     tmp_path,
     monkeypatch,
+    caplog,
 ):
     relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
     manifest = tmp_path / "plugins" / "relay-plugin.toml"
     manifest.parent.mkdir()
     manifest.write_text(
@@ -982,17 +889,23 @@ mode = "strict"
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
 
-    plugin_config, specs = relay_runtime._configured_plugin_inputs(relay)
+    assert relay_runtime._configured_plugin_inputs() == config
 
-    assert plugin_config == {"version": 1}
-    assert [spec.to_dict() for spec in specs] == [
-        {
-            "plugin_id": "fixture.native",
-            "kind": "rust_dynamic",
-            "manifest_ref": str(manifest.resolve()),
-            "config": {"mode": "strict"},
-        }
-    ]
+    # Relay, not Hermes, now reads and validates the [[plugins.dynamic]] records. This
+    # manifest is incomplete for Relay 0.9, and that rejection must fail Hermes open.
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.FAILED
+        )
+        assert "Hermes Relay plugin initialization failed" in caplog.text
+        assert "relay-plugin.toml" in caplog.text
+    finally:
+        host.shutdown()
+        relay_runtime._reset_for_tests()
 
 
 def test_real_binding_ignores_project_config_without_explicit_opt_in(
@@ -1036,7 +949,6 @@ mode = "overwrite"
     monkeypatch.chdir(working_directory)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
     monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
-    relay.plugin.clear()
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
@@ -1119,7 +1031,6 @@ mode = "overwrite"
         relay_runtime.RELAY_PLUGINS_CONFIG_ENV,
         str(selected_config),
     )
-    relay.plugin.clear()
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
@@ -1184,7 +1095,6 @@ agent_version = "test"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config_path))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: relay)
-    relay.plugin.clear()
 
     runtime_ids: dict[str, str] = {}
     try:

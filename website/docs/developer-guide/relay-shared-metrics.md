@@ -23,19 +23,21 @@ as a no-op compatibility alias for existing installation commands.
 > longer activate exporters. Without the new variable, Hermes does not run
 > Relay plugin discovery, configuration layering, middleware, or exporters.
 
-Hermes requires NeMo Relay 0.8.3 or later within the 0.8 release line. That
+Hermes requires NeMo Relay 0.9 or later within the 0.9 release line. That
 line provides the provider-codec and canonical tool-result contracts Hermes
-uses for managed provider and tool calls.
+uses for managed provider and tool calls, and the owned plugin-host API
+(`plugin.initialize` returning an activation, `plugin.validate`) that Hermes
+builds its process-wide plugin lifecycle on.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.8.3,<0.9` dependency range. The published package is built from
+bounded `>=0.9,<0.10` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
 
-Operator-supplied typed native plugins must be rebuilt for Relay 0.8. `grpc-v1`
+Operator-supplied typed native plugins must be rebuilt for Relay 0.9. `grpc-v1`
 workers must be regenerated and rebuilt when they use tool callbacks, tool
 execution intercepts, or manual tool-end APIs.
 

@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-09-04T17:51:26.683963Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
@@ -2074,7 +2074,7 @@ requires-dist = [
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
-    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.8.3,<0.9" },
+    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.9,<0.10" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
     { name = "onnxruntime", marker = "extra == 'wake'", specifier = "==1.27.0" },
@@ -2942,17 +2942,17 @@ wheels = [
 
 [[package]]
 name = "nemo-relay"
-version = "0.8.3"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/03/73/ac90ccb08faca19b2c8470bdd4d5b9bae89fc5edfde8dae72ee7b1a2d8df/nemo_relay-0.8.3.tar.gz", hash = "sha256:3670c0689f0709354068a1460131e6f01ea44cd7c2b2186930dd20b23cd079ff", size = 1615748, upload-time = "2026-09-02T03:32:45.828Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/c8/9aa54f9f6072b23db98dc59208c813ad032be17dd56ea1b7df38a3b5ade2/nemo_relay-0.9.0.tar.gz", hash = "sha256:bfe3113b5b0054bd1e992abf33b8174121be2bda832fa7e1e22e1d7c2a57735a", size = 1688244, upload-time = "2026-09-17T16:20:39.982Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/6a/199c2061358684550780bfc3184e588cea6533ec697ae6fa2f36f8881412/nemo_relay-0.8.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:2b0a59b8a95d6ed9de099e471318af672b51426a89c2019766ac889b1e23f1d4", size = 10200865, upload-time = "2026-09-02T03:32:15.373Z" },
-    { url = "https://files.pythonhosted.org/packages/df/90/3486d10c2003cda3bd4ce98d34e40f283faf87dcb1292cddca356a86c6be/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0c84a93ad0d4bea9a7bf67917874cd4eee24694764456a5f94c9609b1df42904", size = 9199160, upload-time = "2026-09-02T03:32:17.467Z" },
-    { url = "https://files.pythonhosted.org/packages/18/00/15705b941df64443e50c49139140dd84603f23125ab48f9c122942911439/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:10b08a939678d8f54ad02e5fb086454ffad15f269eae4854e9597956dc96b176", size = 9760299, upload-time = "2026-09-02T03:32:19.255Z" },
-    { url = "https://files.pythonhosted.org/packages/00/d3/2dac6a938713cfb6f59d8f3e82e991a1635a666f25f8d7fed8a3fa9c56b7/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:c2fba57f39100068244f8fcaffbdd801a0a8ccc7b9dbee330bb087f3970d8ccc", size = 11287368, upload-time = "2026-09-02T03:32:21.359Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/d2/f61379d244139306c3832082d446ad6167f50108969b3e8720e62e1b2ae5/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ae6804050b309a12dae5a7afc8c85b29b601c2c4a4257d365a998b774a2e7d16", size = 11717569, upload-time = "2026-09-02T03:32:23.321Z" },
-    { url = "https://files.pythonhosted.org/packages/db/96/333f62b4176450154a8908f619e3323b70b43c3b733a0a0752ba3b9232b1/nemo_relay-0.8.3-cp311-abi3-win_amd64.whl", hash = "sha256:b1f006e50e44967821f3a77a2e0001eed8154db01168abcc0681891f9c339fed", size = 9656294, upload-time = "2026-09-02T03:32:25.904Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/bd/37ab6038111d3cdec1858e584ef9e8fdfe0db07aa6073d66d1303b18d791/nemo_relay-0.8.3-cp311-abi3-win_arm64.whl", hash = "sha256:0d3db4f0a9d1f909acbf659612bfb9859e304b53cd425ef8e0f60ca851e85173", size = 9235572, upload-time = "2026-09-02T03:32:28.042Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/74/4e5cdb8ef27444e93fe89593747ab31aeef6b191a44025ebe5529d9bcb13/nemo_relay-0.9.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:3592ac7b53aec0a1c6d64c0ea55eb35f5e1aedf340399fe00682a2a7f93760e1", size = 10294612, upload-time = "2026-09-17T16:19:56.441Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/13/783e6b409530d45d55d39809169b3f617cecf1ee03077c376e2d15f55817/nemo_relay-0.9.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dec6f5e623785bf171cd2327d80377c0b6b0f48a0fb3ec65921151b0ae7b8c23", size = 9227964, upload-time = "2026-09-17T16:19:59.307Z" },
+    { url = "https://files.pythonhosted.org/packages/14/8a/5edfa13b8d66672e6c39f86e52d977701179b01c4d925a5b731a1237f953/nemo_relay-0.9.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:32dc3c5506f630c7976e139c247db8f5f926814d3d6477eab2a926885980b956", size = 9831347, upload-time = "2026-09-17T16:20:02.181Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/93/17daffa48f4af9d69ea079ec38405547e4b664e58d53225ccac6dce222f4/nemo_relay-0.9.0-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ca667add7abc9c0714e2f5aae6f097cc3b942591a286734bb4b15f56b3e9971c", size = 11396245, upload-time = "2026-09-17T16:20:04.807Z" },
+    { url = "https://files.pythonhosted.org/packages/97/2a/588642d0fa5540f8994f938d3b100555e9477e7c0f0984b37d4f153b3d1c/nemo_relay-0.9.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:5776578a31ad72f1a5cd08408e78d9d4c2d079df5a4cd9f666ec5fe4a5441a39", size = 11862826, upload-time = "2026-09-17T16:20:08.712Z" },
+    { url = "https://files.pythonhosted.org/packages/78/3a/1cf19338e7129df47b94ddcabe69120fa8aff39d8f8a36c8cdbd2a33ea37/nemo_relay-0.9.0-cp311-abi3-win_amd64.whl", hash = "sha256:b3d8b1b82001846f847cc83dbc05f66f9832534408103475b21d0829e4dbf251", size = 9793012, upload-time = "2026-09-17T16:20:11.511Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/89/d3f81b4d55c081c2f4580be13c94a7f851bc796077536c8e94d4b73ff528/nemo_relay-0.9.0-cp311-abi3-win_arm64.whl", hash = "sha256:f9d3296b1bdd54f88faef1d2cdbdac852b8aff244532169f42c2f144d9b5dffe", size = 9374047, upload-time = "2026-09-17T16:20:14.322Z" },
 ]
 
 [[package]]
@@ -4283,7 +4283,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4338,7 +4338,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -4975,11 +4975,11 @@ name = "vercel-workers"
 version = "0.0.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "vercel" },
+    { name = "anyio", marker = "python_full_version >= '3.12'" },
+    { name = "httpx", marker = "python_full_version >= '3.12'" },
+    { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
+    { name = "vercel", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/df/04d37021ad7ca53b7599c313e411d91623c7a005c741f491d1eefb7a9f0c/vercel_workers-0.0.25.tar.gz", hash = "sha256:212ded01400b524be51d251df49f801caf115ad7d48cca7eb168cbeceda3def3", size = 64149, upload-time = "2026-06-20T19:26:27.177Z" }
 wheels = [

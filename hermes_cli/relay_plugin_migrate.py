@@ -125,25 +125,13 @@ def dumps_toml(document: Mapping[str, Any]) -> str:
 
 
 def validate_relay_plugin_payload(payload: Mapping[str, Any]) -> list:
-    """Activate the payload once through Relay's own validator and clear it; returns the diagnostics
-    (empty = clean). Raises when Relay rejects the document outright."""
-    import asyncio
+    """Run the payload through Relay's own validator; returns the diagnostics (empty = clean).
+    Raises when Relay rejects the document outright."""
     from nemo_relay import plugin
 
-    async def _probe():
-        try:
-            report = await plugin.initialize(dict(payload))
-        finally:
-            await plugin.clear_async()
-        return list((report or {}).get("diagnostics") or []) if isinstance(report, dict) else []
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_probe())
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(_probe())).result()
+    report = plugin.validate(dict(payload))
+    config_report = report.get("config") if isinstance(report, dict) else None
+    return list((config_report or {}).get("diagnostics") or []) if isinstance(config_report, dict) else []
 
 
 def _comment_out_legacy_lines(lines: list[str], names: set[str]) -> list[str]:

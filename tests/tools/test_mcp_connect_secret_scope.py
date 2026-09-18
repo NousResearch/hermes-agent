@@ -102,3 +102,22 @@ def test_unscoped_discover_interpolates_header_refs_under_the_owners_scope(profi
     assert handed_over["httpsrv"]["headers"]["Authorization"] == f"Bearer {TOKEN_VALUE}"
     assert current_secret_scope() is None
 
+
+def test_connect_scope_install_failure_releases_the_discovery_claim(monkeypatch, spawn_env):
+    """Red on base: the scope install sat between the claim ``set(None)`` and the try, so a raise from
+    hydration skipped ``_connect_server_claim.reset`` and the caller's claim stayed cleared."""
+    async def _boom():
+        raise RuntimeError("hydration failed")
+    monkeypatch.setattr(discovery, "_install_owner_secret_scope", _boom)
+    claim = lambda server: None  # noqa: E731
+
+    async def _run():
+        token = discovery._core._connect_server_claim.set(claim)
+        try:
+            with pytest.raises(RuntimeError, match="hydration failed"):
+                await discovery._connect_server("demo", {"command": "true"})
+            assert discovery._core._connect_server_claim.get() is claim
+        finally:
+            discovery._core._connect_server_claim.reset(token)
+
+    asyncio.run(_run())

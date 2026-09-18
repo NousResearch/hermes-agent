@@ -113,8 +113,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         claim(server)
     # The run task copies this context: don't retain the discovery closure for its life.
     claim_token = _core._connect_server_claim.set(None) if claim is not None else None
-    scope_token = await _install_owner_secret_scope()
+    scope_token = None
     try:
+        scope_token = await _install_owner_secret_scope()
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

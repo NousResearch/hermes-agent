@@ -123,7 +123,19 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def release_jit_tools() -> None:
+            from agent.jit_tool_synthesizer import cleanup_session_jit_tools
+            owning_session_id = getattr(self, "session_id", None)
+            task_session_map = getattr(self, "_task_to_session", None)
+            mapped_session_id = task_session_map.get(task_id) if isinstance(task_session_map, dict) else None
+
+            cleaned_sessions = set()
+            for sid in (owning_session_id, mapped_session_id, task_id):
+                if sid and sid not in cleaned_sessions:
+                    cleanup_session_jit_tools(sid)
+                    cleaned_sessions.add(sid)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use, release_jit_tools):
             _quietly(step)
 
     def _client_log_context(self) -> str:

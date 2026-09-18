@@ -171,8 +171,8 @@ _LEAF_CHILDREN_NOTE = (
     "The system manages this automatically; no parameter override is available."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves be orchestrators or leaves; the system determines this automatically "
-    "based on the remaining depth budget. No parameter override is needed or available."
+    "Your own children can themselves delegate because depth remains. The system determines this automatically "
+    "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
 )
 
 def _build_child_system_prompt(

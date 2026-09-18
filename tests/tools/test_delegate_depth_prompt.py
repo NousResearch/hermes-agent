@@ -76,4 +76,5 @@ def test_dispatched_child_prompt_matches_depth_capability(
         if depth + 1 >= max_depth:
             assert "children MUST be leaves" in prompt
         else:
-            assert "children can themselves be orchestrators" in prompt
+            assert "children can themselves delegate because depth remains" in prompt
+            assert "orchestrators or leaves" not in prompt

@@ -1014,7 +1014,7 @@ export function useGatewayBoot({
       if (!isActivePrimary()) {
         activeGateway()?.close()
 
-        if (!(await ensureActiveGatewayOpen())) {
+        if (!(await ensureActiveGatewayOpen({ explicit: true }))) {
           throw new Error('Hermes gateway is not connected')
         }
 

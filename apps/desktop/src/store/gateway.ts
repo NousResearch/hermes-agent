@@ -1797,15 +1797,25 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
 // Reconnect the active gateway after a transient request failure. Primary
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
-export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
+// A scope parked on a rejected session stays parked for automatic request
+// retries; only a user gesture (`explicit`: the Reconnect action) may redial it.
+export async function ensureActiveGatewayOpen({ explicit = false } = {}): Promise<HermesGateway | null> {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
 
   const entry = g.secondaries.get(g.activeKey)
 
-  if (!entry || g.reauthFailures.has(entry.scope)) {
+  if (!entry) {
     return null
+  }
+
+  if (g.reauthFailures.has(entry.scope)) {
+    if (!explicit) {
+      return null
+    }
+
+    g.reauthFailures.delete(entry.scope)
   }
 
   if (!isOpen(entry.gateway)) {

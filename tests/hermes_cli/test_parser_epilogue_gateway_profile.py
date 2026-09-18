@@ -7,7 +7,7 @@ user-facing copy already rely on (#114495). Contract, not snapshot: assert the v
 profile flag are named, not the exact wording.
 """
 
-from hermes_cli._parser import _EPILOGUE
+from hermes_cli._parser import _EPILOGUE, build_top_level_parser
 
 
 def test_epilogue_documents_the_profile_scoped_command_form():
@@ -18,3 +18,10 @@ def test_epilogue_documents_the_profile_scoped_command_form():
 def test_epilogue_documents_the_gateway_service_verbs():
     for verb in ("gateway start", "gateway stop", "gateway install"):
         assert f"hermes {verb}" in _EPILOGUE
+
+
+def test_rendered_help_carries_the_epilogue_rows():
+    """The wiring, not just the constant: the rows must reach what argparse prints."""
+    help_text = build_top_level_parser()[0].format_help()
+    assert "hermes gateway start" in help_text
+    assert "hermes -p coder gateway stop" in help_text

@@ -494,7 +494,30 @@ def _arrange_uninstalled_start(monkeypatch):
     monkeypatch.setattr(gateway_windows, "install", lambda **kwargs: installs.append(kwargs))
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawns.append(1) or 4242)
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: True)
     return installs, spawns
+
+
+def test_stdin_interactive_only_when_isatty_and_a_console_answers_get_console_mode():
+    """Windows CRT isatty() is True for the NUL device (`hermes gateway start < NUL`, stdin=DEVNULL), so
+    isatty alone must not open the prompt; off Windows (no console-mode fact) isatty decides (#113977)."""
+    assert gateway_windows._stdin_is_interactive(isatty=True, console_mode_ok=False) is False   # NUL
+    assert gateway_windows._stdin_is_interactive(isatty=True, console_mode_ok=True) is True     # console
+    assert gateway_windows._stdin_is_interactive(isatty=False, console_mode_ok=True) is False   # pipe
+    assert gateway_windows._stdin_is_interactive(isatty=True, console_mode_ok=None) is True     # POSIX tty
+
+
+def test_start_with_nul_stdin_starts_the_gateway_but_never_installs_login_persistence(monkeypatch, capsys):
+    """isatty says TTY, GetConsoleMode says no console: `< NUL` gets the same treatment as a pipe."""
+    installs, spawns = _arrange_uninstalled_start(monkeypatch)
+    monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: False)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt on a NUL stdin"))
+
+    gateway_windows.start()
+
+    assert installs == [] and spawns == [1]
+    assert "hermes gateway install" in capsys.readouterr().out
 
 
 def test_start_without_tty_starts_the_gateway_but_never_installs_login_persistence(monkeypatch, capsys):

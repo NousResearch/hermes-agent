@@ -96,8 +96,8 @@ def _relay_report(*diagnostics):
 def test_error_diagnostics_reject_the_payload_like_relay_0_8_did(monkeypatch):
     monkeypatch.setattr(
         nemo_relay.plugin,
-        "validate_exact",
-        lambda _payload: _relay_report(
+        "validate",
+        lambda _payload, additional_plugins_toml=None: _relay_report(
             {"level": "warning", "code": "unknown_field", "message": "unknown field 'x'"},
             {"level": "error", "code": "unsupported_value", "message": "atof.mode 'nope' is unsupported"},
         ),
@@ -109,9 +109,19 @@ def test_error_diagnostics_reject_the_payload_like_relay_0_8_did(monkeypatch):
 
 def test_warning_diagnostics_are_returned_not_raised(monkeypatch):
     warning = {"level": "warning", "code": "unknown_field", "message": "unknown field 'x'"}
-    monkeypatch.setattr(nemo_relay.plugin, "validate_exact", lambda _payload: _relay_report(warning))
+    observed = {}
+
+    def validate(payload, additional_plugins_toml=None):
+        observed["payload"] = payload
+        observed["document"] = tomllib.loads(
+            Path(additional_plugins_toml).read_text(encoding="utf-8")
+        )
+        return _relay_report(warning)
+
+    monkeypatch.setattr(nemo_relay.plugin, "validate", validate)
 
     assert validate_relay_plugin_payload({"version": 1}) == [warning]
+    assert observed == {"payload": {}, "document": {"version": 1}}
 
 
 def test_error_diagnostics_leave_env_untouched(profile_env, monkeypatch):
@@ -119,8 +129,10 @@ def test_error_diagnostics_leave_env_untouched(profile_env, monkeypatch):
     before = (profile_env / ".env").read_text(encoding="utf-8")
     monkeypatch.setattr(
         nemo_relay.plugin,
-        "validate_exact",
-        lambda _payload: _relay_report({"level": "error", "code": "bad", "message": "rejected"}),
+        "validate",
+        lambda _payload, additional_plugins_toml=None: _relay_report(
+            {"level": "error", "code": "bad", "message": "rejected"}
+        ),
     )
 
     result = migrate_profile_relay_env(profile_env)

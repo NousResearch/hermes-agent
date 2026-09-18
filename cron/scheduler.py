@@ -250,7 +250,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase())
+            backup_provider_phrase=_fallback_chain_phrase(), provider=job.get("provider"))
         if notice is not None:
             return notice
 

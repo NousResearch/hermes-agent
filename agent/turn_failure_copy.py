@@ -144,10 +144,7 @@ _NONRETRYABLE_DEFAULT_COPY = (
     "or check the details in `{home}/logs/agent.log`."
 )
 _AUTH_COPY: Dict[str, str] = {
-    "oauth": (
-        "{label} rejected your sign-in, so the model can't be reached. Sign in again: "
-        "`hermes portal` for Nous, `hermes auth add <provider> --type oauth` for other accounts."
-    ),
+    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
     "api_key": (
         "{label} rejected your API key, so the model can't be reached. Update it in "
         "Settings → Providers, or run `hermes setup` in a terminal."
@@ -272,6 +269,36 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> s
     )
 
 
+def oauth_relogin_command(provider: Any) -> str:
+    """The exact re-login command for a rejected OAuth grant, naming the provider slug and the active
+    named profile: a profile's credentials are its own (93889b770da), so a bare ``hermes auth`` from
+    the root profile re-signs the wrong store and the goal judge, reading a bare 401, guesses which
+    service revoked the token (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if slug == "nous":
+        return f"hermes {profile_cli_selector()}portal"
+    return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def relogin_command_hint(provider: Any) -> str:
+    """Re-sign-in command for a rejected credential on surfaces that may not know the provider:
+    the exact OAuth command for a known OAuth slug, ``hermes auth add <slug>`` for a known API-key
+    slug, and the ``<provider>`` placeholder when the slug is unknown — always carrying the
+    ``-p <profile>`` selector so a profile user never re-signs the ROOT store (#114012)."""
+    from hermes_constants import profile_cli_selector
+
+    slug = str(provider or "").strip().lower()
+    if not slug:
+        return f"hermes {profile_cli_selector()}auth add <provider>"
+    from agent.error_surface import auth_kind
+
+    if auth_kind(slug) == "oauth":
+        return oauth_relogin_command(slug)
+    return f"hermes {profile_cli_selector()}auth add {slug}"
+
+
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
 ) -> str:
@@ -288,7 +315,8 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint)
+    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+                           relogin=oauth_relogin_command(provider))
     return f"{body}\n\nProvider said: {summary}"
 
 

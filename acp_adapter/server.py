@@ -414,9 +414,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not mcp_servers:
             return
         try:
+            from agent.runtime_cwd import set_session_cwd
             from tools.mcp_tool_discovery import register_mcp_servers
 
-            await asyncio.to_thread(register_mcp_servers, {s.name: _mcp_server_config(s) for s in mcp_servers})
+            configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
+
+            def _register_pinned() -> None:
+                # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
+                # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
+                set_session_cwd(state.cwd)
+                register_mcp_servers(configs)
+
+            await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return

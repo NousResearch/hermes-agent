@@ -25,12 +25,14 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    _tirith_mod._circuit_open_at = 0.0
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    _tirith_mod._circuit_open_at = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +165,57 @@ class TestUnknownExitCode:
         result = check_command_security("cmd")
         assert result["action"] == "block"
         assert "exit code 99" in result["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker: half-open recovery
+# ---------------------------------------------------------------------------
+
+def _open_breaker(age_s):
+    """Put the breaker in the open state as if it tripped ``age_s`` seconds ago."""
+    _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT
+    _tirith_mod._circuit_open = True
+    _tirith_mod._circuit_open_at = time.monotonic() - age_s
+
+
+class TestCircuitBreakerHalfOpen:
+    @pytest.mark.parametrize("returncode, action", [(0, "allow"), (1, "block"), (2, "warn")])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_completed_probe_after_retry_window_closes_breaker(self, mock_cfg, mock_run, returncode, action):
+        """Once the retry window has elapsed, one real scan runs; any verdict (allow/block/warn)
+        proves the binary healthy and closes the breaker, so the next command is scanned again."""
+        mock_cfg.return_value = _CFG
+        _open_breaker(age_s=_tirith_mod._CIRCUIT_RETRY_S + 1)
+        mock_run.return_value = _mock_run(returncode, _json_stdout())
+
+        result = check_command_security("echo hi")
+
+        assert result["action"] == action
+        assert mock_run.call_count == 1
+        assert (_tirith_mod._circuit_open, _tirith_mod._crash_count) == (False, 0)
+        # Breaker closed: the following command is scanned rather than short-circuited.
+        check_command_security("echo again")
+        assert mock_run.call_count == 2
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_open_breaker_probes_once_per_window_and_failed_probe_rearms(self, mock_cfg, mock_run):
+        """Inside the window nothing spawns; after it exactly one probe runs, and a probe that
+        fails re-arms the window so the next caller is fail-open without spawning again."""
+        mock_cfg.return_value = _CFG
+        _open_breaker(age_s=1)
+        mock_run.side_effect = OSError("binary gone")
+
+        assert check_command_security("echo hi")["summary"] == "tirith disabled (circuit breaker)"
+        assert mock_run.call_count == 0
+
+        _open_breaker(age_s=_tirith_mod._CIRCUIT_RETRY_S + 1)
+        assert check_command_security("echo hi")["action"] == "allow"  # probe spawned and failed
+        assert mock_run.call_count == 1
+        assert _tirith_mod._circuit_open is True
+        assert check_command_security("echo hi")["summary"] == "tirith disabled (circuit breaker)"
+        assert mock_run.call_count == 1  # re-armed: no second probe inside the fresh window
 
 
 # ---------------------------------------------------------------------------

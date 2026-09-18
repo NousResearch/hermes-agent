@@ -31,11 +31,17 @@ if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
 
-_MISSING_ACCESS_TOKEN_MSG = (
-    "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.")
-_MISSING_REFRESH_TOKEN_MSG = (
-    "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.")
-_NO_CREDENTIALS_MSG = "No Codex credentials stored. Run `hermes auth` to authenticate."
+# ``{relogin}`` is filled at raise time with the profile-aware sign-in command: a bare
+# ``hermes auth`` from a named profile re-signs the ROOT store (93889b770da, #114012).
+_MISSING_ACCESS_TOKEN_MSG = "Codex auth is missing access_token. Run `{relogin}` to re-authenticate."
+_MISSING_REFRESH_TOKEN_MSG = "Codex auth is missing refresh_token. Run `{relogin}` to re-authenticate."
+_NO_CREDENTIALS_MSG = "No Codex credentials stored. Run `{relogin}` to authenticate."
+
+
+def _codex_relogin_command() -> str:
+    from agent.turn_failure_copy import oauth_relogin_command
+
+    return oauth_relogin_command("openai-codex")
 
 
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
@@ -87,17 +93,19 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     auth_store = _load_auth_store_maybe_locked(_lock)
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
+        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing", relogin=True)
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise _codex_err(
-            "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
+            f"Codex auth state is missing tokens. Run `{_codex_relogin_command()}` to re-authenticate.",
             "codex_auth_invalid_shape", relogin=True)
     if not _nonempty_str(tokens.get("access_token")):
-        raise _codex_err(_MISSING_ACCESS_TOKEN_MSG, "codex_auth_missing_access_token", relogin=True)
+        raise _codex_err(_MISSING_ACCESS_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_access_token", relogin=True)
     if not _nonempty_str(tokens.get("refresh_token")):
-        raise _codex_err(
-            _MISSING_REFRESH_TOKEN_MSG, "codex_auth_missing_refresh_token", relogin=True)
+        raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_refresh_token", relogin=True)
     return {"tokens": tokens, "last_refresh": state.get("last_refresh")}
 
 
@@ -339,7 +347,7 @@ def _codex_refresh_failure_error(response: "httpx.Response") -> AuthError:
             "Codex refresh token was already consumed by another client "
             "(e.g. Codex CLI or VS Code extension). "
             "Run `codex` in your terminal to generate fresh tokens, "
-            "then run `hermes auth` to re-authenticate.")
+            f"then run `{_codex_relogin_command()}` to re-authenticate.")
     # A 401/403 from the token endpoint always means the refresh token is invalid/expired —
     # force relogin even if the body error code wasn't one of the known strings.
     relogin_required = (
@@ -354,8 +362,8 @@ def refresh_codex_oauth_pure(
     from hermes_cli.auth import _nonempty_str, _utc_now_z
     del access_token  # Access token is only used by callers to decide whether to refresh.
     if not _nonempty_str(refresh_token):
-        raise _codex_err(
-            _MISSING_REFRESH_TOKEN_MSG, "codex_auth_missing_refresh_token", relogin=True)
+        raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
         headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
@@ -509,7 +517,8 @@ def resolve_codex_runtime_credentials(
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
         if read_error is not None:
             raise read_error
-        raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
+        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+                         "codex_auth_missing", relogin=True)
     tokens = dict(data["tokens"])
     access_token = _stripped(tokens.get("access_token"))
     refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)

@@ -203,7 +203,11 @@ repositories too, through the same stored credentials described below.
 
 `hermes plugins install` clones non-interactively (it never prompts for a
 username or password), so a private repo needs a credential Hermes can find on
-its own. For an `https://` source it tries, in order:
+its own. Every clone, pinned `--ref` fetch and `hermes plugins update` pull is
+attempted anonymously first — public repos never see your credential, so a
+stale or revoked token cannot break a public install. Only when the remote
+refuses anonymous access does Hermes look for a credential. For an `https://`
+source it tries, in order:
 
 1. `GITHUB_TOKEN` or `GH_TOKEN` from your `.env` (GitHub hosts only).
 2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.

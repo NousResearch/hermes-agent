@@ -11,7 +11,6 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +161,10 @@ def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
     default's host (or a subdomain of it) and either the bare host — the provider's own host
     with no path still means the native endpoint (#53054) — or the default's path
     (``/anthropic`` for MiniMax, ``/plan/anthropic`` for Tencent) with or without a ``/v1``
-    tail. With nothing to compare — no URL, no path on the default, or an overlay-only
-    provider whose models.dev default is not cached (offline) — keep the declared transport:
-    demoting the provider's own default endpoint would be the worse failure."""
+    tail. With nothing to compare — no URL, an overlay-only provider whose models.dev default
+    is not cached (offline), or a default with no path at all (``api.anthropic.com``: no sibling
+    OpenAI-compatible path exists to tell an override's protocol from) — keep the declared
+    transport: demoting the provider's own endpoint would be the worse failure."""
     pdef = get_provider(provider, allow_network=False)
     default = (pdef.base_url if pdef else "").strip()
     default_path = base_url_path(default).removesuffix("/v1")

@@ -54,12 +54,13 @@ class TestFallbackApiMode:
             "minimax": "https://api.minimax.io/anthropic/v1",
             "minimax-cn": "https://api.minimaxi.com/anthropic/v1",
             "tencent-tokenplan": "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+            "anthropic": "https://api.anthropic.com",
         }
         real = runtime_provider.get_provider
 
         def seeded(name, *, allow_network=True):
-            # allow_network is dropped so the fixture can never reach models.dev; replace, not
-            # assign, because get_provider hands back the cached ProviderDef other tests share.
+            # allow_network is dropped so the fixture can never reach models.dev; replace()
+            # rather than mutate so the fixture never depends on get_provider's object identity.
             # Seed unconditionally: a warm disk cache must not swap in whatever models.dev
             # publishes today.
             pdef = real(name, allow_network=False)
@@ -90,6 +91,7 @@ class TestFallbackApiMode:
         ("minimax", "https://api.minimax.io/anthropic/v1/messages"),  # under the default path
         ("tencent-tokenplan", "https://api.lkeap.cloud.tencent.com/plan/anthropic/v2"),  # non-/anthropic default
         ("minimax", ""),  # nothing to compare: keep the declared transport
+        ("anthropic", "http://127.0.0.1:4000/v1"),  # bare-host default: relays serve /v1/messages
     ])
     def test_anthropic_transport_holds_on_the_provider_endpoint(self, provider, base_url):
         assert _fallback_api_mode(provider, base_url, "MiniMax-M3") == "anthropic_messages"

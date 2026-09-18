@@ -116,6 +116,14 @@ class DispatchResult:
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
+    skipped_self_review: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` review rows parked because the assignee is the
+    card's OWN implementer — ``"assignee_is_implementer"`` (spawning it would
+    hand the review skill to the bot that wrote the change) or
+    ``"implementer_unknown"`` (no implementer provenance, so a distinct reviewer
+    cannot be proven). Fail-closed: the row stays in ``review`` until a distinct
+    reviewer is named. Needs a human, so it is bucketed apart from the
+    "busy, retry later" per-profile deferrals."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -1811,6 +1819,28 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _self_review_reason(
+    conn: sqlite3.Connection, task_id: str, assignee: str,
+) -> Optional[str]:
+    """Why ``assignee`` must not be spawned to review ``task_id``, else ``None``.
+
+    ``"assignee_is_implementer"`` — the card's recorded implementer IS this
+    assignee (canonicalised the same way ``request_review`` canonicalises a
+    reviewer, so capitalization/case-only differences cannot slip past).
+    ``"implementer_unknown"`` — the card carries no ``review_requested``
+    implementer provenance at all, so a distinct reviewer cannot be PROVEN.
+    Fail-closed: unknown provenance parks rather than trusts, since the default
+    ``reviewer=None`` handoff records no reviewer and leaves the author as the
+    assignee.
+    """
+    implementer = _kb.review_implementer(conn, task_id)
+    if not implementer:
+        return "implementer_unknown"
+    if _kb._canonical_assignee(implementer) == _kb._canonical_assignee(assignee):
+        return "assignee_is_implementer"
+    return None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1839,6 +1869,18 @@ def _dispatch_lane_task(
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
+    # Author exclusion: the review lane must never spawn a task's own
+    # implementer with the review skill — the bot that wrote the change would be
+    # grading (and could land) its own work. Fail-closed: park the row until a
+    # distinct reviewer is named. Placed before the cap / respawn guards so
+    # ``dry_run`` sees exactly the same decision. Deliberately no task event:
+    # this guard can stay engaged for many ticks and an event per tick would
+    # spam ``hermes kanban tail``.
+    if lane == "review":
+        self_review = _self_review_reason(conn, task_id, assignee)
+        if self_review is not None:
+            result.skipped_self_review.append((task_id, self_review))
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
@@ -2043,15 +2085,29 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
+def _any_spawnable_review(
+    conn: sqlite3.Connection, review_rows: list[sqlite3.Row],
+) -> bool:
     """Mirrors the review loop's own gate so human-pulled control-plane lanes
-    don't tax ready throughput; assumes spawnable when profiles are unimportable."""
+    don't tax ready throughput; assumes spawnable when profiles are unimportable.
+    A row parked by the author-exclusion guard is NOT spawnable review work:
+    counting it would hold back the ready lane's slot reservation for a review
+    that can never dispatch."""
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+        return any(
+            row["assignee"]
+            and _self_review_reason(conn, row["id"], row["assignee"]) is None
+            for row in review_rows
+        )
+    return any(
+        row["assignee"]
+        and profile_exists(row["assignee"])
+        and _self_review_reason(conn, row["id"], row["assignee"]) is None
+        for row in review_rows
+    )
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2112,7 +2168,7 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(review_rows):
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(conn, review_rows):
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".

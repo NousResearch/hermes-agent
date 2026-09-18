@@ -39,10 +39,6 @@ const ENTER_ACTIVATES = [
   '[role="treeitem"]'
 ].join(',')
 
-// Overlays that cover the whole window (portaled to the body, or the overlay
-// shell itself) — one anywhere means the composer is behind it.
-const BLOCKING_OVERLAY = OVERLAY_SURFACE
-
 // Blockers that live INSIDE a chat surface. Inactive tabs stay mounted, so this
 // one has to be visible-scoped: a clarify card waiting in a background thread
 // must not take the foreground composer's letter keys.
@@ -155,7 +151,7 @@ export function composerFocusBlockedBySurface(): boolean {
     switcherActive() ||
     $workspaceIsPage.get() ||
     isFocusWithin('[data-terminal]') ||
-    Boolean(document.querySelector(BLOCKING_OVERLAY))
+    Boolean(document.querySelector(OVERLAY_SURFACE))
   )
 }
 

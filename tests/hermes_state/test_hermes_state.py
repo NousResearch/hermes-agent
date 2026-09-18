@@ -3252,6 +3252,34 @@ class TestCompressionChainProjection:
         assert "_lineage_root_id" not in row
         assert row["end_reason"] == "compression"
 
+    def test_list_projects_post_reap_ui_continuation_but_not_live_delegate(self, db):
+        """A recovered primary chat stays visible; a delegate created while its parent lived does not."""
+        db.create_session("root", "desktop")
+        db.append_message("root", "user", "old title")
+        db.create_session(
+            "delegate", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.append_message("delegate", "user", "background task")
+        db.end_session("root", "ws_orphan_reap")
+        ended_at = db.get_session("root")["ended_at"]
+        db.create_session(
+            "continued", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (ended_at + 1, "Current title", "continued"),
+        )
+        db.append_message("continued", "user", "live continuation")
+        db._conn.commit()
+
+        rows = db.list_sessions_rich(source="desktop", limit=20)
+
+        assert [row["id"] for row in rows] == ["continued"]
+        assert rows[0]["title"] == "Current title"
+        assert rows[0]["_lineage_ids"] == ["root", "continued"]
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

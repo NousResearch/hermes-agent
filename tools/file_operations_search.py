@@ -464,6 +464,12 @@ class SearchMixin:
         terms = " -o ".join(f"-path {self._escape_shell_arg(item)}" for item in protected_paths)
         return f"\\( {terms} \\) -prune"
 
+    def _root_under_hidden_dir(self, path: str) -> bool:
+        """True when the search root or any ancestor is a dot-directory (``~/.hermes/skills``)."""
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        parts = os.path.normpath(os.path.join(cwd, path or ".")).replace("\\", "/").split("/")
+        return any(part.startswith(".") and part not in (".", "..") for part in parts)
+
     def _rg_exclusion_globs(self, path: str) -> List[str]:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
         out: List[str] = []
@@ -899,7 +905,10 @@ class SearchMixin:
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)
-        if protected_paths:
+        # grep applies --exclude-dir='.*' to the command-line root too (GNU grep: to
+        # every component of it), so a search rooted under a hidden dir such as
+        # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
+        if protected_paths or self._root_under_hidden_dir(path):
             return self._search_with_grep_pruned(
                 pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
@@ -925,14 +934,14 @@ class SearchMixin:
         enumerates files (traversal never enters protected dirs) and hands them to
         grep via ``-exec {} +``; hidden dirs pruned to mirror ``--exclude-dir='.*'``.
         Trade-off: find folds grep's exit code, so a hard grep error surfaces as an
-        empty result — acceptable for this darwin-local-broad-search-only branch."""
+        empty result — accepted for these two branches (macOS protected dirs, roots
+        under a dot-directory) where grep's own --exclude-dir cannot express the intent."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        find_parts = [
-            "find", self._escape_shell_arg(path or "."),
-            self._prune_expr(protected_paths), "-o",
-            "\\( -type d -name '.*' \\) -prune", "-o",
-            "-type f",
-        ]
+        # -mindepth 1: the ``-name '.*'`` prune must not swallow a dot-named root itself.
+        find_parts = ["find", self._escape_shell_arg(path or "."), "-mindepth", "1"]
+        if protected_paths:
+            find_parts.extend([self._prune_expr(protected_paths), "-o"])
+        find_parts.extend(["\\( -type d -name '.*' \\) -prune", "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])

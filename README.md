@@ -160,7 +160,12 @@ For the full command lists, see the [CLI guide](https://hermes-agent.nousresearc
 
 ---
 
-## Documentation
+## Fallback route health
+
+When a configured provider fails, the gateway now publishes the active fallback route as soon as the route changes, including fallback-to-fallback switches and recovery to the primary route. This gives operators diagnosis during an incident instead of waiting for the next turn, which lowers support effort and makes recovery visible in the Desktop gateway panel.
+
+The status is deliberately limited: it contains only provider/model labels, a sanitized reason, and a retry time. It never includes API keys, headers, endpoint URLs, raw exceptions, or session-specific data when the gateway cannot identify one unambiguous active agent. Publication is optional, best-effort, debounced for duplicate snapshots, and runs off the completion path; callback or status-file failures do not fail the turn. Verified coverage includes primary→fallback, fallback switching, recovery, cooldown, absent callbacks, and sanitization.
+
 
 All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
 

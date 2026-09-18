@@ -829,9 +829,11 @@ def _sanitize_fallback_status(value: Any) -> Optional[dict[str, Any]]:
     result: dict[str, Any] = {"active": active, "chain": chain}
     if value.get("cooldown_until") is not None:
         with contextlib.suppress(TypeError, ValueError):
-            result["cooldown_until"] = float(value["cooldown_until"])
+            cooldown_until = float(value["cooldown_until"])
+            if math.isfinite(cooldown_until):
+                result["cooldown_until"] = cooldown_until
     reason = value.get("reason")
-    if isinstance(reason, str) and reason.strip():
+    if isinstance(reason, str) and reason.strip() and "://" not in reason and "@" not in reason:
         result["reason"] = reason.strip()[:240]
     return result
 

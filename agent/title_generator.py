@@ -34,6 +34,12 @@ def wait_for_title_upgrades(timeout: float = 10.0) -> None:
     for thread in list(_UPGRADE_THREADS):
         thread.join(max(0.0, deadline - time.monotonic()))
 
+
+# Sessions whose stage-2 title call is already running; concurrent turn hooks must not
+# start a second LLM upgrade for the same session.
+_title_in_flight: set[str] = set()
+_title_in_flight_lock = threading.Lock()
+
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
 # (title, source) -> None; source is the persisted provenance (``derived`` / ``llm``). Consumers paying a
@@ -600,15 +606,35 @@ def maybe_auto_title(
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return
+    with _title_in_flight_lock:
+        if session_id in _title_in_flight:
+            return
+        _title_in_flight.add(session_id)
+
+    def _run() -> None:
+        try:
+            auto_title_session(
+                session_db,
+                session_id,
+                user_message,
+                failure_callback=failure_callback,
+                main_runtime=main_runtime,
+                title_callback=title_callback,
+                runtime_validator=runtime_validator,
+            )
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(session_id)
+
     # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
-    from agent.memory_provider import spawn_context_thread
-    upgrade = spawn_context_thread(
-        auto_title_session, name="auto-title",
-        args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
-                    runtime_validator=runtime_validator),
-    )
+    try:
+        from agent.memory_provider import spawn_context_thread
+        upgrade = spawn_context_thread(_run, name="auto-title", args=(), kwargs={})
+    except Exception:
+        with _title_in_flight_lock:
+            _title_in_flight.discard(session_id)
+        raise
     _UPGRADE_THREADS.add(upgrade)
     upgrade.start()

@@ -935,6 +935,22 @@ async def test_update_cron_job_no_agent_reuses_existing_script(isolated_profiles
 
 
 @pytest.mark.asyncio
+async def test_dashboard_profile_script_defaults_to_explicit_scheduler_target(isolated_profiles):
+    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
+    scripts_dir.mkdir()
+    script = scripts_dir / "collect.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    job = await _rt_cron.create_cron_job(
+        _web_models.CronJobCreate(schedule="every 1h", script=str(script), no_agent=True),
+        profile="worker_alpha",
+    )
+
+    assert job["script"] == "collect.py"
+    assert job["target"] == "scheduler"
+
+
+@pytest.mark.asyncio
 async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     from hermes_cli import web_server
 

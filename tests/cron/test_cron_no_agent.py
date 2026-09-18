@@ -58,7 +58,7 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 
     script_path = hermes_env / "scripts" / "w.sh"
     script_path.write_text("echo hi\n")
-    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local")
 
     update_job(job["id"], {"no_agent": False})
     reloaded = get_job(job["id"])
@@ -98,7 +98,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="alert.sh", target="scheduler", no_agent=True, deliver="local"
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
@@ -128,7 +128,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     script_path.write_text('#!/bin/bash\necho "ok"\n')
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="probe.sh", target="scheduler", no_agent=True, deliver="local"
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
@@ -154,6 +154,7 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
         prompt=None,
         schedule="every 5m",
         script="slow.py",
+        target="scheduler",
         no_agent=True,
         deliver="telegram",
         name="slow watchdog",

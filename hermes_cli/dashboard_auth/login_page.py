@@ -377,12 +377,16 @@ _EMPTY_HTML = """\
 <main>
 <h1>Sign-in unavailable</h1>
 <p>This dashboard is bound to a non-loopback host but no authentication
-providers are available.</p>
-<p>Configure the bundled username/password provider or an OAuth provider.
-See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
+providers are available for interactive sign-in.</p>
+<p>Configure an auth provider before exposing this server: run
+<code>hermes dashboard register</code> for the Nous Portal OAuth provider, configure the
+bundled username/password provider with <code>dashboard.basic_auth</code>, or
+install another <code>DashboardAuthProvider</code> plugin. See the <a
+href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
 authentication documentation</a> for setup instructions.</p>
-<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through
-an SSH tunnel or Tailscale.</p>
+<p>There is no unauthenticated public-bind option. For auth-free local use,
+bind to <code>127.0.0.1</code> and connect through an SSH tunnel or Tailscale;
+an SSH or Tailscale tunnel keeps it local.</p>
 </main>
 </body>
 </html>

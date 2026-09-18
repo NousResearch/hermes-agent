@@ -44,6 +44,7 @@ SAMPLE_RATE = 24_000
 CHUNK_FRAMES = 2_400                       # 100 ms at 24 kHz
 CHUNK_BYTES = CHUNK_FRAMES * 2             # PCM16 little-endian
 UPSTREAM_BACKPRESSURE_CHUNKS = 3           # >300ms queued upstream => drop, never queue stale mic
+LEAD_IN_MAX_CHUNKS = 30                    # 3s of connect-time audio buffered, not dropped
 DEGRADED_DROP_STREAK = 5                   # consecutive drops before a "degraded" state event
 PLAYBACK_ECHO_TAIL_S = 0.45                # AEC tail after the last playback chunk (SPEC §7)
 RECONNECT_DELAY_S = 5.0                    # matches the reference script's outer loop (SPEC §10)
@@ -199,6 +200,7 @@ class GrokLiveBridge:
         self._muted = False
         self._reconnects = 0
         self._dropped_chunks = 0
+        self._lead_in: list[bytes] = []      # connect-time audio parked until established
         self._consecutive_drops = 0
 
         self._stop_requested = threading.Event()
@@ -241,12 +243,24 @@ class GrokLiveBridge:
     def send_mic(self, pcm: bytes) -> Dict[str, Any]:
         """Relay one upstream mic chunk (~100ms PCM16 24kHz) toward xAI. Drop-not-queue when
         the send side is backed up (>300ms of audio pending — stale live audio would desync
-        the server VAD, SPEC §4.1 backpressure)."""
+        the server VAD, SPEC §4.1 backpressure).
+
+        While still connecting, the chunk is parked in a bounded LEAD-IN buffer instead of
+        dropped: xAI's opening handshake can take 8-10s+ (measured Sep 2026) and discarding
+        everything spoken during it made the first sentence of every wake-word conversation
+        vanish. The buffer is capped at LEAD_IN_MAX_CHUNKS (3s); past the cap it degrades to
+        the same drop-not-queue policy, and it is drained into the mic queue the moment the
+        session is established (loop thread) or discarded on stop/reconnect."""
         loop, mic_q = self._loop, self._mic_q
         if loop is None or mic_q is None or self._stop_requested.is_set():
             return {"accepted": False, "reason": "not_running"}
         if not self._established:
-            return {"accepted": False, "reason": "connecting"}
+            with self._state_lock:
+                if len(self._lead_in) < LEAD_IN_MAX_CHUNKS:
+                    self._lead_in.append(pcm)
+                    return {"accepted": True, "reason": "lead_in"}
+                self._dropped_chunks += 1
+            return {"accepted": False, "dropped": True, "reason": "backpressure"}
         if mic_q.qsize() >= UPSTREAM_BACKPRESSURE_CHUNKS:
             with self._state_lock:
                 self._dropped_chunks += 1
@@ -350,10 +364,14 @@ class GrokLiveBridge:
     # ── thread / loop plumbing ────────────────────────────────────────────────
 
     @staticmethod
-    def _default_connect(url: str, headers: Dict[str, str]):
+    def _default_connect(url: str, headers: Dict[str, str], open_timeout: float = 15.0):
         import websockets
+        # open_timeout must comfortably exceed xAI's opening handshake, measured
+        # at 8-10s+ in Sep 2026 (it was <1s at launch). The library default of
+        # 10s kills healthy connects before our own HANDSHAKE_TIMEOUT_S applies.
         return websockets.connect(url, additional_headers=headers,
-                                  ping_interval=20, ping_timeout=20)
+                                  ping_interval=20, ping_timeout=20,
+                                  open_timeout=open_timeout)
 
     def _thread_main(self) -> None:
         loop = asyncio.new_event_loop()
@@ -413,6 +431,10 @@ class GrokLiveBridge:
                 finally:
                     first_attempt = False
                     self._established = False
+                    # A failed/ended session's connect-time audio is stale: never
+                    # replay it into a fresh session's lead-in.
+                    with self._state_lock:
+                        self._lead_in.clear()
         except asyncio.CancelledError:
             pass
         finally:
@@ -473,6 +495,16 @@ class GrokLiveBridge:
                 if not handshake.is_set():
                     raise ConnectionError("xAI realtime connection closed during handshake")
                 self._established = self._ever_established = True
+                # Drain the connect-time lead-in buffer into the mic queue: the
+                # user has been speaking since voice.grok.start; xAI hears it
+                # immediately after session.updated, before the server VAD arms.
+                with self._state_lock:
+                    lead_in, self._lead_in = self._lead_in, []
+                if lead_in and self._mic_q is not None:
+                    for pcm in lead_in:
+                        self._mic_q.put_nowait(pcm)
+                    logger.info("grok-live: drained %d lead-in chunks (%.1fs) after slow connect",
+                                len(lead_in), len(lead_in) * 0.1)
                 self._set_state("listening")
                 # Mirrors the reference script's FIRST_COMPLETED wait: a dead mic pump
                 # (ConnectionClosed on send) is just as fatal as a dead receiver (§9).

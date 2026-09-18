@@ -272,7 +272,7 @@ class LintMixin:
         remaps baseline diagnostics into post-edit coordinates; otherwise every
         pre-existing diagnostic below an inserted line would look new."""
         svc = self._lsp_service()
-        if svc is None or not svc.enabled_for(path):
+        if svc is None or not self._lsp_will_handle(path):
             return ""
         line_shift = None
         if pre_content is not None and post_content is not None and pre_content != post_content:

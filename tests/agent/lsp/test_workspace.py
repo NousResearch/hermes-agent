@@ -78,6 +78,38 @@ def test_resolve_workspace_for_file_uses_cwd_first(tmp_path: Path, monkeypatch):
     assert gated is True
 
 
+def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeypatch):
+    """A removed process cwd must read as "no anchor", not raise — the LSP
+    workspace resolver runs inside a write tool and must never break a write
+    that already landed on disk."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    file_path = repo / "x.py"
+    file_path.write_text("")
+
+    def _deleted_cwd():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", _deleted_cwd)
+    # cwd argument absent → the process cwd is consulted and raises
+    root, gated = resolve_workspace_for_file(str(file_path))
+    # falls through to the file's own worktree
+    assert root == str(repo)
+    assert gated is True
+
+
+def test_current_dir_none_when_cwd_unreadable(monkeypatch):
+    from agent.lsp.workspace import _current_dir
+
+    def _deleted_cwd():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", _deleted_cwd)
+    assert _current_dir() is None
+    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", lambda: "/somewhere")
+    assert _current_dir() == "/somewhere"
+
+
 
 
 

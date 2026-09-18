@@ -129,13 +129,27 @@ def nearest_root(
     return None
 
 
+def _current_dir() -> Optional[str]:
+    """Process cwd, or ``None`` when the directory was removed underneath the
+    running process (a scratch workspace cleaned up at card completion).  The
+    kernel keeps the inode alive, so ``getcwd`` keeps raising ``FileNotFoundError``
+    even after the same path is recreated — from the resolver's point of view
+    there is simply no cwd anchor left."""
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
+
+
 def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> Tuple[Optional[str], bool]:
     """Return ``(workspace_root, gated_in)`` for a file.  The cwd's worktree wins when the file is
     inside it; otherwise the file's own worktree is the fallback anchor (monorepos / unrelated
     checkouts).  ``(None, False)`` when neither is in a git worktree."""
-    cwd_root = find_git_worktree(cwd or os.getcwd())
-    if cwd_root is not None and is_inside_workspace(file_path, cwd_root):
-        return cwd_root, True
+    cwd_anchor = cwd if cwd else _current_dir()
+    if cwd_anchor is not None:
+        cwd_root = find_git_worktree(cwd_anchor)
+        if cwd_root is not None and is_inside_workspace(file_path, cwd_root):
+            return cwd_root, True
     file_root = find_git_worktree(file_path)
     if file_root is not None:
         return file_root, True

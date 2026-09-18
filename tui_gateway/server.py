@@ -735,12 +735,19 @@ def _pending_connection_request_payload(sid: str) -> dict | None:
     return operation.request_payload() if operation is not None else None
 
 
-def _pending_approval_request_payload(session_key: str) -> dict | None:
-    """Read the oldest unresolved approval in a session, if there is one."""
+def _pending_approval_request_payload(session_key: str, *, strict: bool = False) -> dict | None:
+    """Read the oldest unresolved approval in a session, if there is one.
+
+    By default errors are swallowed (returning None) to match legacy callers.
+    When *strict* is True the exception propagates so callers like the inbox
+    aggregation can surface the failure as a coverage error and a red badge.
+    """
     try:
         from tools.approval import get_pending_gateway_approval
         approval = get_pending_gateway_approval(session_key)
     except Exception:
+        if strict:
+            raise
         logger.debug("failed to read pending approval for %s", session_key, exc_info=True)
         return None
     return _approval_request_payload(approval) if approval else None
@@ -3266,7 +3273,8 @@ from . import (  # noqa: E402
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
-    methods_connectors as _methods_connectors)
+    methods_connectors as _methods_connectors,
+    methods_inbox as _methods_inbox)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3276,6 +3284,7 @@ for _m in (
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
+    _methods_inbox):
     _m.register(sys.modules[__name__])
 del _m

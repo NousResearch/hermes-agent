@@ -1371,6 +1371,56 @@ export interface BrowserControllerParams {
 export interface BrowserControllerDetachResult {
   detached?: boolean
 }
+export interface InboxParams {
+  profile?: string | null
+  limit?: number
+}
+/** Wrapper matching the handler's actual return shape: ``{"inbox": {...}}``. */
+export interface InboxListResult {
+  inbox: InboxResult
+}
+export interface InboxResult {
+  items?: InboxItem[]
+  counts?: InboxCounts
+  badge?: string
+  coverage?: InboxCoverage
+}
+export interface InboxItem {
+  session_key: string
+  title?: string
+  source?: string
+  cwd?: string
+  lanes?: string[]
+  goal?: unknown
+  loop?: unknown
+  heartbeat?: unknown
+  pending_approval?: InboxPendingApproval | null
+  pending_clarify?: PendingClarify | null
+}
+export interface InboxPendingApproval {
+  count: number
+  description?: string
+  command_redacted?: boolean
+}
+export interface PendingClarify {
+  count: number
+}
+export interface InboxCounts {
+  needs_you?: number
+  running?: number
+  waiting?: number
+  scheduled?: number
+  total?: number
+}
+export interface InboxCoverage {
+  profile?: string
+  connection_scope?: string
+  scanned_sessions?: number
+  partial?: boolean
+  approval_scope?: string
+  clarify_scope?: string
+  errors?: string[]
+}
 export type PingParams = Record<string, never>
 export interface PingResult {
   pong: boolean
@@ -4325,6 +4375,8 @@ export interface RpcMethods {
   'image.detach': { params: ImageDetachParams; result: ImageDetachResult }
   /** Generate an image through the tool's provider dispatcher and hand the renderer a data URL. */
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
+  /** Read-only cross-session inbox aggregation for the active profile. */
+  'inbox.list': { params: InboxParams; result: InboxListResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -4696,6 +4748,7 @@ export const RPC_METHODS = [
   'image.attach_bytes',
   'image.detach',
   'image.generate',
+  'inbox.list',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

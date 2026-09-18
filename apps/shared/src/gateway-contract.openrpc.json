@@ -1231,6 +1231,24 @@
       }
     },
     {
+      "name": "inbox.list",
+      "summary": "Read-only cross-session inbox aggregation for the active profile.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxListResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -12728,6 +12746,258 @@
         "title": "ImageGenerateResult",
         "type": "object"
       },
+      "InboxCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "needs_you": {
+            "default": 0,
+            "title": "Needs You",
+            "type": "integer"
+          },
+          "running": {
+            "default": 0,
+            "title": "Running",
+            "type": "integer"
+          },
+          "waiting": {
+            "default": 0,
+            "title": "Waiting",
+            "type": "integer"
+          },
+          "scheduled": {
+            "default": 0,
+            "title": "Scheduled",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "InboxCounts",
+        "type": "object"
+      },
+      "InboxCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "default": "",
+            "title": "Profile",
+            "type": "string"
+          },
+          "connection_scope": {
+            "default": "active connection and profile only",
+            "title": "Connection Scope",
+            "type": "string"
+          },
+          "scanned_sessions": {
+            "default": 0,
+            "title": "Scanned Sessions",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "approval_scope": {
+            "default": "live gateway approval queue",
+            "title": "Approval Scope",
+            "type": "string"
+          },
+          "clarify_scope": {
+            "default": "live open sessions only",
+            "title": "Clarify Scope",
+            "type": "string"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "title": "InboxCoverage",
+        "type": "object"
+      },
+      "InboxItem": {
+        "additionalProperties": false,
+        "properties": {
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "cwd": {
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
+          },
+          "lanes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Lanes",
+            "type": "array"
+          },
+          "goal": {
+            "default": null,
+            "title": "Goal"
+          },
+          "loop": {
+            "default": null,
+            "title": "Loop"
+          },
+          "heartbeat": {
+            "default": null,
+            "title": "Heartbeat"
+          },
+          "pending_approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxPendingApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pending_clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingClarify"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "session_key"
+        ],
+        "title": "InboxItem",
+        "type": "object"
+      },
+      "InboxListResult": {
+        "additionalProperties": false,
+        "description": "Wrapper matching the handler's actual return shape: ``{\"inbox\": {...}}``.",
+        "properties": {
+          "inbox": {
+            "$ref": "#/components/schemas/InboxResult"
+          }
+        },
+        "required": [
+          "inbox"
+        ],
+        "title": "InboxListResult",
+        "type": "object"
+      },
+      "InboxParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "InboxParams",
+        "type": "object"
+      },
+      "InboxPendingApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "command_redacted": {
+            "default": true,
+            "title": "Command Redacted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "InboxPendingApproval",
+        "type": "object"
+      },
+      "InboxResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/InboxCounts",
+            "default": {
+              "needs_you": 0,
+              "running": 0,
+              "waiting": 0,
+              "scheduled": 0,
+              "total": 0
+            }
+          },
+          "badge": {
+            "default": "none",
+            "title": "Badge",
+            "type": "string"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/InboxCoverage",
+            "default": {
+              "profile": "",
+              "connection_scope": "active connection and profile only",
+              "scanned_sessions": 0,
+              "partial": false,
+              "approval_scope": "live gateway approval queue",
+              "clarify_scope": "live open sessions only",
+              "errors": []
+            }
+          }
+        },
+        "title": "InboxResult",
+        "type": "object"
+      },
       "InflightTurn": {
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
@@ -16468,6 +16738,20 @@
           }
         },
         "title": "PendingApproval",
+        "type": "object"
+      },
+      "PendingClarify": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "PendingClarify",
         "type": "object"
       },
       "PetCancelParams": {

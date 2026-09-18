@@ -9,6 +9,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { InboxStatusbarChip } from '@/app/shell/inbox/inbox-statusbar-chip'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -572,6 +573,14 @@ export function useStatusbarItems({
         to: CRON_ROUTE,
         toggleLabel: copy.cron,
         variant: 'action'
+      },
+      {
+        // Agent Inbox attention surface: a self-contained floating-panel chip.
+        // Always visible — the badge signals pending attention, so hiding it
+        // would strand the very requests it warns about.
+        id: 'inbox',
+        lockedVisible: true,
+        render: () => <InboxStatusbarChip />
       },
       {
         icon: <Globe className="size-3" />,

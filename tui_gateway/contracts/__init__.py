@@ -8,6 +8,7 @@ from . import (  # noqa: F401
     connectors_operation,
     events,
     groups_bot_relay,
+    inbox,
     liveness,
     profiles_vault_complete_foreign_subagents,
     projects_pets,

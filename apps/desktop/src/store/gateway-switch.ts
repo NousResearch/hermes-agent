@@ -5,6 +5,7 @@ import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
+import { clearInbox } from '@/store/inbox'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
@@ -232,6 +233,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Transient on purpose: the per-backend memory of the old gateway stays.
   setCurrentCwdTransient('')
   setCurrentBranch('')
+
+  // Inbox aggregation is scoped to the active connection + profile; a
+  // different backend mints a fresh scope and the generation bump rejects
+  // any in-flight late response (A-B-A).
+  clearInbox()
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.

@@ -190,15 +190,17 @@ _cross_vm_existing_wal_warned_paths: set[str] = set()
 _cross_vm_existing_wal_warned_lock = threading.Lock()
 
 
-# proc(5) escapes only octal bytes in mountinfo paths (``\040`` = space). Decode
-# exactly those: ``unicode_escape`` would additionally rewrite ``\t`` ``\n``
-# ``\x..`` ``\u....``, misreading a mount point that contains a literal
-# backslash sequence and routing the DB to the wrong fstype.
+# proc(5) escapes space/tab/newline/backslash as octal (\040 \011 \012 \134).
+# Decode exactly those: the previous latin-1/unicode_escape roundtrip rewrote
+# C-style sequences too and, worse, dropped every non-Latin-1 character
+# whenever any escape triggered decoding — a Unicode mount name with a space
+# lost characters and failed longest-prefix matching, routing the DB to the
+# wrong fstype.
 _OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
 
 
 def _decode_mountinfo_path(raw: str) -> str:
-    """Decode proc(5) octal escapes in a mountinfo path, leaving all other backslashes literal."""
+    """Decode proc(5) octal escapes in a single pass, preserving all other characters."""
     if "\\" not in raw:
         return raw
     return _OCTAL_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 8)), raw)

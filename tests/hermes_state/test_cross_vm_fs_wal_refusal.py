@@ -59,33 +59,39 @@ class TestDetectCrossVmFs:
 
 
 class TestDecodeMountinfoPath:
+    # The kernel escapes space/tab/newline/backslash as octal (\040 \011
+    # \012 \134). The old latin-1/unicode_escape roundtrip rewrote C-style
+    # sequences too and dropped non-Latin-1 characters whenever any escape
+    # triggered decoding.
     @pytest.mark.parametrize("raw,expected", [
-        ("/mnt/my\\040share", "/mnt/my share"),      # octal space still decodes
-        ("/mnt/a\\011b", "/mnt/a\tb"),               # octal tab still decodes
-        ("/mnt/plain", "/mnt/plain"),                # no backslash untouched
-        ("", ""),                                    # empty untouched
+        ("/mnt/my\\040share", "/mnt/my share"),
+        ("/mnt/a\\011b", "/mnt/a\tb"),
+        ("/mnt/a\\134tb", "/mnt/a\\tb"),
+        ("/mnt/a\\134040b", "/mnt/a\\040b"),
+        ("/mnt/plain", "/mnt/plain"),
+        ("", ""),
     ])
-    def test_octal_escapes_decode(self, raw, expected):
+    def test_kernel_octal_escapes_decode_single_pass(self, raw, expected):
         assert _decode_mountinfo_path(raw) == expected
 
     @pytest.mark.parametrize("raw", [
-        "/mnt/a\\tb",        # literal backslash-t is NOT a tab
-        "/mnt/a\\nb",        # literal backslash-n is NOT a newline
-        "/mnt/a\\x41b",      # literal hex escape is NOT decoded
-        "/mnt/a\\u0041b",    # literal unicode escape is NOT decoded
-        "/mnt/a\\NULb",      # literal named escape is NOT decoded
+        "/mnt/a\\tb",
+        "/mnt/a\\nb",
+        "/mnt/a\\x41b",
+        "/mnt/a\\u0041b",
     ])
-    def test_non_octal_backslashes_stay_literal(self, raw):
+    def test_c_style_sequences_are_not_decoded(self, raw):
         assert _decode_mountinfo_path(raw) == raw
 
     @pytest.mark.linux_only
-    def test_literal_backslash_t_mount_routes_by_literal_path(self, tmp_path):
-        # A mount point spelled with a literal backslash-t must match the
-        # literal directory, not a tab-rewritten one (unicode_escape bug).
-        row = "616 25 0:56 / /mnt/a\\tb rw,relatime - virtiofs share rw"
-        mi = _mountinfo(tmp_path, [ROOT_EXT4, row])
-        assert _detect_cross_vm_fs("/mnt/a\\tb/db", mountinfo_path=mi) is True
-        assert _detect_cross_vm_fs("/mnt/a\tb/db", mountinfo_path=mi) is False
+    def test_unicode_mount_with_space_routes_to_its_filesystem(self, tmp_path):
+        # Non-Latin-1 mount name with an octal-escaped space: the old decoder
+        # dropped the CJK characters and the virtiofs mount was missed.
+        row = "616 25 0:56 / /mnt/共享\\040share rw,relatime - virtiofs share rw"
+        mi = tmp_path / "mountinfo"
+        mi.write_text("\n".join([ROOT_EXT4, row]) + "\n", encoding="utf-8")
+        assert _detect_cross_vm_fs("/mnt/共享 share/db", mountinfo_path=str(mi)) is True
+        assert _detect_cross_vm_fs("/mnt/other/db", mountinfo_path=str(mi)) is False
 
 
 class TestWalRefusalOnCrossVmFs:

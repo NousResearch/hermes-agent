@@ -62,22 +62,42 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 
 # -- Provider egress redaction -----------------------------------------------
 
+def _redact_string_leaves(obj: Any) -> Any:
+    """Scrub every string leaf of a row tree (content text, ``tool_calls[].function.arguments``
+    JSON, multimodal part text) with the egress redactor. Returns the input object unchanged when
+    nothing matched, so clean transcripts are not copied on every turn."""
+    if isinstance(obj, str):
+        scrubbed = redact_for_egress(obj)
+        return obj if scrubbed == obj else scrubbed
+    if isinstance(obj, list):
+        items = [_redact_string_leaves(item) for item in obj]
+        return obj if all(new is old for new, old in zip(items, obj)) else items
+    if isinstance(obj, dict):
+        values = {key: _redact_string_leaves(value) for key, value in obj.items()}
+        return (
+            obj
+            if all(new is old for new, old in zip(values.values(), obj.values()))
+            else values
+        )
+    return obj
+
+
 def _redact_rows_for_provider(
     messages: Optional[List[Dict[str, Any]]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Scrub every text ``content`` field of OpenAI-style rows before they leave the process for a
-    memory provider (a remote reader like chat platforms or telemetry). Copies rows — the caller's
-    list/dicts are never mutated. Non-string content (None, multimodal parts) passes through as-is.
+    """Scrub every string leaf of OpenAI-style rows before they leave the process for a
+    memory provider (a remote reader like chat platforms or telemetry). Returns the input list
+    unchanged when nothing matched; scrubbed rows are fresh containers, so the caller's
+    list/dicts are never mutated. Non-string leaves pass through as-is.
     """
     if not messages:
         return messages
-    scrubbed: List[Dict[str, Any]] = []
-    for row in messages:
-        content = row.get("content")
-        if isinstance(content, str) and content:
-            row = {**row, "content": redact_for_egress(content)}
-        scrubbed.append(row)
-    return scrubbed
+    scrubbed = [_redact_string_leaves(row) for row in messages]
+    return (
+        messages
+        if all(new is old for new, old in zip(scrubbed, messages))
+        else scrubbed
+    )
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
@@ -417,6 +437,7 @@ class MemoryManager:
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
+        clean_query = redact_for_egress(clean_query)
         parts = self._each_provider(
             "prefetch failed (non-fatal)", lambda p: self._prefetch_provider(p, clean_query, session_id=session_id),
         )
@@ -487,6 +508,7 @@ class MemoryManager:
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query:
             return
+        clean_query = redact_for_egress(clean_query)
         self._submit_background(lambda: self._each_provider(
             "queue_prefetch failed (non-fatal)", lambda p: p.queue_prefetch(clean_query, session_id=session_id),
             providers=providers,
@@ -626,6 +648,8 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        message = redact_for_egress(message)
+
         def _tick(p: MemoryProvider) -> None:
             # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
             params = _signature_params(p.on_turn_start)
@@ -708,6 +732,8 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        messages = _redact_rows_for_provider(messages)
+        evidence_messages = _redact_rows_for_provider(evidence_messages)
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:

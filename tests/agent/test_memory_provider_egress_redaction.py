@@ -34,6 +34,9 @@ class _RecordingProvider(MemoryProvider):
     def __init__(self):
         self.synced = []
         self.session_rows = None
+        self.pre_compress = []
+        self.prefetches = []
+        self.turn_starts = []
 
     @property
     def name(self) -> str:
@@ -61,6 +64,20 @@ class _RecordingProvider(MemoryProvider):
 
     def on_session_end(self, messages) -> None:
         self.session_rows = messages
+
+    def prefetch(self, query, *, session_id: str = "") -> str:
+        self.prefetches.append(("prefetch", query))
+        return ""
+
+    def queue_prefetch(self, query, *, session_id: str = "") -> None:
+        self.prefetches.append(("queue", query))
+
+    def on_turn_start(self, turn_number, message, **kwargs) -> None:
+        self.turn_starts.append(message)
+
+    def on_pre_compress(self, messages, **kwargs) -> str:
+        self.pre_compress.append(messages)
+        return ""
 
     def get_tool_schemas(self):
         return []
@@ -127,3 +144,110 @@ class TestSyncAllRedactsEgress:
         assert user == REDACTION_UNAVAILABLE
         assert assistant == REDACTION_UNAVAILABLE
         assert _SK_SECRET not in user and _SK_SECRET not in assistant
+
+
+class TestRowLeafRedaction:
+    """Deeper leaves of a row than ``content`` text: tool-call argument JSON and
+    multimodal block lists reach providers too and must be scrubbed (#115104 review)."""
+
+    TOOL_CALL_ROW = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "function": {
+                    "name": "write_file",
+                    "arguments": f'{{"path": "notes.txt", "content": "api_key = \\"{_SK_SECRET}\\""}}',
+                },
+            }
+        ],
+    }
+
+    BLOCK_LIST_ROW = {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": f"screen capture notes: Bearer {_BEARER_TURN.split()[-1]}",
+            },
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }
+
+    def test_tool_call_arguments_scrubbed_without_mutation(self):
+        mgr, provider = _manager_with_recorder()
+        rows = [dict(self.TOOL_CALL_ROW)]
+        mgr.sync_all("question", "answer", messages=rows)
+        mgr.flush_pending(timeout=5.0)
+        ((_, _, forwarded),) = provider.synced
+        assert _SK_SECRET not in forwarded[0]["tool_calls"][0]["function"]["arguments"]
+        assert "notes.txt" in forwarded[0]["tool_calls"][0]["function"]["arguments"]
+        assert _SK_SECRET in rows[0]["tool_calls"][0]["function"]["arguments"]
+
+    def test_block_list_content_text_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        rows = [dict(self.BLOCK_LIST_ROW)]
+        mgr.on_session_end(rows)
+        forwarded_text = provider.session_rows[0]["content"][0]["text"]
+        assert "AQ.opaque46" not in forwarded_text
+        assert "screen capture notes" in forwarded_text
+        # Non-string leaves (image payloads, ids, roles) pass through untouched.
+        assert provider.session_rows[0]["content"][1]["image_url"]["url"].endswith(
+            "AAAA"
+        )
+
+    def test_clean_rows_list_identity_preserved(self):
+        mgr, provider = _manager_with_recorder()
+        rows = [
+            {"role": "user", "content": "nothing sensitive here"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "plain reply"}],
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "ls", "arguments": "{}"}}
+                ],
+            },
+        ]
+        mgr.sync_all("question", "answer", messages=rows)
+        mgr.flush_pending(timeout=5.0)
+        ((_, _, forwarded),) = provider.synced
+        assert forwarded is rows
+
+    def test_on_pre_compress_transcripts_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        rows = [dict(_TOOL_ROW)]
+        evidence = [dict(_TOOL_ROW)]
+        mgr.on_pre_compress(rows, evidence_messages=evidence)
+        assert _SK_SECRET not in provider.pre_compress[0][0]["content"]
+        assert _SK_SECRET in rows[0]["content"]
+        assert _SK_SECRET in evidence[0]["content"]
+
+    def test_on_pre_compress_v1_without_evidence_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        rows = [dict(_TOOL_ROW)]
+        mgr.on_pre_compress(rows)
+        assert _SK_SECRET not in provider.pre_compress[0][0]["content"]
+
+    def test_prefetch_all_query_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        provider._name = "builtin"
+        mgr.prefetch_all(f"summarize {_TURN_WITH_SECRET}")
+        ((_, query),) = provider.prefetches
+        assert _SK_SECRET not in query
+        assert "summarize" in query
+
+    def test_queue_prefetch_all_query_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        mgr.queue_prefetch_all(f"summarize {_TURN_WITH_SECRET}")
+        mgr.flush_pending(timeout=5.0)
+        ((_, query),) = provider.prefetches
+        assert _SK_SECRET not in query
+        assert "summarize" in query
+
+    def test_on_turn_start_message_scrubbed(self):
+        mgr, provider = _manager_with_recorder()
+        mgr.on_turn_start(7, _TURN_WITH_SECRET)
+        (message,) = provider.turn_starts
+        assert _SK_SECRET not in message
+        assert "Remember the deploy notes" in message

@@ -83,3 +83,49 @@ class TestAWSProviderFallback:
             assert resolved is not None
             assert resolved.get("provider") == "bedrock"
             assert resolved.get("model") == "anthropic.claude-3-5-sonnet-v1:0"
+
+    def test_stale_aws_env_auth_retry_rebuilds_client_and_keeps_chain(self, monkeypatch):
+        """Invalid-token Bedrock retry must rebuild the live client and leave chain failover unused."""
+        from agent.turn_recovery import route_classified_error
+        from agent.turn_retry_state import TurnRetryState
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAINVALIDKEY1234567")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "stalesecretkey1234567")
+        monkeypatch.setenv("AWS_PROFILE", "valid-profile")
+
+        rebuilds: list[str] = []
+        agent = MagicMock()
+        agent.provider = "bedrock"
+        agent.api_mode = "anthropic_messages"
+        agent._fallback_index = 0
+        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent._rebuild_anthropic_client = lambda: rebuilds.append("rebuild")
+        agent._close_cached_request_anthropic_client = lambda reason="": rebuilds.append(reason)
+        agent._try_activate_fallback = MagicMock(return_value=True)
+
+        msg = (
+            "An error occurred (InvalidClientTokenId) when calling the Converse operation: "
+            "The security token included in the request is invalid."
+        )
+        err = Exception(msg)
+        err.status_code = 403
+        classified = classify_api_error(err)
+        retry = TurnRetryState()
+
+        verdict = route_classified_error(
+            agent, err, classified, retry,
+            error_msg=msg, error_context={}, recovered_with_pool=False,
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            model="anthropic.claude-3-5-sonnet-v1:0",
+            messages=[], api_messages=[], system_message=None,
+            active_system_prompt="", conversation_history=[],
+            retry_count=0, max_retries=3, compression_attempts=0,
+            max_compression_attempts=2, api_call_count=1, effective_task_id=None,
+        )
+
+        assert verdict.action == "continue"
+        assert retry.auth_failover_attempted is False
+        assert "rebuild" in rebuilds
+        assert "aws_profile_credential_fallback" in rebuilds
+        assert "AWS_ACCESS_KEY_ID" not in os.environ
+        agent._try_activate_fallback.assert_not_called()

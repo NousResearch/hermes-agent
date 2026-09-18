@@ -329,6 +329,26 @@ def fallback_aws_profile_credentials(env: Optional[Any] = None) -> bool:
     return has_aws_credentials(target_env)
 
 
+def rebuild_bedrock_clients_after_env_eviction(agent: Any) -> None:
+    """Drop Bedrock clients built under stale env keys so the next call uses AWS_PROFILE.
+
+    ``fallback_aws_profile_credentials`` only clears process env and the Hermes boto3
+    caches. AnthropicBedrock and the request-local slot are keyed by region alone, so
+    they would otherwise keep the invalid token for the retry.
+    """
+    closer = getattr(agent, "_close_cached_request_anthropic_client", None)
+    if closer is not None:
+        with suppress(Exception):
+            closer(reason="aws_profile_credential_fallback")
+    api_mode = getattr(agent, "api_mode", None)
+    rebuild = getattr(agent, "_rebuild_anthropic_client", None)
+    if api_mode == "anthropic_messages" and rebuild is not None:
+        rebuild()
+        return
+    if api_mode == "bedrock_converse":
+        bind_bedrock_runtime(agent, str(getattr(agent, "base_url", "") or ""), "bedrock_converse")
+
+
 def has_aws_credentials(env: Optional[Any] = None) -> bool:
     """True if any AWS credential source (env vars or boto3 chain) is detected.
 

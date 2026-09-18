@@ -148,6 +148,10 @@ _SPECS = [
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
+        _arg("--body-file", metavar="PATH",
+             help="Read the body from PATH ('-' = stdin) instead of --body. The reliable carrier "
+                  "for multi-line bodies: git-bash/cmd.exe launchers cannot pass embedded newlines "
+                  "in argv, so a quoted --body arrives truncated at the first newline (#115432)"),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",

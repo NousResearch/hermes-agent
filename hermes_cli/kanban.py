@@ -341,6 +341,20 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    body = args.body
+    body_file = getattr(args, "body_file", None)
+    if body_file is not None:
+        if body is not None:
+            return _err("kanban: pass either --body or --body-file, not both", 2)
+        try:
+            # Shells on Windows (git-bash/MSYS, cmd.exe via shell=True) cannot carry embedded
+            # newlines through the launcher shim, so a quoted multi-line --body arrives truncated
+            # at the first newline with every later flag lost (#115432). The file/stdin path keeps
+            # the shell out of the body bytes entirely.
+            body = (sys.stdin.read() if body_file == "-"
+                    else Path(body_file).read_text(encoding="utf-8"))
+        except OSError as exc:
+            return _err(f"kanban: --body-file: {exc}", 2)
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -358,7 +372,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
                     "use 1 to trip on the first failure.", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
-            conn, title=args.title, body=args.body, assignee=args.assignee,
+            conn, title=args.title, body=body, assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,

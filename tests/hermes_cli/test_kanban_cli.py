@@ -214,3 +214,62 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# create --body-file — multi-line bodies through newline-hostile shells (#115432)
+# ---------------------------------------------------------------------------
+
+
+def test_create_body_file_stores_multiline_body_and_flags(kanban_home, tmp_path):
+    """The workaround path from #115432: git-bash/cmd launchers truncate a quoted
+    multi-line --body at the first newline and drop every later flag. --body-file
+    must land the full text plus assignee/priority intact."""
+    import shlex as shlex_mod
+
+    body_path = tmp_path / "brief.md"
+    body_path.write_text("line one\nline two\nline three\n", encoding="utf-8")
+    out = kc.run_slash(
+        f'create "PROBE" --body-file {shlex_mod.quote(str(body_path))} '
+        f"--assignee baxter --priority 7 --json"
+    )
+    payload = json.loads(out)
+    assert payload["body"] == "line one\nline two\nline three\n"
+    assert payload["assignee"] == "baxter"
+    assert payload["priority"] == 7
+
+
+def test_create_body_file_dash_reads_stdin(kanban_home, monkeypatch):
+    import io
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("from stdin\nline two\n"))
+    out = kc.run_slash('create "PROBE" --body-file - --json')
+    payload = json.loads(out)
+    assert payload["body"] == "from stdin\nline two\n"
+
+
+def test_create_rejects_body_together_with_body_file(kanban_home, tmp_path):
+    import shlex as shlex_mod
+
+    body_path = tmp_path / "brief.md"
+    body_path.write_text("from file\n", encoding="utf-8")
+    out = kc.run_slash(
+        f'create "PROBE" --body inline --body-file {shlex_mod.quote(str(body_path))}'
+    )
+    assert "not both" in out
+    # Nothing was created.
+    with kbc.connect() as conn:
+        assert kb.list_tasks(conn, include_archived=True) == []
+
+
+def test_create_body_file_missing_path_is_a_clean_error(kanban_home, tmp_path):
+    import shlex as shlex_mod
+
+    missing = tmp_path / "nope.md"
+    out = kc.run_slash(
+        f'create "PROBE" --body-file {shlex_mod.quote(str(missing))} --json'
+    )
+    # The handler's own diagnostic, not argparse's generic usage dump.
+    assert "kanban: --body-file:" in out
+    assert "nope.md" in out
+
+

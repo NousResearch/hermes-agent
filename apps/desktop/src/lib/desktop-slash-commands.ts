@@ -6,12 +6,6 @@ import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
 
-export interface CommandsCatalogSection {
-  name: string
-  pairs: [string, string][]
-}
-
-export type CommandsCatalogLike = CommandsCatalogResult
 export type { CommandCatalogMeta }
 
 /**
@@ -322,16 +316,16 @@ const ALIAS_TO_CANONICAL = new Map<string, string>(
   ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
 )
 
-let rememberedCatalog: CommandsCatalogLike | undefined
+let rememberedCatalog: CommandsCatalogResult | undefined
 
 /** Last catalog the composer saw — used so Space/Enter know argument mode
  *  without waiting for another `/` keystroke. */
-export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
+export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogResult | undefined): void {
   rememberedCatalog = catalog
 }
 
-function liveCatalog(): CommandsCatalogLike | undefined {
-  return rememberedCatalog ?? peekCachedSlashCompletion<CommandsCatalogLike>('catalog')
+function liveCatalog(): CommandsCatalogResult | undefined {
+  return rememberedCatalog ?? peekCachedSlashCompletion<CommandsCatalogResult>('catalog')
 }
 
 function catalogMeta(command: string): CommandCatalogMeta | undefined {
@@ -635,7 +629,7 @@ export function rankSkillCommands<T extends { text: string }>(
   return kept.sort((a, b) => usageOf(b) - usageOf(a) || a.text.localeCompare(b.text))
 }
 
-export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
+export function filterDesktopCommandsCatalog(catalog: CommandsCatalogResult): CommandsCatalogResult {
   rememberDesktopCommandsCatalog(catalog)
 
   const categories = catalog.categories

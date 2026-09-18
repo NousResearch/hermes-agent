@@ -1,4 +1,4 @@
-import type { JsonValue, MessageReaction, ProjectInfo } from '@hermes/shared'
+import type { JsonValue, MessageReaction } from '@hermes/shared'
 
 export type { ProjectFolder, ProjectInfo, SessionCreateResult, SessionResumeResult } from '@hermes/shared'
 export type { MessageReaction }
@@ -140,31 +140,6 @@ export interface OAuthPollResponse {
   retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
-}
-
-/** Result of the `free_tier.status` RPC. Pull-only: it reads local auth state
- *  and makes no network call, so it is safe to refresh on the ambient status
- *  cadence. */
-export interface FreeTierStatus {
-  /** An identity exists AND the free tier is on: connectors ride on it, and so
-   *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
-  available: boolean
-  enabled: boolean
-  has_guest: boolean
-  /** Display name for the route, e.g. "Nous · free tier". */
-  label: string
-  model: string
-  /** True until the one-time introduction has been acknowledged. */
-  notice_pending: boolean
-  /** Present only while `enabled` and no identity exists: why the last attempt
-   *  to create one failed. `error_code` is one of the backend's `anon_*` codes
-   *  (`hermes_cli/anon_auth.py`), `error` its sentence, `retryable` whether a
-   *  later attempt can succeed, `retry_after` the seconds still to wait. */
-  error?: string
-  error_code?: string
-  retryable?: boolean
-  retry_after?: number
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -713,34 +688,6 @@ export interface StarmapGraph {
   stats: Record<string, unknown>
 }
 
-export interface ContextUsageCategory {
-  color: string
-  id: string
-  label: string
-  tokens: number
-}
-
-export interface ContextFileSource {
-  label: string
-  path: string
-  chars: number
-  est_tokens: number
-  loaded: boolean
-  status: string
-}
-
-export interface ContextBreakdown {
-  categories: ContextUsageCategory[]
-  context_max: number
-  context_percent: number
-  context_estimated?: boolean
-  context_source?: string
-  context_used: number
-  estimated_total: number
-  model?: string
-  context_files?: ContextFileSource[]
-}
-
 export interface AnalyticsDailyEntry {
   actual_cost: number
   api_calls: number
@@ -936,14 +883,6 @@ export interface ProfileDesktopOverlay {
   layoutTree?: unknown
   /** Active layout preset id. */
   layoutPreset?: string
-}
-
-// ── Projects ───────────────────────────────────────────────────────────────
-// A first-class, per-profile, human-named workspace spanning one or more
-// folders. Mirrors hermes_cli/projects_db.Project.to_dict().
-export interface ProjectsPayload {
-  projects: ProjectInfo[]
-  active_id: null | string
 }
 
 export interface ProfileSoul {

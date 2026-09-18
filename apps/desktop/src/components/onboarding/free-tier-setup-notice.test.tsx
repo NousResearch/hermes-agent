@@ -1,23 +1,27 @@
+import type { FreeTierStatusResult } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $freeTierStatus, freeTierSetupFailure } from '@/store/free-tier'
 import type { OnboardingContext } from '@/store/onboarding'
-import type { FreeTierStatus } from '@/types/hermes'
 
 import { FreeTierSetupNotice, setupFailureCopy } from './free-tier-setup-notice'
 
-const NO_IDENTITY: FreeTierStatus = {
+const NO_IDENTITY: FreeTierStatusResult = {
   available: false,
   enabled: true,
   has_guest: false,
   label: 'Nous · free tier',
   model: 'nous/welcome',
-  notice_pending: false
+  notice_pending: false,
+  error: null,
+  error_code: null,
+  retryable: null,
+  retry_after: null
 }
 
-function ctxReturning(status: FreeTierStatus, provisioned?: FreeTierStatus): OnboardingContext & { calls: string[] } {
+function ctxReturning(status: FreeTierStatusResult, provisioned?: FreeTierStatusResult): OnboardingContext & { calls: string[] } {
   const calls: string[] = []
   let current = status
 

@@ -55,8 +55,8 @@ export async function syncApprovalModeForProfile(
 ): Promise<ApprovalMode> {
   const key = profileKey(profile)
   const revision = nextRevision(key)
-  const result = (await requestGateway('config.get', { key: 'approvals.mode' })) as { value?: string }
-  const mode = normalizeApprovalMode(result?.value)
+  const result = await requestGateway('config.get', { key: 'approvals.mode' })
+  const mode = normalizeApprovalMode(result.value)
 
   if (revisions.get(key) === revision) {
     confirmedModes.set(key, mode)

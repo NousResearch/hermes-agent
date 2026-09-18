@@ -1,9 +1,9 @@
 import type { AppendMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { type CommandsCatalogResult, JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
@@ -482,7 +482,7 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }
 
-export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
+export function renderCommandsCatalog(catalog: CommandsCatalogResult, copy: Translations['desktop']): string {
   const desktopCatalog = filterDesktopCommandsCatalog(catalog)
 
   const sections = desktopCatalog.categories?.length

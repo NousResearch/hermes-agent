@@ -1,5 +1,5 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { type HandoffStateResult, JsonRpcGatewayError } from '@hermes/shared'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
@@ -43,10 +43,7 @@ import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
-import type {
-  ClientSessionState,
-  HandoffStateResponse
-} from '../../../types'
+import type { ClientSessionState } from '../../../types'
 
 import {
   appendMidTurnUserMessage,
@@ -542,7 +539,7 @@ export function usePromptActions({
       while (Date.now() < deadline) {
         await delay(800)
 
-        let record: HandoffStateResponse
+        let record: HandoffStateResult
 
         try {
           record = await requestGateway('handoff.state', { session_id: sid })

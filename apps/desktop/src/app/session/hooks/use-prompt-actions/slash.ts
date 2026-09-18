@@ -50,10 +50,7 @@ import {
   applyWakeStopResult
 } from '@/store/wake-word'
 
-import type {
-  ClientSessionState,
-  SlashExecResponse
-} from '../../../types'
+import type { ClientSessionState } from '../../../types'
 
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
@@ -396,18 +393,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
-          const body = output?.output || `/${name}: no output`
+          const body = result.output || `/${name}: no output`
 
           // `/goal status|pause|resume|clear` come back as plain exec output
           // ("⊙ Goal (active, 3/20 turns): …", "⏸ Goal paused: …", "✓ Goal
           // cleared." …). Mirror it into the goal store so the composer
           // indicator tracks pause/resume/clear immediately.
-          if (name === 'goal' && output?.output) {
-            applyGoalStatusText(sessionId, output.output)
+          if (name === 'goal' && result.output) {
+            applyGoalStatusText(sessionId, result.output)
           }
 
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+          renderSlashOutput(result.warning ? `warning: ${result.warning}\n${body}` : body)
 
           return
         } catch (error) {

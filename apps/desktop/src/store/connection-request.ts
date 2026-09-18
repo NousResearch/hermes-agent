@@ -1,13 +1,13 @@
 import type {
   ConnectionAnswer,
-  ConnectorsOperationStatusResult as ConnectionOperationStatus,
   ConnectionOperationTarget,
   ConnectionRequestPayload,
   ConnectionSettleReason,
   ConnectionTargetAction,
   ConnectionTargetKind,
   ConnectionTargetState,
-  ConnectionUpdatePayload
+  ConnectionUpdatePayload,
+  ConnectorsOperationStatusResult
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
@@ -140,7 +140,7 @@ export function normalizeConnectionRequest(
 }
 
 /** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. */
-export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
+export function applyOperationStatus(request: ConnectionRequest, status: ConnectorsOperationStatusResult): ConnectionRequest {
   if (status.op_id !== request.opId) {
     return request
   }

@@ -1,10 +1,10 @@
+import type { CommandsCatalogResult } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { commandsCatalogResult } from '@/test/contract'
 
 import {
   type CommandCatalogMeta,
-  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
@@ -26,7 +26,7 @@ import desktopSlashRegistry from './desktop-slash-registry.json'
 function registryCatalog(
   modes: Record<string, DesktopSlashArgumentMode | null>,
   aliases: Record<string, string> = {}
-): CommandsCatalogLike {
+): CommandsCatalogResult {
   const commands: Record<string, CommandCatalogMeta> = {}
   const canon: Record<string, string> = {}
 

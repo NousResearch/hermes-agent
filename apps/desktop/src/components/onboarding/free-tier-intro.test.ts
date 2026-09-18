@@ -1,22 +1,26 @@
+import type { FreeTierStatusResult } from '@hermes/shared'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $desktopOnboarding, refreshOnboarding } from '@/store/onboarding'
-import type { FreeTierStatus } from '@/types/hermes'
 
-const READY: FreeTierStatus = {
+const READY: FreeTierStatusResult = {
   available: true,
   enabled: true,
   has_guest: true,
   label: 'Nous · free tier',
   model: 'nous/welcome',
-  notice_pending: true
+  notice_pending: true,
+  error: null,
+  error_code: null,
+  retryable: null,
+  retry_after: null
 }
 
 // A configured backend whose free-tier answer the test supplies. `setup.status`
 // and `setup.runtime_check` both report ready so refreshOnboarding takes the
 // "already configured" path — the one the intro hangs off.
-function gatewayReturning(freeTier: FreeTierStatus, route = true) {
+function gatewayReturning(freeTier: FreeTierStatusResult, route = true) {
   return async <T>(method: string): Promise<T> => {
     if (method === 'free_tier.status') {
       return freeTier as T

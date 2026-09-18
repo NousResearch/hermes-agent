@@ -1,4 +1,7 @@
 import type {
+  ProjectInfo,
+  ProjectsDeleteResult,
+  ProjectsListResult,
   ProjectsTreeResult,
   ProjectTreeLane,
   ProjectTreeNode,
@@ -47,7 +50,6 @@ import {
 } from '@/store/session'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
-import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -363,7 +365,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
   return { gateway, profile }
 }
 
-function applyPayload(payload: ProjectsPayload): void {
+function applyPayload(payload: ProjectsDeleteResult | ProjectsListResult): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
 }

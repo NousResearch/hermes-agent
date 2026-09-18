@@ -1,7 +1,7 @@
+import type { SessionContextBreakdownResult } from '@hermes/shared'
 import { useEffect, useState } from 'react'
 
 import type { GatewayRequest } from '@/lib/gateway-rpc'
-import type { ContextBreakdown } from '@/types/hermes'
 
 interface ContextBreakdownOptions {
   busy: boolean
@@ -26,7 +26,7 @@ interface ContextBreakdownOptions {
  *  sessions drops the previous numbers instead of painting them under the new
  *  session's name. */
 export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }: ContextBreakdownOptions) {
-  const [fetched, setFetched] = useState<{ breakdown: ContextBreakdown; sessionId: string } | null>(null)
+  const [fetched, setFetched] = useState<{ breakdown: SessionContextBreakdownResult; sessionId: string } | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {

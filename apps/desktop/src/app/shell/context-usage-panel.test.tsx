@@ -1,8 +1,9 @@
+import type { SessionContextBreakdownResult } from '@hermes/shared'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ContextBreakdown, UsageStats } from '@/types/hermes'
+import type { UsageStats } from '@/types/hermes'
 
 import { ContextUsagePanel } from './context-usage-panel'
 import { useContextBreakdown } from './hooks/use-context-breakdown'
@@ -17,13 +18,16 @@ const usage: UsageStats = {
   total: 0
 }
 
-const breakdown: ContextBreakdown = {
+const breakdown: SessionContextBreakdownResult = {
   categories: [{ color: 'teal', id: 'conversation', label: 'Conversation', tokens: 241_400 }],
   context_max: 272_000,
   context_percent: 89,
   context_used: 241_400,
   estimated_total: 286_600,
-  model: 'test-model'
+  context_estimated: false,
+  context_source: 'estimate',
+  model: 'test-model',
+  context_files: []
 }
 
 afterEach(() => {
@@ -89,7 +93,7 @@ describe('useContextBreakdown', () => {
     // `context_used` on the payload is already the measured figure once a turn
     // has run — the estimate is the backend's own fallback, not a second value
     // the client has to choose between.
-    const measured: ContextBreakdown = { ...breakdown, context_used: 12_000 }
+    const measured: SessionContextBreakdownResult = { ...breakdown, context_used: 12_000 }
     const requestGateway = vi.fn().mockResolvedValue(measured)
 
     const { result } = renderHook(() =>

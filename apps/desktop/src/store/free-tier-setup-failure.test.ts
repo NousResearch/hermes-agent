@@ -1,3 +1,4 @@
+import type { FreeTierStatusResult } from '@hermes/shared'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -7,15 +8,18 @@ import {
   friendlyWait,
   provisionFreeTier
 } from '@/store/free-tier'
-import type { FreeTierStatus } from '@/types/hermes'
 
-const NO_IDENTITY: FreeTierStatus = {
+const NO_IDENTITY: FreeTierStatusResult = {
   available: false,
   enabled: true,
   has_guest: false,
   label: 'Nous · free tier',
   model: 'nous/welcome',
-  notice_pending: false
+  notice_pending: false,
+  error: null,
+  error_code: null,
+  retryable: null,
+  retry_after: null
 }
 
 afterEach(() => {
@@ -86,7 +90,7 @@ describe('friendlyWait', () => {
 describe('provisionFreeTier', () => {
   it('asks the backend to try again, then re-reads the verdict', async () => {
     const calls: string[] = []
-    const after: FreeTierStatus = { ...NO_IDENTITY, available: true, has_guest: true }
+    const after: FreeTierStatusResult = { ...NO_IDENTITY, available: true, has_guest: true }
 
     const requestGateway = (async <T>(method: string): Promise<T> => {
       calls.push(method)
@@ -100,7 +104,7 @@ describe('provisionFreeTier', () => {
   })
 
   it('still reports what the backend knows when the retry call itself fails', async () => {
-    const failed: FreeTierStatus = { ...NO_IDENTITY, error_code: 'anon_unreachable', retryable: true, retry_after: 15 }
+    const failed: FreeTierStatusResult = { ...NO_IDENTITY, error_code: 'anon_unreachable', retryable: true, retry_after: 15 }
 
     const requestGateway = (async <T>(method: string): Promise<T> => {
       if (method === 'free_tier.provision') {

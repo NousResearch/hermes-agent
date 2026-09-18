@@ -270,14 +270,14 @@ describe('firstVisibleGroupIndex', () => {
     const initial = [...history, group('streaming', 1)]
     const grown = [...history, group('streaming', 5_000)]
 
-    expect(firstVisibleGroupIndex(initial, 60, 0, 1)).toBe(1)
-    expect(firstVisibleGroupIndex(grown, 60, 0, 1)).toBe(1)
+    expect(firstVisibleGroupIndex(initial, 60, 0, true)).toBe(1)
+    expect(firstVisibleGroupIndex(grown, 60, 0, true)).toBe(1)
   })
 
   it('exempts exactly one newest group while older history stays budgeted', () => {
     const groups = [group('a', 200), group('b', 50), group('c', 50), group('d', 50), group('e', 10_000)]
 
-    expect(firstVisibleGroupIndex(groups, 60, 0, 1)).toBe(2)
+    expect(firstVisibleGroupIndex(groups, 60, 0, true)).toBe(2)
   })
 })
 

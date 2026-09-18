@@ -280,16 +280,17 @@ export function buildGroups(signature: string): MessageGroup[] {
 
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
-// regardless of weight; the newest `unbudgetedTail` turns are kept AND left out
-// of the sum, so a turn whose weight is still changing cannot move the cut.
-// Returns the index of that first visible group.
+// regardless of weight (the exempt newest turn counts as one of them). With
+// `exemptNewest` the newest turn is kept AND left out of the sum, so a turn
+// whose weight is still changing cannot move the cut. Returns the index of that
+// first visible group.
 export function firstVisibleGroupIndex(
   groups: readonly MessageGroup[],
   budget: number,
   minVisible = 0,
-  unbudgetedTail = 0
+  exemptNewest = false
 ): number {
-  const budgetedEnd = Math.max(0, groups.length - unbudgetedTail)
+  const budgetedEnd = exemptNewest ? Math.max(0, groups.length - 1) : groups.length
   let firstVisible = budgetedEnd
 
   for (let i = budgetedEnd - 1, weight = 0; i >= 0; i--) {
@@ -599,12 +600,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // clamp looks like a user scroll-up to use-stick-to-bottom.
   const fullPage = renderBudget >= paneBudget
 
-  const hiddenCount = firstVisibleGroupIndex(
-    weightedGroups,
-    renderBudget,
-    fullPage ? MIN_VISIBLE_GROUPS : 0,
-    fullPage ? 1 : 0
-  )
+  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the

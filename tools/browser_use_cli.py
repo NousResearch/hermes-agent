@@ -641,6 +641,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
+        # One-call page snapshot: install the helper the harness auto-imports (see
+        # tools/browser_exec_snapshot.py). Best-effort: a helper install must never fail the exec.
+        _quiet(lambda: importlib.import_module("tools.browser_exec_snapshot").ensure_workspace_helpers(workspace),
+               None, "browser_exec: snapshot helper install failed")
 
     # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
     # Chrome/CDP endpoint is reachable (their API key authenticates it)

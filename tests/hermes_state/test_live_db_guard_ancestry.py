@@ -199,19 +199,20 @@ class TestCurrentProcessSelfIdentification:
     """The self-check arm: a ``python -m pytest`` process writing the live DB
     with a scrubbed env is the *process itself*, so neither ``PYTEST_*``
     (stripped) nor ancestry (it has no pytest ancestor above it) fires — only
-    ``sys.argv`` / ``sys.modules`` can identify it."""
-
-    def test_argv_module_path_detects_python_m_pytest(self):
-        # `python -m pytest` puts pytest/__main__.py at argv[0]; its basename is
-        # __main__.py so the launcher-name match misses it — the substring must not.
-        argv = ["/venv/lib/python/site-packages/pytest/__main__.py", "tests/gateway/test_x.py"]
-        assert _run_self_id_probe(argv) == "IS-PYTEST"
+    ``pytest`` in ``sys.modules`` can identify it (argv is deliberately not a
+    signal: it would false-positive on a production prompt mentioning pytest)."""
 
     def test_loaded_module_detects_pytest(self):
         assert _run_self_id_probe(["-c"], inject_module=True) == "IS-PYTEST"
 
     def test_normal_process_is_not_pytest(self):
         assert _run_self_id_probe(["hermes", "gateway", "start"]) == "NOT-PYTEST"
+
+    def test_prompt_mentioning_pytest_is_not_test_context(self):
+        # A production `hermes` CLI run carries the user's prompt in argv; a
+        # prompt that mentions pytest must NOT arm the guard (argv-substring
+        # false positive). Only `sys.modules["pytest"]` is a trusted signal.
+        assert _run_self_id_probe(["hermes", "-q", "why did my pytest tests fail"]) == "NOT-PYTEST"
 
     def test_in_test_context_consults_self_check(self, monkeypatch):
         # With env and ancestry both disabled, the self-check must still arm it.

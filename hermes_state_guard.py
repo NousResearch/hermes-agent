@@ -120,15 +120,19 @@ def _in_test_context() -> bool:
 
 
 def _current_process_is_pytest() -> bool:
-    """True when *this* process is a pytest invocation, even with a scrubbed
-    environment. ``python -m pytest`` puts ``pytest/__main__.py`` at
-    ``sys.argv[0]`` (so a basename match against ``_PYTEST_LAUNCHER_NAMES``
-    misses it), and a rebuilt env strips ``PYTEST_*`` — but the ``pytest``
-    module in ``sys.modules`` and the module path in ``sys.argv`` are process
-    state that ``clear=True`` cannot touch."""
-    if "pytest" in sys.modules:
-        return True
-    return any("pytest" in str(arg).lower() for arg in sys.argv)
+    """True when *this* process is running pytest, even with a scrubbed
+    environment. ``pytest`` in ``sys.modules`` is the precise signal: every real
+    pytest run (``python -m pytest``, ``pytest.main(...)``, the console script)
+    imports the ``pytest`` package, so it is present for the whole process
+    lifetime regardless of ``PYTEST_*`` env or a rebuilt environment.
+
+    Deliberately NOT a substring scan of ``sys.argv``: a production ``hermes``
+    CLI run carries the user's prompt text in ``argv``, so a prompt that happens
+    to mention pytest would false-positive and arm the live state.db / gateway
+    guards against a non-test process (the argv-substring identity bug class,
+    see AGENTS.md). The launcher-name arm already covers ``sys.argv[0]``
+    basenames; this arm only needs to catch the self-process."""
+    return "pytest" in sys.modules
 
 
 def _is_production_state_db(resolved: Path, root: Path) -> bool:

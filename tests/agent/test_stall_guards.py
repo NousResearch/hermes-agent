@@ -15,7 +15,11 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
-from agent.agent_runtime_helpers import trailing_continue_intent
+from agent.agent_runtime_helpers import (
+    SHORT_REPLY_THRESHOLD_CHARS,
+    fallback_short_reply_stall,
+    trailing_continue_intent,
+)
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
@@ -435,6 +439,123 @@ def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
             assert pollers.observe_call("process_manage", args, "running").notice is None
     assert pollers.halt_decision is None
 
+
+# ── fallback short-reply stall guard ───────────────────────────────────────
+
+
+class _StubAgent:
+    """Minimal agent stub for fallback_short_reply_stall() gate tests."""
+
+    def __init__(
+        self,
+        *,
+        fallback_short_reply_continue=True,
+        valid_tool_names=("terminal",),
+        provider_fallback_active=True,
+    ):
+        self.fallback_short_reply_continue = fallback_short_reply_continue
+        self.valid_tool_names = valid_tool_names
+        self._provider_fallback_active = provider_fallback_active
+
+
+def _messages_with_tool_call():
+    return [
+        {"role": "user", "content": "list everything in /tmp"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "1", "content": "file1\nfile2"},
+    ]
+
+
+def test_short_reply_threshold_is_two_hundred():
+    assert SHORT_REPLY_THRESHOLD_CHARS == 200
+
+
+def test_fallback_short_reply_continues_when_below_threshold():
+    agent = _StubAgent()
+    assert fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure, here you go.",
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
+
+
+def test_no_continue_when_reply_above_threshold():
+    agent = _StubAgent()
+    long_reply = ("A detailed answer. " * 30).strip()
+    assert len(long_reply) >= SHORT_REPLY_THRESHOLD_CHARS
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply=long_reply,
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
+
+
+def test_no_continue_when_no_fallback_active():
+    agent = _StubAgent(provider_fallback_active=False)
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure.",
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
+
+
+def test_no_continue_when_no_tool_history():
+    agent = _StubAgent()
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure, here you go.",
+        messages=[{"role": "user", "content": "what is 2+2"}],
+        continuations_used=0,
+    )
+
+
+def test_no_continue_when_fallback_short_reply_disabled():
+    agent = _StubAgent(fallback_short_reply_continue=False)
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure.",
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
+
+
+def test_no_continue_when_no_tools_available():
+    agent = _StubAgent(valid_tool_names=())
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure.",
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
+
+
+def test_cap_shared_with_other_detectors():
+    agent = _StubAgent()
+    assert not fallback_short_reply_stall(
+        agent,
+        stripped_reply="Sure.",
+        messages=_messages_with_tool_call(),
+        continuations_used=2,
+    )
+
+
+def test_handles_empty_and_none_reply():
+    agent = _StubAgent()
+    assert fallback_short_reply_stall(
+        agent,
+        stripped_reply="",
+        messages=_messages_with_tool_call(),
+        continuations_used=0,
+    )
 
 # ── promoted-reasoning plan-tail detector (#111761) ─────────────────────────
 

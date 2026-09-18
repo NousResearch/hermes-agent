@@ -3267,3 +3267,80 @@ Core timing experiment: full Ubuntu runner observed one unchanged sequential
 interrupt test at 12.79s against its 10s bound under 16-worker load. Neither that
 test nor its middleware was modified. Hypothesis: scheduler/filesystem contention;
 rerun the same file in isolation without changing its bound or runtime behavior.
+
+
+## 2026-09-18 — Native-browser durable-compiler obstruction and progressive-compilation reformulation
+
+Status: **VALIDATED root-cause class / architecture REFORMULATED; product fix still OPEN**
+
+Observed dogfood sequence on the internal Workstation Browser:
+
+1. authenticated Electron Chromium navigation succeeded;
+2. browser_snapshot and structured extraction succeeded on the same page;
+3. mutating browser interaction was replaced by durable_compile_required;
+4. durable compilation asked for mutation authority + persistent readback/verifier
+   semantics before the unknown stateful UI workflow had been discovered;
+5. one compiled attempt failed route policy with
+   "Route forbidden by task constraints: native_browser" even though the requested
+   lane was the native browser;
+6. an attempted authority-recording path could itself be intercepted, exposing a
+   bootstrap/deadlock class.
+
+Code inspection on current main identified the matching boundaries:
+
+- workstation.work_intent.prepare_turn_work() stores
+  agent._work_batch_candidate = batch_intent(...);
+- workstation.task_compiler.requires_compilation() treats that broad flag as a
+  reason to reject later non-read/non-interactive effects;
+- workstation.batch_detection.detects_fan_out() already has a useful
+  operation-level structural_signature(), but the resulting state is promoted
+  to the broad boolean latch;
+- tools.effects conservatively classifies unknown builtins as MUTATION while
+  agent/tool_guardrails.py maintains overlapping classifications, including a
+  disagreement around browser_console;
+- route comparison can receive tool-name constraints while TaskCompiler evaluates
+  the canonical route native_browser;
+- RoutinePromotionService and DeterministicRoutineRunner already implement the
+  desired high-level lifecycle: discover/validate/promote and return DRIFT on
+  violated assumptions.
+
+Classification:
+
+- **VALIDATED:** native-browser controller/authenticated read path is not the root
+  failure in this reproduction.
+- **VALIDATED:** a request/session-scoped repeatability latch is too broad.
+- **VALIDATED:** effect/route namespace inconsistency can produce false blocking.
+- **REFORMULATED:** "LLM must not be CPU" remains correct, but compilation must be
+  progressive optimization for understood repeated work, not a prerequisite for
+  exploring a safe deterministic path.
+
+Settled target promoted to canonical docs:
+context/ADAPTIVE_EXECUTION_COMPILATION.md.
+
+Required implementation hypothesis AEPC-E001:
+
+> replacing the global latch with operation-scoped compilation policy, permitting
+> bounded adaptive native-browser interaction, normalizing route/effect authority
+> and adding compact NEEDS_REASONING escalation will restore workability while
+> preserving fan-out/canary/uncertain-mutation protections.
+
+Confirming evidence:
+
+- adaptive browser regression completes without compiler/preflight refusal loop;
+- homogeneous fan-out regression still requires TaskCompiler/canary;
+- candidate scope isolation test passes;
+- route/effect consistency tests pass;
+- deterministic drift returns compact reasoning handoff and resumes without replay;
+- existing durable/compiler/routine/canonical Work100 gates stay green.
+
+Refuting evidence:
+
+- any safe adaptive path bypasses an existing approval/fence/uncertain-mutation
+  invariant;
+- homogeneous fan-out can again proceed item-by-item through the LLM;
+- deterministic resume replays a confirmed external effect;
+- the fix requires a parallel task/memory/browser/authority store.
+
+No live external mutation is required for the focused reproduction; use fake
+providers plus existing internal-browser mocked/native contracts. A later native
+Electron dogfood is required before declaring the browser path product-validated.

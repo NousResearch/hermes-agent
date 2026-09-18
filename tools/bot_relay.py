@@ -187,6 +187,13 @@ def _target_aliases(row: dict) -> set[str]:
     return _target_ids(row) | alias_forms(row.get("title") or "")
 
 
+def target_alias_forms(want: str) -> set[str]:
+    """The bare forms a typed target answers as: itself plus its mention slugs, the local rule
+    (``bot_mode_dm._resolve_local_name``) — so "Dr. Scribe" reaches a remote row as it does a local one."""
+    want = want.lower()
+    return {want} | alias_forms(want)
+
+
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
     """Matched row for a bare handle/profile/title slug (unique across connections) or
     ``<handle|profile|title-slug>@<connection-id>``; ``"ambiguous"`` for a bare form on several
@@ -197,7 +204,8 @@ def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
         return None
     want = want.lower()
     rows = [row for row in roster if not conn or row["connection_id"].lower() == conn.lower()]
-    matches = [row for row in rows if want in _target_ids(row)] or [row for row in rows if want in _target_aliases(row)]
+    wanted = target_alias_forms(want)
+    matches = [row for row in rows if want in _target_ids(row)] or [row for row in rows if wanted & _target_aliases(row)]
     if not matches:
         return None
     return matches[0] if len(matches) == 1 else "ambiguous"

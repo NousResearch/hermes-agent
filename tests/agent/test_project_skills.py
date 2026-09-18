@@ -162,6 +162,60 @@ class TestNonInteractiveInheritance:
         assert su.find_project_root(start=project_env["repo"]) == project_env["repo"].resolve()
 
 
+class TestSessionCwdOverride:
+    """Multi-session surfaces (desktop/tui_gateway) pin a per-session cwd; project
+    skills must resolve from it exactly like context files do."""
+
+    @pytest.fixture
+    def session_cwd(self):
+        from agent import runtime_cwd
+
+        tokens = []
+
+        def _set(path) -> None:
+            tokens.append(runtime_cwd.set_session_cwd(str(path)))
+
+        yield _set
+        for token in reversed(tokens):
+            runtime_cwd._SESSION_CWD.reset(token)
+
+    def test_session_cwd_resolves_project(
+        self, project_env, monkeypatch, tmp_path, session_cwd
+    ):
+        # Desktop backend: launched from a non-project dir with TERMINAL_CWD
+        # pinned there too; only the session override knows the real repo.
+        from agent import runtime_cwd
+
+        outside = tmp_path / "launchdir"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        monkeypatch.setenv("TERMINAL_CWD", str(outside))
+        _trust(project_env["config"], project_env["repo"])
+        session_cwd(project_env["repo"])
+
+        # The context-file loader and the skills loader agree on the cwd.
+        assert runtime_cwd.resolve_context_cwd() == project_env["repo"]
+        assert su.find_project_root() == project_env["repo"].resolve()
+        dirs = su.get_project_skills_dirs()
+        assert (project_env["repo"] / ".hermes" / "skills").resolve() in dirs
+        assert (project_env["repo"] / ".agents" / "skills").resolve() in dirs
+
+    def test_missing_session_cwd_falls_back_to_terminal_cwd(
+        self, project_env, monkeypatch, tmp_path, session_cwd
+    ):
+        # A stale/deleted session cwd must not crash and must not swallow the
+        # surface workdir (resolve_agent_cwd's fallthrough order).
+        outside = tmp_path / "sched"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        monkeypatch.setenv("TERMINAL_CWD", str(project_env["repo"]))
+        _trust(project_env["config"], project_env["repo"])
+        session_cwd(tmp_path / "gone")
+
+        assert su.find_project_root() == project_env["repo"].resolve()
+        assert su.get_project_skills_dirs() != []
+
+
 class TestQuarantine:
     """#48974: dangerous scan verdict excludes a project skill everywhere."""
 

@@ -419,20 +419,23 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
+    Without *start*, the surface's working directory wins over the process cwd so
     cron/API surfaces inherit an interactive trust decision by project identity.
 
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    When *start* is not given, the resolution runs through ``resolve_agent_cwd()`` — the same
+    chain the context-file loader uses, so a project's skills and its ``AGENTS.md`` always come
+    from one directory. That chain is: the per-session cwd override first (multi-session surfaces
+    such as the desktop app / tui_gateway pin a logical cwd per session while the backend process
+    sits in the user's home), then ``TERMINAL_CWD`` — the same per-surface workdir the terminal
+    tool and cron jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the
+    scheduler process) — then the process cwd. This is what lets non-interactive surfaces inherit
+    a prior interactive trust decision by project identity — and a surface with no workdir in a
+    trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

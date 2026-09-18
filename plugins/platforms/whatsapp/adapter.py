@@ -275,15 +275,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        # Group allowlist: config keys win, then the profile-scoped env CSV — mirroring the DM
-        # path (_select_dm_allowlist) so a group_allow_from set only via WHATSAPP_GROUP_ALLOWED_USERS
-        # reaches the adapter (#72529: the env carrier was bridged to the Node bridge but never read here,
-        # so env-only installs silently ran group gating with an empty allowlist).
-        self._group_allow_from = self._coerce_allow_list(
-            extra.get("group_allow_from") if "group_allow_from" in extra
-            else (extra.get("groupAllowFrom") if "groupAllowFrom" in extra
-                  else (_wenv("WHATSAPP_GROUP_ALLOW_FROM") or _wenv("WHATSAPP_GROUP_ALLOWED_USERS") or None))
-        )
+        # Same precedence as the DM list. Until #72529 the env carrier only reached the Node bridge, so
+        # env-only installs gated groups on an empty allowlist.
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
+        self._group_allow_from = self._coerce_allow_list(raw_groups)
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()
@@ -400,11 +396,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
         bridge_env["WHATSAPP_DM_POLICY"] = self._dm_policy
-        allowed = ",".join(sorted(self._allow_from))
-        if allowed:
-            bridge_env["WHATSAPP_ALLOWED_USERS"] = allowed
-        else:
-            bridge_env.pop("WHATSAPP_ALLOWED_USERS", None)
+        bridge_env["WHATSAPP_GROUP_POLICY"] = self._group_policy
+        for env_key, ids in (("WHATSAPP_ALLOWED_USERS", self._allow_from), ("WHATSAPP_GROUP_ALLOWED_USERS", self._group_allow_from)):
+            if ids:
+                bridge_env[env_key] = ",".join(sorted(ids))
+            else:
+                bridge_env.pop(env_key, None)
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))

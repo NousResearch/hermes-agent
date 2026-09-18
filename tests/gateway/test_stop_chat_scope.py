@@ -218,37 +218,6 @@ async def test_stop_in_a_dm_does_not_reach_a_group_run_that_ends_in_the_same_use
 
 
 @pytest.mark.asyncio
-async def test_stop_does_not_reach_another_reply_thread_of_a_channel_keyed_run():
-    # A top-level channel turn keeps chat_type "channel" with the relay-stamped reply-thread ts,
-    # so the SAME boundary must apply to it: a stop inside thread .100 must not reach the run
-    # whose reply thread is .200.
-    other_reply_thread = build_session_key(_slack_source("channel", "C9", thread_id="170.200"))
-    stop_source = _slack_source("thread", "C9", thread_id="170.100")
-
-    _, interrupted, result = await _stop(stop_source, other_reply_thread)
-
-    assert interrupted == []
-    assert result == t("gateway.stop.no_active")
-
-
-@pytest.mark.asyncio
-async def test_stop_in_a_dm_does_not_reach_a_group_run_that_ends_in_the_same_user_id():
-    # Non-Slack DMs key chat_id as the USER id (Telegram), and a per-sender group key ends with
-    # that same user id — the group run is a different chat and must stay untouched.
-    group_run = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_type="group", chat_id="-100123",
-                      user_id="777")
-    )
-    dm_stop = SessionSource(platform=Platform.TELEGRAM, chat_type="dm", chat_id="777",
-                            user_id="777")
-
-    _, interrupted, result = await _stop(dm_stop, group_run)
-
-    assert interrupted == []
-    assert result == t("gateway.stop.no_active")
-
-
-@pytest.mark.asyncio
 async def test_chat_scope_fallback_is_authorization_gated():
     running_key = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     stop_source = _slack_source("thread", "C9", thread_id="170.100")

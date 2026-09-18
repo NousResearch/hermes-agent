@@ -28,12 +28,17 @@ class TestKnownPrefixes:
 
         dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
         multi_dot_sk = "sk-ws-" + "H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "ABCDEFGHIJKLMNOP"
-        zhipu = "50aaedFAKE1234567890abcdef1234567890abc" + "." + "ZpSh99"
+        zhipu = "50aaed1234567890abcdef1234567890" + "." + "ZpSh99AbCdEfGh12"
         yaml = f"a:\n  api_key: {dotted_sk}\nb:\n  api_key: {zhipu}\nc:\n  api_key: {multi_dot_sk}\n"
 
         term = redact_terminal_output(yaml, "cat /tmp/keys.yaml")
         for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
             assert secret_tail not in term, term
+        # Display masks (``sk-pro...EFGH``) contain ``..``, which no real key does:
+        # a second pass over an already-masked token must be a no-op, not ``***``
+        # (tool_executor redacts browser_type args, then build_tool_preview
+        # redacts them again).
+        assert redact_sensitive_text("sk-pro...EFGH", force=True) == "sk-pro...EFGH"
 
         read = redact_sensitive_text(yaml, file_read=True)
         assert "«redacted:sk-…»" in read and "«redacted-secret»" in read, read
@@ -42,15 +47,18 @@ class TestKnownPrefixes:
 
     def test_dotted_and_prefixless_matchers_leave_benign_tokens_alone(self):
         """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
-        content-hash filenames, bare git shas, short ``sk-`` fragments and a
-        31-char id must stay byte-identical."""
+        content-hash filenames (incl. ``<sha>.bundle`` / ``<md5>.sqlite3``), bare
+        git shas, short ``sk-`` fragments and a 31-char id must stay byte-identical."""
         from agent.redact import redact_terminal_output
 
         benign = (
             "blob 0123456789abcdef0123456789abcdef.png\n"
+            "git bundle create 0123456789abcdef0123456789abcdef01234567.bundle\n"
+            "/cache/0123456789abcdef0123456789abcdef.sqlite3\n"
+            "cp " + "a1" * 18 + ".example\n"
             "commit 0123456789abcdef0123456789abcdef01234567\n"
             "sk-short sk-abc.def\n"
-            "release=" + "a" * 31 + ".ZpSh99\n"
+            "release=" + "a" * 31 + ".ZpSh99AbCdEfGh12\n"
         )
         assert redact_terminal_output(benign, "git log --stat") == benign
         assert redact_sensitive_text(benign, file_read=True) == benign

@@ -134,11 +134,13 @@ def _redact_enabled() -> bool:
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
     # Some provider-issued ``sk-`` keys carry dot-delimited body segments (Alibaba
-    # ``sk-sp-…``/``sk-ws-…``). The lookahead sets the 10-char floor over the whole
-    # dotted body; the body then runs to its last non-dot char so sentence
-    # punctuation after a key is never consumed. Kept free of nested unbounded
-    # repeats so the pattern passes the same structural gate plugins must.
-    r"sk-(?=[A-Za-z0-9_.-]{10,}(?![A-Za-z0-9_.-]))[A-Za-z0-9_.-]*[A-Za-z0-9_-]",
+    # ``sk-sp-…``/``sk-ws-…``). Each unit is one body char optionally preceded by
+    # a single dot, so the body ends on its last non-dot char (sentence punctuation
+    # is never consumed) and can never span ``..``: the ``sk-pro...EFGH`` display
+    # mask is left alone by a second redaction pass instead of collapsing to
+    # ``***``. Kept free of nested unbounded repeats so the pattern passes the
+    # same structural gate plugins must.
+    r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -571,10 +573,11 @@ _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
-# both opaque segments are alphanumeric, the ID is 32--40 characters, and the
-# credential suffix is at least six characters.
+# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
+# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
+# ``<md5>.sqlite3``) never match.
 _ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([A-Za-z0-9]{32,40}\.[A-Za-z0-9]{6,})(?![A-Za-z0-9_.-])"
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
 
 

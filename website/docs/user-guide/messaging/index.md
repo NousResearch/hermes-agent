@@ -538,6 +538,8 @@ You can also set this via environment variable:
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
 
+With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is queued as the agent's next turn and you get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code), instead of silence until that turn ends.
+
 ### Use Cases
 
 - **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"
@@ -594,6 +596,10 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 :::
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
+
+:::note Inside a container, only the system scope is offered
+`hermes gateway install` (and the `hermes gateway setup` wizard) refuse to install a **user** service when Hermes detects it is running inside a container. A user unit lands in `~/.config/systemd/user`, and when that home is bind-mounted from the host (podman/distrobox), the host's own `systemd --user` enables and starts the same unit — a second gateway polling the same bot token. Run the gateway as the container's main process (`hermes gateway run`, with a container restart policy), or in a systemd container (systemd as PID 1) install the isolated system scope: `sudo hermes gateway install --system --run-as-user <user>`.
+:::
 
 :::info Multiple installations
 If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
@@ -804,6 +810,52 @@ display:
       interim_assistant_messages: false
       long_running_notifications: false
 ```
+
+### Warning and error notifications (opt-in suppression)
+
+Automatic warning and error notifications are shown by default. To suppress
+these notifications, enable `suppress_warning_notifications` globally or for
+an individual surface:
+
+```yaml
+display:
+  suppress_warning_notifications: true
+  platforms:
+    telegram:
+      suppress_warning_notifications: false
+```
+
+This example suppresses notifications globally while keeping them visible on
+Telegram. Omit the setting or use `false` to preserve normal delivery. Platform
+overrides take precedence; `null` inherits. Invalid values do not enable
+suppression.
+
+The setting controls automatic engine warnings, retry/fallback diagnostics,
+watchdog and database notices, cron failure notifications, Kanban failure
+notifications, background/delegation diagnostics, and adapter-generated error
+notices. It applies to messaging platforms, CLI/TUI presentation and API
+notification presentation. Classification belongs to the producer: warning-like
+text in a user request or an ordinary result is not filtered by its wording.
+
+Suppression changes presentation, not execution. Existing logs, stored diagnostic
+content, retry decisions, failure state, scheduler bookkeeping and notification
+cursors remain available. A diagnostic-only internal wake (a subagent or credit
+failure, a Kanban crash notice) still runs its agent turn — so the agent can act on
+the failure and the session history stays consistent — and that turn is billed as
+usual; only its unsolicited text, media and streaming presentation are muted. Structured
+approval and clarification controls, direct command/API outcomes and requested
+results are not converted into success or discarded. API failure flags, status
+codes and usage remain truthful even when diagnostic text is hidden.
+
+Cron `failure_deliver` still selects the destination; the destination's warning
+policy determines whether an automatic failure notice is presented there.
+Suppressed deliveries are settled without claiming a successful send. Already
+admitted deliveries retain their delivery identity and outcome.
+
+Policy is resolved for the owning profile and logical destination. Agent turns
+use their turn policy; independent notifications and deferred deliveries evaluate
+policy at their own delivery boundary. Already delivered messages are not removed.
+Suppression does not fix an underlying failure or add another logging destination.
 
 ### Progress bubble cleanup (opt-in)
 

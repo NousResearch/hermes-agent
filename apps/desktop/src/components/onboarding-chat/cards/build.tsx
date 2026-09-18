@@ -40,7 +40,7 @@ const FALLBACK_OPTION = "Let's figure it out together"
 /**
  * The last question card before the handoff. The model asks what the user wants to build first, then places this card
  * with options it wrote from the conversation so far:
- * `::onboarding{step="first" options="A Discord bot|A habit tracker|…"}`.
+ * `::onboarding{step="first" options="Find emails I need to reply to|Plan my day around meetings|…"}`.
  */
 export function FirstBuildCard({ attrs, locked }: CardProps) {
   const view = useSessionView()

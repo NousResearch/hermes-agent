@@ -179,7 +179,9 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         return None
 
 
-def build_error_surface_from_exception(exc: BaseException, provider: str = "", model: str = "") -> Optional[dict]:
+def build_error_surface_from_exception(
+    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None,
+) -> Optional[dict]:
     """Descriptor for an exception that escaped the turn dispatcher.
 
     API/transport exceptions go through ``classify_api_error`` (same taxonomy
@@ -195,7 +197,7 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
 
         from agent.error_classifier import classify_api_error
 
-        classified = classify_api_error(exc, provider=provider, model=model)
+        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:

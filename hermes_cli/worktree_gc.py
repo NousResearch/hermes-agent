@@ -329,10 +329,11 @@ def audit_branches(repo_root: str) -> List[BranchRecord]:
     def _lines(result) -> List[str]:
         return [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
-    upstream = next(
-        (c for c in ("origin/HEAD", "origin/main", "origin/master")
-         if _git(["rev-parse", "--verify", "--quiet", c], cwd=repo_root, timeout=5).returncode == 0),
-        None)
+    # No remote at all -> the local trunk; no trunk either -> nothing can be judged, report nothing.
+    try:
+        upstream = _ops._worktree_merge_base_ref(repo_root)
+    except Exception:
+        upstream = None
     if upstream is None:
         return []
 

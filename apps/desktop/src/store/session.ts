@@ -144,6 +144,48 @@ export function setRememberedSessionId(id: null | string, profile: string): void
   persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
 }
 
+/** A renamed profile keeps its sessions, so the remembered session / route and
+ *  every owner hint pointing at the old name move to the new one instead of
+ *  routing the next open at a backend that no longer exists (#111868). */
+export function migrateRememberedNavigationForProfile(oldProfile: string, newProfile: string): void {
+  discardLegacyRememberedNavigation()
+
+  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY]) {
+    const value = storedString(profileNavigationKey(base, oldProfile))
+
+    if (value !== null) {
+      persistString(profileNavigationKey(base, newProfile), value)
+      persistString(profileNavigationKey(base, oldProfile), null)
+    }
+  }
+}
+
+export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfile: string): void {
+  const from = oldProfile.trim() || 'default'
+  const to = newProfile.trim() || 'default'
+  let changed = false
+
+  for (const [key, entry] of [...sessionOwnerHints]) {
+    const { route } = entry
+
+    if (route.profile !== from && route.targetProfile !== from) {
+      continue
+    }
+
+    sessionOwnerHints.delete(key)
+    rememberSessionOwnerHint(entry.id, {
+      ...route,
+      profile: route.profile === from ? to : route.profile,
+      ...(route.targetProfile === from ? { targetProfile: to } : {})
+    })
+    changed = true
+  }
+
+  if (changed) {
+    persistSessionOwnerHints()
+  }
+}
+
 export function sessionBelongsToProfile(
   sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>[],
   storedSessionId: string,

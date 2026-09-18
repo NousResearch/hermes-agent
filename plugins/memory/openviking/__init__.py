@@ -2216,7 +2216,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.debug("Could not safely mark OpenViking session %s pending without a run lock", sid)
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(path.parent)
             atomic_json_write(path, {"session_id": sid, "owner_run_id": self._run_id}, mode=0o600)
             self._pending_marked_sids.add(sid)
         except Exception as e:

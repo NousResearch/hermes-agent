@@ -297,6 +297,26 @@ describe('useComposerActions native image drops', () => {
     vi.clearAllMocks()
   })
 
+  it('does not attach a screenshot when its draft changes during native image saving', async () => {
+    let finishSave!: (path: string) => void
+    const saveImageBuffer = vi.fn(() => new Promise<string>(resolve => { finishSave = resolve }))
+    const add = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
+    const { result } = renderHook(() => useComposerActions({
+      activeSessionId: null,
+      currentCwd: '/test',
+      requestGateway: vi.fn(),
+      scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
+    }))
+    let current = true
+    const pending = result.current.attachImageBlob(new Blob([new Uint8Array([1])], { type: 'image/png' }), () => current)
+    await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
+    current = false
+    finishSave('/test/screenshot.png')
+    expect(await pending).toBe(false)
+    expect(add).not.toHaveBeenCalled()
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'

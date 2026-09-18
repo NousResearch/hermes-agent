@@ -76,7 +76,7 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
     ):
         agent._vprint(
             f"{agent.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
-            force=True,
+            force=True, diagnostic=True,
         )
         return "length"
     return finish_reason
@@ -198,7 +198,8 @@ def check_api_response(
     if agent.provider == "nous":
         try:
             from agent.nous_rate_guard import clear_nous_rate_limit
-            clear_nous_rate_limit()
+            from hermes_cli.anon_auth import is_anonymous_agent
+            clear_nous_rate_limit(anonymous=is_anonymous_agent(agent))
         except Exception:
             pass
     from agent import relay_llm
@@ -258,7 +259,7 @@ def retry_invalid_response(
 
     # Eager fallback: empty/malformed responses often mean rate limiting.
     if agent._fallback_index < len(agent._fallback_chain):
-        agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
+        agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
@@ -276,7 +277,7 @@ def retry_invalid_response(
 
     if retry_count >= max_retries:
         if agent._has_pending_fallback():
-            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
         if agent._try_activate_fallback():
             active_system_prompt = _arm_fallback_restart(
                 agent, api_messages, active_system_prompt, _retry)
@@ -285,7 +286,7 @@ def retry_invalid_response(
             return _verdict("break")
         # Terminal — flush buffered retry trace so user sees what happened.
         agent._flush_status_buffer()
-        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+        agent._emit_diagnostic_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
         logger.error("%sInvalid API response after %d retries.", agent.log_prefix, max_retries)
         agent._persist_session(messages, conversation_history)
         # "model=<id>" is describe_invalid_response's OpenRouter fallback, not a provider name.

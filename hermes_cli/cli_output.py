@@ -26,6 +26,18 @@ def print_header(text: str) -> None:
     print(color(f"\n  {text}", Colors.YELLOW))
 
 
+def print_truncated(more: int | None, hint: str = "") -> None:
+    """Footer for a capped listing so a cut list never reads as the whole list.
+
+    ``more`` is the exact number of hidden rows, or ``None`` when the caller only probed
+    one row past its cap (``LIMIT n+1``) and knows just that at least one more exists.
+    ``hint`` names how to see the rest (``"use --limit 40 to see more"``).
+    """
+    count = f"{more} more" if more is not None else "more not shown"
+    suffix = f" ({hint})" if hint else ""
+    print(color(f"  … {count}{suffix}", Colors.DIM))
+
+
 def line_input(prompt_text: str) -> str:
     """Read non-secret text with normal cursor-editing keys on a real TTY.
 

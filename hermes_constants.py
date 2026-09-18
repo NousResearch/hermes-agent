@@ -157,6 +157,12 @@ def get_process_hermes_home() -> Path:
     return Path(val) if val else _get_platform_default_hermes_home()
 
 
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
+
 # get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
 # fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
@@ -257,6 +263,28 @@ def profile_tombstone_path(profile_home: Path) -> Path:
 
 def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
+
+
+# A directory under profiles/ is a profile only when something identifies it as one.
+# Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
+# none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
+# listed, served, ticked, or seeded with the default install's credentials.
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+
+
+def named_profile_has_identity(profile_home: str | Path) -> bool:
+    # A dangling symlinked marker (clone/migration leftover) is still an identity claim:
+    # ``is_file()`` follows links, so it alone would make such a profile unlistable.
+    home = Path(profile_home)
+    return any((home / marker).is_file() or (home / marker).is_symlink() for marker in _PROFILE_IDENTITY_MARKERS)
+
+
+def named_profile_is_live(profile_home: str | Path) -> bool:
+    """A resolvable named profile: an existing dir with identity that has not been deleted.
+    ``-p``/``--profile`` resolution and ``profile_exists`` share this so a stale ghost shell can
+    never be started as a backend (whose ``ensure_hermes_home`` would rebuild the full tree)."""
+    home = Path(profile_home)
+    return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
@@ -781,9 +809,14 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
-def display_hermes_home() -> str:
-    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``)."""
-    home = get_hermes_home()
+def display_hermes_home(home: Path | None = None) -> str:
+    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``).
+
+    ``home`` overrides the lookup for callers that run before the CLI has applied the sticky
+    ``active_profile`` (``get_hermes_home()`` would emit the wrong-profile fallback warning there).
+    """
+    if home is None:
+        home = get_hermes_home()
     try:  # as_posix(): str() on Windows yields chimeras like ~/AppData\Local\hermes/skills/
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:

@@ -76,7 +76,8 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
 
     # Dashboard update on a catalog install = re-pin. Pin unchanged → no-op.
     assert pc.dashboard_update_user_plugin("cat-plugin") == {
-        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True}
+        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True,
+        "python_dependencies": [], "warnings": []}
     # Bump the catalog pin → the checkout moves to exactly that sha.
     world["state"]["pin"] = world["sha2"]
     assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
@@ -96,3 +97,10 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
     assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
     assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin") == "malware"
+
+
+def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():
+    from hermes_cli.plugins_cmd import _resolve_git_url
+    assert _resolve_git_url("plastic-labs/honcho#hermes-plugin-honcho") == (
+        "https://github.com/plastic-labs/honcho.git", "hermes-plugin-honcho")
+    assert _resolve_git_url("owner/repo") == ("https://github.com/owner/repo.git", None)

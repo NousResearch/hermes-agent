@@ -10,6 +10,8 @@ read-only engine open creates -wal/-shm sidecar files next to a WAL database.
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -441,6 +443,72 @@ class TestReportDatabaseJournalModes:
 
         assert _sidecars(tmp_path) == []
         assert db.read_bytes() == db_bytes
+
+
+class TestConfiguredDeleteNeverApplied:
+    """#111729: a database still in WAL while ``database.journal_mode: delete`` is configured is a
+    WARNING naming the unapplied setting (the runtime never live-downgrades and logs that once per
+    process), not the informational line a healthy WAL database gets; a configured ``wal`` is unchanged."""
+
+    @pytest.mark.parametrize("version, exposed", [((3, 51, 3), False), (VULNERABLE, True)])
+    def test_wal_db_under_configured_delete_warns(self, tmp_path, capsys, monkeypatch, version, exposed):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+
+        doctor_platform._report_database_journal_modes(tmp_path, version)
+
+        out = capsys.readouterr().out
+        assert "state.db is in WAL mode" in out and "despite database.journal_mode=delete" in out
+        assert "never live-downgraded" in out and "PRAGMA journal_mode=DELETE" in out
+        assert "state.db: WAL journal mode" not in out
+        assert ("To clear the exposure:" in out) is exposed
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="holder scan has no Windows backend")
+    def test_wal_db_under_configured_delete_names_its_holders(self, tmp_path, capsys, monkeypatch):
+        # The offline conversion needs the file quiet, so doctor must say WHICH process to stop — a
+        # subprocess holding a real connection is named by PID; the doctor process itself is not a holder.
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
+             "print('ready', flush=True); sys.stdin.readline()", str(db)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "ready"
+            doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+        finally:
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.wait(timeout=30)
+
+        out = capsys.readouterr().out
+        assert f"state.db is held by PID {holder.pid}" in out and "state.db" in out.split("held by PID")[1]
+        assert "no other process holds it" not in out and "cannot prove" not in out
+
+    def test_partial_holder_scan_is_never_an_all_clear(self, tmp_path, capsys, monkeypatch):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda path: [(-1, "open-file scan unavailable")])
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "cannot prove the database is quiet" in out and "open-file scan unavailable" in out
+        assert "no other process holds it" not in out and "held by PID" not in out
+
+    def test_configured_wal_keeps_the_informational_line(self, tmp_path, capsys, monkeypatch):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "wal")
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "state.db: WAL journal mode" in out
+        assert "despite" not in out
 
 
 class TestSizeAndRepairHint:

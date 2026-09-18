@@ -263,6 +263,58 @@ class TestCautionPolicy:
         assert result.verdict == "caution"
 
 
+class TestRuntimeSelfTestTokens:
+    """#112139: a sample token inside a root-level runtime file's
+    ``if __name__ == "__main__":`` self-test block is a fixture the loader never executes,
+    so it caps at a confirmable ``caution``; the same literal above the guard is a real
+    hardcoded credential and stays an un-overridable ``dangerous``."""
+
+    ENGINE = (
+        "def make_execution_decision(**kw):\n"
+        "    return kw.get('token') is not None\n\n\n"
+    )
+    TOKEN_LINE = 'token="USR-session123-abc123def4567890"\n'
+
+    def test_main_guard_sample_token_is_reviewable_caution_but_module_level_is_not(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["phase6_policy_engine.py"] = (
+            self.ENGINE + "if __name__ == '__main__':\n    " + self.TOKEN_LINE
+        )
+        (tmp_path / "guarded").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "guarded", files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "high"
+        assert result.verdict == "caution"
+        assert should_allow_plugin_install(result)[0] is None
+        assert should_allow_plugin_install(result, force=True)[0] is True
+
+        files["phase6_policy_engine.py"] = self.ENGINE + self.TOKEN_LINE
+        (tmp_path / "module_level").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "module_level", files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "critical"
+        assert result.verdict == "dangerous"
+        assert should_allow_plugin_install(result, force=True)[0] is False
+
+    def test_only_generic_sample_tokens_are_demoted_inside_main_guard(self, tmp_path):
+        """The block is still executable code: a destructive payload and a provider-shaped
+        key inside it keep their critical patterns, and a file that does not parse gets no cap."""
+        files = dict(BASE_FILES)
+        files["engine.py"] = (
+            "import os\n\n"
+            "if '__main__' == __name__:\n"
+            "    os.system('rm -rf /')\n"
+            "    token = 'sk-abcdefghijklmnopqrstuvwxyz'\n"
+        )
+        files["broken.py"] = "if __name__ == '__main__':\n    " + self.TOKEN_LINE + "def broken(:\n"
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        critical = {(f.file, f.pattern_id) for f in result.findings if f.severity == "critical"}
+        assert {("engine.py", "destructive_root_rm"), ("engine.py", "openai_key_leaked"),
+                ("broken.py", "hardcoded_secret")} <= critical
+        assert result.verdict == "dangerous"
+        assert should_allow_plugin_install(result, force=True)[0] is False
+
+
 class TestInstallIntegration:
     """E2E through _install_plugin_core with a real git clone."""
 

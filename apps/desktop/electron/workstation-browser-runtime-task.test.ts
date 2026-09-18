@@ -93,13 +93,38 @@ const electron = vi.hoisted(() => {
     stop(): void {}
     async executeJavaScript(source: string): Promise<unknown> {
       if (source.includes('__hermesWorkstationRefs')) {
+        if (source.includes('byRef.get')) {
+          return {
+            success: true,
+            x: 100,
+            y: 100,
+            target: {
+              ref: '@e1',
+              tag: 'button',
+              role: 'button',
+              label: 'Submit',
+              testid: 'submit-btn',
+              name: 'submit'
+            }
+          }
+        }
         return {
           url: this.url,
           title: this.title,
           text: '',
           totalTextChars: 0,
           truncated: false,
-          elements: []
+          elements: [
+            {
+              ref: '@e1',
+              tag: 'button',
+              role: 'button',
+              label: 'Submit',
+              disabled: false,
+              testid: 'submit-btn',
+              name: 'submit'
+            }
+          ]
         }
       }
 
@@ -1087,6 +1112,58 @@ test('concurrent multi-task isolation: background actions do not steal active ta
   // Switching back to Session 2 activates Tab 2
   runtime.attach(window as never, bounds, 'chat', 'task-sess-2')
   assert.equal(runtime.state().activeTabId, tab2.id, 'Attaching to Session 2 should activate Tab 2')
+
+  await runtime.destroy()
+})
+
+test('browser_click and browser_type return structured elements, target metadata, and semantic_effect', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const executeControlRequest = (
+    runtime as unknown as {
+      executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
+    }
+  ).executeControlRequest.bind(runtime)
+
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-sem-1',
+    arguments: { url: 'https://example.com/app' }
+  })
+
+  const clickResult = (await executeControlRequest({
+    action: 'browser_click',
+    task_id: 'task-sem-1',
+    arguments: { ref: '@e1' }
+  })) as Record<string, unknown>
+
+  assert.equal(clickResult.semantic_effect, 'click')
+  assert.deepEqual(clickResult.target, {
+    ref: '@e1',
+    tag: 'button',
+    role: 'button',
+    label: 'Submit',
+    testid: 'submit-btn',
+    name: 'submit'
+  })
+  assert.ok(Array.isArray(clickResult.elements))
+  assert.equal((clickResult.elements as unknown[]).length, 1)
+
+  const typeResult = (await executeControlRequest({
+    action: 'browser_type',
+    task_id: 'task-sem-1',
+    arguments: { ref: '@e1', text: 'hello' }
+  })) as Record<string, unknown>
+
+  assert.equal(typeResult.semantic_effect, 'type')
+  assert.deepEqual(typeResult.target, {
+    ref: '@e1',
+    tag: 'button',
+    role: 'button',
+    label: 'Submit',
+    testid: 'submit-btn',
+    name: 'submit'
+  })
 
   await runtime.destroy()
 })

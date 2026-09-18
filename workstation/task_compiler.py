@@ -260,8 +260,66 @@ class TaskCompiler:
     def execute(self, request: dict, *, task_id: str, session_id: str, dispatch: Callable,
                 progress: Callable | None = None, provider_usage: dict | None = None,
                 environment: str | None = None, event_bus=None, canonical_task_id: str | None = None) -> dict:
+        if request.get("capability_id"):
+            from workstation.operational_kernel import OperationalKernel
+            kernel = OperationalKernel(artifacts=self.artifacts)
+            inputs = request.get("capability_inputs") or request.get("inputs") or {}
+            owner = str(canonical_task_id or task_id or session_id)
+            result = kernel.execute_capability(
+                request["capability_id"],
+                inputs,
+                version=request.get("capability_version"),
+                dispatch=dispatch,
+                context={"task_id": owner, "session_id": session_id},
+                owner=owner,
+            )
+            plan_id = f"cap_exec_{request['capability_id']}_{int(time.time())}"
+            from workstation.recipes import sanitize
+            res_ref = self.artifacts.store(owner, f"{plan_id}_result.json", sanitize(result))
+            return {
+                "status": result.get("status", "COMPLETED"),
+                "plan_id": plan_id,
+                "task_id": owner,
+                "capability_id": request["capability_id"],
+                "results_ref": res_ref.ref,
+                "output": result.get("output"),
+                "savings": result.get("savings", {}),
+            }
         recipe_key = request.get("recipe_key")
         if not recipe_key and request.get('operation_fingerprint'):
+            from workstation.operational_capabilities import OperationalCapabilityRegistry
+            op_reg = OperationalCapabilityRegistry(artifacts=self.artifacts)
+            matched_cap = op_reg.find_matching(
+                route=request.get('recipe_scope', {}).get('route', 'native_browser') if request.get('recipe_scope') else 'native_browser',
+                semantic_fingerprint=request['operation_fingerprint'],
+                scope=request.get('recipe_scope'),
+                promoted_only=True
+            )
+            if matched_cap:
+                from workstation.operational_kernel import OperationalKernel
+                kernel = OperationalKernel(registry=op_reg, artifacts=self.artifacts)
+                inputs = request.get("capability_inputs") or request.get("inputs") or {}
+                owner = str(canonical_task_id or task_id or session_id)
+                cap_res = kernel.execute_capability(
+                    matched_cap,
+                    inputs,
+                    dispatch=dispatch,
+                    context={"task_id": owner, "session_id": session_id},
+                    owner=owner
+                )
+                plan_id = f"cap_reuse_{matched_cap.id}_{int(time.time())}"
+                from workstation.recipes import sanitize
+                res_ref = self.artifacts.store(owner, f"{plan_id}_result.json", sanitize(cap_res))
+                return {
+                    "status": cap_res.get("status", "COMPLETED"),
+                    "plan_id": plan_id,
+                    "task_id": owner,
+                    "capability_id": matched_cap.id,
+                    "results_ref": res_ref.ref,
+                    "output": cap_res.get("output"),
+                    "savings": cap_res.get("savings", {}),
+                    "reused_capability": True
+                }
             match = self.recipes.find_verified(fingerprint=request['operation_fingerprint'],
                 scope=request.get('recipe_scope'), mutation_target=request.get('mutation_target'),
                 preflight=request.get('preflight', []))

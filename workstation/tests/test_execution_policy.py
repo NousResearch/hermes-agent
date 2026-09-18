@@ -82,3 +82,61 @@ def test_final_arguments_cannot_bypass_dispatch_threshold():
     with pytest.raises(RuntimeError, match='REQUIRE_COMPILE'):
         prepare_mutation(a, 'write_file', {'path': 'middleware-rewritten.json', 'content': 'x'})
     assert sum(a._work_mutation_shapes.values()) == 2
+
+
+def test_heterogeneous_stateful_browser_never_requires_compile():
+    from workstation.execution_policy import CompilationDecision, decisions_for_calls
+    a = agent()
+    calls = [
+        call('browser_navigate', {'url': 'https://example.com/login'}),
+        call('browser_snapshot', {}),
+        call('browser_type', {'ref': '@e1', 'text': 'user_a', 'semantic_anchor': {'type': 'testid', 'value': 'username'}}),
+        call('browser_snapshot', {}),
+        call('browser_click', {'ref': '@e2', 'semantic_anchor': {'type': 'testid', 'value': 'next_btn'}}),
+        call('browser_snapshot', {}),
+        call('browser_type', {'ref': '@e3', 'text': 'pass_123', 'semantic_anchor': {'type': 'testid', 'value': 'password'}}),
+        call('browser_snapshot', {}),
+        call('browser_click', {'ref': '@e4', 'semantic_anchor': {'type': 'testid', 'value': 'submit_btn'}}),
+        call('browser_snapshot', {}),
+        call('browser_type', {'ref': '@e5', 'text': 'search_term', 'semantic_anchor': {'type': 'testid', 'value': 'search_box'}}),
+    ]
+    decisions = decisions_for_calls(a, calls)
+    assert all(d != CompilationDecision.REQUIRE_COMPILE for d in decisions)
+
+
+def test_homogeneous_fanout_requires_compile_on_third_mutation():
+    from workstation.execution_policy import CompilationDecision, decisions_for_calls
+    a = agent()
+    calls = [
+        call('browser_type', {'ref': '@e1', 'text': 'val1', 'target_family': 'row_amount_field'}),
+        call('browser_type', {'ref': '@e2', 'text': 'val2', 'target_family': 'row_amount_field'}),
+        call('browser_type', {'ref': '@e3', 'text': 'val3', 'target_family': 'row_amount_field'}),
+    ]
+    decisions = decisions_for_calls(a, calls)
+    assert decisions[0] == CompilationDecision.ALLOW_ADAPTIVE
+    assert decisions[1] == CompilationDecision.SUGGEST_COMPILE
+    assert decisions[2] == CompilationDecision.REQUIRE_COMPILE
+
+
+def test_unknown_semantic_family_does_not_fabricate_homogeneity():
+    from workstation.execution_policy import CompilationDecision, decisions_for_calls
+    a = agent()
+    calls = [
+        call('browser_type', {'ref': '@e1', 'text': 'val1'}),
+        call('browser_type', {'ref': '@e2', 'text': 'val2'}),
+        call('browser_type', {'ref': '@e3', 'text': 'val3'}),
+    ]
+    decisions = decisions_for_calls(a, calls)
+    assert decisions[2] != CompilationDecision.REQUIRE_COMPILE
+
+
+def test_executed_unverified_does_not_count_as_verified_success():
+    from workstation.execution_policy import decisions_for_calls
+    a = agent()
+    record_mutation(a, 'write_file', {'path': 'test.json', 'content': 'x'}, {'ok': True})
+    decisions_for_calls(a, [call('write_file', {'path': 'test2.json', 'content': 'y'})])
+    candidates = getattr(a, '_work_compilation_candidates', {})
+    for cand in candidates.values():
+        assert cand.executed_occurrences >= 1
+        assert cand.verified_successes == 0
+

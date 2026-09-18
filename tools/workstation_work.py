@@ -55,10 +55,13 @@ registry.register(
                     "timeout_seconds": {"type": "number"}, "interval_seconds": {"type": "number"},
                     "max_polls": {"type": "integer"}}}},
                 "required": ["tool", "args"]}},
+            "capability_id": {"type": "string", "description": "Deterministic Operational Capability identifier to execute or compose."},
+            "capability_version": {"type": "string", "description": "Optional version constraint for the capability."},
+            "capability_inputs": {"type": "object", "description": "Input arguments mapped to the capability schema."},
             "constraints": {"type": "object", "properties": {
                 "mutation_allowed_routes": {"type": "array", "items": {"type": "string"}, "description": "Mutation channel authority only; independent verification reads remain permitted."},
                 "mutation_forbidden_routes": {"type": "array", "items": {"type": "string"}},
                 "allowed_routes": {"type": "array", "items": {"type": "string"}},
                 "forbidden_routes": {"type": "array", "items": {"type": "string"}}}},
-        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["recipe_key"]}, {"required": ["operation_fingerprint", "recipe_scope"]}, {"required": ["plan_id"]}, {"properties": {"action": {"enum": ["contract", "discover"]}}, "required": ["action"]}]}},
+        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["recipe_key"]}, {"required": ["capability_id"]}, {"required": ["operation_fingerprint", "recipe_scope"]}, {"required": ["plan_id"]}, {"properties": {"action": {"enum": ["contract", "discover"]}}, "required": ["action"]}]}},
 )

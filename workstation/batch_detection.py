@@ -113,16 +113,24 @@ def record_mutation(agent, name, args, raw, *, dispatched=True, duration_ms=None
     completed = getattr(agent, "_work_completed_mutations", {})
     key = call_key(name, args)
     evidence = getattr(agent, "_work_mutation_evidence", {})
+    from workstation.execution_policy import semantic_operation_fingerprint
+    signature = structural_signature(name, args)
+    sem_fp = semantic_operation_fingerprint(name, args)
+    op_fp = sem_fp or signature
     if key not in evidence:
         shapes = getattr(agent, "_work_mutation_shapes", {})
-        signature = structural_signature(name, args)
         shapes[signature] = shapes.get(signature, 0) + 1
         agent._work_mutation_shapes = shapes
+        if sem_fp:
+            sem_families = getattr(agent, "_work_mutation_sem_families", {})
+            sem_families[sem_fp] = sem_families.get(sem_fp, 0) + 1
+            agent._work_mutation_sem_families = sem_families
     record = mutation_identity(name, args, task_id=getattr(agent, "_canonical_work_task_id", None),
                                run_id=getattr(agent, "_canonical_work_run_id", None))
     record.update({"evidence_ref": ref, "verifier_status": "not_verified",
                    "persisted": None, "status": "uncertain" if failed else "executed_unverified",
-                   "operation_fingerprint": structural_signature(name, args)})
+                   "operation_fingerprint": op_fp,
+                   "semantic_fingerprint": sem_fp})
     evidence[key] = record
     agent._work_mutation_evidence = evidence
     store.store(owner, "mutation_" + key + ".json", record)
@@ -175,13 +183,17 @@ def prepare_mutation(agent, name, args):
         if prior.get('status') == 'uncertain':
             raise RuntimeError('uncertain_mutation_requires_review')
     record = sanitize(mutation_identity(name, args, task_id=task_id, run_id=run_id))
+    from workstation.execution_policy import semantic_operation_fingerprint
+    signature = structural_signature(name, args)
+    sem_fp = semantic_operation_fingerprint(name, args)
+    op_fp = sem_fp or signature
     record.update({'status': 'uncertain', 'persisted': None, 'verifier_status': 'pending',
-                   'operation_fingerprint': structural_signature(name, args)})
+                   'operation_fingerprint': op_fp,
+                   'semantic_fingerprint': sem_fp})
     store.store(owner, 'mutation_' + key + '.json', record)
     evidence = getattr(agent, '_work_mutation_evidence', {})
     if key not in evidence:
         shapes = getattr(agent, '_work_mutation_shapes', {})
-        signature = structural_signature(name, args)
         shapes[signature] = shapes.get(signature, 0) + 1
         agent._work_mutation_shapes = shapes
     evidence[key] = record

@@ -22,6 +22,7 @@ def durable_arguments(value):
 def record_trace(agent, name, args, raw, *, duration_ms=None):
     from workstation.artifacts import ArtifactStore
     from workstation.batch_detection import structural_signature
+    from workstation.execution_policy import semantic_operation_fingerprint
     from agent.tool_guardrails import classify_tool_failure
     from workstation.journal import ExecutionJournal
     from workstation.contracts import ExecutionEventKind
@@ -41,10 +42,18 @@ def record_trace(agent, name, args, raw, *, duration_ms=None):
         before = artifacts.read_json(before_ref)
         elements = semantic_browser_elements(before) if isinstance(before, dict) else []
         element = next((e for e in elements if e.get('ref') == args['ref']), None)
-        if element and element.get('label') and sum(e.get('role') == element.get('role') and e.get('label') == element['label'] for e in elements) == 1:
-            arguments['semantic_anchor'] = {'type': 'role_name', 'value': element['role'] + ':' + element['label']}
+        if element:
+            if element.get('testid'):
+                arguments['semantic_anchor'] = {'type': 'testid', 'value': element['testid']}
+            elif element.get('name'):
+                arguments['semantic_anchor'] = {'type': 'name', 'value': f"{element.get('role', 'element')}:{element['name']}"}
+            elif element.get('label') and sum(e.get('role') == element.get('role') and e.get('label') == element['label'] for e in elements) == 1:
+                arguments['semantic_anchor'] = {'type': 'role_name', 'value': element['role'] + ':' + element['label']}
+    sem_fp = semantic_operation_fingerprint(name, args)
+    op_fp = sem_fp or structural_signature(name, args)
     record = {'tool': name, 'action': name.removeprefix('browser_'),
-        'route': canonical_route_for_tool(name, runtime=selected_runtime), 'operation_fingerprint': structural_signature(name, args),
+        'route': canonical_route_for_tool(name, runtime=selected_runtime), 'operation_fingerprint': op_fp,
+        'semantic_fingerprint': sem_fp,
         'arguments': arguments, 'semantic_anchor': arguments.get('semantic_anchor'),
         'before_state_ref': before_ref, 'after_state_ref': output.ref,
         'outcome': 'failed' if classify_tool_failure(name, raw if isinstance(raw, str) else json.dumps(raw))[0] else 'executed_unverified',

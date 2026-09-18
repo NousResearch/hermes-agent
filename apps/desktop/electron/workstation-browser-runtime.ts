@@ -350,10 +350,21 @@ interface PageInventory {
     label: string
     value?: string
     disabled: boolean
+    testid?: string
+    name?: string
   }>
   wallDetected?: boolean
   wallReason?: string
   spaNotice?: string
+}
+
+export interface ElementTargetMetadata {
+  ref?: string
+  tag?: string
+  role?: string
+  name?: string
+  testid?: string
+  label?: string
 }
 
 interface BrowserTaskShowContext {
@@ -686,6 +697,8 @@ function inventoryScript(maxText: number, maxElements: number): string {
       var type = String(el.getAttribute('type') || '').toLowerCase();
       var rawValue = 'value' in el ? String(el.value || '') : '';
       var value = type === 'password' && rawValue ? '[REDACTED]' : rawValue;
+      var testid = String(el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-qa') || '').trim();
+      var name = String(el.getAttribute('name') || '').trim();
       var label = String(
         el.getAttribute('aria-label') ||
         el.getAttribute('alt') ||
@@ -693,7 +706,7 @@ function inventoryScript(maxText: number, maxElements: number): string {
         el.getAttribute('placeholder') ||
         el.innerText ||
         el.textContent ||
-        el.getAttribute('name') ||
+        name ||
         ''
       ).replace(/\\s+/g, ' ').trim().slice(0, 240);
       out.push({
@@ -702,7 +715,9 @@ function inventoryScript(maxText: number, maxElements: number): string {
         role: role,
         label: label,
         value: value ? value.slice(0, 240) : undefined,
-        disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true'
+        disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+        testid: testid || undefined,
+        name: name || undefined
       });
     }
 
@@ -727,7 +742,33 @@ function pointScript(ref: string, focus: boolean): string {
     if (${focus ? 'true' : 'false'}) { try { el.focus({ preventScroll: true }); } catch (err) { try { el.focus(); } catch (err2) {} } }
     var r = el.getBoundingClientRect();
     if (!r || r.width < 1 || r.height < 1) return { success: false, error: 'element_not_visible' };
-    return { success: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    var tag = String(el.tagName || '').toLowerCase();
+    var role = String(el.getAttribute('role') || tag || 'element');
+    var testid = String(el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-qa') || '').trim();
+    var name = String(el.getAttribute('name') || '').trim();
+    var label = String(
+      el.getAttribute('aria-label') ||
+      el.getAttribute('alt') ||
+      el.getAttribute('title') ||
+      el.getAttribute('placeholder') ||
+      el.innerText ||
+      el.textContent ||
+      name ||
+      ''
+    ).replace(/\\s+/g, ' ').trim().slice(0, 240);
+    return {
+      success: true,
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+      target: {
+        ref: ${JSON.stringify(ref)},
+        tag: tag,
+        role: role,
+        name: name || undefined,
+        testid: testid || undefined,
+        label: label || undefined
+      }
+    };
   })()`
 }
 
@@ -2098,18 +2139,29 @@ export class WorkstationBrowserRuntime {
       case 'browser_snapshot':
         return this.snapshotForEntry(entry, Boolean(args.full))
 
-      case 'browser_click':
-        await this.clickRef(entry, String(args.ref ?? ''))
+      case 'browser_click': {
+        const clickResult = await this.clickRef(entry, String(args.ref ?? ''))
         await delay(220)
 
-        return this.snapshotForEntry(entry, false)
+        const snap = await this.snapshotForEntry(entry, false)
+        return {
+          ...snap,
+          target: clickResult?.target,
+          semantic_effect: 'click'
+        }
+      }
       case 'browser_type': {
         const clear = args.clear !== undefined ? Boolean(args.clear) : !args.append
         const append = Boolean(args.append)
-        await this.typeRef(entry, String(args.ref ?? ''), String(args.text ?? ''), { clear, append })
+        const typeResult = await this.typeRef(entry, String(args.ref ?? ''), String(args.text ?? ''), { clear, append })
         await delay(160)
 
-        return this.snapshotForEntry(entry, false)
+        const snap = await this.snapshotForEntry(entry, false)
+        return {
+          ...snap,
+          target: typeResult?.target,
+          semantic_effect: 'type'
+        }
       }
 
       case 'browser_extract_items':
@@ -2528,6 +2580,7 @@ export class WorkstationBrowserRuntime {
       url: inv.url,
       title: inv.title,
       snapshot: formatInventory(inv, full),
+      elements: inv.elements,
       truncated: inv.truncated,
       total_text_chars: inv.totalTextChars,
       element_count: inv.elements.length,
@@ -2536,7 +2589,11 @@ export class WorkstationBrowserRuntime {
     }
   }
 
-  private async resolvePoint(entry: BrowserEntry, ref: string, focus: boolean): Promise<{ x: number; y: number }> {
+  private async resolvePoint(
+    entry: BrowserEntry,
+    ref: string,
+    focus: boolean
+  ): Promise<{ x: number; y: number; target?: ElementTargetMetadata }> {
     if (!ref) {
       throw new Error('ref_required')
     }
@@ -2546,13 +2603,14 @@ export class WorkstationBrowserRuntime {
       error?: string
       x?: number
       y?: number
+      target?: ElementTargetMetadata
     }
 
     if (!result?.success || !Number.isFinite(result.x) || !Number.isFinite(result.y)) {
       throw new Error(result?.error || 'element_unavailable')
     }
 
-    return { x: Number(result.x), y: Number(result.y) }
+    return { x: Number(result.x), y: Number(result.y), target: result.target }
   }
 
   private async ensureDebugger(wc: WebContents): Promise<void> {
@@ -2581,10 +2639,11 @@ export class WorkstationBrowserRuntime {
     await this.cdp(wc, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
   }
 
-  private async clickRef(entry: BrowserEntry, ref: string): Promise<void> {
+  private async clickRef(entry: BrowserEntry, ref: string): Promise<{ target?: ElementTargetMetadata }> {
     const wc = entry.view.webContents
     const point = await this.resolvePoint(entry, ref, true)
     await this.cdpClick(wc, point.x, point.y)
+    return { target: point.target }
   }
 
   private async typeRef(
@@ -2592,7 +2651,7 @@ export class WorkstationBrowserRuntime {
     ref: string,
     text: string,
     options: { clear?: boolean; append?: boolean } = {}
-  ): Promise<void> {
+  ): Promise<{ target?: ElementTargetMetadata }> {
     const wc = entry.view.webContents
     const point = await this.resolvePoint(entry, ref, true)
     await this.cdpClick(wc, point.x, point.y)
@@ -2680,6 +2739,8 @@ export class WorkstationBrowserRuntime {
     }
 
     await this.cdp(wc, 'Input.insertText', { text })
+
+    return { target: point.target }
   }
 
   private async scrollEntry(entry: BrowserEntry, direction: string): Promise<void> {

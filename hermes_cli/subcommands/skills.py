@@ -86,6 +86,25 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
     _flag(skills_audit, "--deep", help="Run AST-level analysis on Python files (opt-in diagnostic)")
 
+    skills_lint = skills_subparsers.add_parser(
+        "lint", help="Lint SKILL.md files against the authoring conventions",
+        description="Run the advisory SKILL.md linter (the same rules skill_manage reports on "
+            "create) over installed skills or a directory tree. With no targets, lints every "
+            "skill in the active profile and adds the collection-level checks (related_skills "
+            "that resolve to nothing, overlapping descriptions, descriptions with no trigger). "
+            "Exit status 1 when any error-severity finding exists (or any finding with --strict), "
+            "2 on a usage error, so it can gate CI.")
+    skills_lint.add_argument("targets", nargs="*",
+        help="Installed skill names, skill directories, or SKILL.md paths (default: every "
+            "installed skill, same as --all)")
+    _flag(skills_lint, "--all", dest="all_skills",
+        help="Lint every skill in the active profile, with collection-level checks")
+    skills_lint.add_argument("--dir", dest="lint_dir", metavar="PATH", default=None,
+        help="Lint every SKILL.md under PATH recursively (e.g. a repo's skills/), with "
+            "collection-level checks")
+    _flag(skills_lint, "--strict", help="Exit 1 on warnings too, not only errors")
+    add_json_flag(skills_lint, "Machine-readable output (per-skill findings, collection findings, summary)")
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")

@@ -911,7 +911,7 @@ class GatewayNotificationsMixin:
                 message_id = str(evt.get("message_id") or "").strip()
                 if message_id and not getattr(source, "message_id", None):
                     # Legacy origins lack anchors. Keep canonical identity and transport refs without
-                    # mutating shared session/cache state or replacing an existing root.
+                    # mutating shared session/cache state or replacing an existing anchor.
                     source = copy(source)
                     source.message_id = message_id
                 return source

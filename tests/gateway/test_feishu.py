@@ -803,11 +803,8 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.text, "/help test")
 
     def test_inbound_thread_message_populates_source_message_id_anchor(self):
-        """A topic/thread inbound message must populate source.message_id
-        with a stable om_ thread anchor (the topic root) so synthetic /
-        resumed sends (async-delegation completions, terminal background
-        notifications) route into the topic via the reply API instead of an
-        invalid create-by-thread-id path."""
+        """Detached replies use the current inbound message, not the topic root
+        or the invalid omt_ thread id; quoted context still uses the root."""
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -843,9 +840,9 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
         event = adapter._dispatch_inbound_event.await_args.args[0]
-        # source.message_id carries the topic root, not the omt_ thread id.
+        # Match the event identity, including when a different topic root exists.
         self.assertEqual(event.source.thread_id, "omt_topic_abc")
-        self.assertEqual(event.source.message_id, "om_root_msg")
+        self.assertEqual(event.source.message_id, event.message_id)
         self.assertEqual(event.message_id, "om_user_msg")
         # event.reply_to_message_id is unchanged — still the root for context.
         self.assertEqual(event.reply_to_message_id, "om_root_msg")

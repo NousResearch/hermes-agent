@@ -902,13 +902,37 @@ cd hermes-agent
 nix develop
 
 # Shell provides:
-#   - Python 3.12 + uv (deps installed into .venv on first entry)
+#   - Python 3.12 + uv, with a writable .venv over Nix-provided dependencies
 #   - Node.js 26, ripgrep, git, openssh, ffmpeg on PATH
-#   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
+#   - Local Python installs preserved on re-entry; npm uses dependency stamps
 
 hermes setup
 hermes chat
 ```
+
+The shell creates a writable `.venv` in the checkout. Its Python loads the
+Nix-built dependencies without copying them or downloading them again. Additional
+installs are written into `.venv`, never into the Nix store:
+
+```bash
+uv pip install -e '.[acp]'
+hermes-acp --check
+```
+
+ACP is already included in the default Nix environment; installing it again is
+only necessary when testing an editable install or changing dependencies.
+`python`, `VIRTUAL_ENV`, `HERMES_PYTHON`, and the Python console commands all use
+the local environment. `uv run --active --no-sync` also reuses it.
+
+Re-entering the shell refreshes the Nix dependency path and preserves local
+overrides. To return to only the Nix-provided dependencies, move `.venv` aside
+and re-enter the shell. This writable overlay is only for development; packaged
+Hermes installations remain immutable.
+
+This is not a fully isolated environment: editable installs of other packages
+already provided by Nix can be shadowed by the Nix fallback, depending on their
+editable-install backend. Use a separate, standalone venv when replacing those
+dependencies with local source trees.
 
 ### direnv (Recommended)
 
@@ -917,7 +941,7 @@ The included `.envrc` activates the dev shell automatically:
 ```bash
 cd hermes-agent
 direnv allow    # one-time
-# Subsequent entries are near-instant (stamp file skips dep install)
+# Re-entry preserves local Python installs; npm stamps skip unchanged installs
 ```
 
 ### Flake Checks

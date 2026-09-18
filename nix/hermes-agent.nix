@@ -8,6 +8,8 @@
   lib,
   stdenv,
   makeWrapper,
+  runtimeShell,
+  uv,
   callPackage,
   python312,
   electron,
@@ -248,7 +250,10 @@ stdenv.mkDerivation (finalAttrs: {
       };
 
       devShellHook = ''
-        export HERMES_PYTHON=${devPython}/bin/python3
+        ${devPython}/bin/python3 ${./dev-python.py} "$HERMES_PYTHON_SRC_ROOT" ${runtimeShell} ${uv}/bin/uv || return 1
+        export VIRTUAL_ENV="$HERMES_PYTHON_SRC_ROOT/.venv"
+        export HERMES_PYTHON="$VIRTUAL_ENV/bin/python"
+        export PATH="$VIRTUAL_ENV/bin:$PATH"
       '';
 
       devDeps =

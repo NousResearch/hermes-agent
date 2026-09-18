@@ -247,7 +247,11 @@ Use `peer dm` only for short queries and receipts because it holds one HTTP
 connection until the turn finishes. If the peer takes the message but the turn outlasts that
 connection, the message is already in the peer's Bot Chat and the turn keeps running there, so the
 command says exactly that instead of reporting the peer unreachable — resending would run the turn
-twice. A timeout while connecting still reports the peer unreachable. For a long turn, `peer run` returns a
+twice. A timeout while connecting still reports the peer unreachable. When the peer's Bot Chat is
+open in its Desktop, the message is handed to that open chat and runs there as its next turn —
+whoever is watching sees it, and the reply still comes back on the call; if that turn is still going
+after five minutes, `peer dm` reports the message as queued in that chat rather than lost. For a long
+turn, `peer run` returns a
 `run_id` immediately; poll it with `peer status`. The run inherits the
 canonical Bot Chat transcript, and a stable `--idempotency-key` makes a retry
 return the original run instead of starting duplicate work. Use `peer stop`

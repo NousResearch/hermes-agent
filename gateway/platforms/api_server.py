@@ -3187,6 +3187,55 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
         return "confirmed" if runtime else "accepted"
 
+    async def _answer_through_live_bot_chat(self, ctx: Dict[str, Any]) -> Optional["web.Response"]:
+        """Hand a turn aimed at a canonical Bot Chat that a Desktop holds live to that owner.
+
+        This is the ``hermes peer dm`` transport. Running the turn here would make this process a
+        second writer beside the lease holder: the open chat never shows the message or the reply,
+        its live context never learns of them, and the two transcripts interleave in state.db.
+        Local and relayed DMs already hand such a message to the owner's mailbox
+        (``tools/bot_mode_dm.py``, ``tui_gateway/methods_bot_relay.py``). This waits for the owner's
+        receipt on the same budget as the local path, so the peer still gets the reply on this call.
+        """
+        message = ctx["user_message"]
+        if not isinstance(message, str):
+            return None
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return None
+        home = Path(db.db_path).parent
+        session_id = ctx["session_id"]
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+
+        def _admit() -> Optional[Dict[str, Any]]:
+            owner = find_canonical_live_owner(home)
+            # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
+            if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
+                return None
+            return deliver_to_live_owner(home, owner, message, author=ctx["run_kwargs"]["turn_author"])
+
+        record = await asyncio.to_thread(_admit)
+        if record is None:
+            return None
+        delivery_id = record["delivery_id"]
+        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+        while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            record = await asyncio.to_thread(read_delivery_result, home, delivery_id) or record
+        headers = self._session_headers(session_id, ctx["gateway_session_key"])
+        if record["status"] == "settled":
+            return web.json_response(
+                {"object": "hermes.session.chat.completion", "session_id": session_id,
+                 "message": {"role": "assistant", "content": record.get("reply") or ""},
+                 "usage": {}, "runtime": {}, "delivery_id": delivery_id}, headers=headers)
+        if record["status"] in ("queued", "claimed"):
+            return web.json_response(
+                {"object": "hermes.session.chat.queued", "session_id": session_id,
+                 "status": record["status"], "delivery_id": delivery_id}, status=202, headers=headers)
+        return _error_response(record.get("error") or f"Bot Chat delivery {record['status']}", 502,
+                               code=record.get("reason") or record["status"], headers=headers)
+
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
@@ -3201,6 +3250,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        handed_off = await self._answer_through_live_bot_chat(ctx)
+        if handed_off is not None:
+            return handed_off
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)

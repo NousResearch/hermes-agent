@@ -1160,7 +1160,7 @@ DEFAULT_CONFIG = {
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
         # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # "deepinfra" | "xai". Global language hint unless a per-provider language overrides it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1198,6 +1198,9 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "xai": {
+            # grok-voice-transcribe-2.0 | grok-voice-transcribe-1.0. Sent as the multipart
+            # ``model`` field; omitting it leaves xAI on 1.0 until that server default flips.
+            "model": "grok-voice-transcribe-2.0",
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "elevenlabs": {

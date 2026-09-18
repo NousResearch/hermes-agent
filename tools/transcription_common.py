@@ -22,6 +22,10 @@ DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 # Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
 # self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
 DEFAULT_STT_TIMEOUT = 60.0
+# xAI's /v1/stt still defaults to grok-voice-transcribe-1.0 when ``model`` is omitted.
+# Pin 2.0 so Hermes doesn't stay on 1.0 until xAI flips the server default, then
+# break when 1.0 is removed. Override with STT_XAI_MODEL or stt.xai.model.
+DEFAULT_XAI_STT_MODEL = os.getenv("STT_XAI_MODEL", "grok-voice-transcribe-2.0")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")

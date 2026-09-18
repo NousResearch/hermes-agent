@@ -319,6 +319,10 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
     form.set('file', audio, sttFileName(audio))
     form.set('format', 'true')
 
+    if (stt.model) {
+      form.set('model', stt.model)
+    }
+
     if (stt.language) {
       form.set('language', stt.language)
     }

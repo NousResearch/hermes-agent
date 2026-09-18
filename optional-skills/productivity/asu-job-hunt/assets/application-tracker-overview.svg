@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">秋招投递进度 HTML 预览</title>
+  <desc id="desc">包含统计卡片、筛选栏和投递记录表的虚构秋招投递进度页面。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#edf3fb"/>
+      <stop offset="1" stop-color="#f7f9fc"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#2f5597" flood-opacity=".10"/>
+    </filter>
+    <style>
+      .sans { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; }
+      .ink { fill: #172033; }
+      .muted { fill: #718096; }
+      .blue { fill: #2f5597; }
+      .small { font-size: 14px; }
+      .body { font-size: 16px; }
+    </style>
+  </defs>
+  <rect width="1200" height="760" fill="url(#bg)"/>
+  <rect x="34" y="28" width="1132" height="704" rx="22" fill="#fff" filter="url(#shadow)"/>
+
+  <text x="70" y="78" class="sans blue" font-size="15" font-weight="700" letter-spacing="3">秋招投递记录</text>
+  <text x="70" y="122" class="sans ink" font-size="34" font-weight="800">秋招投递进度</text>
+  <text x="70" y="151" class="sans muted" font-size="15">记录投递、测评和反馈，随时掌握求职节奏</text>
+  <rect x="930" y="91" width="178" height="44" rx="10" fill="#2f5597"/>
+  <text x="1019" y="119" text-anchor="middle" class="sans" fill="#fff" font-size="15" font-weight="700">＋ 新增记录</text>
+
+  <g class="sans">
+    <g transform="translate(70 184)">
+      <rect width="198" height="88" rx="14" fill="#f8fbff" stroke="#e2e9f3"/>
+      <text x="18" y="28" class="muted small">全部记录</text><text x="18" y="64" class="blue" font-size="28" font-weight="800">18</text>
+    </g>
+    <g transform="translate(285 184)">
+      <rect width="198" height="88" rx="14" fill="#f8fbff" stroke="#e2e9f3"/>
+      <text x="18" y="28" class="muted small">进行中</text><text x="18" y="64" class="blue" font-size="28" font-weight="800">12</text>
+    </g>
+    <g transform="translate(500 184)">
+      <rect width="198" height="88" rx="14" fill="#f8fbff" stroke="#e2e9f3"/>
+      <text x="18" y="28" class="muted small">已获 Offer</text><text x="18" y="64" class="blue" font-size="28" font-weight="800">2</text>
+    </g>
+    <g transform="translate(715 184)">
+      <rect width="198" height="88" rx="14" fill="#f8fbff" stroke="#e2e9f3"/>
+      <text x="18" y="28" class="muted small">已拒绝</text><text x="18" y="64" class="blue" font-size="28" font-weight="800">3</text>
+    </g>
+    <g transform="translate(930 184)">
+      <rect width="178" height="88" rx="14" fill="#f8fbff" stroke="#e2e9f3"/>
+      <text x="18" y="28" class="muted small">本月投递</text><text x="18" y="64" class="blue" font-size="28" font-weight="800">16</text>
+    </g>
+  </g>
+
+  <rect x="70" y="300" width="1038" height="374" rx="16" fill="#fff" stroke="#e4eaf2"/>
+  <text x="96" y="337" class="sans ink" font-size="20" font-weight="800">投递记录</text>
+  <text x="1010" y="336" class="sans muted small" text-anchor="end">虚构示例数据</text>
+
+  <rect x="96" y="357" width="450" height="38" rx="8" fill="#fbfcfe" stroke="#d8e1ed"/>
+  <text x="114" y="382" class="sans muted small">搜索公司、岗位或备注…</text>
+  <rect x="560" y="357" width="180" height="38" rx="8" fill="#fff" stroke="#d8e1ed"/>
+  <text x="578" y="382" class="sans ink small">全部进度⌄</text>
+  <rect x="754" y="357" width="180" height="38" rx="8" fill="#fff" stroke="#d8e1ed"/>
+  <text x="772" y="382" class="sans ink small">时间：新到旧⌄</text>
+  <rect x="948" y="357" width="160" height="38" rx="8" fill="#edf3fc"/>
+  <text x="1028" y="382" text-anchor="middle" class="sans blue small" font-weight="700">导出 CSV</text>
+
+  <rect x="96" y="420" width="1012" height="42" fill="#f8fafc"/>
+  <g class="sans muted small" font-weight="700">
+    <text x="114" y="447">时间</text><text x="230" y="447">公司</text><text x="400" y="447">岗位</text><text x="700" y="447">进度</text><text x="824" y="447">下一步</text><text x="1000" y="447">操作</text>
+  </g>
+  <g class="sans body">
+    <line x1="96" y1="462" x2="1108" y2="462" stroke="#e9eef5"/>
+    <text x="114" y="492" class="muted">2026.08.12</text><text x="230" y="492" class="ink" font-weight="700">星河科技</text><text x="400" y="492" class="ink">AI产品经理</text>
+    <rect x="700" y="471" width="82" height="27" rx="14" fill="#fff5d6"/><text x="741" y="490" text-anchor="middle" class="sans small" fill="#885b08" font-weight="700">评估中</text><text x="824" y="492" class="muted">等待反馈</text><text x="1000" y="492" class="blue small">编辑</text>
+    <line x1="96" y1="515" x2="1108" y2="515" stroke="#e9eef5"/>
+    <text x="114" y="545" class="muted">2026.08.11</text><text x="230" y="545" class="ink" font-weight="700">远航能源</text><text x="400" y="545" class="ink">AI应用开发工程师</text>
+    <rect x="700" y="524" width="96" height="27" rx="14" fill="#eaf2ff"/><text x="748" y="543" text-anchor="middle" class="sans small" fill="#285c9f" font-weight="700">简历已投递</text><text x="824" y="545" class="muted">等待筛选</text><text x="1000" y="545" class="blue small">编辑</text>
+    <line x1="96" y1="568" x2="1108" y2="568" stroke="#e9eef5"/>
+    <text x="114" y="598" class="muted">2026.08.10</text><text x="230" y="598" class="ink" font-weight="700">新程软件</text><text x="400" y="598" class="ink">后端开发工程师</text>
+    <rect x="700" y="577" width="82" height="27" rx="14" fill="#ddf8eb"/><text x="741" y="596" text-anchor="middle" class="sans small" fill="#16734d" font-weight="700">Offer</text><text x="824" y="598" class="muted">准备签约</text><text x="1000" y="598" class="blue small">编辑</text>
+    <line x1="96" y1="621" x2="1108" y2="621" stroke="#e9eef5"/>
+    <text x="114" y="651" class="muted">2026.08.08</text><text x="230" y="651" class="ink" font-weight="700">未来制造</text><text x="400" y="651" class="ink">算法工程师</text>
+    <rect x="700" y="630" width="68" height="27" rx="14" fill="#ffebe8"/><text x="734" y="649" text-anchor="middle" class="sans small" fill="#ad3a2f" font-weight="700">拒绝</text><text x="824" y="651" class="muted">无需跟进</text><text x="1000" y="651" class="blue small">编辑</text>
+  </g>
+</svg>

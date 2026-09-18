@@ -85,6 +85,8 @@ def _enable_managed_nous_tools(monkeypatch):
 
 
 def _install_fake_tools_package():
+    from agent.redact import _PREFIX_RE, redact_sensitive_text
+
     _reset_modules(("tools", "agent"))
 
     tools_package = types.ModuleType("tools")
@@ -108,6 +110,8 @@ def _install_fake_tools_package():
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
     sys.modules["agent.redact"] = types.SimpleNamespace(
         redact_cdp_url=lambda value: str(value),
+        _PREFIX_RE=_PREFIX_RE,
+        redact_sensitive_text=redact_sensitive_text,
     )
     sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,

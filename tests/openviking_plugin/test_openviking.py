@@ -925,6 +925,7 @@ class TestEnsureClientReloadsEnv:
         )
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
+        monkeypatch.setattr(openviking_plugin, "_load_hermes_openviking_config", lambda: {})
         refresh_entered = threading.Event()
         release_refresh = threading.Event()
 
@@ -1063,6 +1064,7 @@ class TestEnsureClientFailureHardening:
     torn-identity-safe connection snapshots."""
 
     def test_failed_config_probes_once_then_cools_down(self, monkeypatch):
+        monkeypatch.setattr(openviking_plugin, "_load_hermes_openviking_config", lambda: {})
         """A down endpoint must not pay a health probe on every access."""
         probes = []
 

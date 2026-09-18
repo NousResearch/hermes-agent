@@ -654,6 +654,12 @@ but does not promote the separate production-like Desktop/Browser soak gate.
 
 ## Failure policy
 
+A full POSIX core run needs GNU coreutils and ripgrep for the executable-option
+security probes. A different `sort` implementation does not establish GNU option
+behavior. The canonical per-file runner retains isolated temporary roots and
+uses a short prefix so AF_UNIX socket paths fit the operating-system limit.
+Work100 uses the shared Hermes Node resolver, including managed installations.
+
 A red gate is investigated, not disabled. Never make CI green by deleting coverage, weakening a valid expectation, or turning a baseline-equivalent failure into a claimed pass. Record what failed, establish causality, and use the smallest test that corresponds to the actual risk.
 
 ## Canonical Work Loop regressions

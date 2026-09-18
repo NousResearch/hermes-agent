@@ -156,19 +156,23 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")
+    # Exercise the family-warning branch without the higher-priority exact
+    # warning. Production defaults are unchanged.
+    from dataclasses import replace
+    guardrails.config = replace(guardrails.config, exact_failure_warn_after=4)
     guardrails.after_call(
         "terminal",
-        {"command": "bad-1"},
+        {"command": "bad", "timeout": 1},
         json.dumps({"exit_code": 1}),
         failed=True,
     )
     guardrails.after_call(
         "terminal",
-        {"command": "bad-2"},
+        {"command": "bad", "timeout": 2},
         json.dumps({"exit_code": 1}),
         failed=True,
     )
-    tc = _mock_tool_call("terminal", json.dumps({"command": "bad-3"}), "c-recover")
+    tc = _mock_tool_call("terminal", json.dumps({"command": "bad", "timeout": 3}), "c-recover")
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 

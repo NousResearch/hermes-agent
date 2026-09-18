@@ -275,7 +275,55 @@ Neither local electron.exe nor apps/desktop/dist-electron/main.js existed.
 Native authenticated Chromium/packaged Desktop smoke is NOT RUN / environment
 blocked; Vitest Electron mocks and loopback controller tests do not satisfy that
 product gate. No real external application was mutated in qualification.
->>>>>>> ba85f322b3 (docs(workstation): record progressive compilation evidence and native boundary)
+## Read-only durable preflight qualification (2026-09-17)
+
+Current qualification base: main `2df145e80636355e9e590b15cce9b68d41012c56`.
+The preflight implementation from PR #22 was merged by concurrent maintainer
+activity; this investigation did not perform that merge. The follow-up extends
+the current Canonical Work Loop owners rather than restoring an older branch.
+
+Confirmed regression fixture: twelve fake card writes, independent API readback,
+interruption and reconstructed SQLite checkpoints, exactly one write per card.
+The 22 incident tests passed on native Windows Python 3.13.12. The added ledger
+test keeps arbitrary terminal/browser execution scope unknown without owner
+metadata; the browser tool name alone does not establish an external target.
+No live Trello or historical mutation was touched.
+No configuration switch or production mutation threshold changed.
+
+Broad qualification exposed pre-existing fixtures which did not model current
+conversation-root, read-connection, Hybrid activity or session toolset contracts.
+Baseline comparisons reproduced those failures. Fixtures now exercise the real
+contract. The per-file temporary root uses a shorter prefix to fit Unix socket
+path limits; Work100 resolves Node through the existing managed-runtime owner.
+GNU sort and ripgrep are installed in an isolated Linux test cache to exercise
+the actual execution-option security probes, rather than skipping them.
+
+Experiment in progress: full Python suite on Linux and the full native Windows
+Workstation suite on this current-main base. Earlier candidate evidence:
+472 Workstation tests passed, 1,783 Electron tests passed (5 skipped),
+5,674 UI tests passed and Desktop typecheck passed. These earlier results do not
+replace current-main qualification. The remote Windows aggregate gate exposed a
+900-second smoke timeout and a missing Git merge base; neither gate was disabled.
+Current-main Work100: 30 PASS, 0 FAIL, 0 COVERAGE_GAP and 0 NOT_RUN_ENVIRONMENT,
+including the real Electron lifecycle contracts through the managed Node resolver.
+Current-main POSIX Workstation run: 476 passed, 0 failed; one initial worker-event
+fixture flake passed on the runner retry. Trace showed result notification racing
+delivery notification because the executor completed immediately. The fixture now
+blocks executor completion until delivery is observed, preserving both event types,
+task correlation and the original two-second bounds. Five fresh-process runs of
+all seven persistent-worker tests passed without retry (35 assertions).
+Full current-main core run: 37,977 passed, 337 skipped and one failed in 1,066.4s.
+The failure cancelled full dispatch during initialization of the unrelated topic
+lookup thread pool, before the lease clock. The lease file passed all 12 tests
+in both direct and canonical isolated runs. The fixture now initializes that pool
+before timing dispatch, retaining the real path, one-second rejection deadline,
+20ms lease budget and all fail-closed/no-goal/no-transcript assertions. A new full
+core run is in progress; the earlier aggregate failure is not claimed green.
+The first native Workstation run had 472 passed, two skipped and a Windows file
+replacement access failure under a checkout-nested temporary directory. The
+canonical isolated runner repeats it using independent OS temporary roots.
+Desktop reruns exposed host saturation when multiple suites used default worker
+counts; qualification now limits Desktop workers without changing test timeouts.
 
 ## H-064 — Canonical Work Loop (2026-09-17)
 

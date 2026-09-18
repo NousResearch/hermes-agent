@@ -158,9 +158,18 @@ class TestDetectAudioEnvironmentTermuxFallback:
     no longer see the misleading 'Termux:API Android app is not installed'
     warning when the package-manager probe is inconclusive."""
 
+    def _android_kernel(self, monkeypatch):
+        import builtins
+        from io import StringIO
+        real_open = builtins.open
+        monkeypatch.setattr("tools.voice_mode.open", lambda path, *a, **kw:
+            StringIO("Linux Android") if str(path) == "/proc/version" else real_open(path, *a, **kw),
+            raising=False)
+
     def test_inconclusive_probes_with_binary_does_not_emit_app_warning(
         self, monkeypatch
     ):
+        self._android_kernel(monkeypatch)
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.delenv("SSH_CLIENT", raising=False)
@@ -212,6 +221,7 @@ class TestDetectAudioEnvironmentTermuxFallback:
         """The genuine "CLI installed without the app" case still blocks
         with the existing warning — important so users don't lose the
         install hint when the package manager *can* tell us the truth."""
+        self._android_kernel(monkeypatch)
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
         monkeypatch.delenv("SSH_CLIENT", raising=False)

@@ -151,6 +151,14 @@ def test_semantic_replay_identity_ignores_incidental_selector(incident):
     assert call_key("incident_ui", args) != call_key("incident_ui", {**args, "description": "new update"})
 
 
+def test_opaque_execution_ledger_does_not_infer_external_target_from_name():
+    from workstation.batch_detection import mutation_identity
+    for name in ("browser_console", "browser_exec", "terminal"):
+        record = mutation_identity(name, {"code": "opaque"})
+        assert record["scope"] == "unknown" and record["external"] is None
+        assert record["provider"] is None and record["target_identifier"] is None
+
+
 def test_unpersisted_canary_blocks_eleven(incident):
     compiler, dispatch, req, state, writes, *_ = incident
     def lost_write(name, args, *rest):

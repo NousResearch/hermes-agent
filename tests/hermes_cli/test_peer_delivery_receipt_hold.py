@@ -56,7 +56,11 @@ def test_ordinary_turn_keeps_the_session_not_owned_refusal(tmp_path):
     assert isinstance(message, ActiveSessionRefusal)
     assert not isinstance(message, DeliveryHold)
     assert message.reason == SESSION_NOT_OWNED
-    assert "already has a live owner" in message
+    # Upstream's plain-language UX fix replaced the old "already has a live owner" prose, so
+    # assert the contract this test guards: the refusal names the owning surface and carries
+    # none of the hold wording (the hold/refusal split is the §5.2 behaviour under test).
+    assert "tui" in message, "the refusal names the owning surface"
+    assert "ACCEPTED" not in message and "Do not resend" not in message
 
 
 def test_delivery_turn_gets_a_hold_not_a_refusal(tmp_path):

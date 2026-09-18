@@ -837,6 +837,89 @@ async def _cancel_socket_tasks(tasks: Any) -> None:
             _SOCKET_TASK_CANCEL_TIMEOUT_S)
 
 
+# Drain passes teardown makes after ``close_async()``. One extra pass is normally enough; the third
+# only matters when the SDK rebinds a task in response to the previous cancel. A pass that finds
+# nothing new returns immediately, so the worst case is bounded by the cancel timeout per pass.
+_SOCKET_TEARDOWN_DRAIN_PASSES = 3
+# Bound on retained torn-down generations; each entry is dropped once its tasks are gone.
+_MAX_RETIRED_SOCKET_GENERATIONS = 8
+# How far up a task's await chain to look for the Socket Mode client before giving up. The orphan
+# sits inside ``connect()``/``ws_connect()``/``sleep()``, so a handful of frames is plenty.
+_SOCKET_CLIENT_FRAME_SCAN_DEPTH = 8
+
+
+class _RetiredSocketGeneration:
+    """A torn-down Socket Mode handler generation kept so its orphans can be reaped.
+
+    ``SocketModeClient.connect()`` is an unconditional retry loop that never checks the client's
+    ``closed`` flag, and the SDK rebinds its task attributes while ``close_async()`` is running -- so
+    a task from a retired generation can survive teardown and keep retrying against a session that is
+    already closed (#83662). Every other probe looks at the *current* handler, which cannot see such
+    an orphan; keeping the generation here lets the watchdog reap it instead of leaving it to spam
+    tracebacks until the process restarts (#85574).
+    """
+
+    __slots__ = ("handler", "task", "client", "warned")
+
+    def __init__(self, handler: Any, task: Optional[asyncio.Task], client: Any) -> None:
+        self.handler = handler
+        self.task = task
+        self.client = client
+        self.warned = False
+
+
+def _tasks_referencing_client(client: Any) -> List[asyncio.Task]:
+    """Live tasks whose await chain still holds ``client``.
+
+    The SDK rebinds its task attributes on every successful (re)connect, so a surviving retry loop may
+    no longer be reachable through any attribute of the client. Walking each task's frame stack finds
+    it anyway: a task suspended inside the client's own methods has the client in a live local.
+    Best-effort only -- a miss just means the orphan is caught by the attribute pass instead.
+    """
+    matches: List[asyncio.Task] = []
+    try:
+        current = asyncio.current_task()
+        candidates = [task for task in asyncio.all_tasks() if not task.done()]
+    except Exception:  # pragma: no cover - defensive: no running loop
+        return matches
+
+    for task in candidates:
+        if task is current:
+            continue
+        try:
+            coro = task.get_coro()
+            frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None)
+        except Exception:  # pragma: no cover - exotic task object
+            continue
+        depth = 0
+        while frame is not None and depth < _SOCKET_CLIENT_FRAME_SCAN_DEPTH:
+            try:
+                if client in frame.f_locals.values():
+                    matches.append(task)
+                    break
+            except Exception:  # pragma: no cover - defensive
+                break
+            frame = frame.f_back
+            depth += 1
+    return matches
+
+
+def _socket_generation_tasks(handler: Any, task: Optional[asyncio.Task]) -> List[asyncio.Task]:
+    """Every live task a Socket Mode generation may still own."""
+    client = getattr(handler, "client", None) if handler is not None else None
+    candidates: List[Any] = [task]
+    if client is not None:
+        candidates.extend(getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS)
+        candidates.extend(_tasks_referencing_client(client))
+
+    live: List[asyncio.Task] = []
+    for candidate in candidates:
+        if not isinstance(candidate, asyncio.Task) or candidate.done() or candidate in live:
+            continue
+        live.append(candidate)
+    return live
+
+
 _SLACK_PROXY_HOSTS = ("slack.com", "files.slack.com", "wss-primary.slack.com")
 
 
@@ -1118,6 +1201,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+        # Torn-down Socket Mode generations. The watchdog can only probe the *current* handler, so an
+        # orphan leaked by a previous generation is invisible to it and would retry a closed session
+        # forever (#83662/#85574).
+        self._retired_socket_generations: List[_RetiredSocketGeneration] = []
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1258,6 +1345,64 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
 
+        # ``close_async()`` awaits and ``connect()`` rebinds the client's task attributes on success,
+        # so a snapshot taken before it is a moving target: a task bound *during* the close survives
+        # it. Drain until a pass finds nothing new, then retire the generation so the watchdog can
+        # reap whatever still outlives teardown.
+        await self._drain_socket_generation(handler, task)
+        self._retire_socket_generation(handler, task, client)
+
+    async def _drain_socket_generation(self, handler: Any, task: Optional[asyncio.Task]) -> None:
+        """Cancel Socket Mode tasks that appeared after the teardown snapshot.
+
+        Each pass re-reads the live task set and only cancels tasks it has not seen before, so a pass
+        with nothing new costs one attribute lookup and returns.
+        """
+        seen: List[asyncio.Task] = []
+        for _ in range(_SOCKET_TEARDOWN_DRAIN_PASSES):
+            pending = [
+                candidate
+                for candidate in _socket_generation_tasks(handler, task)
+                if candidate not in seen]
+            if not pending:
+                return
+            seen.extend(pending)
+            await _cancel_socket_tasks(pending)
+
+    def _retire_socket_generation(
+            self, handler: Any, task: Optional[asyncio.Task], client: Any) -> None:
+        """Remember a torn-down generation so its orphans can be reaped later."""
+        if handler is None:
+            return
+        self._retired_socket_generations.append(_RetiredSocketGeneration(handler, task, client))
+        del self._retired_socket_generations[:-_MAX_RETIRED_SOCKET_GENERATIONS]
+
+    async def _reap_retired_socket_generations(self) -> None:
+        """Cancel tasks still alive from a torn-down Socket Mode generation.
+
+        This is the only path that can see such an orphan: every other check looks at the current
+        handler. Reported once per generation, so the condition shows up in the log as a leak instead
+        of as an endless stream of SDK retry tracebacks.
+        """
+        if not self._retired_socket_generations:
+            return
+
+        survivors: List[_RetiredSocketGeneration] = []
+        for generation in self._retired_socket_generations:
+            leaked = _socket_generation_tasks(generation.handler, generation.task)
+            if not leaked:
+                continue
+            if not generation.warned:
+                generation.warned = True
+                logger.warning(
+                    "[Slack] Reaped %d orphaned Socket Mode task(s) from a retired handler generation",
+                    len(leaked))
+            await _cancel_socket_tasks(leaked)
+            if _socket_generation_tasks(generation.handler, generation.task):
+                survivors.append(generation)
+
+        self._retired_socket_generations = survivors
+
     async def _socket_transport_connected(self) -> Optional[bool]:
         """Best-effort check of current Socket Mode transport state."""
         state = getattr(getattr(self._handler, "client", None), "is_connected", None)
@@ -1314,6 +1459,10 @@ class SlackAdapter(BasePlatformAdapter):
                 await asyncio.sleep(self._socket_watchdog_interval_s)
                 if not self._running:
                     break
+                # Reap first: an orphan from a retired generation retries a closed session, so it
+                # is invisible to every probe below and would otherwise never be cleaned up.
+                await self._reap_retired_socket_generations()
+
                 task = self._socket_mode_task
                 if task is None:
                     await self._restart_socket_mode("socket task missing")

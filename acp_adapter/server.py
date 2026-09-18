@@ -904,7 +904,19 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             except Exception:
                 logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
+        # NEVER assume a str: a provider/plugin transform can hand back None (a result dict
+        # that carries the key with a null value), and every caller here slices it. Without
+        # the coercion the whole turn dies as a JSON-RPC -32603 carrying Python's own
+        # `'NoneType' object has no attribute 'startswith'` — which is how a Paseo/Hermes
+        # session "stops weirdly" with no visible error (Paseo daemon.log: handleStreamEvent:
+        # turn_failed). A non-str final_response is a bug upstream, not a reason to fail the turn.
         final_response = result.get("final_response", "")
+        if not isinstance(final_response, str):
+            logger.warning(
+                "Non-string final_response on session %s (%s); coercing to empty text",
+                session_id, type(final_response).__name__,
+            )
+            final_response = ""
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX

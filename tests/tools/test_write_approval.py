@@ -201,6 +201,65 @@ def test_handle_approval_off(hermes_home):
     assert "off" in out
 
 
+def _assert_memory_bg_policy_when_off(text):
+    """Effective unattended background-review policy must be visible beside the
+    general write_approval setting (#106918)."""
+    from tools.memory_tool import _BG_DELETE_ACTIONS
+    assert "memory.write_approval = off" in text
+    lowered = text.lower()
+    assert " or ".join(_BG_DELETE_ACTIONS) in lowered
+    assert "refine" in lowered
+    assert "add" in lowered or "addition" in lowered
+    assert "pending" in lowered
+    assert "batch" in lowered
+
+
+def test_memory_status_explains_bg_policy_when_approval_off(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    # Default / missing config keeps write_approval off; still show the
+    # unattended background-review restriction so /memory matches the
+    # staging notification.
+    text = handle_pending_subcommand(wa.MEMORY, [])
+    _assert_memory_bg_policy_when_off(text)
+
+
+def test_memory_approval_status_explains_bg_policy_when_off(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    text = handle_pending_subcommand(wa.MEMORY, ["approval"])
+    _assert_memory_bg_policy_when_off(text)
+    assert "Set with:" in text
+
+
+def test_memory_status_explains_bg_policy_when_approval_on(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import _BG_DELETE_ACTIONS
+
+    _set_approval("memory", True)
+    text = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = on" in text
+    lowered = text.lower()
+    # General gate already covers all writes; still mention the
+    # background replace/remove protection.
+    assert " or ".join(_BG_DELETE_ACTIONS) in lowered
+    assert "background" in lowered
+
+
+def test_skills_status_omits_memory_bg_policy(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    text = handle_pending_subcommand(wa.SKILLS, [])
+    assert "skills.write_approval = off" in text
+    lowered = text.lower()
+    assert "refine" not in lowered
+    assert "replace or remove" not in lowered
+
+
 # ---------------------------------------------------------------------------
 # Inline (interactive CLI) approval path — regression for the bug where the
 # per-thread approval callback was never passed to prompt_dangerous_approval,

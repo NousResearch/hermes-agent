@@ -1910,3 +1910,18 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+@pytest.mark.parametrize("name", ["opencode-free", "free", "opencode_free"])
+def test_removed_keyless_free_provider_points_at_its_replacements(name):
+    """The keyless OpenCode free tier is gone (the relay 403s anonymous traffic), so a persisted
+    ``model.provider`` — or ``--provider`` — still naming it must fail with the removal hint
+    naming both surviving OpenCode providers, not a bare "Unknown provider"."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    with pytest.raises(AuthError) as excinfo:
+        resolve_provider(name)
+
+    assert excinfo.value.code == "invalid_provider"
+    message = str(excinfo.value)
+    assert "opencode-zen" in message and "opencode-go" in message

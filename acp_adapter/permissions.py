@@ -77,29 +77,43 @@ def _map_outcome_to_hermes(outcome: object, *, allowed_option_ids: set[str]) -> 
 def await_permission(
     request_permission_fn: Callable, loop: asyncio.AbstractEventLoop, session_id: str, *,
     tool_call, options: list[PermissionOption], timeout: float, what: str,
+    send_update: Callable[[object], None] | None = None,
 ) -> tuple[object | None, bool]:
     """Schedule ``request_permission`` on ``loop`` from a worker thread and block for the answer.
-    Returns ``(response, timed_out)``; ``(None, False)`` when scheduling or the request failed."""
+    Returns ``(response, timed_out)``; ``(None, False)`` when scheduling or the request failed.
+
+    Clients materialise the request's ``tool_call`` as a pending bubble, so once the answer is
+    in, ``send_update`` (when given) closes it: ``completed`` for an allow, ``failed`` otherwise."""
     from agent.async_utils import safe_schedule_threadsafe
 
     coro = request_permission_fn(session_id=session_id, tool_call=tool_call, options=options)
     future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message=f"{what}: failed to schedule on loop")
     if future is None:
         return None, False
+    response, timed_out = None, False
     try:
-        return future.result(timeout=timeout), False
+        response = future.result(timeout=timeout)
     except FutureTimeout:
         future.cancel()
         logger.warning("%s timed out after %ss", what, timeout)
-        return None, True
+        timed_out = True
     except Exception as exc:
         future.cancel()
         logger.warning("%s failed: %s", what, exc)
-        return None, False
+    if send_update is not None:
+        import acp as _acp
+
+        outcome = getattr(response, "outcome", None)
+        allowed = isinstance(outcome, AllowedOutcome) and any(
+            option.option_id == outcome.option_id and option.kind.startswith("allow") for option in options
+        )
+        send_update(_acp.update_tool_call(tool_call.tool_call_id, status="completed" if allowed else "failed"))
+    return response, timed_out
 
 
 def make_approval_callback(request_permission_fn: Callable, loop: asyncio.AbstractEventLoop,
-                           session_id: str, timeout: float = 60.0) -> Callable[..., str]:
+                           session_id: str, timeout: float = 60.0,
+                           send_update: Callable[[object], None] | None = None) -> Callable[..., str]:
     """Return a Hermes approval callback (``command, description, **kw`` as used by
     ``tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
     connection's ``request_permission`` coroutine on ``loop``; auto-denies after ``timeout`` s."""
@@ -110,7 +124,7 @@ def make_approval_callback(request_permission_fn: Callable, loop: asyncio.Abstra
                                             smart_denied=smart_denied)
         response, timed_out = await_permission(
             request_permission_fn, loop, session_id, tool_call=_build_permission_tool_call(command, description),
-            options=options, timeout=timeout, what="Permission request",
+            options=options, timeout=timeout, what="Permission request", send_update=send_update,
         )
         if timed_out:
             # Distinct from an explicit deny: tools.approval reports "timed out

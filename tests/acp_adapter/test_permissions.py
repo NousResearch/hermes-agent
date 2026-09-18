@@ -5,6 +5,7 @@ import inspect
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,
@@ -205,3 +206,37 @@ class TestSchedulerFailure:
             and "_response_coro" in str(w.message)
         ]
         assert runtime_warnings == []
+
+
+class TestPermissionRequestToolCallReachesATerminalStatus:
+    """The ``perm-check-N`` / ``edit-approval-N`` ToolCallUpdate attached to ``request_permission``
+    is materialised by clients as a pending bubble; once the user answers it must be closed."""
+
+    @staticmethod
+    def _run(factory, outcome, call):
+        request_permission = AsyncMock(name="request_permission")
+        future = MagicMock(spec=Future)
+        future.result.return_value = _make_response(outcome)
+        sent = []
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+            cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
+            call(cb)
+        requested = request_permission.call_args.kwargs["tool_call"]
+        return requested, sent
+
+    @pytest.mark.parametrize("outcome, status", [
+        (AllowedOutcome(option_id="allow_once", outcome="selected"), "completed"),
+        (DeniedOutcome(outcome="cancelled"), "failed"),
+    ])
+    def test_command_permission_request_is_closed_per_outcome(self, outcome, status):
+        requested, sent = self._run(make_approval_callback, outcome, lambda cb: cb("rm -rf /", "dangerous"))
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, status)]
+
+    def test_denied_edit_approval_request_is_closed_as_failed(self):
+        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+
+        proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
+        requested, sent = self._run(
+            make_acp_edit_approval_requester, DeniedOutcome(outcome="cancelled"), lambda cb: cb(proposal),
+        )
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "failed")]

@@ -63,6 +63,7 @@ export function ScreenshotSettings() {
       setStatus(next)
       setError(null)
     })
+
     void refresh()
 
     return () => {
@@ -108,6 +109,7 @@ export function ScreenshotSettings() {
     'screen-permission': s.screenPermission,
     unavailable: s.unavailable
   }
+
   const description = busy ? s.checking : error ? s[error] : descriptions[status?.state ?? 'disabled']
   const showStatus = busy || error || status?.enabled || status?.state !== 'disabled'
   const canRetry = error || (status?.state !== 'ready' && status?.state !== 'disabled')
@@ -150,7 +152,9 @@ export function ScreenshotSettings() {
                 <ErrorIcon size="1rem" />
                 {s.errorTitle}
               </span>
-            ) : s.statusTitle
+            ) : (
+              s.statusTitle
+            )
           }
         />
       )}

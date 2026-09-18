@@ -336,14 +336,35 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
+def _cleanup_root(path: Path) -> Optional[Path]:
+    """The accepted cleanup root containing *path* — HERMES_HOME or a ``/tmp/hermes-*``
+    peer (mirrors :func:`is_safe_path`, resolved so it compares equal to ancestors of
+    ``path.resolve()``). None outside both roots."""
+    home = get_hermes_home()
+    with contextlib.suppress(ValueError, OSError):
+        path.resolve().relative_to(home)
+        return home
+    parts = path.parts
+    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
+        return Path(*parts[:3]).resolve()
+    return None
+
+
 def _inside_git_worktree(path: Path) -> bool:
     """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
-    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
-    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
+    normal checkout, a pointer FILE in a linked worktree) exists on the directory chain up to
+    the accepted cleanup root. The walk is bounded at that root: a stray ``/tmp/.git`` or
+    ``/.git`` can never exempt files in unrelated trees (#115307 review). Files inside a
+    bounded worktree are Git-owned — a ``test_*`` file there is typically a committed
     regression test, not session scratch (#115295)."""
+    root = _cleanup_root(path)
+    if root is None:
+        return False
     for parent in path.resolve().parents:
         if (parent / ".git").exists():
             return True
+        if parent == root:
+            break
     return False
 
 

@@ -14,6 +14,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -259,9 +260,9 @@ class TestGitWorktreeFilesNeverCleaned:
         """Same for a plain checkout outside HERMES_HOME. Must be a literal /tmp/hermes-*
         path — is_safe_path() only accepts that prefix for out-of-home trees, and the
         pytest tmp dir (/private/var/folders on macOS) would be rejected before the
-        git-ownership check is ever reached."""
+        git-ownership check is ever reached. Pid-suffixed so parallel runs don't collide."""
         dg = _load_lib()
-        checkout = Path("/tmp/hermes-cleanup-test-checkout")
+        checkout = Path(f"/tmp/hermes-cleanup-test-checkout-{os.getpid()}")
         try:
             (checkout / ".git").mkdir(parents=True, exist_ok=True)
             f = checkout / "test_durable.py"
@@ -270,6 +271,16 @@ class TestGitWorktreeFilesNeverCleaned:
         finally:
             import shutil
             shutil.rmtree(checkout, ignore_errors=True)
+
+    def test_git_above_cleanup_root_does_not_exempt(self, _isolate_env, tmp_path):
+        """A stray .git ABOVE the accepted cleanup root (the /tmp/.git or /.git case from
+        review) must not exempt unrelated test_* scratch inside the root — the worktree
+        walk is bounded at HERMES_HOME, so only .git entries inside the root count."""
+        dg = _load_lib()
+        (tmp_path / ".git").mkdir()  # parent of HERMES_HOME (= tmp_path/.hermes)
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
 
     def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
         """A stale pre-fix tracked entry (category "test") inside a worktree is dropped by

@@ -316,6 +316,16 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
+def _resolve_quota_attempt_limit() -> int:
+    """``HERMES_KANBAN_QUOTA_ATTEMPT_LIMIT`` (small values for tests) else default."""
+    return _env_int("HERMES_KANBAN_QUOTA_ATTEMPT_LIMIT", DEFAULT_QUOTA_ATTEMPT_LIMIT, minimum=1)
+
+
+def _resolve_quota_elapsed_limit_seconds() -> int:
+    """``HERMES_KANBAN_QUOTA_ELAPSED_SECONDS`` (small values for tests) else default."""
+    return _env_int("HERMES_KANBAN_QUOTA_ELAPSED_SECONDS", DEFAULT_QUOTA_ELAPSED_LIMIT_SECONDS, minimum=1)
+
+
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
@@ -4247,6 +4257,8 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
+    DEFAULT_QUOTA_ATTEMPT_LIMIT,
+    DEFAULT_QUOTA_ELAPSED_LIMIT_SECONDS,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
     _clear_failure_counter,

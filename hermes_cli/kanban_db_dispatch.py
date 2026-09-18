@@ -70,6 +70,14 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# Total quota-wall budget before the task is HELD (blocked) with a
+# coordinator-visible gave_up event. rate_limited requeues never count
+# as a failure, so without this a task whose provider quota never returns
+# retries forever (spaced by the cooldown above). Overridable via
+# HERMES_KANBAN_QUOTA_ATTEMPT_LIMIT / HERMES_KANBAN_QUOTA_ELAPSED_SECONDS.
+DEFAULT_QUOTA_ATTEMPT_LIMIT = 20  # total rate_limited runs per unblock epoch
+DEFAULT_QUOTA_ELAPSED_LIMIT_SECONDS = 6 * 3600  # 6h from first hit in epoch
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -131,11 +139,18 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"rate_limit_cooldown"`` (quota wall, retry after the cooldown),
+    ``"quota_exhausted"`` (total quota-attempt/elapsed bound passed — held)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    quota_held: list[str] = field(default_factory=list)
+    """Task ids HELD (blocked) this tick because their total quota-wall
+    usage passed the attempt/elapsed bound. Coordinator-visible via the
+    gave_up event; unblock starts a fresh probe epoch. Per-run
+    history (task_runs, task_events, worker logs) is preserved."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -164,6 +179,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.quota_held:
+            counts["quota_held"] = counts.get("quota_held", 0) + len(res.quota_held)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -1027,12 +1044,111 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    quota_held: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
+
+
+def _quota_epoch_start(conn: sqlite3.Connection, task_id: str) -> int:
+    """Epoch start for the quota budget: latest unblocked event, else 0.
+
+    A deliberate operator unblock is a fresh start for the quota budget, the
+    same way unblock_task resets consecutive_failures.
+    """
+    row = conn.execute(
+        "SELECT MAX(created_at) FROM task_events WHERE task_id = ? AND kind = 'unblocked'",
+        (task_id,),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def _quota_wall_usage(conn: sqlite3.Connection, task_id: str):
+    """(count, first_ended_at, last_ended_at) of rate_limited runs in the
+    current unblock epoch. Read-only: holding a task never rewrites history.
+    """
+    epoch = _quota_epoch_start(conn, task_id)
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(ended_at), MAX(ended_at) FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'rate_limited' "
+        "AND ended_at IS NOT NULL AND ended_at > ?",
+        (task_id, epoch),
+    ).fetchone()
+    return int(row[0] or 0), row[1], row[2]
+
+
+def _quota_wall_exhausted(conn: sqlite3.Connection, task_id: str, *, now=None):
+    """None, or (trigger, attempts, window_seconds) when the task passed the
+    total quota-attempt count or the quota-elapsed window."""
+    count, first, _last = _quota_wall_usage(conn, task_id)
+    if count <= 0:
+        return None
+    now = int(now if now is not None else time.time())
+    if count >= _kb._resolve_quota_attempt_limit():
+        return ("attempts", count, max(0, now - int(first or now)))
+    if first is not None and now - int(first) >= _kb._resolve_quota_elapsed_limit_seconds():
+        return ("elapsed", count, now - int(first))
+    return None
+
+
+def _hold_quota_exhausted(
+    conn: sqlite3.Connection, task_id: str, *, trigger: str, attempts: int, window_seconds: int,
+) -> None:
+    """Hold a quota-exhausted task: blocked plus coordinator-visible gave_up.
+
+    Non-destructive: consecutive_failures is untouched and no run, event, or
+    worker-log row is modified - the hold only flips the status, stamps the
+    error, and appends one gave_up event (already in the notifier terminal and
+    wake kinds, so the coordinator sees it). unblock clears the error and
+    starts a fresh quota epoch.
+    """
+    error = (
+        "quota wall persisted: %d rate-limited runs over %ds (bound: %s) - "
+        "held for operator attention; unblock %s to probe again"
+        % (attempts, window_seconds, trigger, task_id)
+    )[:500]
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', last_failure_error = ? "
+            "WHERE id = ? AND status IN ('ready', 'review', 'running')",
+            (error, task_id),
+        )
+        _kb._append_event(conn, task_id, "gave_up", {
+            "trigger_outcome": "rate_limited",
+            "quota_trigger": trigger,
+            "quota_attempts": attempts,
+            "quota_window_seconds": window_seconds,
+            "quota_attempt_limit": _kb._resolve_quota_attempt_limit(),
+            "quota_elapsed_limit_seconds": _kb._resolve_quota_elapsed_limit_seconds(),
+            "error": error,
+        })
+
+
+def _apply_quota_holds(conn: sqlite3.Connection, sweep: _CrashSweep) -> None:
+    """Hold every reclaimed rate-limited task past the total quota bound.
+
+    Runs AFTER the reclaim txn (like _account_crashes). Held ids move from
+    sweep.rate_limited to sweep.quota_held so the tick buckets stay disjoint:
+    rate_limited means requeued to ready, quota_held means blocked.
+    """
+    held: list[str] = []
+    still_ready: list[str] = []
+    for task_id in sweep.rate_limited:
+        exhausted = _quota_wall_exhausted(conn, task_id)
+        if exhausted is None:
+            still_ready.append(task_id)
+            continue
+        trigger, attempts, window_seconds = exhausted
+        _hold_quota_exhausted(
+            conn, task_id, trigger=trigger, attempts=attempts,
+            window_seconds=window_seconds,
+        )
+        held.append(task_id)
+    sweep.rate_limited = still_ready
+    sweep.quota_held = held
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
@@ -1104,6 +1220,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 sweep.crash_details.append(
                     (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
                 )
+    _apply_quota_holds(conn, sweep)
     return sweep
 
 
@@ -1175,7 +1292,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``_last_rate_limited`` attribute (the return stays crashed-only), until
+    the total quota-attempt/elapsed bound holds the task (``blocked`` plus
+    coordinator-visible ``gave_up``, surfaced via ``_last_quota_held``).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
@@ -1185,6 +1304,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_quota_held = sweep.quota_held  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -1368,6 +1488,7 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"quota_exhausted"`` (total quota-attempt/elapsed bound passed),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1400,6 +1521,8 @@ def check_respawn_guard(
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
+        if _quota_wall_exhausted(conn, task_id, now=now) is not None:
+            return "quota_exhausted"
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1408,8 +1531,9 @@ def check_respawn_guard(
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # stamped rate-limit text; retries continue (spaced by the cooldown)
+        # until quota returns, a real run supersedes it, or the total
+        # quota-attempt/elapsed bound holds the task (quota_exhausted).
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
@@ -1969,6 +2093,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.quota_held.extend(getattr(detect_crashed_workers, "_last_quota_held", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

@@ -2,6 +2,44 @@
 
 A Workstation change is stable only when its **behavioral contract** is proven at the lowest useful layer and the relevant integration path remains green. Typecheck or source-shape checks alone are not proof.
 
+## AEPC-E002 semantic-homogeneity regression gate
+
+The 2026-09-18 follow-up audit found that shape-equivalent browser calls can still
+be over-grouped. The regression gate must prove **semantic family**, not merely
+tool/schema repetition.
+
+Required focused cases:
+
+1. one long stateful native-browser turn executes at least three
+   `browser_type` calls and at least three `browser_click`/equivalent mutable
+   browser actions against different semantic targets, with observations between
+   mutations; it must not enter `durable_compile_required` solely because the
+   same tool shape recurs;
+2. the test must vary semantic anchors/targets so it cannot pass by resetting a
+   counter around navigation/snapshot boundaries;
+3. a paired true homogeneous fan-out fixture with the same owner-declared
+   operation, canonical route/provider and concrete target family must transition
+   to `REQUIRE_COMPILE` on the configured third distinct mutation;
+4. middleware-final arguments must still be rechecked before mutable I/O;
+5. lost ACK/uncertain mutation must still require human/reconciliation and must
+   never be retried to satisfy the adaptive test;
+6. browser snapshot remains E1 and may not be promoted to E2 to make the test
+   green;
+7. `CompilationCandidate.successful_occurrences` must not count
+   `executed_unverified` as verified success. Test the corrected name/semantics.
+
+Anti-cheat conditions: do not raise the threshold, reset mutation counters on
+snapshot/navigation, special-case `browser_*` as always adaptive, disable
+TaskCompiler/canary, or weaken route/effect/TaskRun/lease/approval checks.
+
+Run the new focused tests together with `test_execution_policy.py`,
+`test_progressive_compilation.py`, `test_task_compiler.py`,
+`test_readonly_preflight.py`, `test_durable_agent_integration.py`,
+`test_durable_hardening.py`, `test_browser_workstation_route.py` and
+`test_routines.py`; then run all `workstation/tests`, adjacent executor/
+guardrail tests, Work100 and Desktop owner contracts. Native packaged browser
+evidence remains a separate gate.
+
 ## Adaptive execution / progressive compilation regression gate
 
 The implemented 2026-09-18 correction is specified in

@@ -60,7 +60,7 @@ SEED = (
 
 def run_work100(execute: bool = False):
     import os
-    import shutil
+    from hermes_constants import find_node_executable
     import tempfile
     import xml.etree.ElementTree as ET
 
@@ -146,7 +146,7 @@ def run_work100(execute: bool = False):
                     pass
 
     if electron_cases:
-        node = shutil.which("node")
+        node = find_node_executable("node")
         vitest = root / "node_modules" / "vitest" / "vitest.mjs"
         if node is None or not vitest.is_file():
             for c in electron_cases:

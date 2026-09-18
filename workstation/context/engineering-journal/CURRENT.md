@@ -1,5 +1,37 @@
 # CURRENT — Workstation Engineering Journal
 
+## Read-only durable preflight qualification (2026-09-17)
+
+Current qualification base: main `2df145e80636355e9e590b15cce9b68d41012c56`.
+The preflight implementation from PR #22 was merged by concurrent maintainer
+activity; this investigation did not perform that merge. The follow-up extends
+the current Canonical Work Loop owners rather than restoring an older branch.
+
+Confirmed regression fixture: twelve fake card writes, independent API readback,
+interruption and reconstructed SQLite checkpoints, exactly one write per card.
+The 22 incident tests passed on native Windows Python 3.13.12. The added ledger
+test keeps arbitrary terminal/browser execution scope unknown without owner
+metadata; the browser tool name alone does not establish an external target.
+No live Trello or historical mutation was touched.
+No configuration switch or production mutation threshold changed.
+
+Broad qualification exposed pre-existing fixtures which did not model current
+conversation-root, read-connection, Hybrid activity or session toolset contracts.
+Baseline comparisons reproduced those failures. Fixtures now exercise the real
+contract. The per-file temporary root uses a shorter prefix to fit Unix socket
+path limits; Work100 resolves Node through the existing managed-runtime owner.
+GNU sort and ripgrep are installed in an isolated Linux test cache to exercise
+the actual execution-option security probes, rather than skipping them.
+
+Experiment in progress: full Python suite on Linux and the full native Windows
+Workstation suite on this current-main base. Earlier candidate evidence:
+472 Workstation tests passed, 1,783 Electron tests passed (5 skipped),
+5,674 UI tests passed and Desktop typecheck passed. These earlier results do not
+replace current-main qualification. The remote Windows aggregate gate exposed a
+900-second smoke timeout and a missing Git merge base; neither gate was disabled.
+Current-main Work100: 30 PASS, 0 FAIL, 0 COVERAGE_GAP and 0 NOT_RUN_ENVIRONMENT,
+including the real Electron lifecycle contracts through the managed Node resolver.
+
 ## H-064 — Canonical Work Loop (2026-09-17)
 
 Continuation experiment: subscribe on the owning RuntimeEventBus before compiler

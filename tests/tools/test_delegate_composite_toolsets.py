@@ -3,6 +3,7 @@
 import unittest
 
 from tools.delegate_tool import _expand_parent_toolsets
+from toolsets import TOOLSETS
 
 
 class TestExpandParentToolsets(unittest.TestCase):
@@ -13,7 +14,10 @@ class TestExpandParentToolsets(unittest.TestCase):
         expanded = _expand_parent_toolsets({"hermes-cli"})
         self.assertIn("web", expanded)
         self.assertIn("terminal", expanded)
-        self.assertIn("browser", expanded)
+        # Expand only capabilities actually available in the current parent;
+        # Workstation browser additions do not implicitly grow the CLI core.
+        expected_browser = set(TOOLSETS["browser"]["tools"]).issubset(TOOLSETS["hermes-cli"]["tools"])
+        self.assertEqual("browser" in expanded, expected_browser)
         # Original composite is preserved
         self.assertIn("hermes-cli", expanded)
 

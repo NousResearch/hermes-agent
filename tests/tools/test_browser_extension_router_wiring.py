@@ -35,6 +35,9 @@ def _route_spy(monkeypatch):
     import tools.browser_cdp_tool as browser_cdp_tool
 
     monkeypatch.setattr(browser_tool, "routed_browser_handler", spy)
+    # This suite exercises extension-router plumbing. Workstation fail-closed
+    # routing has its own controller tests; do not require a live controller.
+    monkeypatch.setattr(browser_tool, "_workstation_or_legacy", lambda action, args, kw, fallback: fallback())
     monkeypatch.setattr(browser_cdp_tool, "routed_browser_handler", spy)
     monkeypatch.setattr(browser_tool, "browser_navigate", lambda url="", task_id=None: "legacy-nav")
     monkeypatch.setattr(browser_cdp_tool, "browser_cdp", lambda *a, **k: "legacy-cdp")

@@ -12,7 +12,7 @@ def mutation_identity(name, args, *, task_id=None, run_id=None):
     from tools.effects import tool_contract
     effect, contract = tool_contract(name)
     target = contract.get("mutation_target") or {}
-    scope = target.get("scope", "external" if name.startswith("browser_") else
+    scope = target.get("scope", "external" if name in {"browser_click", "browser_type", "browser_press"} else
                        "local" if name in {"write_file", "patch"} else "unknown")
     identifier = args.get(target.get("identifier_field", "path" if scope == "local" else "id"))
     return {"operation_id": call_key(name, args), "task_id": task_id, "run_id": run_id,

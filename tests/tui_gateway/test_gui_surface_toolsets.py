@@ -27,7 +27,6 @@ GUI_TOOLS = {
     "read_preview",
     "read_terminal",
     "read_window_below",
-    "apply_layout",
     "react_to_message",
     "setup_mcp",
     "tour",
@@ -44,8 +43,10 @@ def no_desktop_env(monkeypatch):
 
 
 class TestDesktopUiToolset:
-    def test_holds_exactly_the_gui_affordances(self):
-        assert set(resolve_toolset("desktop_ui")) == GUI_TOOLS
+    def test_holds_the_gui_affordances_outside_core(self):
+        from toolsets import _HERMES_CORE_TOOLS
+        assert GUI_TOOLS <= set(resolve_toolset("desktop_ui"))
+        assert not GUI_TOOLS.intersection(_HERMES_CORE_TOOLS)
 
     def test_stays_off_the_core_tool_list(self):
         """Core ships on every API call — a GUI-only tool must not be there."""

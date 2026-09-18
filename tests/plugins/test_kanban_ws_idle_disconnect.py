@@ -89,6 +89,10 @@ class _TrackingConnection:
         self._rows: list[dict] = []
 
     def execute(self, sql, params):
+        if "FROM hybrid_activity" in sql:
+            self.thread_ids.append(threading.get_ident())
+            self._rows = []
+            return self
         self.execute_calls += 1
         self.thread_ids.append(threading.get_ident())
         if self.on_execute is not None:
@@ -149,6 +153,7 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
         return conn
 
     monkeypatch.setattr(mod.kanban_db, "connect", _connect)
+    monkeypatch.setattr(mod.hybrid_kanban, "sync_delegations_for_agent_task", lambda *a, **kw: None)
 
     wait_calls = 0
 

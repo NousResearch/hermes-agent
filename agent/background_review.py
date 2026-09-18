@@ -691,7 +691,11 @@ def build_memory_write_metadata(
     agent: Any, *, write_origin: Optional[str] = None, execution_context: Optional[str] = None,
     task_id: Optional[str] = None, tool_call_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build provenance metadata for external memory-provider mirrors."""
+    """Locate a write and its recent source context in the durable transcript.
+
+    Context references are candidates for human review, never proof that the
+    model's claim follows from them. Refused commands are not observations.
+    """
     metadata: Dict[str, Any] = {
         "write_origin": write_origin or getattr(agent, "_memory_write_origin", "assistant_tool"),
         "execution_context": execution_context or getattr(agent, "_memory_write_context", "foreground"),
@@ -702,7 +706,24 @@ def build_memory_write_metadata(
         "task_id": task_id or None,
         "tool_call_id": tool_call_id or None,
     }
-    return {k: v for k, v in metadata.items() if v not in {None, ""}}
+    metadata["evidence_status"] = "unverified"
+    db = getattr(agent, "_session_db", None)
+    if db is not None and metadata["session_id"]:
+        try:
+            from agent.tool_result_classification import tool_nonexecution
+
+            rows = db.get_messages(metadata["session_id"], limit=32, latest=True)
+            metadata["context_message_ids"] = [
+                row["id"] for row in rows
+                if row.get("role") in ("user", "tool")
+                and not (
+                    row.get("role") == "tool"
+                    and tool_nonexecution(row.get("tool_name", ""), row.get("content"))
+                )
+            ]
+        except Exception as exc:
+            logger.debug("Memory source context unavailable: %s", exc)
+    return {k: v for k, v in metadata.items() if v is not None and v != ""}
 
 
 _USAGE_COUNTERS = (

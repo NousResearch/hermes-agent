@@ -30,6 +30,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.tool_result_classification import tool_nonexecution
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -1025,7 +1026,10 @@ def _commit_tool_result(
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
     if observed:
-        if not blocked:
+        # A dispatch that returned a refusal (approval blocked/pending) did not run:
+        # keep it a visible result, but never a guardrail or file-mutation observation.
+        _nonexecution = tool_nonexecution(function_name, function_result)
+        if not blocked and not _nonexecution:
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
             )
@@ -1033,7 +1037,7 @@ def _commit_tool_result(
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
         elif success_log_chars is not None:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
-        if not blocked:
+        if not blocked and not _nonexecution:
             try:
                 agent._record_file_mutation_result(
                     function_name, function_args, function_result, is_error, task_id=effective_task_id,
@@ -1422,7 +1426,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
-            effect_disposition = "none" if blocked else None
+            effect_disposition = "none" if blocked or tool_nonexecution(ref.name, function_result) else None
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
         committed = _commit_tool_result(
@@ -1688,7 +1692,10 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
-        effect_disposition="unknown" if _execution_timed_out else None, observed=True,
+        effect_disposition=(
+            "none" if managed.blocked or tool_nonexecution(ref.name, function_result)
+            else "unknown" if _execution_timed_out else None
+        ), observed=True,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

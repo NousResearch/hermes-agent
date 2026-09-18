@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import file_mutation_result_landed, tool_nonexecution
 
 logger = logging.getLogger(__name__)
 
@@ -912,7 +912,9 @@ def _degraded_suffix(data: dict) -> str:
 
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
-    if result is None or file_mutation_result_landed(tool_name, result):
+    if result is None:
+        return False, ""
+    if file_mutation_result_landed(tool_name, result):
         return False, ""
     data = result if isinstance(result, dict) else safe_json_loads(result)
 
@@ -920,6 +922,14 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
     if isinstance(data, dict) and data.get("user_summary"):
         return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+    # A refusal with no human summary still must read as "did not run", never as an
+    # execution failure or a network timeout.
+    nonexecution = tool_nonexecution(tool_name, result)
+    if nonexecution:
+        _, reason = nonexecution
+        label = "approval timed out" if reason == "timeout" else reason.replace("_", " ")
+        return True, f" [not run: {label}]"
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":

@@ -216,6 +216,10 @@ def build_memory_guidance(
         "even when skill writing is unavailable. "
     )
     return frame + skill_routing + (
+        "Save only facts explicitly supplied by the user or supported by observed "
+        "tool results; your own earlier assertions are not evidence. Current models, "
+        "ports, service health, and performance belong in config or fresh observations, "
+        "not persistent memory. "
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "
@@ -383,6 +387,9 @@ TASK_COMPLETION_GUIDANCE = (
     "tool output — not a description of one. Do not stop after writing a stub, a plan, or a single command. Keep "
     "working until you have actually exercised the code or produced the requested result, then report what real "
     "execution returned.\n"
+    "A blocked command, pending approval, or approval timeout means the command did not run. It is not an "
+    "execution timeout or evidence of a network outage. Never invent infrastructure addresses or service "
+    "identities; establish them from user input, configuration, or observed tool results before probing.\n"
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "

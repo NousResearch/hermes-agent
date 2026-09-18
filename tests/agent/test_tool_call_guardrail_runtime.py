@@ -10,6 +10,64 @@ import pytest
 from run_agent import AIAgent
 
 
+@pytest.mark.parametrize("mode", ["sequential", "concurrent"])
+@pytest.mark.parametrize("outcome", ["timeout", "denied", "pending_approval"])
+def test_terminal_refusal_stays_visible_without_execution_evidence(tmp_path, mode, outcome):
+    agent = _make_agent("terminal")
+    agent._record_file_mutation_result = MagicMock()
+    agent._append_guardrail_observation = MagicMock(side_effect=lambda n, a, r, **kw: r)
+    completed = []
+    agent.tool_complete_callback = lambda *args: completed.append(args)
+    call = _mock_tool_call("terminal", json.dumps({"command": "curl http://192.0.2.95:8188/v1/models"}), "blocked-curl")
+    env = MagicMock(cwd=str(tmp_path))
+    messages = []
+    approval = {"approved": False, "outcome": outcome, "status": outcome,
+                "user_consent": False, "message": "No approval received"}
+    with (
+        patch("tools.terminal_tool._get_env_config", return_value={
+            "env_type": "local", "timeout": 10, "cwd": str(tmp_path),
+        }),
+        patch("tools.terminal_tool._start_cleanup_thread"),
+        patch("tools.terminal_tool._active_environments", {"task-1": env}),
+        patch("tools.terminal_tool._last_activity", {"task-1": 0}),
+        patch("tools.terminal_tool._session_cwd", {}),
+        patch("tools.terminal_tool._check_all_guards", return_value=approval),
+    ):
+        getattr(agent, f"_execute_tool_calls_{mode}")(
+            SimpleNamespace(content="", tool_calls=[call]), messages, "task-1",
+        )
+    env.execute.assert_not_called()
+    agent._record_file_mutation_result.assert_not_called()
+    agent._append_guardrail_observation.assert_not_called()
+    row = messages[0]
+    result = json.loads(row["content"])
+    assert result["executed"] is False
+    assert result["outcome"] == outcome
+    assert row["effect_disposition"] == "none"
+    assert completed and json.loads(completed[0][3])["executed"] is False
+    from agent.display import _detect_tool_failure
+    from model_tools import _tool_result_observer_fields
+    assert "not run" in _detect_tool_failure("terminal", row["content"])[1]
+    status, error_type, _ = _tool_result_observer_fields("terminal", row["content"])
+    assert status == ("pending_approval" if outcome == "pending_approval" else "blocked")
+    assert error_type == "not_executed"
+
+
+@pytest.mark.parametrize("mode", ["sequential", "concurrent"])
+def test_actual_command_timeout_remains_execution_evidence(mode):
+    agent = _make_agent("terminal")
+    result = json.dumps({"output": "curl: operation timed out", "exit_code": 28, "status": "completed"})
+    agent._record_file_mutation_result = MagicMock()
+    call = _mock_tool_call("terminal", '{"command":"curl https://example.test"}')
+    messages = []
+    with patch("run_agent.handle_function_call", return_value=result):
+        getattr(agent, f"_execute_tool_calls_{mode}")(
+            SimpleNamespace(content="", tool_calls=[call]), messages, "task-1",
+        )
+    agent._record_file_mutation_result.assert_called_once()
+    assert messages[0].get("effect_disposition") != "none"
+
+
 def _make_tool_defs(*names: str) -> list[dict]:
     return [
         {

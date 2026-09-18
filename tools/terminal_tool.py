@@ -804,6 +804,17 @@ def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None
     if status is not None:
         body["status"] = status
     body.update(extra)
+    if status in ("blocked", "pending_approval"):
+        # A refused/pending command did not run: preserve that distinct from a shell or
+        # network failure in every downstream projection (observer hooks, verifiers, UI).
+        body.setdefault("executed", False)
+        body.setdefault("outcome", status)
+        body.setdefault("user_consent", False)
+        body.setdefault(
+            "execution_note",
+            "Command was not run. This result provides no evidence about the command's "
+            "target, network connectivity, or service health.",
+        )
     return json.dumps(body, ensure_ascii=False)
 
 
@@ -859,6 +870,7 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
                 "", status="pending_approval",
+                outcome=approval.get("outcome") or "pending_approval",
                 approval_pending=True,
                 command=approval.get("command", command),
                 description=approval.get("description", "command flagged"),
@@ -872,6 +884,7 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
             "Use the approval prompt to allow it, or rephrase the command."
         )
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    outcome=approval.get("outcome") or "denied",
                                     **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):

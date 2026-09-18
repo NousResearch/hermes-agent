@@ -427,6 +427,10 @@ def make_tool_result_message(
     else:
         if risk_metadata is not None:
             message["_tool_output_risk"] = risk_metadata
+    from agent.tool_result_classification import tool_nonexecution
+
+    if tool_nonexecution(name, content):
+        effect_disposition = "none"
     if effect_disposition is not None:
         message["effect_disposition"] = effect_disposition
     return message

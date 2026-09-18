@@ -655,6 +655,12 @@ class _CallIds:
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""
+    from agent.tool_result_classification import tool_nonexecution
+
+    nonexecution = tool_nonexecution(tool_name, result)
+    if nonexecution:
+        status, reason = nonexecution
+        return status, "not_executed", f"Command not run: {reason}"
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):

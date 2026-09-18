@@ -2222,6 +2222,38 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
         return None, function_args
 
 
+def execute_memory_tool(agent, args: dict, task_id: str, tool_call_id: str | None) -> str:
+    """One built-in write path, with provenance in the durable tool result.
+
+    No second memory database or extra model-tool parameters: the session log
+    records the write's arguments, result, and source-context references together.
+    External mirrors receive the same metadata. Prompt snapshots stay frozen.
+    """
+    from tools.memory_tool import memory_tool
+
+    metadata = agent._build_memory_write_metadata(
+        task_id=task_id, tool_call_id=tool_call_id,
+    )
+    result = memory_tool(
+        action=args.get("action"), target=args.get("target", "memory"),
+        content=args.get("content"), old_text=args.get("old_text"),
+        new_text=args.get("new_text"), operations=args.get("operations"),
+        store=agent._memory_store,
+    )
+    try:
+        payload = json.loads(result)
+        if payload.get("success") is True and payload.get("staged") is not True:
+            payload["provenance"] = metadata
+            result = json.dumps(payload, ensure_ascii=False)
+    except (ValueError, TypeError):
+        pass
+    if agent._memory_manager:
+        agent._memory_manager.notify_memory_tool_write(
+            result, args, build_metadata=lambda: metadata,
+        )
+    return result
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,

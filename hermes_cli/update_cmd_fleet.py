@@ -200,6 +200,8 @@ def _marker_only_restart_obsolete() -> bool:
 
     Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
     """
+    from hermes_cli.update_serve_obligations import defer_manual_serve
+
     try:
         fields = {}
         for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
@@ -216,7 +218,11 @@ def _marker_only_restart_obsolete() -> bool:
             return False
         owed = set()
         for runtime in runtimes:
-            if not isinstance(runtime, dict) or runtime.get("kind") != "gateway":
+            if not isinstance(runtime, dict):
+                return False
+            if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                continue
+            if runtime.get("kind") != "gateway":
                 return False
             profile = runtime.get("profile")
             if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
@@ -519,8 +525,7 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     print()
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
-    if _run_pending_fleet_restart():
-        _clear_fleet_restart_pending_marker()
+    if _run_pending_fleet_restart() and not _pending_fleet_restart_needed():
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)

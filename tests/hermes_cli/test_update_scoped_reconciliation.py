@@ -150,7 +150,7 @@ def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, legacy,
     assert target.read_bytes() == receipt_before
 
 
-@pytest.mark.parametrize("inventory", [None, {}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": []}, {"version": 1, "runtimes": [GATEWAY, MANUAL]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
+@pytest.mark.parametrize("inventory", [None, {}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": []}, {"version": 1, "runtimes": [GATEWAY, dict(MANUAL, detail={})]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
 def test_unverified_marker_inventory_stays_pending(monkeypatch, inventory):
     seed(monkeypatch, {"outcome": "success", "plan": {"runtimes": [GATEWAY]}}, "new", [CURRENT])
     marker = fleet._fleet_restart_pending_marker_path()
@@ -158,6 +158,10 @@ def test_unverified_marker_inventory_stays_pending(monkeypatch, inventory):
         stream.write("inventory=" + json.dumps(inventory) + "\n")
     before = marker.read_bytes()
     assert fleet._pending_fleet_restart_needed()
+    monkeypatch.setattr("hermes_cli.update_cmd._run_pending_fleet_restart", lambda: True)
+    with pytest.raises(SystemExit) as exc:
+        fleet._apply_pending_fleet_restart_catchup()
+    assert exc.value.code == 1
     assert marker.read_bytes() == before
 
 
@@ -195,6 +199,81 @@ def test_pulled_update_marker_owns_pre_update_inventory(monkeypatch):
     assert json.loads(fields["inventory"]) == {"version": 1, "runtimes": plan.to_dict()["runtimes"]}
     assert fleet._pending_fleet_restart_needed()
     assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("successor", ["missing", "stale", "unknown", "probe-error", "current"])
+def test_catchup_verifies_owned_fleet_after_restart(monkeypatch, successor):
+    from hermes_cli import update_cmd
+
+    old = {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}
+    live = [CURRENT]
+    target = seed(monkeypatch, old, "new", live)
+    fleet._write_fleet_restart_pending_marker(expected_sha="new", runtimes=[GATEWAY, dict(GATEWAY, profile="beta")])
+    marker = fleet._fleet_restart_pending_marker_path()
+    receipt_before, marker_before = target.read_bytes(), marker.read_bytes()
+    restarted = []
+
+    def restart():
+        restarted.append("alpha")
+        live[:] = [CURRENT]
+        if successor not in ("missing", "probe-error"):
+            live.append(dict(CURRENT, profile="beta", state=successor, code_sha="old" if successor == "stale" else "new"))
+        return True
+
+    def collect(**kwargs):
+        if restarted and successor == "probe-error":
+            raise OSError("fleet unavailable")
+        return live
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", restart)
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", collect)
+    if successor == "current":
+        fleet._apply_pending_fleet_restart_catchup()
+        assert not marker.exists()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            fleet._apply_pending_fleet_restart_catchup()
+        assert exc.value.code == 1
+        assert marker.read_bytes() == marker_before
+        live[:] = [CURRENT, dict(CURRENT, profile="beta")]
+        monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: live)
+        fleet._apply_pending_fleet_restart_catchup()
+        assert not marker.exists()
+    assert restarted == ["alpha"]
+    assert target.read_bytes() == receipt_before
+
+
+@pytest.mark.parametrize("blocked_storage", [False, True])
+def test_verified_restart_surviving_marker_preserves_manual_debt(monkeypatch, capsys, blocked_storage):
+    from hermes_cli import update_cmd
+
+    manual = [MANUAL, dict(MANUAL, pid=901)]
+    old = {"outcome": "partial", "post_update": {"sha": "new"}, "gateway_restart": {"incomplete": False, "phase_error": ""}, "plan": {"runtimes": [GATEWAY, *manual]}, "fleet": [CURRENT]}
+    target = seed(monkeypatch, old, "new", [CURRENT])
+    fleet._write_fleet_restart_pending_marker(expected_sha="new", runtimes=[GATEWAY, *manual])
+    marker = fleet._fleet_restart_pending_marker_path()
+    receipt_before, marker_before = target.read_bytes(), marker.read_bytes()
+    directory = get_hermes_home() / "serve_restart_pending"
+    if blocked_storage:
+        directory.write_text("not a directory")
+    restarted = []
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: restarted.append(True) or True)
+    if blocked_storage:
+        with pytest.raises(SystemExit) as exc:
+            fleet._apply_pending_fleet_restart_catchup()
+        assert exc.value.code == 1
+        assert marker.read_bytes() == marker_before
+        directory.unlink()
+        restarted.clear()
+    fleet._apply_pending_fleet_restart_catchup()
+    assert not restarted
+    assert not marker.exists()
+    assert {json.loads(path.read_text())["pid"] for path in directory.glob("*.json")} == {900, 901}
+    fleet._warn_pending_fleet_restart_on_startup()
+    warning = capsys.readouterr().err
+    assert "hermes gateway restart" not in warning
+    assert "pid 900" in warning and "pid 901" in warning
+    assert target.read_bytes() == receipt_before
 
 
 def test_marker_reconciliation_collects_one_live_snapshot(monkeypatch):

@@ -570,9 +570,14 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
 ):
     args = _update_args()
     _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
-    update_cmd._write_fleet_restart_pending_marker(expected_sha="def456")
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "abc123")
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123", runtimes=[{"kind": "gateway", "profile": "default"}])
 
     seen = {"ran": False}
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [{"profile": "default", "state": "current", "code_sha": "abc123"}] if seen["ran"] else [],
+    )
 
     def _restart():
         seen["ran"] = True
@@ -623,6 +628,10 @@ def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
     )
 
     seen = {"ran": False}
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [{"profile": "default", "state": "current", "code_sha": disk_sha}] if seen["ran"] else [],
+    )
     monkeypatch.setattr(
         update_cmd,
         "_run_pending_fleet_restart",

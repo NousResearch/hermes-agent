@@ -253,6 +253,55 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
     assert evidence.status == "passed"
 
 
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        "python3.12 {script}",
+        "/usr/bin/python3 {script}",
+        "/usr/bin/python3.12 {script}",
+        "python3 -u {script}",
+        "/usr/bin/env python3 {script}",
+    ],
+)
+def test_versioned_or_absolute_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, invocation):
+    """A versioned, absolute or `env`-prefixed interpreter names the same interpreter as a bare
+    `python3`. Matching only the bare token left the ad-hoc branch blind to the invocation shapes
+    the verify-on-stop nudge itself hands the agent, so a passing run recorded no evidence and
+    every later turn re-nudged the same workspace as unverified.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            invocation.format(script=script),
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.status == "passed"
+
+
+def test_non_interpreter_command_touching_the_temp_script_is_not_evidence(tmp_path, monkeypatch):
+    """The nudge also tells the agent to clean the temp script up. A command that merely names
+    the script — `rm`, `chmod`, `cat` — runs no verification and must not satisfy the gate.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+
+    for command in (f"rm -f {script}", f"/usr/bin/chmod +x {script}", f"/usr/bin/cat {script}"):
+        evidence = classify_verification_command(command, cwd=tmp_path, session_id="s1", exit_code=0)
+        assert evidence is None, f"{command!r} must not be recorded as verification evidence"
+
+
 
 
 

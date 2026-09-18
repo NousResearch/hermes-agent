@@ -323,7 +323,10 @@ export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatM
   return chatMessageArraysEquivalent(current, next) ? current : next
 }
 
-export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
+export function reconcileResumeMessages(
+  nextMessages: ChatMessage[], previousMessages: ChatMessage[],
+  options: { baselineSuppressed?: boolean } = {}
+): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
   }
@@ -362,7 +365,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // restart. Guarded to the same reply further along (see
     // localPendingSupersedes) so a different turn at the same ordinal cannot
     // hijack the slot.
-    if (localPendingSupersedes(previous, message)) {
+    if (!options.baselineSuppressed && localPendingSupersedes(previous, message)) {
       return withAuthoritativeTurnState(previous, message)
     }
 
@@ -384,7 +387,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const sameTurn =
       sameText ||
       (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
-      (message.role === 'assistant' &&
+      (!options.baselineSuppressed && message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
@@ -1141,6 +1144,30 @@ export function removeRepresentedLocalLiveProjection(
   )
 }
 
+function concurrentPartsOnly(current: ChatMessage, baseline: ChatMessage): ChatMessage {
+  const parts = current.parts.flatMap((part, index): ChatMessage['parts'] => {
+    const previous = part.type === 'tool-call'
+      ? baseline.parts.find(candidate => candidate.type === 'tool-call' && candidate.toolCallId === part.toolCallId)
+      : baseline.parts[index]
+
+    if (!previous || previous.type !== part.type) {return [part]}
+
+    if ((part.type === 'text' || part.type === 'reasoning') &&
+      (previous.type === 'text' || previous.type === 'reasoning')) {
+      const text = part.text.startsWith(previous.text) ? part.text.slice(previous.text.length) : part.text
+
+      return text ? [{ ...part, text }] : []
+    }
+
+    const { timestamp: _oldTime, completedAt: _oldEnd, ...oldContent } = previous
+    const { timestamp: _newTime, completedAt: _newEnd, ...newContent } = part
+
+    return JSON.stringify(oldContent) === JSON.stringify(newContent) ? [] : [part]
+  })
+
+  return { ...current, parts }
+}
+
 /**
  * Overlay messages that changed while activation waited on REST. Existing ids
  * replace the older activation row; only rows added or changed since the warm
@@ -1149,7 +1176,8 @@ export function removeRepresentedLocalLiveProjection(
 export function overlayConcurrentMessageChanges(
   nextMessages: ChatMessage[],
   baselineMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
+  currentMessages: ChatMessage[],
+  options: { baselineSuppressed?: boolean } = {}
 ): ChatMessage[] {
   const baselineById = new Map(baselineMessages.map(message => [message.id, message]))
   const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
@@ -1161,18 +1189,50 @@ export function overlayConcurrentMessageChanges(
       message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
   )
 
-  for (const current of currentMessages) {
-    const baseline = baselineById.get(current.id)
-    const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
+  for (const message of currentMessages) {
+    const baseline = baselineById.get(message.id)
+    const nextIndex = nextIndexById.get(message.id)
+
+    const authoritativeIndex = nextIndex ?? (
+      message.role === 'assistant' && message.id.startsWith('assistant-stream-') ? activationStreamIndex : -1
+    )
+
+    const authoritative = authoritativeIndex >= 0 ? overlaid[authoritativeIndex] : undefined
+
+    // RPC may independently validate the live row even when cached history was
+    // suppressed. Its full concurrent replacement remains safe in that case.
+    const baselineValidated = baseline && authoritative &&
+      baseline.parts.length === authoritative.parts.length &&
+      baseline.parts.every((part, index) =>
+        JSON.stringify({ ...part, timestamp: undefined, completedAt: undefined }) ===
+        JSON.stringify({ ...authoritative.parts[index], timestamp: undefined, completedAt: undefined })
+      )
+
+    const projectDelta = options.baselineSuppressed && baseline && !baselineValidated
+    let current = projectDelta ? concurrentPartsOnly(message, baseline) : message
+
+    const changedSinceBaseline = projectDelta
+      ? current.parts.length > 0 || baseline.pending !== current.pending
+      : !baseline || !chatMessagesEquivalent(baseline, current)
 
     if (!changedSinceBaseline) {
       continue
     }
 
-    const nextIndex = nextIndexById.get(current.id)
+    if (projectDelta) {
+      if (nextIndex !== undefined) {
+        const authoritative = overlaid[nextIndex]
+        const updatedCalls = new Set(current.parts.flatMap(part => part.type === 'tool-call' ? [part.toolCallId] : []))
+        current = { ...authoritative, pending: current.pending, parts: [
+          ...authoritative.parts.filter(part => part.type !== 'tool-call' || !updatedCalls.has(part.toolCallId)),
+          ...current.parts
+        ] }
+      } else if (!current.parts.length) {continue}
+    }
 
     if (nextIndex !== undefined) {
-      if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
+      if (options.baselineSuppressed ? JSON.stringify(overlaid[nextIndex]) !== JSON.stringify(current) :
+        !chatMessagesEquivalent(overlaid[nextIndex], current)) {
         overlaid[nextIndex] = current
         changed = true
       }

@@ -55,8 +55,13 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     )
 
     act(() => {
-      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => ({ ...state, messages: [
+        { id: 'live', role: 'assistant', parts: [{ type: 'text', text: 'concurrent content' }] }
+      ] }), 'stored-A')
+      const messages = $sessionStates.get()['runtime-A'].messages
+      cache.ensureSessionState('runtime-A', 'stored-A-next')
       cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+      expect($sessionStates.get()['runtime-A'].messages).toBe(messages)
     })
 
     expect($activeSessionStoredIdRotation.get()).toEqual({
@@ -66,6 +71,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     })
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect($sessionStates.get()['runtime-A']?.storedSessionId).toBe('stored-A-next')
   })
 
   it('does not publish a foreground-navigation event for a background runtime rotation', () => {

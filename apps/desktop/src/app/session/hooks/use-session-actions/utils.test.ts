@@ -1720,6 +1720,34 @@ describe('removeRepresentedLocalLiveProjection', () => {
 })
 
 describe('overlayConcurrentMessageChanges', () => {
+  it.each([false, true])('preserves only concurrent parts of an unverified row (same id: %s)', sameId => {
+    const baseline = [msg('old', 'assistant', 'unverified prefix', { parts: [
+      { type: 'text', text: 'unverified prefix' },
+      { type: 'tool-call', toolCallId: 'tool', toolName: 'terminal', args: {}, argsText: '{}', result: 'old result' }
+    ] })]
+
+    const current = [{ ...baseline[0], parts: [
+      { type: 'text' as const, text: 'unverified prefix fresh delta' },
+      { ...baseline[0].parts[1], result: 'fresh result' }
+    ] }]
+
+    const authoritative = [msg(sameId ? 'old' : 'trusted', 'assistant', 'trusted answer')]
+    const result = overlayConcurrentMessageChanges(authoritative, baseline, current, { baselineSuppressed: true })
+    expect(JSON.stringify(result)).not.toContain('unverified prefix')
+    expect(result.flatMap(row => row.parts)).toEqual(expect.arrayContaining([
+      { type: 'text', text: 'trusted answer' },
+      { type: 'text', text: ' fresh delta' },
+      expect.objectContaining({ toolCallId: 'tool', result: 'fresh result' })
+    ]))
+  })
+
+  it('retains a prefix independently confirmed by authority while applying its live delta', () => {
+    const baseline = [msg('old', 'assistant', 'confirmed prefix')]
+    const current = [msg('old', 'assistant', 'confirmed prefix fresh delta')]
+    expect(overlayConcurrentMessageChanges([...baseline], baseline, current, { baselineSuppressed: true }))
+      .toEqual(current)
+  })
+
   it('does not replace an authoritative row with an unchanged baseline cache row', () => {
     const baseline = [msg('shared-assistant', 'assistant', 'stale cached answer')]
     const authoritative = [msg('shared-assistant', 'assistant', 'completed persisted answer')]

@@ -21,6 +21,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import { $sessionTranscriptViewGates, clearTranscriptViewGates, holdTranscriptView } from '@/store/session-transcript-view'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'
@@ -128,7 +129,8 @@ export function useSessionStateCache({
   const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
-  const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, symbol>())
+  const transcriptViewOwner = useRef(Symbol('session-cache')).current
+  useEffect(() => () => clearTranscriptViewGates(transcriptViewOwner), [transcriptViewOwner])
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
@@ -177,6 +179,8 @@ export function useSessionStateCache({
           }
 
           sessionStateCache.set(sessionId, updated)
+          // A no-op updater must still expose the authoritative identity to readers.
+          publishSessionState(sessionId, updated)
         }
 
         return sessionStateCache.get(sessionId)!
@@ -208,15 +212,8 @@ export function useSessionStateCache({
   }, [])
 
   const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
-    const token = Symbol(runtimeId)
-    transcriptViewGateByRuntimeIdRef.current.set(runtimeId, token)
-
-    return () => {
-      if (transcriptViewGateByRuntimeIdRef.current.get(runtimeId) === token) {
-        transcriptViewGateByRuntimeIdRef.current.delete(runtimeId)
-      }
-    }
-  }, [])
+    return holdTranscriptView(runtimeId, transcriptViewOwner, sessionStateCache.get(runtimeId)?.messages ?? [])
+  }, [sessionStateCache, transcriptViewOwner])
 
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
@@ -281,7 +278,7 @@ export function useSessionStateCache({
         return
       }
 
-      const viewState = suppressTranscriptForView(state, transcriptViewGateByRuntimeIdRef.current.has(sessionId))
+      const viewState = suppressTranscriptForView(state, Boolean($sessionTranscriptViewGates.get()[sessionId]))
 
       syncRuntimeMetadataToView(viewState)
       pendingViewStateRef.current = { sessionId, state: viewState }
@@ -353,9 +350,7 @@ export function useSessionStateCache({
 
       // If the updater returned the same reference, nothing changed for this
       // session — skip the store write, publishSessionState, and view sync.
-      // The cache entry was already updated by ensureSessionState (if
-      // storedSessionId rotated); the caller gets its return value from the
-      // cache, so stale reads don't regress.
+      // Identity changes were already published by ensureSessionState.
       if (next === previous) {
         return previous
       }

@@ -5,9 +5,12 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { buildTileView } from '@/app/chat/session-tile'
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { handleInputRequestEvent } from '@/app/session/hooks/use-message-stream/gateway-event/input-requests'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
   deleteSession,
@@ -33,6 +36,7 @@ import {
   ensureGatewayProfile
 } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { resetServerRequestsForTests, respondToServerRequest } from '@/store/server-requests'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -79,11 +83,13 @@ import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import {
+  $sessionStates,
   $sessionTiles,
   knownOwnerForSession,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
+import { $sessionTranscriptViewGates } from '@/store/session-transcript-view'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
@@ -92,6 +98,7 @@ import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { handleServerRequest } from './use-message-stream/gateway-event/server-requests'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -1045,19 +1052,22 @@ function ResumeHarness({
 }
 
 function ResumeTimerHarness({
+  onCache,
   onReady,
   requestGateway
 }: {
+  onCache?: (cache: ReturnType<typeof useSessionStateCache>) => void
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const busyRef = useRef(false)
 
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
-    selectedStoredSessionId: null,
+    selectedStoredSessionId,
     setAwaitingResponse,
     setBusy,
     setMessages
@@ -1074,7 +1084,7 @@ function ResumeTimerHarness({
     requestGateway,
     resetViewSync: cache.resetViewSync,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionId: null,
+    selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
     holdSessionTranscriptView: cache.holdSessionTranscriptView,
@@ -1084,16 +1094,302 @@ function ResumeTimerHarness({
   })
 
   useEffect(() => {
+    onCache?.(cache)
     onReady(actions.resumeSession)
-  }, [actions.resumeSession, onReady])
+  }, [actions.resumeSession, onReady, onCache, cache])
 
   return null
 }
 
 describe('resumeSession failure recovery', () => {
+
+  it.each(['cancel', 'answer', 'cold-answer', 'cold-rebind'] as const)(
+    'keeps authority across REST while still running: %s', async mode => {
+      const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+      vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+      setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+      setActiveSessionId('rt-B')
+      setSelectedStoredSessionId('stored-B')
+      let cache!: ReturnType<typeof useSessionStateCache>
+      let resume!: (id: string) => Promise<unknown>
+      const respond = vi.fn()
+
+      const park = (id: string) => handleServerRequest({
+        id, method: 'clarify', replayed: true, profile: 'default',
+        params: { session_id: 'rt-A', question: 'Which path?', choices: ['safe', 'fast'] },
+        respond, fail: vi.fn()
+      }, { activeSessionIdRef: cache.activeSessionIdRef, updateSessionState: cache.updateSessionState,
+        sessionInterrupted: () => false, upsertToolCall: () => undefined }, 'rt-B')
+
+      const requestGateway = vi.fn(async () => {
+        park('req-A')
+
+        return { session_id: 'rt-A', session_key: 'stored-A', resumed: 'stored-A', info: {},
+          messages: [], messages_omitted: true, running: true,
+          open_requests: [{ id: 'req-A', method: 'clarify', params: { question: 'Which path?' } }] } as never
+      })
+
+      render(<ResumeTimerHarness onCache={value => { cache = value }}
+        onReady={value => { resume = value }} requestGateway={requestGateway} />)
+      act(() => {
+        cache.updateSessionState('rt-A', state => ({ ...state, busy: true, turnLive: true,
+          messages: [{ id: 'old', role: 'assistant', parts: [{ type: 'text', text: 'unverified prefix' }] }]
+        }), mode.startsWith('cold') ? 'old-stored-A' : 'stored-A')
+
+        if (!mode.startsWith('cold')) {park('req-A')}
+      })
+      const releaseOldGate = cache.holdSessionTranscriptView('rt-A')
+      let pending!: Promise<unknown>
+      act(() => { pending = resume('stored-A') })
+      await waitFor(() => expect(PRIMARY_SESSION_VIEW.$runtimeId.get()).toBe('rt-A'))
+
+      if (mode === 'cold-rebind') {
+        expect(cache.sessionStateByRuntimeIdRef.current.get('rt-A')?.storedSessionId).toBe('stored-A')
+        expect($sessionStates.get()['rt-A']?.storedSessionId).toBe('stored-A')
+        $sessionTiles.set([{ storedSessionId: 'stored-A', runtimeId: 'rt-A' }])
+        const tile = buildTileView('stored-A')
+        expect(tile.$runtimeId.get()).toBe(PRIMARY_SESSION_VIEW.$runtimeId.get())
+        expect(tile.$storedId.get()).toBe(PRIMARY_SESSION_VIEW.$storedId.get())
+        expect(tile.$messages.get()).toEqual(PRIMARY_SESSION_VIEW.$messages.get())
+        expect(JSON.stringify($sessionStates.get()['rt-A']?.messages)).toContain('unverified prefix')
+        expect(cache.runtimeIdByStoredSessionIdRef.current.has('old-stored-A')).toBe(false)
+        expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+        releaseOldGate()
+        expect($sessionTranscriptViewGates.get()['rt-A']).toBeDefined()
+        expect(PRIMARY_SESSION_VIEW.$messages.get().flatMap(row => row.parts)
+          .filter(part => part.type === 'tool-call' && part.result === undefined)).toHaveLength(1)
+      } else if (mode === 'cancel') {
+        act(() => {
+          park('req-new')
+
+          for (const id of ['req-A', 'req-new']) {
+            const payload = { id }
+            handleInputRequestEvent({ event: { type: 'request.cancel', session_id: 'rt-A', payload },
+              payload, sessionId: 'rt-A', occurredAt: 2,
+              deps: { updateSessionState: cache.updateSessionState } } as never)
+
+            if (id === 'req-A') {expect($clarifyRequests.get()['rt-A']?.requestId).toBe('req-new')}
+          }
+
+          cache.updateSessionState('rt-A', state => ({ ...state, messages: state.messages.map(row => ({
+            ...row, parts: row.parts.map(part => part.type === 'text' ? { ...part, text: part.text + ' fresh delta' } : part)
+          })) }))
+        })
+      } else {
+        act(() => {
+          expect(respondToServerRequest('req-A', { answer: 'safe' })).toBe(true)
+          clearClarifyRequest('req-A', 'rt-A')
+        })
+        expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'safe' })
+      }
+
+      persisted.resolve({ session_id: 'stored-A', messages: [{ role: 'user', content: 'trusted history', timestamp: 1 }] } as never)
+      await act(async () => { await pending })
+      const parts = PRIMARY_SESSION_VIEW.$messages.get().flatMap(row => row.parts)
+      expect(JSON.stringify(parts)).not.toContain('unverified prefix')
+      expect(parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'trusted history' }))
+      expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(true)
+
+      if (mode !== 'cold-rebind') {
+        expect(parts.filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)).toHaveLength(0)
+      }
+
+      if (mode === 'cancel') {
+        expect(parts).toContainEqual(expect.objectContaining({ type: 'text', text: ' fresh delta' }))
+        expect(parts).toContainEqual(expect.objectContaining({ type: 'tool-call', toolCallId: 'req-A', result: expect.anything() }))
+      }
+    }
+  )
+
+  it.each([
+    ['warm', true, true],
+    ['cold', true, true],
+    ['warm', false, true],
+    ['cold', false, true],
+    ['warm', false, false],
+    ['cold', false, false]
+  ] as const)(
+    'exposes the %s replay before REST hydration through PRIMARY (history succeeds: %s, answered: %s)',
+    async (mode, historySucceeds, answered) => {
+      const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+      vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+      setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+      setActiveSessionId('rt-B')
+      setSelectedStoredSessionId('stored-B')
+      let cache!: ReturnType<typeof useSessionStateCache>
+      let resume!: (id: string) => Promise<unknown>
+      const respond = vi.fn()
+
+      const requestGateway = vi.fn(async () => {
+        // Synthetic RPC boundary, real request handler: the shared channel
+        // re-delivers open_requests BEFORE resolving activate/resume.
+        handleServerRequest(
+          {
+            id: 'req-A',
+            method: 'clarify',
+            replayed: true,
+            profile: 'default',
+            params: { session_id: 'rt-A', question: 'Which path?', choices: ['safe', 'fast'] },
+            respond,
+            fail: vi.fn()
+          },
+          {
+            activeSessionIdRef: cache.activeSessionIdRef,
+            updateSessionState: cache.updateSessionState,
+            sessionInterrupted: () => false,
+            upsertToolCall: () => undefined
+          },
+          'rt-B'
+        )
+
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          info: {},
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          open_requests: [{ id: 'req-A', method: 'clarify', params: { question: 'Which path?' } }]
+        } as never
+      })
+
+      render(
+        <ResumeTimerHarness
+          onCache={value => {
+            cache = value
+          }}
+          onReady={value => {
+            resume = value
+          }}
+          requestGateway={requestGateway}
+        />
+      )
+
+      if (mode === 'warm') {
+        act(() => {
+          cache.updateSessionState(
+            'rt-A',
+            state => ({
+              ...state,
+              messages: [{ id: 'old', role: 'assistant', parts: [{ type: 'text', text: 'unverified old tail' }] }]
+            }),
+            'stored-A'
+          )
+        })
+      }
+
+      let pending!: Promise<unknown>
+      act(() => {
+        pending = resume('stored-A')
+      })
+      await waitFor(() => expect($clarifyRequests.get()['rt-A']).toBeDefined())
+      const visible = PRIMARY_SESSION_VIEW.$messages.get()
+      expect(
+        visible
+          .flatMap(message => message.parts)
+          .filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      ).toHaveLength(1)
+      expect(requestGateway).toHaveBeenCalledWith(
+        mode === 'warm' ? 'session.activate' : 'session.resume',
+        expect.anything()
+      )
+      expect(
+        visible
+          .flatMap(message => message.parts)
+          .some(part => part.type === 'text' && part.text === 'unverified old tail')
+      ).toBe(false)
+      expect($sessionStates.get()['rt-B']?.messages ?? []).toEqual([])
+
+      if (answered) {
+        act(() => {
+          expect(respondToServerRequest('req-A', { answer: 'safe' })).toBe(true)
+          clearClarifyRequest('req-A', 'rt-A')
+          // Terminal cache write while REST is still unresolved (the real
+          // message.complete handler is exercised by the Thread suite).
+          cache.updateSessionState('rt-A', state => ({
+            ...state,
+            busy: false,
+            awaitingResponse: false,
+            needsInput: false,
+            turnStartedAt: null,
+            turnLive: false
+          }))
+        })
+        expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'safe' })
+        expect(
+          PRIMARY_SESSION_VIEW.$messages
+            .get()
+            .flatMap(message => message.parts)
+            .filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
+        ).toHaveLength(0)
+      }
+
+      if (historySucceeds) {
+        persisted.resolve({
+          session_id: 'stored-A',
+          messages: [{ role: 'user', content: 'choose', timestamp: 1 }]
+        } as never)
+      } else {
+        persisted.reject(new Error('offline transcript'))
+      }
+
+      await act(async () => {
+        await pending
+      })
+      expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(!answered)
+
+      if (answered) {
+        expect(PRIMARY_SESSION_VIEW.$turnStartedAt.get()).toBeNull()
+        expect(PRIMARY_SESSION_VIEW.$messages.get().some(message => message.pending)).toBe(false)
+      }
+
+      if (historySucceeds) {
+        expect(PRIMARY_SESSION_VIEW.$messages.get().flatMap(message => message.parts)).toContainEqual(
+          expect.objectContaining({ type: 'text', text: 'choose' })
+        )
+        expect($sessionTranscriptViewGates.get()['rt-A']).toBeUndefined()
+      } else {
+        expect(
+          PRIMARY_SESSION_VIEW.$messages
+            .get()
+            .flatMap(message => message.parts)
+            .some(part => part.type === 'text' && part.text === 'unverified old tail')
+        ).toBe(false)
+      }
+
+      expect(
+        PRIMARY_SESSION_VIEW.$messages
+          .get()
+          .filter(message => message.pending)
+          .flatMap(message => message.parts)
+          .filter(
+            part =>
+              part.type === 'tool-call' &&
+              part.toolName === 'clarify' &&
+              part.result === undefined &&
+              part.completedAt === undefined
+          )
+      ).toHaveLength(answered ? 0 : 1)
+
+      if (!historySucceeds && mode === 'warm') {
+        vi.mocked(getLatestSessionMessages).mockResolvedValue({
+          session_id: 'stored-A',
+          messages: [{ role: 'user', content: 'trusted retry', timestamp: 1 }]
+        } as never)
+        await act(async () => {
+          await resume('stored-A')
+        })
+        expect($sessionTranscriptViewGates.get()['rt-A']).toBeUndefined()
+      }
+    }
+  )
+
   afterEach(() => {
     cleanup()
+    resetServerRequestsForTests()
     setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])

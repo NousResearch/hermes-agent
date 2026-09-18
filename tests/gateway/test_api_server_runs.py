@@ -378,6 +378,36 @@ class TestStartRun:
 
 class TestRunStatus:
 
+    def test_shutdown_marker_is_persisted_for_live_run(self, adapter):
+        status = adapter._set_run_status("run_live", "running")
+        scope = "shutdown-test-scope"
+        adapter._run_owners["run_live"] = scope
+        adapter._run_idempotency_store.reserve(
+            scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
+        adapter._run_idempotency_ids.add("run_live")
+
+        marked = adapter.mark_shutdown_requested()
+
+        assert marked == 1
+        marker = adapter._run_statuses["run_live"].get("shutdown_requested_at")
+        assert isinstance(marker, float)
+        durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
+        assert durable["status"].get("shutdown_requested_at") == marker
+
+    def test_shutdown_marker_is_inherited_by_late_status(self, adapter):
+        adapter.mark_shutdown_requested()
+        adapter._set_run_status("run_late", "queued")
+
+        assert isinstance(adapter._run_statuses["run_late"].get("shutdown_requested_at"), float)
+
+    def test_shutdown_marker_does_not_touch_terminal_run(self, adapter):
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed",
+        }
+
+        assert adapter.mark_shutdown_requested() == 0
+        assert "shutdown_requested_at" not in adapter._run_statuses["run_done"]
+
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)

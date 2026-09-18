@@ -302,9 +302,13 @@ class WithdrawnRequestMethod(WireEnum):
 
 
 class RequestCancelReason(WireEnum):
-    answered = "answered"
+    """Every value a producer withdraws a request with: ``server_requests`` (timeout / interrupted /
+    shutdown) and the approval queue's ``_drop_entry`` (resolved from another surface, session_closed,
+    notify_failed)."""
     interrupted = "interrupted"
     notify_failed = "notify_failed"
+    resolved = "resolved"
+    session_closed = "session_closed"
     shutdown = "shutdown"
     timeout = "timeout"
 

@@ -1658,3 +1658,49 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+@pytest.mark.parametrize("settle_queue, reason", [
+    # A choice committed from another surface (/approve on a chat platform, another client).
+    (lambda approval_mod, sk, rid: approval_mod.resolve_gateway_approval(sk, "once", request_id=rid), "resolved"),
+    # The entry is torn down with no choice (session end, client that cannot answer).
+    (lambda approval_mod, sk, rid: approval_mod.withdraw_gateway_approval(sk, rid, "session ended"), "session_closed"),
+], ids=["resolved-elsewhere", "withdrawn"])
+def test_queue_settlement_outside_the_request_withdraws_the_card(capture, monkeypatch, settle_queue, reason):
+    """The approval wait is owned by ``tools.approval``'s queue; when the queue settles by any path other
+    than this request's own response the open ``approval`` request must be withdrawn with one
+    ``request.cancel`` — through the real queue, registry and frame builder — or every renderer keeps
+    showing a card for a decision that is already made."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+    from tui_gateway import server_requests
+
+    server, buf = capture
+    sid = "s-approval"
+    server._sessions[sid] = {"session_key": sid, "history": [], "history_lock": threading.Lock(), "agent_ready": None}
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 5)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    approval_mod.register_gateway_notify(sid, lambda data: server._emit_approval_request(sid, data))
+    decision: dict = {}
+
+    def wait():
+        decision.update(wait_mod._await_gateway_decision(
+            sid, approval_mod._gateway_notify_cbs[sid],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]}))
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    try:
+        waiter.start()
+        request = _wait_open(server_requests, buf)
+        assert settle_queue(approval_mod, sid, request.params.request_id)
+        waiter.join(timeout=5)
+        assert not waiter.is_alive(), "queue settlement did not wake the waiter"
+    finally:
+        approval_mod.unregister_gateway_notify(sid)
+        server._sessions.pop(sid, None)
+
+    cancels = [f["params"]["payload"] for f in _frames(buf)
+               if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
+    assert cancels == [{"id": request.id, "method": "approval", "reason": reason}]
+    assert not server_requests._open
+    assert sid not in approval_mod._gateway_queues

@@ -4677,7 +4677,9 @@ export interface ReasoningDeltaPayload {
   rendered: string | null
   verbose: boolean | null
 }
-export type RequestCancelReason = 'answered' | 'interrupted' | 'notify_failed' | 'shutdown' | 'timeout'
+/** Every value a producer withdraws a request with: ``server_requests`` (timeout / interrupted / shutdown) and the approval queue's ``_drop_entry`` (resolved from another surface, session_closed, notify_failed). */
+export type RequestCancelReason =
+  'interrupted' | 'notify_failed' | 'resolved' | 'session_closed' | 'shutdown' | 'timeout'
 export type WithdrawnRequestMethod =
   | 'approval'
   | 'clarify'

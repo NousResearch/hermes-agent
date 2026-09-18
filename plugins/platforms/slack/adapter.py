@@ -2498,7 +2498,21 @@ class SlackAdapter(BasePlatformAdapter):
                 self._active_streams.pop(stream_key, None)
                 return SendResult(success=False, error="stream prefix mismatch")
             delta = text[len(sent) :]
-            await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
+            try:
+                await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
+            except Exception as exc:
+                if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                    raise
+                # Same server-side seal the native task-card stream hits on a long turn
+                # (see _slack_error_is's other caller above): the sealed message is a
+                # regular message now, so reopen a fresh stream in the same thread,
+                # seeded with the FULL accumulated text so the next frame's delta still
+                # resumes correctly. One reopen per frame; a second rejection propagates
+                # as a real failure, same as the task-card twin.
+                logger.info(
+                    "[Slack] Native draft stream %s expired (message_not_in_streaming_state); "
+                    "reopening a fresh stream for chat %s", stream["ts"], chat_id)
+                return await self._start_stream(client, chat_id, draft_id, text, metadata)
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors

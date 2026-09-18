@@ -41,6 +41,15 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.slack.adapter import SlackAdapter
 
 
+class _StreamExpiredError(Exception):
+    """slack_sdk.SlackApiError's shape (``exc.response["error"]``) without importing the SDK,
+    which CI stubs as a bare module. The adapter only reads the response mapping."""
+
+    def __init__(self, message, response):
+        super().__init__(message)
+        self.response = response
+
+
 def _make_adapter(extra=None):
     config = PlatformConfig(enabled=True, token="xoxb-fake", extra=extra or {})
     a = SlackAdapter(config)
@@ -170,6 +179,57 @@ class TestSendDraft:
         await adapter.send_draft("C1", 8, "Thread B answer", metadata=META_B)
         client.chat_stopStream.assert_not_awaited()
         assert {s["ts"] for s in _open_streams(adapter, "C1")} == {"123.456", "456.000"}
+
+    @pytest.mark.asyncio
+    async def test_expired_stream_reopens_a_fresh_stream_with_the_full_text(self):
+        """Slack seals a native draft stream server-side after a few minutes of a
+        long turn — the same seal the native task-card stream hits (see
+        _slack_error_is's other caller). The next chat.appendStream fails with
+        message_not_in_streaming_state; the lane must not permanently disable
+        draft streaming for the run (#_send_draft_frame's "any failure
+        permanently disables drafts"): drop the dead ts and start a fresh stream
+        in the same thread seeded with the FULL accumulated text, so the next
+        frame's delta still resumes correctly."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
+
+        client.chat_appendStream = AsyncMock(
+            side_effect=_StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+        )
+        client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "124.000"})
+
+        result = await adapter.send_draft("D1", 7, "Hello world!", metadata=META)
+
+        assert result.success
+        assert result.message_id == "124.000"
+        kwargs = client.chat_startStream.await_args.kwargs
+        assert kwargs["markdown_text"] == "Hello world!"  # full text, not just the delta
+        assert adapter._active_streams["D1"]["ts"] == "124.000"
+        assert adapter._active_streams["D1"]["sent"] == "Hello world!"
+        assert adapter._native_stream_unsupported is False  # not the feature-gate path
+
+        # A later frame resumes as a normal delta against the reopened stream.
+        client.chat_appendStream = AsyncMock(return_value={"ok": True})
+        result2 = await adapter.send_draft("D1", 7, "Hello world! More.", metadata=META)
+        assert result2.success
+        assert client.chat_appendStream.await_args.kwargs["markdown_text"] == " More."
+
+    @pytest.mark.asyncio
+    async def test_expired_stream_reopen_failure_is_a_real_failure(self):
+        """A reopened stream that itself fails to start is a genuine failure, not
+        a retry loop: one reopen per frame, same as the native task-card twin."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
+
+        client.chat_appendStream = AsyncMock(
+            side_effect=_StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+        )
+        client.chat_startStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send_draft("D1", 7, "Hello world!", metadata=META)
+
+        assert not result.success
+        assert "D1" not in adapter._active_streams
 
 
 class TestFeatureGateFallback:

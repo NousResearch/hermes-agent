@@ -341,6 +341,38 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": False, "error": str(e)}
 
 
+def execute_job_for_event(
+    job_ref: str, extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Fire an existing cron job in response to an external event.
+
+    Public entry point for event-driven triggers (the webhook adapter's
+    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
+    fires it through the exact same claimed-run body a manual
+    ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
+    dedupe, delivery, and ``[SILENT]`` handling stay identical across the
+    scheduler / manual / event paths.
+
+    ``extra_prompt`` is injected as transient per-run context (the job's
+    stored prompt is never mutated), exactly like ``action='run'`` with a
+    ``prompt`` argument.
+
+    Returns the ``_execute_job_now`` result shape:
+    ``{"claimed": bool, "success": bool, "error": str|None}``.
+    """
+    try:
+        job = resolve_job_ref(job_ref)
+    except AmbiguousJobReference as e:
+        return {"claimed": False, "success": False, "error": str(e)}
+    if job is None:
+        return {
+            "claimed": False,
+            "success": False,
+            "error": f"Cron job '{job_ref}' not found.",
+        }
+    return _execute_job_now(job, extra_prompt=extra_prompt)
+
+
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
     """Excerpt of the job's most recent saved output file for the background completion
     block (parent sees what the job produced). Never raises."""
@@ -1062,13 +1094,17 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 
 
 def check_cronjob_requirements() -> bool:
-    """Available in interactive CLI mode and gateway/messaging platforms (the scheduler is
-    internal; no crontab needed). Flags must be explicitly truthy via ``env_var_enabled``."""
-    from utils import env_var_enabled
+    """Available in interactive CLI mode, gateway/messaging platforms, and cron runs (the
+    scheduler is internal; no crontab needed). Flags must be explicitly truthy via
+    ``env_var_enabled``. An external cron worker has the presence vars stripped from its env, so
+    the cron session marker keeps ``cron.allow_agent_scheduling`` meaningful there."""
+    from gateway.session_context import get_session_env
+    from utils import env_var_enabled, is_truthy_value
     return (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
+        or is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
     )
 
 

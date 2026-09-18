@@ -1,24 +1,28 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { stubResizeObserver } from '@/test/jsdom'
 
-const { requestGateway } = vi.hoisted(() => ({
-  requestGateway: vi.fn()
+const { requestGateway, requestGatewayForAgent } = vi.hoisted(() => ({
+  requestGateway: vi.fn(),
+  requestGatewayForAgent: vi.fn()
 }))
 
-// The panel routes every RPC through the owner profile's socket (never the ambient gateway);
-// the mock receives (method, params) after the profile argument.
+// The panel routes every RPC through the owner (connection, profile) socket (never the ambient
+// gateway); the mock receives (method, params) after the connectionId + profile arguments.
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForAgent: (...args: [null | string, string, string, Record<string, unknown>?, ...unknown[]]) => {
+    requestGatewayForAgent(...args)
+
+    return requestGateway(args[2], args[3] ?? {})
+  }
 }))
 
 import { queryClient } from '@/lib/query-client'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { VaultSettings } from './vault-settings'
 
@@ -45,7 +49,9 @@ const LOGIN_ITEM = {
 
 beforeEach(() => {
   requestGateway.mockReset()
+  requestGatewayForAgent.mockReset()
   queryClient.clear()
+  $connection.set(null)
   $gatewayState.set('open')
 })
 
@@ -61,6 +67,37 @@ describe('VaultSettings', () => {
 
     await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
     expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
+    // The scoped Settings dial must be foreground so a cold profile spawn is not
+    // queued behind background work (#111651).
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      null,
+      expect.any(String),
+      'vault.list',
+      {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+  })
+
+  // Two connections both serving `default` (this device + a remote gateway): a bare profile
+  // name would resolve onto the PRIMARY socket and the panel would show the other machine's
+  // vault (#94811). The RPC must name the connection the panel claims to show.
+  it('routes every vault RPC through the active connection, not a bare profile name', async () => {
+    requestGateway.mockResolvedValue({ items: [] })
+    $connection.set({ connectionId: 'this-device', mode: 'local' } as never)
+    renderVault()
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.list', {}))
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'this-device',
+      expect.any(String),
+      'vault.list',
+      {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 
   it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {
@@ -200,5 +237,71 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
+  })
+
+  it('refreshes password-manager detection when the page is reopened', async () => {
+    let installed = false
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+
+    installed = true
+    renderVault()
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
+  })
+
+  it('refreshes password-manager detection after remounting while the gateway is closed', async () => {
+    let installed = false
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+
+    installed = true
+    $gatewayState.set('closed')
+    renderVault()
+    act(() => $gatewayState.set('open'))
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
   })
 })

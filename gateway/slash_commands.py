@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
+from gateway.group_chat_slash import GroupChatSlashCommandsMixin
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
@@ -162,6 +163,7 @@ def _home_thread_from_source(source) -> Optional[str]:
 
 
 class GatewaySlashCommandsMixin(
+    GroupChatSlashCommandsMixin,
     GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
     GatewaySessionCommandsMixin,
@@ -805,7 +807,11 @@ class GatewaySlashCommandsMixin(
             model, rt = None, {}
         if not rt.get("api_key"):
             return t("gateway.btw.no_provider")
-        main_runtime = {"model": model, **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+        main_runtime = {
+            "model": model,
+            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": session_entry.session_id,
+        }
         history_snapshot = list(history)
         # Prefer the cache-parity fork when a live cached AIAgent exists: it replays the snapshot
         # against the warm provider prefix cache, giving FULL context at cache-read prices. With no

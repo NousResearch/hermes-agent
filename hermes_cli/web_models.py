@@ -98,6 +98,9 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+    # Auxiliary only. Omitted → the task's override is left alone; explicit null → cleared
+    # (inherit the main agent's effort); a level → set. ``model_fields_set`` tells the two apart.
+    reasoning_effort: Optional[str] = None
     # Custom/local endpoint URL + key, honored on main AND auxiliary slots: the runtime resolvers
     # read model.base_url / auxiliary.<task>.base_url (+ .api_key) and ignore OPENAI_BASE_URL.
     base_url: str = ""

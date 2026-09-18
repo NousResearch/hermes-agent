@@ -66,7 +66,7 @@ class HandlerRegistry:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
                 real = server._profile_scoped(real)
-            server._methods[name] = real
+            server.register_method(name, real)
 
 
 _PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "logger"}

@@ -143,11 +143,14 @@ default applies.
 #### Failure cooldown and provider-proven overflow
 
 A failed or stalled summary attempt arms a per-session **failure cooldown**
-(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
-ordinary threshold-triggered compaction is deferred so a broken summary backend
-does not re-fire every turn. Two paths run a real attempt anyway:
+(escalating 60s → 300s → 900s, never shorter than
+`compression.context_timeout_seconds`, persisted in `state.db`). While it is
+armed, ordinary threshold-triggered compaction is deferred so a broken summary
+backend does not re-fire every turn. Three paths run a real attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- The same-turn `fallback_chain` retry after a stalled primary route — the
+  cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring

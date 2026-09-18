@@ -11,7 +11,13 @@ import {
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $activeSessionId, $connection, $selectedStoredSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $connection,
+  $selectedStoredSessionId,
+  setSessionOwnerHint,
+  setSessions
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
@@ -1293,6 +1299,19 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
 
     expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  // Two connections both exposing `default`: the row only names the profile,
+  // and a bare profile is resolved by the profile door against the PRIMARY
+  // connection — another machine for a session that runs on a non-primary one.
+  // The inbound event proved the exact owner, so it must outrank the
+  // connection-blind row profile (this is what keeps the 2nd prompt of an
+  // ordinary session from answering `4001 session not found`).
+  it('prefers an event-proven connection over a bare row profile when two connections share the profile name', () => {
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([{ id: 'rt-local', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('rt-local')).toEqual({ connectionId: 'local', profile: 'default' })
   })
 
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {

@@ -15,6 +15,7 @@ import os
 import signal
 import time
 from contextlib import suppress
+from contextvars import copy_context
 from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
@@ -107,6 +108,31 @@ class GatewayStartupMixin:
             return
         self._startup_warmup_task = asyncio.ensure_future(self._warm_turn_prerequisites())
 
+    async def _run_boot_probe_in_launch_scope(self, fn):
+        """Run a boot-time probe on the default executor under the LAUNCH profile's scope when
+        multiplexing (the ``_discover_gateway_mcp_tools`` shape). Boot probes (``check_fn``s, the
+        free-tier bootstrap) read profile-scoped secrets; an unscoped read under multiplex fails
+        closed, so routing overrides resolve as absent and default routing applies. ``copy_context``
+        carries the contextvars across the executor hop; single-profile keeps environ semantics."""
+        loop = asyncio.get_running_loop()
+        if getattr(self.config, "multiplex_profiles", False):
+            from gateway.run import _async_profile_runtime_scope
+            from hermes_constants import get_hermes_home
+            try:
+                async with _async_profile_runtime_scope(get_hermes_home()):
+                    return await loop.run_in_executor(None, copy_context().run, fn)
+            except Exception:
+                # Same fallback as load_gateway_config_for_runner: a scope that cannot be built must not
+                # abort startup; the probe runs unscoped as it did before.
+                logger.debug("multiplex launch-scope entry failed for boot probe %s; running unscoped",
+                             getattr(fn, "__name__", fn), exc_info=True)
+        return await loop.run_in_executor(None, copy_context().run, fn)
+
+    async def _run_free_tier_bootstrap(self) -> None:
+        """The free-tier bootstrap mints the Portal identity through the same profile-scoped routing
+        overrides the warm-up resolves, so it takes the same launch-profile binding."""
+        await self._run_boot_probe_in_launch_scope(self._start_free_tier_bootstrap)
+
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
@@ -115,9 +141,8 @@ class GatewayStartupMixin:
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
             exc_info=True,
         ):
-            loop = asyncio.get_running_loop()
             t0 = time.monotonic()
-            tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
+            tool_count = await self._run_boot_probe_in_launch_scope(_warm_turn_machinery_sync)
             logger.info(
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,
@@ -212,16 +237,13 @@ class GatewayStartupMixin:
         ``_send_restart_notification`` and ``_redeliver_pending_obligations`` used to be awaited inline
         *before* ``_finish_startup_restore`` released the gate. See #91969.
         """
-        from gateway.run import _clear_planned_restart_notification, _startup_restore_drain_timeout_secs
+        from gateway.run import _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
             await self._send_restart_notification()
             if planned_restart_notification_pending:
-                try:
-                    await self._send_home_channel_startup_notifications(skip_targets=None)
-                finally:
-                    _clear_planned_restart_notification()
+                await self._replay_pending_planned_restart_notification()
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())
@@ -744,11 +766,13 @@ class GatewayStartupMixin:
             with _log_suppressed(logging.DEBUG, "faulthandler.enable() unavailable", exc_info=True):
                 faulthandler.enable(file=self._open_faulthandler_log(), all_threads=True)
         # SIGUSR2 stack dump to file for service managers that drop stderr; POSIX-only.
+        # chain=False: SIGUSR2's default disposition is "terminate", so chaining to it
+        # dumps the stacks and then kills the gateway the operator was trying to inspect.
         _sigusr2 = getattr(signal, "SIGUSR2", None)
         if _sigusr2 is not None and hasattr(faulthandler, "register"):
             with _log_suppressed(logging.DEBUG, "Could not set up faulthandler file logging", exc_info=True):
                 faulthandler.register(
-                    _sigusr2, file=self._open_faulthandler_log(), all_threads=True, chain=True,
+                    _sigusr2, file=self._open_faulthandler_log(), all_threads=True, chain=False,
                 )
 
     def _start_log_startup_environment(self) -> None:
@@ -904,7 +928,26 @@ class GatewayStartupMixin:
                 send_relay_policy()
         except Exception:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
-        GatewayStartupMixin._register_config_hooks("shell-hook registration failed at gateway startup")
+        GatewayStartupMixin._register_launch_profile_config_hooks()
+
+    @staticmethod
+    def _register_launch_profile_config_hooks() -> None:
+        """The launch profile's ``hooks:`` block, registered under ITS runtime scope when multiplexing.
+
+        Startup runs before any turn scope exists and ``get_secret`` fails closed outside a scope
+        while multiplexing is on, so the launch profile needs the scope secondaries already get
+        (``_start_secondary_profile_adapters``) or its ``secret_env`` targets cannot resolve.
+        """
+        from agent.secret_scope import is_multiplex_active
+        if not is_multiplex_active():
+            GatewayStartupMixin._register_config_hooks(
+                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
+            return
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_process_hermes_home
+        with _profile_runtime_scope(get_process_hermes_home()):
+            GatewayStartupMixin._register_config_hooks(
+                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
 
     @staticmethod
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:
@@ -1177,8 +1220,7 @@ class GatewayStartupMixin:
             # Startup authority is one phase: from here on every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
         # A platform skipped on the primary should have been picked up by a secondary owning the token;
-        # if none did it is enabled yet silently unserved — say so loudly.
-        # If none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
+        # if none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
         # the operator sees a config problem instead of a quiet dead channel (#64674 follow-up).
         for _skipped in _multiplex_skipped_platforms:
             if not any(_skipped in _profile_map for _profile_map in self._profile_adapters.values()):
@@ -1187,6 +1229,9 @@ class GatewayStartupMixin:
                     "the platform is not being served. Add its token to the profile that should "
                     "own it, or disable the platform.", _skipped.value,
                 )
+        # The mirror image: a SECONDARY enabled shared ingress (WhatsApp/Relay) that only the default can run.
+        for _line in self._unserved_shared_ingress_warnings():
+            logger.warning(_line)
         return False, connected_count
 
     def _start_handle_no_connections(
@@ -1375,7 +1420,7 @@ class GatewayStartupMixin:
         # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
         # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
         # inventory and no network.
-        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
+        await self._run_free_tier_bootstrap()
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True
@@ -1494,6 +1539,23 @@ class GatewayStartupMixin:
             platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(home_chat_id)
         )
         is_thread = bool(new_thread_id) and not is_telegram_private_chat
+        chat_type = "thread" if is_thread else "dm"
+        scope_id = None
+        if platform == Platform.TELEGRAM and not is_telegram_private_chat:
+            # The Telegram adapter keys forum-topic replies ``group:<chat>:<topic>`` (never
+            # ``thread``); bind the handoff on the same slot.
+            chat_type = "group"
+        if platform == Platform.SLACK:
+            # Slack keys a thread reply on the parent channel's type ("dm" for a D… channel, else
+            # "group") plus the workspace id — never on a "thread" slot. Mirror the adapter's inbound
+            # source shape or the first reply after a restart lands on a different key (#111896).
+            chat_type = "dm" if home_chat_id.startswith("D") else "group"
+            scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
+            scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
+        if platform == Platform.MATRIX:
+            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
+            # get_chat_info reports "dm"/"group" for the home room.
+            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1501,15 +1563,27 @@ class GatewayStartupMixin:
                 is_thread and platform == Platform.DISCORD and effective_thread_id
             ) else home_chat_id,
             chat_name=home.name,
-            chat_type="thread" if is_thread else "dm",
+            chat_type=chat_type,
             user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
+            scope_id=scope_id,
         )
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
             handoff_config=handoff_config,
         )
+
+    @staticmethod
+    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
+        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
+        unknown/failed → not a DM, the common handoff target."""
+        try:
+            info = await adapter.get_chat_info(home_chat_id)
+        except Exception:
+            logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
+            return False
+        return isinstance(info, dict) and info.get("type") == "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next

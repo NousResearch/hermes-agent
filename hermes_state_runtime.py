@@ -565,6 +565,10 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    if not auxiliary:
+        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
+        # session row was minted with its real surface at admission, so nothing to repair here.
+        payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')

@@ -36,6 +36,7 @@ export interface MediaRemoteScope {
 export interface MediaRemoteConnection {
   authMode?: 'oauth' | 'token'
   baseUrl: string
+  headers?: Record<string, string>
   mode?: 'local' | 'remote'
   token?: null | string
   sharedRemote?: boolean
@@ -162,6 +163,14 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
         target.filePath,
         connection.sharedRemote ? target.profile : undefined
       )
+
+      // The gateway's configured extra headers (access-proxy gates) travel on
+      // every remote request; forwarded range/cache negotiation headers win.
+      for (const [name, value] of Object.entries(connection.headers ?? {})) {
+        if (!headers.has(name)) {
+          headers.set(name, value)
+        }
+      }
 
       if (connection.authMode === 'oauth') {
         return await requestWithOauthFallback(connection.baseUrl, {

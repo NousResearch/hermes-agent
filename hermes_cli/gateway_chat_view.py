@@ -8,13 +8,16 @@ from hermes_cli.gateway_client import GatewayClientError
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None):
         self.client = client
         self.session_id = snapshot["stored_session_id"]
         self.generation = snapshot.get("execution_generation", 0)
         self.prompts = {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
         self.pending = snapshot.get("pending", [])
-        self.quiet = quiet
+        # ``--format stream-json``: stdout belongs to the JSONL protocol, so every human line is
+        # replaced by an emitter event and the terminal record carries the exit code.
+        self.emitter = emitter
+        self.quiet = quiet or emitter is not None
         self.finite = False
         self.streams = {}
         self.completions = {}
@@ -23,8 +26,11 @@ class GatewayChatView:
         from hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
 
+    def unknown_admissions(self):
+        return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
+
     def show_pending(self):
-        unknown = any(row["status"] == "unknown" for row in self.pending)
+        unknown = bool(self.unknown_admissions())
         if unknown:
             print("Execution outcome unknown after restart. Discard acknowledges the lost turn "
                   "without replaying it; queued work may then continue.", file=sys.stderr)
@@ -58,6 +64,7 @@ class GatewayChatView:
             admission = params.get("admission_id") or payload.get("admission_id")
             handler = {
                 "message.delta": self._delta, "message.complete": self._complete,
+                "tool.start": self._tool_start, "tool.complete": self._tool_complete,
                 "approval.request": self._request, "clarify.request": self._request,
                 "approval.settled": self._settled, "clarify.settled": self._settled,
             }.get(kind)
@@ -65,9 +72,24 @@ class GatewayChatView:
                 handler(admission, payload)
             self.changed.set()
 
+    def _tool_start(self, admission, payload):
+        if self.emitter is not None:
+            self.emitter.on_tool_progress("tool.started", payload.get("tool_name"), None, payload.get("args"),
+                                          tool_call_id=payload.get("tool_call_id") or None)
+
+    def _tool_complete(self, admission, payload):
+        if self.emitter is not None:
+            self.emitter.on_tool_progress("tool.completed", payload.get("tool_name"), None, payload.get("args"),
+                                          tool_call_id=payload.get("tool_call_id") or None,
+                                          result=payload.get("result"), is_error=payload.get("is_error", False))
+
     def _delta(self, admission, payload):
         text = payload.get("text") or payload.get("delta") or payload.get("content") or ""
-        if isinstance(text, str) and not self.quiet:
+        if not isinstance(text, str):
+            return
+        if self.emitter is not None:
+            self.emitter.on_text_delta(text)
+        elif not self.quiet:
             self.streams[admission] = self.streams.get(admission, "") + text
             print(text, end="", flush=True)
 
@@ -146,12 +168,27 @@ class GatewayChatView:
             return True
         raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
 
+    def _detach(self, message):
+        """One-shot cannot go on without a human: say why on stderr, exit 3, and in stream-json
+        mode close the protocol with a failed ``result`` (a consumer parsing stdout must never be
+        left without a terminal record)."""
+        print(message, file=sys.stderr)
+        if self.emitter is not None:
+            return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
+        return 3
+
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
         self.show_pending()
         for prompt in self.prompts.values():
             self.show_prompt(prompt)
+        if oneshot and self.unknown_admissions():
+            # A new admission would queue behind the unknown row and never run; refuse BEFORE
+            # submitting so nothing is left queued for the next interactive resume to find.
+            lost = " ".join(self.unknown_admissions())
+            return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
+                                f"interactively with /discard {lost} (prompt.resolve_unknown), then retry.")
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None
@@ -164,12 +201,17 @@ class GatewayChatView:
                     if self.failure:
                         raise self.failure
                     if self.prompts:
-                        print("Input required; detached without cancelling. Resume this session interactively.", file=sys.stderr)
-                        return 3
+                        return self._detach("Input required; detached without cancelling. Resume this session interactively.")
                     await self.changed.wait()
                 terminal = self.completions[admission]
+                outcome = terminal.get("outcome")
+                if self.emitter is not None:
+                    return self.emitter.emit_result(
+                        {"final_response": terminal.get("text") or terminal.get("content") or "",
+                         "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
+                        session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
                 print(terminal.get("text") or terminal.get("content") or "", flush=True)
-                return 0 if terminal.get("outcome") == "completed" else 1
+                return 0 if outcome == "completed" else 1
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             prompt = PromptSession()

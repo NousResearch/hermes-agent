@@ -202,6 +202,68 @@ class TestBuildApiKwargsOpenRouter:
             "google": {"thought_signature": "opaque"}
         }
 
+    def test_gemini_image_request_drops_corrupted_thought_signature(self, monkeypatch):
+        """An empty Gemini signature must not be replayed with an image request.
+
+        OpenRouter can return a signature container without the actual signature.
+        Google rejects that request as a corrupted thought signature instead of
+        processing the image.
+        """
+        agent = _make_agent(monkeypatch, "openrouter", model="google/gemini-3.8-flash")
+        messages = [
+            {"role": "user", "content": "use a tool first"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": ""}},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "ok"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "describe this image"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ]},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "extra_content" not in kwargs["messages"][1]["tool_calls"][0]
+        assert messages[1]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": ""}
+        }
+
+    def test_gemini_image_request_keeps_nonempty_thought_signature(self, monkeypatch):
+        """A valid signature remains available for the required tool-call replay."""
+        agent = _make_agent(monkeypatch, "openrouter", model="google/gemini-3.8-flash")
+        messages = [
+            {"role": "user", "content": "use a tool first"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "signed-call"}},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "ok"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "describe this image"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ]},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"][1]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "signed-call"}
+        }
+
     def test_gemini_native_passes_base_url_for_top_level_thinking_config(self, monkeypatch):
         agent = _make_agent(
             monkeypatch,
@@ -919,6 +981,5 @@ class TestReasoningEffortDefaults:
                             base_url="https://chatgpt.com/backend-api/codex")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["reasoning"]["effort"] == "medium"
-
 
 

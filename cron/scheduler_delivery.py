@@ -206,6 +206,13 @@ def _maybe_mirror_cron_delivery(
         )
 
 
+# chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
+# key the shared "thread" lane; Slack, Matrix and Telegram (forum topics: ``_build_message_event``
+# types every supergroup "group") keep the parent channel/room's "group" — a seed on the wrong slot
+# is a row no reply ever resolves to (#111896, #112918).
+_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
+
+
 def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
     """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
     thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
@@ -278,14 +285,17 @@ def _seed_cron_thread_session(
     """Seed the freshly-opened cron thread's session with the brief (never raises), else the
     user's in-thread reply resolves to a transcript without it. Threads are participant-shared
     (no real user_id); a DM thread must seed ``chat_type="dm"`` — DM-thread replies route through
-    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits."""
+    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits.
+    Non-DM threads seed the slot the platform's adapter puts on an in-thread reply
+    (``_THREAD_REPLY_CHAT_TYPE``)."""
     text = (mirror_text or "").strip()
     if not text:
         return
     try:
         ok = _seed_cron_session(
             job, adapter, platform_name, chat_id, text,
-            thread_id=str(thread_id), chat_type="dm" if is_dm else "thread",
+            thread_id=str(thread_id),
+            chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
             user_id="system:cron", user_name="Cron", chat_name=chat_name, scope_id=scope_id,
             discord_keys_on_thread=True)
         if ok:

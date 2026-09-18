@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionsResult } from '@hermes/shared'
 
 import type {
   AnalyticsResponse,
@@ -33,7 +33,7 @@ export function getGlobalModelOptions(
     explicitOnly?: boolean
   },
   profile?: null | string
-): Promise<ModelOptionsResponse> {
+): Promise<ModelOptionsResult> {
   const params = new URLSearchParams()
 
   if (opts?.refresh) {
@@ -48,7 +48,7 @@ export function getGlobalModelOptions(
     params.set('explicit_only', '1')
   }
 
-  return hermesApi<ModelOptionsResponse>({
+  return hermesApi<ModelOptionsResult>({
     ...profileScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS

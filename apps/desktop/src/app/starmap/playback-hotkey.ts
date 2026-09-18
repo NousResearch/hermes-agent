@@ -6,7 +6,10 @@
  * inside a menu — Radix menu items are `div[role=menuitem]`, so the tag check
  * alone would let Space both activate the item and toggle playback.
  */
-export function shouldIgnorePlaybackHotkey(e: Pick<KeyboardEvent, 'code' | 'defaultPrevented' | 'key' | 'target'>, activeElement: Element | null): boolean {
+export function shouldIgnorePlaybackHotkey(
+  e: Pick<KeyboardEvent, 'code' | 'defaultPrevented' | 'key' | 'target'>,
+  activeElement: Element | null
+): boolean {
   if (e.code !== 'Space' && e.key !== ' ') {
     return true
   }

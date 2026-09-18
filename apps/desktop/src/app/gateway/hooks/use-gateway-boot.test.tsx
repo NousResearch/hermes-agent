@@ -383,11 +383,13 @@ describe('default-route profile adoption', () => {
     async connectionId => {
       const base = fakeDesktop()
       const route = { connectionId, profile: 'coder' }
+
       const desktop = {
         ...base,
         getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
         profile: { ...base.profile, getDefault: vi.fn(async () => route) }
       }
+
       ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
       render(<Harness />)
       await flushAsync()
@@ -398,6 +400,7 @@ describe('default-route profile adoption', () => {
         expect(desktop.getConnection).toHaveBeenCalledWith('coder')
         expect(desktop.getConnectionFor).not.toHaveBeenCalled()
       }
+
       expect($connection.get()?.profile).toBe('coder')
       expect($desktopBoot.get().running).toBe(false)
     }
@@ -512,6 +515,41 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().visible).toBe(false)
     }
   )
+  it('a rejected background primary offers Settings instead of parking silently', async () => {
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'remote', remoteKind: 'cloud', authMode: 'oauth' } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toast = $notifications.get().find(entry => entry.kind === 'error')
+    expect(toast?.action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {

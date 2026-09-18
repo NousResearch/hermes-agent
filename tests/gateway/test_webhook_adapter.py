@@ -966,10 +966,8 @@ class TestDualStackBind:
 
 
 class TestExclusiveBindTimeWait:
-    """macOS binds the listener with ``reuse_address=False`` (exclusive dual-stack bind). On BSD that
-    also refuses the port while a TIME_WAIT connection from the previous gateway lingers (2*MSL = 30s):
-    a ``/restart`` re-binds within seconds and used to fail with EADDRINUSE although nobody was
-    listening (observed on 127.0.0.1:8644; the reconnect watcher only recovered ~50s later)."""
+    """The TIME_WAIT rebind (positive case: tests/gateway/test_api_server_bind_guard.py, shared
+    ``start_tcp_site``) must not weaken the exclusive bind: a live listener still wins."""
 
     @staticmethod
     def _adapter_on(port: int) -> WebhookAdapter:
@@ -979,32 +977,12 @@ class TestExclusiveBindTimeWait:
             port=port,
         )
 
-    @pytest.mark.macos_only  # the exclusive bind (reuse_address=False) is a Darwin-only path
-    @pytest.mark.asyncio
-    async def test_explicit_host_rebinds_over_time_wait(self):
-        """A port held only by a server-side TIME_WAIT socket must not block the bind."""
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-        port = listener.getsockname()[1]
-        client = socket.create_connection(("127.0.0.1", port))
-        accepted, _ = listener.accept()
-        accepted.close()  # the side closing first enters TIME_WAIT: the server side, as on gateway shutdown
-        client.close()
-        listener.close()
-        adapter = self._adapter_on(port)
-        try:
-            with patch.object(adapter, "_reload_dynamic_routes"):
-                assert await adapter.connect() is True
-            assert adapter.is_connected is True
-        finally:
-            await adapter.disconnect()
-
     @pytest.mark.asyncio
     async def test_explicit_host_still_rejects_live_listener(self):
         """The TIME_WAIT retry must not weaken exclusivity: a live listener on the same address wins."""
+        # The probe's connection must be closed server-side too, or ``wait_closed()`` never returns.
         blocker = await asyncio.start_server(
-            lambda _reader, _writer: None, host="127.0.0.1", port=0, reuse_address=False
+            lambda _reader, writer: writer.close(), host="127.0.0.1", port=0, reuse_address=False
         )
         port = blocker.sockets[0].getsockname()[1]
         adapter = self._adapter_on(port)

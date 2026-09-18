@@ -131,12 +131,20 @@ export async function getHermesConfigRecord(
   return record
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
-  return hermesApi<HermesConfigRecord>({
-    ...profileScoped(),
+export async function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
+  const origin = capabilityScoped(profile ?? undefined)
+
+  const record = await window.hermesDesktop.api<HermesConfigRecord>({
+    ...origin,
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
+
+  if (record && typeof record === 'object') {
+    bindConfigReadOrigin(record, origin)
+  }
+
+  return record
 }
 
 export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {

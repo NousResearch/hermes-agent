@@ -17513,6 +17513,17 @@
             ],
             "default": null
           },
+          "turn_stats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnStats"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "status": {
             "anyOf": [
               {
@@ -30713,6 +30724,30 @@
             "default": null,
             "title": "Cost Status"
           },
+          "cache_ttl_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Ttl S"
+          },
+          "cache_refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Refreshed At"
+          },
           "credits_lines": {
             "anyOf": [
               {
@@ -34807,6 +34842,134 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnStats": {
+        "additionalProperties": true,
+        "description": "``tui_gateway/prompt_turn.py::_build_turn_stats`` \u2014 one turn's usage deltas. Every\nfigure is omitted rather than zeroed when the turn did not produce it.",
+        "properties": {
+          "duration_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration S"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
+          },
+          "cache_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Read"
+          },
+          "cache_write": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Write"
+          },
+          "calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Calls"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cost Usd"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "title": "TurnStats",
+        "type": "object"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -35056,6 +35219,30 @@
             ],
             "default": null,
             "title": "Cost Status"
+          },
+          "cache_ttl_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Ttl S"
+          },
+          "cache_refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Refreshed At"
           }
         },
         "title": "Usage",

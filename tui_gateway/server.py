@@ -2012,6 +2012,23 @@ def _get_usage(agent) -> dict:
             spent = agent.get_credits_spent_micros()
             if spent is not None:
                 usage["dev_credits_spent_micros"] = int(spent)
+    with contextlib.suppress(Exception):
+        usage["cache_read"] = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+        usage["cache_write"] = int(getattr(agent, "session_cache_write_tokens", 0) or 0)
+        # Before the TTL lookup, which imports and can raise: one suppressed failure there
+        # should not also cost the refresh stamp.
+        refreshed = getattr(agent, "_cache_refreshed_at", None)
+        if refreshed is not None:
+            usage["cache_refreshed_at"] = refreshed
+        if getattr(agent, "_use_prompt_caching", False):
+            from agent.prompt_caching import effective_cache_ttl
+            ttl = effective_cache_ttl(
+                getattr(agent, "_cache_ttl", None),
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+            if (ttl_s := {"5m": 300, "1h": 3600}.get(ttl)) is not None:
+                usage["cache_ttl_s"] = ttl_s
     return usage
 
 

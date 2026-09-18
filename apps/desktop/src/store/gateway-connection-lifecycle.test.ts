@@ -802,3 +802,34 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
   })
 })
+
+
+describe('rejected secondary authentication', () => {
+  it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
+    vi.useFakeTimers()
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    }))
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+    await ensureGatewayForAgent('cloud', 'default')
+    gatewayMocks.instances[0].connectionState = 'closed'
+    getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
+    const rejected = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await rejected).toBeNull()
+    const calls = getGatewayWsUrlFor.mock.calls.length
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await vi.advanceTimersByTimeAsync(60_000)
+    const nudged = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await nudged).toBeNull()
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls)
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    await ensureGatewayForAgent('healthy', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    await ensureGatewayForAgent('cloud', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 2)
+  })
+})

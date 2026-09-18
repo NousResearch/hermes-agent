@@ -1,6 +1,7 @@
 import {
   type ConnectionState,
   type GatewayEvent,
+  isGatewayReauthRequired,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -10,7 +11,9 @@ import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
@@ -112,6 +115,8 @@ interface Secondary {
   /** Consecutive automatic dials that stalled (slot wait / dial timeout)
    *  rather than failing fast; see SECONDARY_STALLED_DIAL_BUDGET. */
   stalledDials: number
+  // Wake, polling and relay retention cannot revive a rejected credential.
+  reauthError: Error | null
   reconnecting: boolean
   /** A material connection edit is waiting for live owners to drain. */
   pendingConnectionRedial: boolean
@@ -600,6 +605,10 @@ function clearTimer(entry: Secondary): void {
 async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
   const desktop = window.hermesDesktop
 
+  if (entry.reauthError) {
+    throw entry.reauthError
+  }
+
   if (!desktop) {
     return
   }
@@ -735,6 +744,13 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
   try {
     await pending
+  } catch (error) {
+    if (isGatewayReauthRequired(error)) {
+      entry.reauthError = error
+      entry.wantOpen = false
+      clearTimer(entry)
+    }
+    throw error
   } finally {
     if (entry.connectPromise === pending) {
       entry.connectPromise = null
@@ -765,6 +781,11 @@ function isStalledDialError(error: unknown): boolean {
 }
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
+  if (entry.reauthError && priority !== 'foreground') {
+    throw entry.reauthError
+  }
+  entry.reauthError = null
+
   if (entry.retiredByPool && priority !== 'foreground') {
     throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
   }
@@ -800,6 +821,11 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
   } catch (error) {
+    if (isGatewayReauthRequired(error)) {
+      notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
+      return
+    }
+
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself
     // gone/mid-delete. Both are permanent for this scoped socket — retrying
@@ -881,6 +907,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectTimer: null,
     reconnectAttempt: 0,
     stalledDials: 0,
+    reauthError: null,
     reconnecting: false,
     pendingConnectionRedial: false,
     retained: false,
@@ -1256,7 +1283,9 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
-  rearmSecondary(entry)
+  if (!entry.reauthError) {
+    rearmSecondary(entry)
+  }
 
   let released = false
 
@@ -1772,7 +1801,7 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 
   const entry = g.secondaries.get(g.activeKey)
 
-  if (!entry) {
+  if (!entry || entry.reauthError) {
     return null
   }
 
@@ -1814,7 +1843,7 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     // A backend main retired for a foreground open stays parked: redialing it
     // from a focus/wake nudge would queue a background spawn for the slot the
     // retirement just freed. Its tile still shows; the next click re-arms it.
-    if (entry.retiredByPool) {
+    if (entry.retiredByPool || entry.reauthError) {
       continue
     }
 

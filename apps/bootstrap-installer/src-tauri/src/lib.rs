@@ -163,6 +163,29 @@ pub fn run() {
                     tracing::error!("main installer window not found; installer UI will not appear");
                 }
             }
+
+            // Update mode resilience: auto-start the update flow after a brief
+            // delay so the frontend has time to mount and subscribe to bootstrap
+            // events. If the frontend fails to load (corrupted binary, missing
+            // dist, or any other error), the update still proceeds — the desktop
+            // quit expecting us to do the work, and sitting forever waiting for a
+            // frontend invoke that never comes would leave the user with a blank
+            // window and no recovery.
+            //
+            // The re-entrancy guard in start_update (UPDATE_RUNNING) ensures only
+            // one update task runs. If the frontend also calls startUpdate() via
+            // invoke, the duplicate call is a safe no-op that re-emits the manifest
+            // for the frontend to catch up to in-flight progress.
+            if mode == AppMode::Update {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    if let Err(err) = update::start_update(app_handle).await {
+                        tracing::error!("auto-start update failed: {err}");
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

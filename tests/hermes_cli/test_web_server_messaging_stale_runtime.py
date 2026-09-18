@@ -53,3 +53,25 @@ def test_stopped_gateway_does_not_report_stale_platform_error(client):
     assert telegram["state"] == "gateway_stopped"
     assert telegram["error_code"] is None
     assert telegram["error_message"] is None
+
+
+def test_operator_stopped_gateway_does_not_report_retained_startup_failure(client):
+    """``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk with
+    ``desired_state: stopped``; the Channels page must read that as stopped, exactly like
+    ``/api/status`` does, not wear a "Start failed" badge with the stale reason (#112517)."""
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "gateway_state.json").write_text(json.dumps({
+        "kind": "gateway", "pid": 999_999_999, "start_time": 1.0,
+        "gateway_state": "startup_failed", "desired_state": "stopped",
+        "exit_reason": "Port 8642 already in use", "updated_at": "2026-01-01T00:00:00+00:00",
+        "platforms": {},
+    }), encoding="utf-8")
+
+    payload = client.get("/api/messaging/platforms").json()
+    telegram = next(p for p in payload["platforms"] if p["id"] == "telegram")
+
+    assert telegram["gateway_running"] is False
+    assert telegram["state"] == "gateway_stopped"
+    assert telegram["error_code"] is None
+    assert telegram["error_message"] is None

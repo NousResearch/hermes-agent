@@ -72,9 +72,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
         root = _root()
-        known = {"default"}
-        if (root / "profiles").is_dir():
-            known.update(c.name for c in (root / "profiles").iterdir() if c.is_dir())
+        from tools.bot_mode_probe import _roster
+        known = {name for name, _ in _roster(root)}
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
@@ -113,10 +112,27 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
             return _ok(rid, {"reply": reply})
 
-        def _detail(p) -> str:
-            return (p.stderr or p.stdout or "").strip()[-500:]
+        # This process's _sessions is not the ownership authority: the Desktop pools one backend per
+        # (connection, profile) and an SSH source runs one remote dashboard per profile, so the
+        # target's Bot Chat can be live in a sibling process on this host while the relay RPC lands
+        # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
+        # lease (#113753). Hand the DM to the live owner through the same mailbox local DMs use
+        # (tools/bot_mode_dm.py::_run_delivery); its poller admits it at the next idle boundary.
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+        owner_home = live_home if live_home is not None else Path(_hermes_home)
+        owner = find_canonical_live_owner(owner_home)
+        if owner is not None:
+            deliver_to_live_owner(owner_home, owner, message, author=author)
+            # The owner's poller admits the mailbox record at its next idle boundary; this
+            # process only queued it, so say so (the in-process branch above really submitted).
+            reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
+            return _ok(rid, {"reply": reply})
 
-        turn_env = delivery_env(author)
+        def _detail(p) -> str:
+            from tools.bot_failure_reasons import turn_failure_text
+            return turn_failure_text(p.stdout, p.stderr)
+
+        turn_env = delivery_env(author, live_home)
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
@@ -138,16 +154,23 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                     from tools.bot_failure_reasons import (
                         RETRY_NONE, classify_agent_error, retry_action)
                     if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp, turn_env)
+                        # The failed attempt already persisted the DM; the re-run resumes that row.
+                        from tools.bot_relay import retry_turn_env
+                        proc = _run(resolved, tmp, retry_turn_env(turn_env))
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         if proc.returncode != 0:
             from tools.bot_failure_reasons import classify_agent_error
             detail = _detail(proc)
-            return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}",
+            return _err(rid, 5092, f"delivery turn failed: {detail[-500:] or proc.returncode}",
                         data={"reason": classify_agent_error(detail)})
-        return _ok(rid, {"reply": (proc.stdout or "").strip()})
+        # Use the same canonical whole-response predicate as live Bot Chat
+        # completion.  A marker remains a successful turn, but is never sent
+        # back to the relay caller as visible prose.
+        from tui_gateway.prompt_turn import _bot_mode_delivery_text
+        reply = _bot_mode_delivery_text((proc.stdout or "").strip(), successful=True)
+        return _ok(rid, {"reply": reply})
     except subprocess.TimeoutExpired:
         return _err(rid, 5093, "delivery turn timed out")
     except Exception as e:

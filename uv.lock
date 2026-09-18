@@ -52,8 +52,8 @@ ruamel-yaml = false
 sherpa-onnx = false
 huggingface-hub = false
 pytest-asyncio = false
+google-cloud-pubsub = false
 slack-sdk = false
-unpaddedbase64 = false
 discord-py = false
 honcho-ai = false
 faster-whisper = false
@@ -62,8 +62,9 @@ debugpy = false
 packaging = false
 rich = false
 supermemory = false
-youtube-transcript-api = false
+unpaddedbase64 = false
 h2 = false
+youtube-transcript-api = false
 edge-tts = false
 microsoft-teams-apps = false
 aiohttp-socks = false
@@ -1729,7 +1730,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.21.2"
+version = "0.21.3"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },

@@ -56,6 +56,8 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
+from gateway.platforms.base_exec_approval import (
+    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
     coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
@@ -325,10 +327,10 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
     if cmd or always:
-        body.append(TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"))
+        body.append(TextBlock(text=f"⚠️ {EA_HEADER_TEXT}", wrap=True, weight="Bolder"))
         body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
     if desc or always:
-        body.append(TextBlock(text=f"Reason: {desc}", wrap=True, isSubtle=True))
+        body.append(TextBlock(text=f"{EA_REASON_LABEL_TEXT}: {desc}", wrap=True, isSubtle=True))
     return body
 
 
@@ -634,6 +636,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
         body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
         card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)

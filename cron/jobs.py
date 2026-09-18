@@ -112,6 +112,38 @@ class _CronStorePaths:
 _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
     "cron_store_override", default=None)
 
+
+class _SelfRemovalDelivery:
+    """Mutable run-local marker shared with the agent's copied ContextVar context."""
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.removed = False
+
+
+_self_removal_delivery: ContextVar[Optional[_SelfRemovalDelivery]] = ContextVar(
+    "self_removal_delivery", default=None)
+
+
+@contextlib.contextmanager
+def self_removal_delivery_scope(job_id: str):
+    """Permit this run's final delivery after it removes its own job record."""
+    marker = _SelfRemovalDelivery(job_id)
+    token = _self_removal_delivery.set(marker)
+    try:
+        yield marker
+    finally:
+        _self_removal_delivery.reset(token)
+
+
+def self_removal_delivery_allowed(job_id: str) -> bool:
+    """Whether the active run deleted exactly its own job record and no record has since taken
+    its id (a replacement record belongs to another owner, so that stays fail-closed)."""
+    marker = _self_removal_delivery.get()
+    if marker is None or marker.job_id != job_id or not marker.removed:
+        return False
+    return all(item.get("id") != job_id for item in load_jobs())
+
 # Import-time snapshot so deliberate re-pointing of CRON_DIR/JOBS_FILE/OUTPUT_DIR (the documented
 # escape hatch for tests/embedders) is distinguishable from the constants merely being stale.
 _IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
@@ -354,7 +386,8 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
-    """Hold a per-job fence while an owner performs an external side effect."""
+    """Hold a per-job fence while an owner performs an external side effect. A missing record
+    is accepted only for the active run that removed this exact job (#111039)."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             yield False
@@ -363,6 +396,8 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
             claim = job.get("fire_claim") if isinstance(job, dict) else None
             owns_claim = isinstance(claim, dict) and claim.get("by") == expected_owner
+            if job is None:
+                owns_claim = self_removal_delivery_allowed(job_id)
         yield owns_claim
 
 
@@ -893,6 +928,10 @@ _TELEMETRY_RECENT_HISTORY = 20
 # A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
 # for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
 FIRE_CLAIM_TTL_SECONDS = 300
+# A hosted/webhook fire for the armed slot can arrive a few seconds before the stored
+# ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
+# the slot; only claims further ahead are off-tick manual/dashboard fires.
+FIRE_CLAIM_SKEW_SECONDS = 60
 _persisted_error_recoveries_recent: list = []
 
 
@@ -2255,6 +2294,9 @@ def remove_job(job_id: str) -> bool:
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs, removed_ids={canonical_id})
+        marker = _self_removal_delivery.get()
+        if marker is not None and marker.job_id == canonical_id:
+            marker.removed = True
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         try:
@@ -2689,6 +2731,21 @@ def claim_job_for_fire(
         # stamping it would make completed_occurrence() skip that slot when it arrives.
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        # A scheduled tick only ever fires when now >= next_run_at
+        # (_evaluate_due_job returns False while the stored occurrence is still
+        # in the future), so a claim arriving BEFORE the stored next occurrence
+        # cannot be the tick that owns it — it is a manual / dashboard / webhook
+        # fire and must stay occurrence-free. Binding it would make run_one_job
+        # stamp that FUTURE instant completed in the ledger: later manual fires
+        # are then refused ("Job is already being fired by the scheduler") and
+        # the scheduled tick dedupe-skips its real delivery (2026-09-08 live:
+        # a manual run at 19:53 consumed the next day's 19:00 occurrence).
+        # A claim within FIRE_CLAIM_SKEW_SECONDS of the slot is the fire for that slot
+        # (provider clock skew); dropping its identity would leave the slot unrecorded, so
+        # mark_job_run recomputes the same cron slot and the misfire backstop runs it twice.
+        if (instant is not None
+                and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
+            instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

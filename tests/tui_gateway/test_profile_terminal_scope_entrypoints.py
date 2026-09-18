@@ -23,7 +23,7 @@ import pytest
 
 from tools import terminal_tool as tt
 from tools.terminal_scope import get_terminal_scope
-from tui_gateway import launch_terminal_policy as ltp
+from tui_gateway import launch_profile_policy as ltp
 from tui_gateway import server
 
 
@@ -33,6 +33,7 @@ def _launch_local_env(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", False)
     monkeypatch.setattr(ltp, "_snapshot", None)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", lambda _h: {})
 
 
@@ -132,6 +133,10 @@ def _launch_turn_policy(launch_home):
         from tools.terminal_scope import reset_terminal_scope
         if st.scopes.terminal is not None:
             reset_terminal_scope(st.scopes.terminal)
+        if st.scopes.secret is not None:
+            server.reset_secret_scope(st.scopes.secret)
+        if st.scopes.home is not None:
+            server.reset_hermes_home_override(st.scopes.home)
         if st.scopes.approval is not None:
             reset_current_session_key(st.scopes.approval)
         server._clear_session_context(st.scopes.session_tokens)
@@ -144,7 +149,7 @@ def test_launch_turn_keeps_env_only_ssh_policy_once_multiplexing_is_active(tmp_p
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "example.test")
-    ltp.capture_launch_terminal_env()  # multiplex activation: first secondary served
+    ltp.activate_multi_profile_hosting()  # multiplex activation: first secondary served
 
     cfg = _launch_turn_policy(launch)
     assert (cfg["env_type"], cfg["ssh_host"]) == ("ssh", "example.test")
@@ -158,7 +163,7 @@ def test_launch_turn_ignores_ambient_terminal_env_written_after_activation(tmp_p
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "example.test")
-    ltp.capture_launch_terminal_env()
+    ltp.activate_multi_profile_hosting()
     # A secondary context later poisons the process env (the pre-#108440 latch shape).
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "bee/img:1")

@@ -102,7 +102,7 @@ export type {
   SessionInfo,
   SessionMessage,
   SessionMessagesResponse,
-  SessionResumeResponse,
+  SessionResumeResult,
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,

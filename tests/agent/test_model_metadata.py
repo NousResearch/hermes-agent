@@ -318,6 +318,49 @@ class TestDefaultContextLengths:
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
 
+    @staticmethod
+    def _upstage_ctx(model):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            return get_model_context_length(model, provider="upstage", base_url="https://api.upstage.ai/v1")
+
+    def test_upstage_solar_ids_match_legacy_keys_only_on_an_id_boundary(self):
+        """Upstage /v1/models has no context field, so the table decides. ``solar-mini`` must not
+        claim ``solar-mini4`` (its 32K is below MINIMUM_CONTEXT_LENGTH, so the agent refused to
+        start); Solar ids without a legacy key get the Solar family window, not the 256K fallback."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _longest_key_match
+
+        family = DEFAULT_CONTEXT_LENGTHS["solar-"]
+        assert family > DEFAULT_FALLBACK_CONTEXT
+        for model in ("solar-mini4", "solar-mini4-preview", "upstage/solar-mini4", "solar-pro4",
+                      "solar-pro4-260806", "solar-pro4-quant", "solar-mini12", "solar-foo"):
+            assert self._upstage_ctx(model) == family, model
+            # The gateway labels a table miss as "default"; it must agree with the resolver.
+            assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())[1] == family, model
+
+        # Legacy ids keep their own (smaller) windows: dated, org-prefixed, aggregator-hyphenated
+        # (``solar-pro-3``) and quant/variant-suffixed ids included.
+        for variant, bare in (("solar-mini-250422", "solar-mini"), ("upstage/solar-mini", "solar-mini"),
+                              ("solar-pro2-251215", "solar-pro2"), ("solar-pro3-260323", "solar-pro3"),
+                              ("upstage/solar-pro-3", "solar-pro3"), ("solar-pro3.1", "solar-pro3"),
+                              ("solar-open2@q4_k_m", "solar-open2")):
+            assert self._upstage_ctx(variant) == self._upstage_ctx(bare), variant
+        assert self._upstage_ctx("solar-mini") < MINIMUM_CONTEXT_LENGTH
+        assert self._upstage_ctx("solar-pro3") < family
+
+        # Ids merely containing "solar", and open-weight Solar ids, are not Solar API lineups.
+        for model in ("ft:solar-news-correction", "acme-solar-foo", "upstage/solar-10.7b-instruct"):
+            assert self._upstage_ctx(model) != family, model
+
+    def test_explicit_solar_key_beats_the_family_default(self):
+        with patch.dict(DEFAULT_CONTEXT_LENGTHS, {"solar-foo": 300_000}):
+            assert self._upstage_ctx("solar-foo") == 300_000
+            assert self._upstage_ctx("solar-foo-260101") == 300_000
+            assert self._upstage_ctx("solar-foo2") == DEFAULT_CONTEXT_LENGTHS["solar-"]
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -1990,3 +2033,38 @@ class TestOpenRouterRoutingVariantContextLength:
         assert variant_ctx == base_ctx == 2_000_000
         assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
         assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000
+
+
+def test_endpoint_pricing_already_per_million_is_not_inflated():
+    """#112018 / #34256 / #79174: a /models catalog quoting USD per 1M tokens (with or without an explicit
+    ``unit``) must reach usage_pricing as per-token rates, so the cost estimate is $0.60/M — not $600,000/M."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    catalog = {
+        "minimax-m3": {"id": "minimax-m3", "pricing": {"currency": "USD", "prompt": 0.6, "completion": 1.2, "cache_read": 0.12}},
+        "glm-x": {"id": "glm-x", "pricing": {"currency": "CNY", "unit": "per_1m_tokens", "prompt": 1, "completion": 2}},
+        "crof-a": {"id": "crof-a", "cost": {"input": 0.04, "output": 0.15}},
+    }
+    meta = {mid: mm._endpoint_model_entry(model, mid, None) for mid, model in catalog.items()}
+    dollars_per_million = {
+        mid: up._pricing_entry_from_metadata(meta, mid, source_url="x", pricing_version="openai-compatible-models-api")
+        for mid in catalog
+    }
+    assert float(dollars_per_million["minimax-m3"].input_cost_per_million) == pytest.approx(0.6)
+    assert float(dollars_per_million["minimax-m3"].cache_read_cost_per_million) == pytest.approx(0.12)
+    assert float(dollars_per_million["glm-x"].output_cost_per_million) == pytest.approx(2.0)
+    assert float(dollars_per_million["crof-a"].input_cost_per_million) == pytest.approx(0.04)
+
+
+def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
+    """Control: per-token quotes (the OpenRouter convention) and per-request fees are left alone."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    model = {"id": "m", "pricing": {"prompt": "0.0000006", "completion": "0.0000012", "request": "0.005"}}
+    meta = {"m": mm._endpoint_model_entry(model, "m", None)}
+    entry = up._pricing_entry_from_metadata(meta, "m", source_url="x", pricing_version="openai-compatible-models-api")
+    assert float(entry.input_cost_per_million) == pytest.approx(0.6)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.2)
+    assert float(entry.request_cost) == pytest.approx(0.005)

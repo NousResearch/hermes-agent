@@ -506,6 +506,17 @@ print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
 
+def _release_header_probe_fds() -> None:
+    """Close this process's cached header-probe fds (no SQLite connection is live, so no lock is at risk)."""
+    import os
+
+    import hermes_state_dbfile
+    with hermes_state_dbfile._HEADER_PROBE_LOCK:
+        for fd, _dev, _ino in hermes_state_dbfile._HEADER_PROBE_FDS.values():
+            os.close(fd)
+        hermes_state_dbfile._HEADER_PROBE_FDS.clear()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
 def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     """Concurrent repairers serialise; the loser sees a healed DB and stops.
@@ -518,6 +529,9 @@ def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
     _corrupt_duplicate_fts(db_path)
+    # The test process itself must not count as a holder: _build_healthy_db's SessionDB left the
+    # process-lifetime header-probe fd open, and a second process refuses ANY foreign holder (#103339).
+    _release_header_probe_fds()
 
     script = _REPAIR_SCRIPT.format(
         root=str(Path(hermes_state.__file__).parent), db=str(db_path)

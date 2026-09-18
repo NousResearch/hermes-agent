@@ -5,6 +5,7 @@ import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
+import { Tip } from '@/components/ui/tooltip'
 import { Mail } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
@@ -447,33 +448,34 @@ export function PetOverlayApp() {
               its box so the overlay's click-through hit-test still catches it);
               stopPropagation keeps a click from starting a window drag. */}
           {unread && (
-            <button
-              aria-label="Open in Hermes"
-              onClick={openApp}
-              onPointerDown={e => e.stopPropagation()}
-              onPointerUp={e => e.stopPropagation()}
-              style={{
-                alignItems: 'center',
-                background: 'var(--ui-bg-elevated)',
-                border: '1px solid var(--ui-stroke-secondary)',
-                borderRadius: 999,
-                boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
-                color: 'var(--foreground)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                height: 24,
-                justifyContent: 'center',
-                padding: 0,
-                position: 'absolute',
-                right: 0,
-                top: 0,
-                width: 24
-              }}
-              title="Open in Hermes"
-              type="button"
-            >
-              <Mail style={{ height: 13, width: 13 }} />
-            </button>
+            <Tip label="Open in Hermes">
+              <button
+                aria-label="Open in Hermes"
+                onClick={openApp}
+                onPointerDown={e => e.stopPropagation()}
+                onPointerUp={e => e.stopPropagation()}
+                style={{
+                  alignItems: 'center',
+                  background: 'var(--ui-bg-elevated)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 999,
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+                  color: 'var(--foreground)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  height: 24,
+                  justifyContent: 'center',
+                  padding: 0,
+                  position: 'absolute',
+                  right: 0,
+                  top: 0,
+                  width: 24
+                }}
+                type="button"
+              >
+                <Mail style={{ height: 13, width: 13 }} />
+              </button>
+            </Tip>
           )}
         </div>
       </div>

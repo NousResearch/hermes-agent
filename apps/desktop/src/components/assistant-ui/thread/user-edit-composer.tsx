@@ -66,6 +66,7 @@ import {
   USER_BUBBLE_BASE_CLASS
 } from '@/components/assistant-ui/thread/user-message'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
@@ -903,29 +904,30 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 {copy.attachingFile}
               </span>
             )}
-            <button
-              aria-label={copy.sendEdited}
-              className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-              disabled={!canSubmit || submitting || staging}
-              onClick={() => {
-                const editor = editorRef.current
+            <Tip label={copy.sendEdited}>
+              <button
+                aria-label={copy.sendEdited}
+                className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                disabled={!canSubmit || submitting || staging}
+                onClick={() => {
+                  const editor = editorRef.current
 
-                if (editor) {
-                  submitEdit(editor)
-                }
-              }}
-              // Keep focus in the editor on click: macOS doesn't focus a button
-              // on mousedown, so without this the arrow-click blurs the editor,
-              // the blur timer cancels the edit (tearing down the composer
-              // core), and the click's send() then throws against a dead core —
-              // the edit silently never sends. The restore button guards the
-              // same way.
-              onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
-              type="button"
-            >
-              {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}
-            </button>
+                  if (editor) {
+                    submitEdit(editor)
+                  }
+                }}
+                // Keep focus in the editor on click: macOS doesn't focus a button
+                // on mousedown, so without this the arrow-click blurs the editor,
+                // the blur timer cancels the edit (tearing down the composer
+                // core), and the click's send() then throws against a dead core —
+                // the edit silently never sends. The restore button guards the
+                // same way.
+                onPointerDown={event => event.preventDefault()}
+                type="button"
+              >
+                {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}
+              </button>
+            </Tip>
           </div>
         </div>
       </StickyHumanMessageContainer>

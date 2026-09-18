@@ -2,6 +2,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
@@ -116,18 +117,19 @@ export function KeyField({
       {editing && (info.is_set || dirty) && (
         <div className="flex items-center gap-1">
           {info.is_set && (
-            <Button
-              aria-label={t.settings.credentials.remove}
-              className="text-muted-foreground hover:text-destructive"
-              disabled={busy}
-              onClick={() => void onClear(varKey)}
-              size="icon-xs"
-              title={t.settings.credentials.remove}
-              type="button"
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
+            <Tip label={t.settings.credentials.remove}>
+              <Button
+                aria-label={t.settings.credentials.remove}
+                className="text-muted-foreground hover:text-destructive"
+                disabled={busy}
+                onClick={() => void onClear(varKey)}
+                size="icon-xs"
+                type="button"
+                variant="ghost"
+              >
+                <Trash2 />
+              </Button>
+            </Tip>
           )}
           {dirty && (
             <Button className="h-8" disabled={busy} onClick={() => void onSave(varKey)} size="sm">

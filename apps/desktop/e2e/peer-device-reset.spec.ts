@@ -85,28 +85,37 @@ async function freePort(): Promise<number> {
   })
 }
 
-async function stopRemote(child: ChildProcess | undefined): Promise<void> {
-  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
-    return
-  }
+function remoteAlive(child: ChildProcess): boolean {
+  return Boolean(child.pid) && child.exitCode === null && child.signalCode === null
+}
 
-  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
-
-  const stop = (signal: NodeJS.Signals) => {
+// The remote runs in its own process group so its Python children die with it.
+// ESRCH (group already gone) must not abort the rest of teardown.
+function signalRemote(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
     if (process.platform === 'win32') {
       child.kill(signal)
     } else {
       process.kill(-child.pid!, signal)
     }
+  } catch {
+    /* already exited */
+  }
+}
+
+async function stopRemote(child: ChildProcess | undefined): Promise<void> {
+  if (!child || !remoteAlive(child)) {
+    return
   }
 
-  stop('SIGTERM')
+  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+  signalRemote(child, 'SIGTERM')
   let timer: ReturnType<typeof setTimeout> | undefined
   await Promise.race([exited, new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000) })])
   clearTimeout(timer)
 
-  if (child.exitCode === null && child.signalCode === null) {
-    stop('SIGKILL')
+  if (remoteAlive(child)) {
+    signalRemote(child, 'SIGKILL')
     await exited
   }
 }
@@ -161,6 +170,15 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
         detached: process.platform !== 'win32',
         env: { ...isolatedEnv(remote), HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN },
         stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      // Fixture setup shares the test budget; a timeout while still awaiting
+      // readiness abandons this function before `finally`, and a detached
+      // child outlives the worker. Reap it on process exit regardless.
+      const spawned = child
+      process.once('exit', () => {
+        if (remoteAlive(spawned)) {
+          signalRemote(spawned, 'SIGKILL')
+        }
       })
       child.stdout?.on('data', chunk => { remoteLog += chunk.toString() })
       child.stderr?.on('data', chunk => { remoteLog += chunk.toString() })

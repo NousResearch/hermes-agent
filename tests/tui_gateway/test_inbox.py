@@ -1469,3 +1469,18 @@ class TestProducerShapedData:
         monkeypatch.setattr(dtr, "list_active_subagents", lambda: fake_records)
         item = _result(server, "inbox.list")["inbox"]["items"][0]
         assert item["subagent_count"] == 1
+
+
+def test_inbox_deny_list_matches_canonical_listing_sources():
+    """The inbox must not clip the sidebar's deny-list.
+
+    Every method module's top-level names are copied into the shared server
+    namespace at registration, so a private copy of the deny-list here silently
+    replaced ``session.list``'s set and surfaced one-shot runs in the picker.
+    """
+    import tui_gateway.server  # noqa: F401  (runs the split-module registration bridge)
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from tui_gateway.methods_inbox import _INBOX_DENY_SOURCES
+
+    assert _INBOX_DENY_SOURCES == frozenset(INTERNAL_LISTING_SOURCES)
+    assert "oneshot" in _INBOX_DENY_SOURCES

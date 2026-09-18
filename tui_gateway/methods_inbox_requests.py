@@ -16,7 +16,7 @@ import logging
 import os
 
 from .method_ctx import HandlerRegistry, bind_module
-from .methods_inbox import _LISTING_DENY_SOURCES, _denied_source
+from .methods_inbox import _INBOX_DENY_SOURCES, _inbox_denied_source
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -138,7 +138,7 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5031)
         row = db.get_session(session_key)
-        if row is None or _denied_source(row):
+        if row is None or _inbox_denied_source(row):
             return _err(rid, 4001, "Session not found")
 
     # Thread-safe snapshot of live sessions
@@ -162,7 +162,7 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
             continue
         # Deny-listed sources are not human-facing
         source = str(record.get("source") or "").strip().lower()
-        if source in _LISTING_DENY_SOURCES:
+        if source in _INBOX_DENY_SOURCES:
             continue
         live_sessions.append((sid, record))
 

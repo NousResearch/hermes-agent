@@ -22,6 +22,7 @@ import os
 import time
 
 from .method_ctx import HandlerRegistry, bind_module
+from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -29,9 +30,11 @@ _profile_scoped = _registry.profile_scoped
 
 logger = logging.getLogger(__name__)
 
-# Same visual/attentional deny-list as the session sidebar: sub-agent runs and kanban workers
-# are not human-facing inbox items.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+# Same deny-list as the session sidebar (INTERNAL_LISTING_SOURCES): sub-agent runs,
+# kanban workers and one-shot runs are not human-facing inbox items. Import the
+# canonical tuple — a hand-rolled copy here silently overrode the sidebar's set,
+# because every method module's top-level names land in the shared server namespace.
+_INBOX_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
 
 _DEFAULT_LIMIT = 200
 _MAX_LIMIT = 1000
@@ -40,8 +43,8 @@ _MAX_LIMIT = 1000
 VALID_CATEGORIES = frozenset({"goals", "loops", "heartbeats", "subagents", "background_tasks", "other"})
 
 
-def _denied_source(row) -> bool:
-    return (row.get("source") or "").strip().lower() in _LISTING_DENY_SOURCES
+def _inbox_denied_source(row) -> bool:
+    return (row.get("source") or "").strip().lower() in _INBOX_DENY_SOURCES
 
 
 # ── pure lane classification ──────────────────────────────────────────────────
@@ -283,7 +286,7 @@ def _list_inbox(rid, params: dict) -> dict:
     # Collect session keys from the allowed rows for bounded bg-process queries
     session_keys = []
     for row in rows[:cap]:
-        if _denied_source(row):
+        if _inbox_denied_source(row):
             continue
         key = str(row.get("id") or "")
         if key:
@@ -298,7 +301,7 @@ def _list_inbox(rid, params: dict) -> dict:
         errors.append(bg_task_error)
     scanned = 0
     for row in rows[:cap]:
-        if _denied_source(row):
+        if _inbox_denied_source(row):
             continue
         key = str(row.get("id") or "")
         if not key:

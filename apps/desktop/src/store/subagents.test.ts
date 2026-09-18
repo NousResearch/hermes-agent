@@ -133,6 +133,7 @@ describe('subagent store', () => {
         subagent_id: 'a',
         task_index: 0,
         cost_usd: 0.25,
+        cost_status: 'estimated',
         input_tokens: 100,
         output_tokens: 50,
         schema_valid: true,
@@ -145,6 +146,7 @@ describe('subagent store', () => {
 
     expect(listFor('s1')[0]).toMatchObject({
       costUsd: 0.25,
+      costStatus: 'estimated',
       inputTokens: 100,
       outputTokens: 50,
       schemaValid: true,

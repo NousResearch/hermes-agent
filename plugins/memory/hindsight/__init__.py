@@ -437,24 +437,6 @@ class HindsightMemoryProvider(MemoryProvider):
         display["bank_id"] = banks.get("bankId") or cfg.get("bank_id", "hermes")
         return display
 
-    def _offer_starter_template(self, mode: str, provider_config: dict, env_writes: dict) -> None:
-        """Offer to seed the bank with a Hermes starter template (best-effort)."""
-        from hermes_cli.memory_setup import _CANCELLED, _curses_select
-
-        from . import templates as _hs_templates
-
-        default_url = _DEFAULT_LOCAL_URL if mode == "local_external" else _DEFAULT_API_URL
-        api_url = provider_config.get("api_url") or default_url
-        bank_id = provider_config.get("bank_id", "hermes")
-        api_key = env_writes.get("HINDSIGHT_API_KEY") or os.environ.get("HINDSIGHT_API_KEY", "") or None
-        _hs_templates.run_template_step(
-            api_url=api_url,
-            bank_id=bank_id,
-            api_key=api_key,
-            select=_curses_select,
-            cancelled=_CANCELLED,
-        )
-
     def get_config_schema(self):
         return [
             {"key": "mode", "description": "Connection mode", "default": "cloud", "choices": ["cloud", "local_embedded", "local_external"]},

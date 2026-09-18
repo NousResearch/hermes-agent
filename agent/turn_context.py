@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.effort_updates import EFFORT_UPDATE_KEY, effort_update, record_effort_switch
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -1052,6 +1053,9 @@ def build_turn_context(
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
+    # A mid-session effort switch lands as a hidden marker BEFORE the user message so routes with a
+    # native per-message effort update keep the cached prefix (agent.effort_updates).
+    record_effort_switch(agent, messages)
     # Append the user message now that close persistence is safe.
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
@@ -1216,6 +1220,10 @@ def build_api_messages(
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
         _api_content = api_msg.pop("api_content", None)
+        # An effort marker's payload rides display_metadata in the durable row; the wire copy
+        # carries it top-level so the transport can lower or strip it after display_* is gone.
+        if (update := effort_update(msg)) is not None:
+            api_msg[EFFORT_UPDATE_KEY] = update
         for key in ("display_kind", "display_metadata", "_row_id"):
             api_msg.pop(key, None)
 

@@ -94,6 +94,34 @@ def test_scroll_and_tabs():
     assert backend._page is p1
 
 
+def test_navigate_replaces_current_tab():
+    backend = BrowserBackend("https://example.com")
+    page = _FakePage(title="one", url="https://a.example")
+    backend._page = page
+    backend._pages = [page]
+    res = backend.navigate("https://b.example")
+    assert res.ok
+    assert len(backend._pages) == 1
+    assert page.url == "https://b.example"
+
+
+class _FakeBrowser:
+    def new_page(self, viewport=None):
+        return _FakePage(title="new", url="about:blank")
+
+
+def test_navigate_new_tab_appends():
+    backend = BrowserBackend("https://example.com")
+    page = _FakePage(title="one", url="https://a.example")
+    backend._page = page
+    backend._pages = [page]
+    backend._browser = _FakeBrowser()
+    res = backend.navigate("https://b.example", new_tab=True)
+    assert res.ok
+    assert len(backend._pages) == 2
+    assert backend._page is not page
+    assert backend._page.url == "https://b.example"
+
 def test_playwright_type_into_input(tmp_path):
     pytest.importorskip("playwright.sync_api")
     html = tmp_path / "form.html"

@@ -75,13 +75,7 @@ class BrowserBackend(ComputerUseBackend):
         target = _as_goto(url)
         if self._page is None:
             return ActionResult(ok=False, action="navigate", message="browser not started")
-        current = ""
-        try:
-            current = self._page.url or ""
-        except Exception:
-            current = ""
-        open_new = new_tab or (current not in {"", "about:blank"} and current != target)
-        if open_new and self._browser is not None:
+        if new_tab and self._browser is not None:
             page = self._browser.new_page(viewport={"width": 1280, "height": 720})
             self._pages.append(page)
             self._page = page
@@ -91,7 +85,8 @@ class BrowserBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="navigate", message=str(exc))
         self._last_element = None
         self._refresh_elements()
-        return ActionResult(ok=True, action="navigate", message=f"opened {target} tab={len(self._pages)}")
+        n = len(self._pages)
+        return ActionResult(ok=True, action="navigate", message=f"opened {target} tab={n}")
 
     def _refresh_elements(self) -> list[dict[str, Any]]:
         if self._page is None:

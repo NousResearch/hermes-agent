@@ -288,8 +288,8 @@ def _config_profile_scope(profile: Optional[str]):
 _TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
-        ("docker", "Docker",
-         "Run commands in an isolated Docker container with a persistent workspace."),
+        ("docker", "Docker / Podman",
+         "Run commands in an isolated Docker or Podman container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),

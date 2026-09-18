@@ -6,6 +6,7 @@ monkeypatching on web_server stays authoritative.
 """
 
 import asyncio
+import os
 import shutil
 import subprocess
 import sys
@@ -54,20 +55,40 @@ def _terminal_backend_rows() -> List[Dict[str, str]]:
     return [*_TERMINAL_BACKENDS, *_plugin_terminal_backend_rows()]
 
 
+def _docker_runtime_label(executable: str) -> str:
+    """User-facing name for the resolved docker/podman CLI."""
+    return "Podman" if "podman" in os.path.basename(executable).lower() else "Docker"
+
+
 def _probe_docker_backend(_cfg) -> tuple:
-    if not shutil.which("docker"):
-        return ("needs_setup", "Docker CLI not found — install Docker Desktop or docker-ce.")
+    """Health-check the docker terminal backend the same way the agent resolves it.
+
+    ``find_docker()`` honors ``HERMES_DOCKER_BINARY``, then ``docker`` / ``podman``
+    on PATH. The probe uses ``version`` (not ``info --format {{.ServerVersion}}``)
+    because Podman has no ServerVersion field and the agent already probes with
+    ``version``.
+    """
+    from tools.environments.docker import find_docker
+
+    docker_exe = find_docker()
+    if not docker_exe:
+        return (
+            "needs_setup",
+            "Docker CLI not found — install Docker Desktop, docker-ce, or Podman.",
+        )
+    runtime = _docker_runtime_label(docker_exe)
     try:
         proc = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2)
+            [docker_exe, "version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=2, stdin=subprocess.DEVNULL)
         if proc.returncode == 0:
             return ("ready", "")
-        return ("needs_setup", "Docker daemon not reachable — start Docker and retry.")
+        return ("needs_setup", f"{runtime} daemon not reachable — start {runtime} and retry.")
     except subprocess.TimeoutExpired:
-        return ("needs_setup", "Docker daemon not responding (timed out).")
+        return ("needs_setup", f"{runtime} daemon not responding (timed out).")
     except Exception as exc:
-        return ("unavailable", f"Docker probe failed: {exc}")
+        return ("unavailable", f"{runtime} probe failed: {exc}")
 
 
 def _probe_singularity_backend(_cfg) -> tuple:

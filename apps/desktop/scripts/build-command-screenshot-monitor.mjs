@@ -8,8 +8,13 @@ import { fileURLToPath } from 'node:url'
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
 
-export function buildCommandScreenshotMonitor({ distDir = resolve(root, 'dist') } = {}) {
-  if (process.platform !== 'darwin') return null
+// `platform` is injectable so tests can exercise both branches without
+// redefining process.platform.
+export function buildCommandScreenshotMonitor({
+  distDir = resolve(root, 'dist'),
+  platform = process.platform,
+} = {}) {
+  if (platform !== 'darwin') return null
   const output = resolve(distDir, 'native/command-screenshot-monitor')
   const staging = `${output}.${process.pid}.tmp`
   mkdirSync(dirname(output), { recursive: true })

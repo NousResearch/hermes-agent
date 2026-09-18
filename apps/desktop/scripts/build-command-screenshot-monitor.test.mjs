@@ -10,10 +10,7 @@ vi.mock('node:child_process', () => ({
 const { execFileSync } = await import('node:child_process')
 const { buildCommandScreenshotMonitor } = await import('./build-command-screenshot-monitor.mjs')
 
-const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
-
 afterEach(() => {
-  Object.defineProperty(process, 'platform', realPlatform)
   vi.mocked(execFileSync).mockReset()
 })
 
@@ -21,13 +18,12 @@ afterEach(() => {
 // so a non-macOS CI host still proves what the macOS build will run.
 describe('buildCommandScreenshotMonitor argv', () => {
   it('names the macOS SDK explicitly so driver and linker agree', () => {
-    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'darwin' })
     const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'csm-argv-'))
     const staging = path.resolve(distDir, `native/command-screenshot-monitor.${process.pid}.tmp`)
     fs.mkdirSync(path.dirname(staging), { recursive: true })
     fs.writeFileSync(staging, 'staged')
 
-    const out = buildCommandScreenshotMonitor({ distDir })
+    const out = buildCommandScreenshotMonitor({ distDir, platform: 'darwin' })
 
     expect(execFileSync).toHaveBeenCalledOnce()
     const [cmd, argv] = vi.mocked(execFileSync).mock.calls[0]
@@ -40,9 +36,9 @@ describe('buildCommandScreenshotMonitor argv', () => {
   })
 
   it('is a no-op off macOS', () => {
-    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' })
+    const distDir = path.join(os.tmpdir(), 'csm-never')
 
-    expect(buildCommandScreenshotMonitor({ distDir: path.join(os.tmpdir(), 'csm-never') })).toBeNull()
+    expect(buildCommandScreenshotMonitor({ distDir, platform: 'linux' })).toBeNull()
     expect(execFileSync).not.toHaveBeenCalled()
   })
 })

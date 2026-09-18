@@ -85,6 +85,40 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+async def _strip_empty_meta_from_request(request):
+    """Drop a serialized-but-empty ``_meta`` envelope from a JSON-RPC request body.
+
+    The mcp SDK (>= 2.x) always emits ``params._meta: {}`` on the legacy
+    ``initialize()``; servers pinned to an older protocol (e.g. Meta Ads MCP at
+    2025-06-18) reject the unknown field with HTTP 400 before the response is ever
+    read. An empty ``_meta`` carries no metadata, so removing it is safe for every
+    server; a non-empty one is left intact (it holds real protocol-version /
+    client-info stamps that modern servers need).
+
+    Async: httpx2 always ``await``s request hooks (see ``_send_handling_redirects``).
+    """
+    import json as _json
+
+    try:
+        ctype = (request.headers.get("content-type") or "").lower()
+        if not ctype.startswith("application/json") or not request.content:
+            return
+        body = _json.loads(request.content)
+        params = body.get("params") if isinstance(body, dict) else None
+        if isinstance(params, dict) and params.get("_meta") == {}:
+            params.pop("_meta", None)
+            new_content = _json.dumps(body).encode("utf-8")
+            # httpx2's Request is immutable (`content` has no setter): rewrite the
+            # underlying byte store and its ByteStream so the transport sends the
+            # stripped body, and keep content-length honest.
+            request._content = new_content
+            request.stream = type(request.stream)(new_content)
+            request.headers["content-length"] = str(len(new_content))
+    except (ValueError, TypeError):
+        # Non-JSON body or a malformed edge — leave the request untouched.
+        pass
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -434,7 +468,8 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect],
+                                               "request": [_strip_empty_meta_from_request]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}

@@ -1,5 +1,61 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-067 — Capability abstraction / Progressive Operational Compilation (2026-09-18)
+
+**Classification:** ARCHITECTURAL FINDING CONFIRMED / implementation required.
+
+**Evidence base:** current `main` plus AEPC-E002 and the 2026-09-18 abstraction
+review. Canonical target:
+[../PROGRESSIVE_OPERATIONAL_COMPILATION.md](../PROGRESSIVE_OPERATIONAL_COMPILATION.md).
+
+**Finding:** AEPC-E002 correctly identifies the immediate false-positive class,
+but fixing semantic homogeneity alone would leave the optimization boundary at
+the wrong reusable unit. The current system still tends to treat compilation as
+“convert repeated calls/work into `work_execute`”. The desired behavior is
+“learn a deterministic operational capability once, validate it, then resolve
+and reuse it automatically”.
+
+**Observed foundations already present:**
+- `ProceduralMemory`, `WebProcedure`, `ProcedureStep`;
+- semantic fallback anchors and `resolve_anchor()`;
+- `RecipeStore` exact compatibility lookup;
+- `TaskCompiler`, DurableBatchRunner and WorkPlan/WorkItem checkpoints;
+- `RoutinePromotionService` and `DeterministicRoutineRunner`;
+- compact `NEEDS_REASONING` drift handoff;
+- ExecutionJournal/ArtifactStore experience/evidence plane.
+
+**Observed abstraction gap:**
+- `execution_policy.py` can still promote structural repetition toward
+  `REQUIRE_COMPILE`;
+- built-in native browser mutations do not yet expose a sufficient semantic
+  target-family contract;
+- `work_execute` is surfaced as a model replan requirement instead of primarily
+  being harness-selected deterministic runtime infrastructure;
+- there is no first-class general Capability unit between primitive Tool and
+  higher-level Recipe/Routine;
+- procedural learning is currently browser/workflow-centric rather than a common
+  browser/filesystem/process operational compilation model.
+
+**Decision under test/implementation:** introduce a versioned Capability contract,
+Capability Resolver and trusted Operational Kernel while extending existing stores.
+Atomic capabilities should be reusable by multiple composites. Capability replay
+must not call the LLM on the success path.
+
+**Required proof:**
+1. heterogeneous shape-identical browser actions remain adaptive;
+2. true homogeneous fan-out remains compiler/canary gated;
+3. exact promoted atomic Capability replay uses zero new LLM planning calls;
+4. two distinct composites reuse the same atomic Capability;
+5. drift escalates only the unresolved segment and does not replay confirmed
+   mutable effects;
+6. filesystem/process capabilities use the same lifecycle and resolver;
+7. no second canonical state owner is introduced.
+
+**Rejected shortcuts:** threshold inflation, blanket browser exemption, counter
+reset around snapshots, transient ref persistence, arbitrary generated-code
+bypass, second memory/task/browser database, hidden LLM invocation from a
+“deterministic” capability.
+
 ## AEPC-E002 — Structural similarity is not semantic homogeneity (2026-09-18)
 
 **Classification:** CONFIRMED residual obstruction risk / P0 hardening follow-up.

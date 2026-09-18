@@ -30,7 +30,7 @@ _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 # Explicit-path, fail-closed values use a separate cache so a fail-open
 # ``load_user_config_effective`` prewarm can never satisfy a safety-sensitive read.
-_STRICT_VALUE_CACHE: Dict[str, Tuple[Tuple[Any, ...], Tuple[Any, ...], Any]] = {}
+_STRICT_VALUE_CACHE: Dict[str, Tuple[Tuple[Any, ...], Tuple[Any, ...], Dict[str, Any]]] = {}
 
 
 class ConfigResolutionError(RuntimeError):
@@ -104,20 +104,21 @@ def resolve_effective_config_value(config_path: Path, *keys: str, default: Any =
     path_key = str(config_path)
     cached = _STRICT_VALUE_CACHE.get(path_key)
     if cached is not None and cached[0] == user_sig and cached[1] == managed_sig:
-        return copy.deepcopy(cached[2])
-
-    user_raw = {} if user_sig == ("absent",) else _read_mapping_strict(config_path, label="Config")
-    managed_raw = {} if managed_path is None else _read_mapping_strict(managed_path, label="Managed config")
-    expanded = _config._normalize_root_model_keys(
-        cast(Dict[str, Any], _config._expand_env_vars(user_raw))
-    )
-    managed_expanded = _config._normalize_root_model_keys(
-        cast(Dict[str, Any], _config._expand_env_vars(managed_raw))
-    )
-    if isinstance(managed_expanded.get("model"), str):
-        managed_expanded = dict(managed_expanded)
-        managed_expanded["model"] = {"default": managed_expanded["model"]}
-    effective = _config._deep_merge(expanded, managed_expanded)
+        effective = copy.deepcopy(cached[2])
+    else:
+        user_raw = {} if user_sig == ("absent",) else _read_mapping_strict(config_path, label="Config")
+        managed_raw = {} if managed_path is None else _read_mapping_strict(managed_path, label="Managed config")
+        expanded = _config._normalize_root_model_keys(
+            cast(Dict[str, Any], _config._expand_env_vars(user_raw))
+        )
+        managed_expanded = _config._normalize_root_model_keys(
+            cast(Dict[str, Any], _config._expand_env_vars(managed_raw))
+        )
+        if isinstance(managed_expanded.get("model"), str):
+            managed_expanded = dict(managed_expanded)
+            managed_expanded["model"] = {"default": managed_expanded["model"]}
+        effective = _config._deep_merge(expanded, managed_expanded)
+        _STRICT_VALUE_CACHE[path_key] = (user_sig, managed_sig, copy.deepcopy(effective))
 
     value: Any = effective
     for key in keys:
@@ -129,7 +130,6 @@ def resolve_effective_config_value(config_path: Path, *keys: str, default: Any =
             value = default
             break
         value = value[key]
-    _STRICT_VALUE_CACHE[path_key] = (user_sig, managed_sig, copy.deepcopy(value))
     return copy.deepcopy(value)
 
 

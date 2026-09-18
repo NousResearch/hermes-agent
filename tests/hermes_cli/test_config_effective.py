@@ -28,6 +28,7 @@ def _reset_caches():
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+    config_effective._STRICT_VALUE_CACHE.clear()
     config_effective._LAST_GOOD_USER_RAW.clear()
     managed_scope.invalidate_managed_cache()
 
@@ -114,6 +115,48 @@ def test_good_backup_is_written_only_for_the_active_home(homes, tmp_path):
 
     assert not (other / "backups").exists()
     assert list((home / "backups" / "config").glob("config.yaml.good.*"))
+
+
+def test_strict_value_cache_is_safe_for_multiple_key_paths(homes):
+    from hermes_cli.config_effective import resolve_effective_config_value
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+    _write(
+        config_path,
+        """
+        model:
+          default: model/value
+        sessions:
+          trigram_fts: false
+        """,
+    )
+
+    assert resolve_effective_config_value(config_path, "sessions", "trigram_fts") is False
+    assert resolve_effective_config_value(config_path, "model", "default") == "model/value"
+    assert resolve_effective_config_value(config_path, "sessions", "trigram_fts") is False
+
+
+def test_strict_value_cache_does_not_reuse_defaults_or_mutable_values(homes):
+    from hermes_cli.config_effective import resolve_effective_config_value
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+    _write(
+        config_path,
+        """
+        selected:
+          - original
+        """,
+    )
+
+    selected = resolve_effective_config_value(config_path, "selected")
+    selected.append("caller mutation")
+    assert resolve_effective_config_value(config_path, "selected") == ["original"]
+
+    first_default = resolve_effective_config_value(config_path, "missing", default=["first"])
+    first_default.append("caller mutation")
+    assert resolve_effective_config_value(config_path, "missing", default=["second"]) == ["second"]
 
 
 def _reset_caches_keep_last_good():

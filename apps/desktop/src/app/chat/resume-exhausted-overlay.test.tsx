@@ -7,10 +7,16 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const requestFreshSession = vi.hoisted(() => vi.fn())
+const migrateSessionDraft = vi.hoisted(() => vi.fn())
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestFreshSession: () => requestFreshSession()
+}))
+
+vi.mock('@/store/composer', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  migrateSessionDraft: (...args: unknown[]) => migrateSessionDraft(...args)
 }))
 
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
@@ -18,6 +24,7 @@ import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 afterEach(() => {
   cleanup()
   requestFreshSession.mockClear()
+  migrateSessionDraft.mockClear()
 })
 
 describe('stranded resume overlay escape (#106217)', () => {
@@ -30,6 +37,8 @@ describe('stranded resume overlay escape (#106217)', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 
     screen.getByRole('button', { name: 'Start new session' }).click()
+    // #111868: carry any draft left on the dead id into the pre-session bucket.
+    expect(migrateSessionDraft).toHaveBeenCalledWith('session-1', null)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
     expect(onRetryResume).not.toHaveBeenCalled()
   })

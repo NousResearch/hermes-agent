@@ -291,4 +291,14 @@ describe('session drafts', () => {
     clearSessionDraft('from')
     clearSessionDraft('to')
   })
+
+  it('can seed the pre-session bucket from a stranded session id (#111868)', () => {
+    stashSessionDraft('gone-session', 'typed before the tab 404ed', [])
+
+    expect(migrateSessionDraft('gone-session', null)).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('typed before the tab 404ed')
+    expect(takeSessionDraft('gone-session').text).toBe('')
+
+    clearSessionDraft(null)
+  })
 })

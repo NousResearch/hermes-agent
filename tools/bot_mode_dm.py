@@ -470,6 +470,8 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     if record is None:
         record = deliver_to_live_owner(home, intent["owner"], intent["message"],
                                        delivery_id=intent["delivery_id"], author=intent.get("author"))
+    elif not isinstance(record, dict):
+        raise ValueError("delivery id already belongs to a different payload")
     return record
 
 
@@ -479,11 +481,11 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
     deadline = time.monotonic() + _LIVE_WAIT_SECONDS
     while True:
         record = read_delivery_result(home, delivery_id)
-        status = record["status"] if record else "ambiguous"
+        status = record["status"] if isinstance(record, dict) else "ambiguous"
         if status not in ("queued", "claimed") or time.monotonic() >= deadline:
             break
         time.sleep(min(0.5, max(0, deadline - time.monotonic())))
-    payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
+    payload = {key: record[key] for key in ("reply", "error", "reason") if isinstance(record, dict) and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."

@@ -238,3 +238,52 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_recover_skips_unreadable_and_non_dict_flush_files(tmp_path, monkeypatch):
+    """A corrupt or non-object flush file must not wedge recovery of its siblings:
+    it stays on disk for manual inspection and the healthy payload still replays."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    good = {
+        "session_key": "agent:main:telegram:dm:1",
+        "reason": "shutdown",
+        "ts": 1,
+        "data": {"text": "recovered", "session_id": "s1"},
+    }
+    good_path = flush_dir / "a_good.json"
+    good_path.write_text(json.dumps(good), encoding="utf-8")
+    non_dict = flush_dir / "b_scalar.json"
+    non_dict.write_text('"oops"', encoding="utf-8")
+    broken = flush_dir / "c_broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+
+    mock_db = MagicMock()
+    assert recover_pending_to_db(session_db=mock_db) == 1
+    mock_db.append_message.assert_called_once()
+    assert not good_path.exists()
+    assert non_dict.exists() and broken.exists()
+
+
+def test_drain_transcript_spool_removes_non_dict_and_replays_valid(tmp_path, monkeypatch):
+    """A non-object spool payload used to crash drain_transcript_spool at
+    payload.get(); it is structurally invalid, so it is removed while the
+    valid sibling still replays."""
+    from gateway.shutdown_flush import (
+        TRANSCRIPT_CAP_DROP_REASON,
+        drain_transcript_spool,
+    )
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    (flush_dir / "pending-bad.json").write_text("42", encoding="utf-8")
+    good = flush_dir / "pending-good.json"
+    good.write_text(json.dumps({
+        "session_key": "sess-1", "reason": TRANSCRIPT_CAP_DROP_REASON,
+        "ts": 1, "seq": 1, "data": {"message": {"role": "user", "content": "hi"}},
+    }), encoding="utf-8")
+    replayed = []
+    replayed_n, remaining = drain_transcript_spool("sess-1", replayed.append)
+    assert (replayed_n, remaining) == (1, 0)
+    assert replayed == [{"role": "user", "content": "hi"}]
+    assert not good.exists()
+    assert not (flush_dir / "pending-bad.json").exists()

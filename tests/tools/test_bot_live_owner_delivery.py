@@ -158,3 +158,34 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(PermissionError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
+
+
+def test_non_dict_ticket_does_not_wedge_bulk_scans(tmp_path):
+    """A ticket that parses as JSON but is not an object must be skipped by the scans
+    exactly like an unreadable one — never crash the sequence sweep or the claim."""
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    (root / f"{'9' * 32}.json").write_text('"not a receipt"', encoding="utf-8")
+    admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+    assert admitted["sequence"] > queued["sequence"]
+    assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+    assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+
+
+def test_non_dict_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
+    """A non-dict ticket at an exact id is a conflict, never an overwrite or a TypeError."""
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    bad = root / f"{'9' * 32}.json"
+    bad.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ValueError, match="different payload"):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="9" * 32)
+    assert bad.read_text(encoding="utf-8") == "[1, 2]"

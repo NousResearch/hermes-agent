@@ -751,7 +751,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
                 pending = defer(key, dict(job), content, profile, home)
             if pending is not None:
-                if pending["content"] != content or pending["home"] != str(home):
+                if not isinstance(pending, dict) or pending["content"] != content or pending["home"] != str(home):
                     raise ValueError("delivery id already belongs to a different payload")
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
@@ -763,7 +763,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             if owner is not None:
                 receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
         if receipt is not None:
-            if receipt["message"] != message:
+            if not isinstance(receipt, dict) or receipt["message"] != message:
                 raise ValueError("delivery id already belongs to a different payload")
             status = receipt["status"]
             target = f"bot-chat:{profile_label}"

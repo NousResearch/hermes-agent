@@ -173,3 +173,36 @@ def test_entry_prompt_text_shapes():
     assert _entry_prompt_text({"prompt": "  padded  ", "discarded": "x"}) == "padded"
     assert _entry_prompt_text({}) == ""
     assert _entry_prompt_text("not-a-dict") == ""
+
+
+def test_content_scan_skips_non_dict_lines(tmp_path):
+    """A parseable-but-non-object line used to raise AttributeError at
+    entry.get() and kill the resume scan."""
+    (tmp_path / "batch_1.jsonl").write_text(
+        '"scalar row"\n'
+        + json.dumps({"prompt": "ok q", "completed": True}) + "\n",
+        encoding="utf-8",
+    )
+    assert _scan_runner(tmp_path)._scan_completed_prompts_by_content() == {"ok q"}
+
+
+def test_combine_batch_files_skips_non_dict_lines(tmp_path):
+    (tmp_path / "batch_1.jsonl").write_text(
+        '42\n'
+        + json.dumps({"conversations": [{"from": "human", "value": "kept"}]}) + "\n",
+        encoding="utf-8",
+    )
+    runner = _scan_runner(tmp_path)
+    kept, _found = runner._combine_batch_files()
+    assert kept == 1
+    out = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
+    assert "kept" in out and "42" not in out
+
+
+def test_load_dataset_skips_non_dict_lines(tmp_path):
+    dataset = tmp_path / "dataset.jsonl"
+    dataset.write_text(
+        '"not an entry"\n' + json.dumps({"prompt": "real"}) + "\n", encoding="utf-8")
+    runner = _scan_runner(tmp_path)
+    runner.dataset_file = dataset
+    assert runner._load_dataset() == [{"prompt": "real"}]

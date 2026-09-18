@@ -126,6 +126,8 @@ def _scan_read(path: Path) -> dict[str, Any] | None:
     """
     try:
         record = _read(path)
+        if record is not None and not isinstance(record, dict):
+            raise ValueError(f"expected a JSON object, got {type(record).__name__}")
     except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
         level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
         _warned_unreadable.add(path)
@@ -177,7 +179,8 @@ def deliver_to_live_owner(
         path = root / f"{key}.json"
         existing = _read(path)
         if existing is not None:
-            if existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author:
+            if not isinstance(existing, dict) or existing["owner"] != pinned or \
+                    existing["message"] != message or existing.get("author") != author:
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
@@ -243,6 +246,8 @@ def complete_delivery(
         record = _read(path)
         if record is None:
             raise FileNotFoundError(f"delivery not found: {key}")
+        if not isinstance(record, dict):
+            raise ValueError("delivery id already belongs to a different payload")
         if record["status"] in _TERMINAL:
             if any(record.get(k) != v for k, v in outcome.items()):
                 raise ValueError("delivery already has a different terminal receipt")

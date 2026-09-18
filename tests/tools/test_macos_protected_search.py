@@ -243,7 +243,7 @@ def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     absolute_operand = downloads.as_posix() in command
     anchored_operand = (
         f"cd {ops._escape_shell_arg(downloads.parent.as_posix())} &&" in command
-        and " -- '.' 'Downloads' 2>/dev/null" in command
+        and " -- '.' 'Downloads'" in command
     )
     assert absolute_operand or anchored_operand
     assert "!Downloads/**" not in command
@@ -361,7 +361,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version' 2>/dev/null" in command
+    assert " -- '.' '--version'" in command
     assert result.error is None
 
 

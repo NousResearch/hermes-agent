@@ -1337,6 +1337,77 @@ class TestDetectSudoStdin:
             assert is_dangerous is False, cmd
 
 
+class TestSudoArgvAnchoring:
+    """Sudo flag detection is anchored to sudo's OWN argv (card t_6a479602).
+
+    The earlier ``\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b`` lazy bridge spanned
+    ACROSS the subcommand, so any later flag cluster containing s/a was
+    misattributed to sudo: `sudo ls -la <path>` (plus cp -a, rsync -a, df -a,
+    tar -xaf, ss -atp), including inside ssh-wrapped one-liners, hard-blocked
+    in single-query mode as "sudo with combined-flag privilege escalation".
+    Only tokens that can be part of sudo's own argv (env assignments, sudo's
+    own options and their values) may precede the gated flag cluster; the
+    subcommand token ends the walk, so subcommand flags can never match.
+    """
+
+    def test_read_only_sudo_subcommand_flags_not_flagged(self):
+        for cmd in (
+            "sudo ls -la /opt/nginxproxymanager/data/nginx/proxy_host/",
+            "ssh S2 'sudo ls -la /opt/nginxproxymanager/data/nginx/proxy_host/'",
+            'ssh S2 "sudo ls -la /opt/x && sudo cat /opt/y"',
+            "ssh S2 'sudo ls -la /opt/x; sudo grep -rl foo /opt/y'",
+            "sudo grep -rl nginx /opt/nginxproxymanager/data/nginx/proxy_host/",
+            "sudo ls -lt /var/log/elasticsearch/",
+            "sudo docker ps",
+            "sudo cp -a /src /dst",
+            "sudo rsync -a /srv/app/ /opt/byrd-it/",
+            "sudo ss -atp",
+            "sudo df -a",
+            "sudo tar -xaf /tmp/b.tar",
+            "sudo journalctl -u elasticsearch -n 50",
+        ):
+            assert detect_dangerous_command(cmd) == (False, None, None), cmd
+
+    def test_sudo_own_short_privilege_flags_still_detected(self):
+        for cmd in (
+            "sudo -ns whoami",
+            "sudo -sa id",
+            "sudo -S cat /etc/shadow",
+            "sudo -s",
+            "sudo -a id",
+            "sudo -u root -S cat /etc/shadow",
+            'sudo -p "pw:" -S id',
+            "sudo -i -S id",
+            "sudo -n -S cat /etc/shadow",
+            "sudo --user root -S id",
+            "sudo -kn -sa id",
+            "sudo -u alice -S id",
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "sudo" in desc.lower()
+
+    def test_sudo_long_privilege_flags_still_detected(self):
+        for cmd in (
+            "sudo --stdin apt upgrade",
+            "sudo --askpass whoami",
+            "sudo -i --stdin apt upgrade",
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "privilege flag" in desc.lower()
+
+    def test_sudo_options_before_subcommand_stay_safe(self):
+        for cmd in (
+            "sudo -u alice ls -la /opt/x",
+            "sudo --preserve-env=PATH ls -la /opt/x",
+            "sudo -nv ls -la /opt/x",
+            "sudo --non-interactive ls -la /opt/x",
+            "sudo systemctl status nginx",
+        ):
+            assert detect_dangerous_command(cmd) == (False, None, None), cmd
+
+
 class TestMacOSPrivateSystemPaths:
     """Inspired by Claude Code 2.1.113 "dangerous path protection".
 

@@ -868,7 +868,8 @@ class TestSharedBoardPaths:
         # profile-local HERMES_HOME.
         assert kb.kanban_home() == default_home
         assert kb.kanban_db_path() == default_home / "kanban.db"
-        assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
+        assert kb.workspaces_root() == tmp_path / "hermes-workspaces" / "default"
+        assert kb.workspaces_root(board="ops") == tmp_path / "hermes-workspaces" / "ops"
         assert (
             kb.worker_log_path("t_0d214f19")
             == default_home / "kanban" / "logs" / "t_0d214f19.log"
@@ -963,7 +964,7 @@ class TestSharedBoardPaths:
         env = captured["env"]
         assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
-            default_home / "kanban" / "workspaces"
+            tmp_path / "hermes-workspaces" / "default"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"

@@ -92,16 +92,25 @@ def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     return resolved
 
 
-_SIGNAL_SUFFIXES = ("/v1/traces", "/v1/metrics")
+_SIGNAL_SUFFIXES = ("/v1/traces", "/v1/metrics", "/v1/logs")
 
 
 def _signal_endpoint(endpoint: str, signal: str) -> str:
-    """Rewrite a traces/metrics OTLP path to ``/v1/<signal>``; other paths pass through."""
+    """Normalize an OTLP endpoint to end with ``/v1/<signal>``.
+
+    Per the OTLP/HTTP exporter spec, a base endpoint (e.g. ``http://host:4318``) needs the
+    per-signal path appended; an endpoint that already carries one of the three known signal
+    suffixes has that suffix swapped for the target one. Anything else (a custom path with no
+    recognized suffix) passes through unchanged rather than risk mangling an intentional route.
+    """
     target = f"/v1/{signal}"
+    stripped = endpoint.rstrip("/")
+    if stripped.endswith(target):
+        return stripped
     for suffix in _SIGNAL_SUFFIXES:
-        if suffix != target and endpoint.endswith(suffix):
-            return endpoint[: -len(suffix)] + target
-    return endpoint
+        if stripped.endswith(suffix):
+            return stripped[: -len(suffix)] + target
+    return stripped + target
 
 
 _RESOURCE_ATTRIBUTE_KEYS = frozenset({
@@ -150,6 +159,7 @@ def build_exporter(config: Dict[str, Any]):
     endpoint = otlp.get("endpoint")
     if not endpoint:
         raise ValueError("monitoring.export.otlp.endpoint is not set")
+    endpoint = _signal_endpoint(str(endpoint), "traces")
     return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=_resolve_headers(otlp.get("headers_env")) or None)
 
 

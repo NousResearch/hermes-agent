@@ -15,7 +15,7 @@ without any external IDP.  Exercises:
 from __future__ import annotations
 
 import pytest
-
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -132,6 +132,76 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+def test_gated_html_redirects_to_login(gated_app):
+    r = gated_app.get("/", follow_redirects=False)
+    assert r.status_code == 302
+    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
+    # unauthenticated HTML load auto-initiates the OAuth redirect to
+    # /auth/login rather than rendering the /login interstitial. The /login
+    # page remains the fallback (multiple/zero providers, or loop-guard trip).
+    assert r.headers["location"].startswith("/auth/login?provider=stub")
+
+
+def test_gated_auth_providers_is_public(gated_app):
+    r = gated_app.get("/api/auth/providers")
+    assert r.status_code == 200
+    body = r.json()
+    assert any(p["name"] == "stub" for p in body["providers"])
+    assert body["providers"][0]["display_name"] == "Stub IdP (test only)"
+
+
+def test_gated_login_html_is_public_and_lists_providers(gated_app):
+    r = gated_app.get("/login")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Stub IdP" in r.text
+    assert 'href="/auth/login?provider=stub"' in r.text
+
+
+def test_gated_static_asset_path_is_public(gated_app):
+    """``/assets/*`` is allowlisted so the SPA's CSS/JS loads pre-login."""
+    r = gated_app.get("/assets/_nonexistent.css")
+    # 404 not 401 — proves middleware let the request through to the
+    # static-files mount, which then 404'd because the file isn't there.
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/pwa-icon-180.png",
+        "/pwa-icon-192.png",
+        "/pwa-icon-512.png",
+        "/pwa-icon.svg",
+    ],
+)
+def test_gated_pwa_asset_is_served_without_auth(monkeypatch, tmp_path, path):
+    """PWA metadata must remain fetchable before a browser has a session."""
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+
+    asset = tmp_path / path.removeprefix("/")
+    expected = b"{}" if path.endswith("webmanifest") else b"asset"
+    asset.write_bytes(expected)
+    (tmp_path / "index.html").write_text("<html></html>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    monkeypatch.setattr(web_server, "WEB_DIST", tmp_path)
+
+    app = FastAPI()
+    app.state.auth_required = True
+    app.middleware("http")(gated_auth_middleware)
+    web_server.mount_spa(app)
+    response = TestClient(app).get(path, follow_redirects=False)
+
+    assert response.status_code == 200, (
+        f"{path} was not served through the auth gate: "
+        f"{response.status_code} {response.text}"
+    )
+    assert response.content == expected
+    assert "/login" not in response.headers.get("location", "")
 
 
 # ---------------------------------------------------------------------------
@@ -382,5 +452,3 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 503
     assert "unreachable" in r.text.lower()
-
-

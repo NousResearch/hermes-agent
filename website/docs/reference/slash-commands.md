@@ -11,7 +11,7 @@ Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTR
 - **Interactive CLI slash commands** — dispatched by `cli.py`, with autocomplete from the registry
 - **Messaging slash commands** — dispatched by `gateway/run.py`, with help text and platform menus generated from the registry
 
-Installed skills are also exposed as dynamic slash commands on both surfaces. (`/plan` used to be one of these; it is now a built-in command — see the Session table below.)
+Installed skills are also exposed as dynamic slash commands on both surfaces. (`/plan` used to be one of these; it is now a built-in command — see the Session table below.) A skill whose name matches a built-in command (or one of its aliases) never gets its own `/<name>` — the built-in wins and the skill stays loadable via `/skill <name>`; `/skills list`, `/help skills` and the command palette mark such a skill with `slash command /<name> unavailable — name taken by built-in; use /skill <name>`.
 
 ## Permissions and admin/user split
 

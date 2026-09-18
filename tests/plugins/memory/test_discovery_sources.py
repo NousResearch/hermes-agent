@@ -243,3 +243,55 @@ def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkey
     assert "goodmem" in names
     assert "denied" not in names
     assert memory_plugins.find_provider_dir("denied") is None
+
+
+# ---------------------------------------------------------------------------
+# Sibling modules core reads off the provider (cli.py, oauth_flow.py)
+# ---------------------------------------------------------------------------
+
+OAUTH_FLOW_SOURCE = """\
+from .endpoints import TOKEN_URL
+
+
+def start_loopback_flow_background():
+    return {"state": "pending", "detail": TOKEN_URL}
+
+
+def get_flow_status():
+    return {"state": "idle", "detail": "", "connected": False, "auth": None}
+"""
+
+
+def test_oauth_flow_resolves_for_a_provider_installed_outside_core(tmp_path, monkeypatch):
+    """The Desktop Connect button is capability-probed: ``/oauth/status`` 404ing means "this
+    provider has no OAuth", and the panel renders nothing at all. Resolving the flow as
+    ``plugins.memory.<name>.oauth_flow`` only ever found a BUNDLED provider, so every provider
+    that moves to the catalog lost one-click sign-in silently rather than loudly.
+
+    The relative import is the point: the flow loads under the synthetic namespace, so its
+    parent package shell has to exist before ``from .endpoints import ...`` can resolve."""
+    provider = _write_provider_dir(tmp_path / "plugins", "flowmem")
+    (provider / "endpoints.py").write_text("TOKEN_URL = 'https://example.test/token'\n", encoding="utf-8")
+    (provider / "oauth_flow.py").write_text(OAUTH_FLOW_SOURCE, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.memory_oauth import _resolve_flow
+
+    flow = _resolve_flow("flowmem")
+    assert flow.get_flow_status()["state"] == "idle"
+    assert flow.start_loopback_flow_background()["detail"] == "https://example.test/token"
+
+
+def test_provider_without_an_oauth_flow_still_reports_no_capability(tmp_path, monkeypatch):
+    """404 has to keep meaning "no flow shipped" — it is how the panel decides not to offer
+    Connect. Only providers that actually ship the module may answer the route."""
+    from fastapi import HTTPException
+
+    _write_provider_dir(tmp_path / "plugins", "plainmem")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.memory_oauth import _resolve_flow
+
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_flow("plainmem")
+    assert excinfo.value.status_code == 404

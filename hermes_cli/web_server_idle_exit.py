@@ -94,6 +94,13 @@ def wrap_asgi_with_ws_tracking(app, tracker: IdleClientTracker):
 _probe_failure_logged = False
 
 
+def _session_work_in_flight(session: dict) -> bool:
+    if any(session.get(key) for key in ("running", "queued_prompt", "queued_prompts", "_auto_continue_scheduled")):
+        return True
+    return any(thread.is_alive() for key in ("_run_thread", "_agent_build_thread")
+               if (thread := session.get(key)) is not None)
+
+
 def turn_in_flight() -> Optional[bool]:
     """True/False from the gateway's running-session table OR the in-process cron scheduler; None
     when neither can be read. The session table lives on ``tui_gateway.server`` (the voice mixin's
@@ -105,12 +112,17 @@ def turn_in_flight() -> Optional[bool]:
     global _probe_failure_logged
     try:
         import tui_gateway.server as gateway
+        from hermes_cli.backend_retirement import retirement
+
+        if retirement.active_count():
+            return True
         with gateway._sessions_lock:
-            running = any(s.get("running") for s in gateway._sessions.values())
+            running = any(_session_work_in_flight(s) for s in gateway._sessions.values())
         if running:
             return True
+        from tools.async_delegation import active_count
         from cron.scheduler import get_running_job_ids
-        return bool(get_running_job_ids())
+        return bool(active_count() or get_running_job_ids())
     except Exception:
         if not _probe_failure_logged:
             _probe_failure_logged = True

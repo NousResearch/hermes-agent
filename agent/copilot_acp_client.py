@@ -27,7 +27,8 @@ from agent.acp_openai_bridge import (
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
-from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
+from agent.file_safety import (
+    get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
@@ -217,7 +218,10 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
+def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:
+    # Raw-string check BEFORE resolve(): resolving an NT-namespace path is the NTLM-leak trigger.
+    if nt_error := get_nt_namespace_error(path_text, verb=verb):
+        raise PermissionError(nt_error)
     if not Path(path_text).is_absolute():
         raise PermissionError("ACP file-system paths must be absolute.")
     resolved, root = Path(path_text).resolve(), Path(cwd).resolve()
@@ -237,7 +241,7 @@ def _effective_timeout(timeout: Any) -> float:
 
 
 def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
-    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Read")
     if block_error := get_read_block_error(str(path)):
         raise PermissionError(block_error)
     try:
@@ -252,7 +256,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
 
 
 def _fs_write_text_file(params: dict[str, Any], cwd: str) -> Any:
-    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Write")
     if denied := get_write_denied_error(str(path)):
         raise PermissionError(denied)
     if is_write_approval_required(str(path)):  # soft-gated for interactive tools; the ACP shim has no human channel → fail closed
@@ -284,20 +288,39 @@ class CopilotACPClient:
         self._acp_args = list(acp_args or args or _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
-        self.is_closed, self._active_process = False, None
+        self.is_closed = False
+        # Clients are cached and shared across concurrent callers (auxiliary tasks, async
+        # dispatch), so several ACP sessions can be live on one instance. Track every live
+        # child — a single slot would let one session's teardown kill a sibling's process
+        # while its own leaked.
+        self._active_processes: set[subprocess.Popen[str]] = set()
         self._active_process_lock = threading.Lock()
 
-    def close(self) -> None:
-        with self._active_process_lock:
-            proc, self._active_process = self._active_process, None
-        self.is_closed = True
+    @staticmethod
+    def _terminate_process(proc: subprocess.Popen[str]) -> None:
         try:
-            if proc is not None:
-                proc.terminate()
-                proc.wait(timeout=2)
+            proc.terminate()
+            proc.wait(timeout=2)
         except Exception:
             with contextlib.suppress(Exception):
                 proc.kill()
+
+    def _release_process(self, proc: subprocess.Popen[str]) -> None:
+        """Reap one session's own child. ``is_closed`` flips only when the last live
+        session drains — marking it while siblings still run would tell lifecycle code
+        to rebuild a client that is mid-request."""
+        with self._active_process_lock:
+            self._active_processes.discard(proc)
+            if not self._active_processes:
+                self.is_closed = True
+        self._terminate_process(proc)
+
+    def close(self) -> None:
+        with self._active_process_lock:
+            procs, self._active_processes = tuple(self._active_processes), set()
+        self.is_closed = True
+        for proc in procs:
+            self._terminate_process(proc)
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: float | None = None,
@@ -344,9 +367,9 @@ class CopilotACPClient:
         if proc.stdin is None or proc.stdout is None:
             proc.kill()
             raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
-        self.is_closed = False
         with self._active_process_lock:
-            self._active_process = proc
+            self._active_processes.add(proc)
+            self.is_closed = False
         return proc
 
     @contextlib.contextmanager
@@ -409,7 +432,7 @@ class CopilotACPClient:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
             yield session, _request
         finally:
-            self.close()
+            self._release_process(proc)
 
     def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
         """Return the enabled models advertised by a short-lived authenticated ACP session."""

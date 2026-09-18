@@ -191,10 +191,11 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
-The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
-Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
-plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
-can confirm everyone is running the same commit. `hermes plugins list` prints
+The same agent-plugin pin is available in Hermes Desktop: **Capabilities →
+Plugins → Install from Git** has a *Pin to commit* field that takes the full
+40-character SHA, and **Installed** shows a `pinned @ <sha8>` badge on pinned
+agent plugins. This does not guarantee a pinned standalone desktop-plugin
+install. `hermes plugins list` prints
 the pin in its Source column (`git pinned@<sha8>`). Pins work for private
 repositories too, through the same stored credentials described below.
 
@@ -202,7 +203,11 @@ repositories too, through the same stored credentials described below.
 
 `hermes plugins install` clones non-interactively (it never prompts for a
 username or password), so a private repo needs a credential Hermes can find on
-its own. For an `https://` source it tries, in order:
+its own. Every clone, pinned `--ref` fetch and `hermes plugins update` pull is
+attempted anonymously first — public repos never see your credential, so a
+stale or revoked token cannot break a public install. Only when the remote
+refuses anonymous access does Hermes look for a credential. For an `https://`
+source it tries, in order:
 
 1. `GITHUB_TOKEN` or `GH_TOKEN` from your `.env` (GitHub hosts only).
 2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.
@@ -376,6 +381,27 @@ hermes plugins disable my-plugin             # remove from allow-list + add to d
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
 
+### Installed and Browse in Desktop
+
+Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin
+registry and the selected profile's actual agent-plugin state, combining both
+halves in one row where appropriate. It is not a list of catalog entries
+assumed to be installed. **Browse** is a native catalog view, not an embedded
+website; it uses the same **Installed / Browse** tabs as Skills, with search
+at the top and the tab switch and actions on one row. Browse defaults to cards,
+with list and card icons at the right of the filters. The layout choice is shared
+with Skills and remembered. Click a card to read its details; Install opens the
+existing review-then-install dialog.
+
+Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
+snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+The public alias serves the same data as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`. The docs
+build generates it from `plugin-catalog/*.yaml` and cached star counts. The
+same publish also supplies the removed-entry list used by the installer.
+Browsing does not query GitHub live or fetch source repos;
+the installer retrieves code only as part of the separate install flow.
+
 ### One-click install links (Desktop)
 
 Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
@@ -401,6 +427,23 @@ dialog. The same modal is reachable without a link via **Capabilities →
 Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
 `hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
 (`npm run dev`) the scheme is `hermes-dev://`.
+
+The public [Plugin Catalog](/plugins) includes **Install in Hermes** on every
+card. Catalog links carry `catalog_name`, a URL-encoded `repo` (including
+`#subdir` when present), and `sha`:
+
+```text
+hermes://plugin/install?repo=owner%2Frepo&catalog_name=example-plugin&sha=0123456789abcdef0123456789abcdef01234567
+```
+
+The SHA parameter is display metadata only. For the agent-plugin install,
+the backend resolves `catalog_name` to its reviewed pin when you confirm;
+the link cannot override that pin. Do not treat the displayed SHA as a pin
+guarantee for a standalone desktop plugin. These catalog parameters require
+an updated Desktop build; older builds may only understand the repository
+link. If the app is missing or too old, update Desktop or use the copyable
+`hermes plugins install <catalog-name>` command in the expanded card to retain
+catalog resolution.
 
 Websites need no SDK — a normal anchor works:
 
@@ -654,6 +697,11 @@ there is capped at **caution**: their fixtures deliberately hold hostile
 strings to prove the plugin rejects them, so it asks for confirmation and
 `--force` overrides it instead of blocking the install outright. The same
 finding in any other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
+Likewise, a generic sample token (`hardcoded_secret`) inside a runtime `.py`
+file's `if __name__ == "__main__":` self-test block is capped at **caution**
+— the loader imports plugins and never runs that block — while every other
+finding inside it (destructive commands, provider-shaped keys such as `sk-…`)
+and the same token anywhere above the guard keep full severity.
 
 Scanning is on by default; disable it in `config.yaml`:
 

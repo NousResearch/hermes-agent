@@ -434,6 +434,13 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    # Deep transport code (tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
+    # session.initialize() bound straight off config["connect_timeout"], independent of the
+    # `connect_timeout` param above. Callers that extend the param to give a user time to finish
+    # an OAuth browser flow (e.g. `hermes mcp login`'s 315s) left that inner bound at the
+    # (unrelated) 60s default, so the still-pending OAuth callback wait got cancelled mid-flow —
+    # surfacing as a retry that re-opens a second authorization against the same callback port.
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
@@ -644,7 +651,8 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
+        _error(f"Failed to connect: {_probe_failure_reason(exc)}")
+        _info(_probe_failure_next_step(name, exc))
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -738,12 +746,36 @@ def cmd_mcp_list(args=None):
     print()
 
 
+def _probe_failure_reason(exc: BaseException) -> str:
+    """Plain reason for a failed probe: ``_format_connect_error`` unwraps ExceptionGroups and names a
+    missing executable; the result is redacted like every other probe string."""
+    from tools.mcp_tool_errors import _format_connect_error
+    return redact_mcp_probe_text(_format_connect_error(exc))
+
+
+def _probe_failure_next_step(name: str, exc: BaseException) -> str:
+    """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
+    from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    root = _unwrap_exception_group(exc)
+    if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
+        return f"The server rejected the sign-in. Run: hermes mcp login {name}"
+    if "missing executable" in _format_connect_error(exc):
+        return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
+                "to its full path.")
+    return f"Check the server is running and the URL/command in its config, then run: hermes mcp test {name}"
+
+
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Returns the process exit code so health probes and watchdogs can branch on ``$?`` instead of
+    parsing the output: 0 connected, 1 connection failed, 3 server not in the config (argparse
+    already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
+    """
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 3
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -767,14 +799,17 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {redact_mcp_probe_text(exc)}")
-        return
+        elapsed = time.monotonic() - start
+        _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
+        _info(_probe_failure_next_step(name, exc))
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -1058,8 +1093,8 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

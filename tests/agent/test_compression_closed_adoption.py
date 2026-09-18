@@ -237,4 +237,4 @@ def test_disk_cause_keeps_disk_guidance() -> None:
     text = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", persistence_cause="disk"
     )
-    assert "full disk" in text, "real disk failures must keep disk guidance"
+    assert "disk" in text.lower() and "free some space" in text.lower(), "real disk failures must keep disk guidance"

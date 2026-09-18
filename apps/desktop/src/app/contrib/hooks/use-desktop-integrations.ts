@@ -1,11 +1,14 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { announceNewSessionDraftKey } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -20,12 +23,14 @@ import {
   $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
+  resolveComposerSessionKey,
   sessionBelongsToProfile,
   setRememberedRoute,
   setRememberedSessionId
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -100,6 +105,7 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
   // navigation exactly once. The same effect owns subsequent writes so the
@@ -144,6 +150,14 @@ export function useDesktopIntegrations({
           return
         }
 
+        // A remembered plugin page looks session-shaped until its route
+        // registers, and disk plugins load async. Hold the latch through the
+        // first disk scan so a page that is merely late is not erased as stale
+        // (an already-running backend can hand us the session list first).
+        if (routeSession && diskPluginsScanPending) {
+          return
+        }
+
         restoredRef.current = true
 
         if (
@@ -152,6 +166,10 @@ export function useDesktopIntegrations({
           !isOverlayView(appViewForPath(route)) &&
           (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
         ) {
+          // The user may have started typing on the fresh chat while the
+          // backend was still coming up; the composer moves that draft onto
+          // the restored session when its scope swaps (#114122).
+          announceNewSessionDraftKey(routeSession && resolveComposerSessionKey(routeSession, sessions))
           navigate(route, { replace: true })
 
           return
@@ -164,6 +182,7 @@ export function useDesktopIntegrations({
         }
 
         if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
+          announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
           navigate(sessionRoute(last), { replace: true })
 
           return
@@ -187,7 +206,7 @@ export function useDesktopIntegrations({
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
+  }, [activeProfile, diskPluginsScanPending, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {
@@ -279,6 +298,7 @@ export function useDesktopIntegrations({
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -317,9 +337,21 @@ export function useDesktopIntegrations({
           repo: action.repo,
           enable: action.enable,
           force: action.force,
-          legacyHint: action.legacyHint
+          legacyHint: action.legacyHint,
+          catalogName: action.catalogName,
+          sha: action.sha
         })
 
+        return
+      }
+
+      if (action.type === 'skill-install') {
+        void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (payload.kind === 'skill') {
         return
       }
 

@@ -13,6 +13,7 @@ Run with:  python -m pytest tests/tools/test_read_extract.py -v
 import base64
 import json
 import os
+import shlex
 import tempfile
 import unittest
 import zipfile
@@ -443,7 +444,8 @@ class TestNotebookExtraction(unittest.TestCase):
         ])
         text = extract_document_text(p)
         self.assertIn("output chars truncated", text)
-        self.assertIn("— full output: jq -r '.cells[1].outputs' nb_big.ipynb]", text)
+        command = text.split("full output: ", 1)[1].splitlines()[0].removesuffix("]")
+        self.assertEqual(shlex.split(command), ["jq", "-r", ".cells[1].outputs", p])
         self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
 
     def test_oversized_outputs_truncated_v3_jq_hint(self):
@@ -459,10 +461,8 @@ class TestNotebookExtraction(unittest.TestCase):
             json.dump(nb, fh)
         text = extract_document_text(p)
         self.assertIn("output chars truncated", text)
-        self.assertIn(
-            "— full output: jq -r '.worksheets[0].cells[1].outputs' nb_v3_big.ipynb]",
-            text,
-        )
+        command = text.split("full output: ", 1)[1].splitlines()[0].removesuffix("]")
+        self.assertEqual(shlex.split(command), ["jq", "-r", ".worksheets[0].cells[1].outputs", p])
 
     def test_legacy_v3_pyout_flat_fields(self):
         p = os.path.join(self.tmp, "nb_v3.ipynb")

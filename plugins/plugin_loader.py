@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
+_log = logging.getLogger(__name__)
+
 _PLUGINS_ROOT = Path(__file__).parent
 
 
@@ -39,8 +41,16 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
     """Sorted child dirs of *root* that have an ``__init__.py`` (skips ``_``/``.`` names)."""
     if not root.is_dir():
         return []
-    return [child for child in sorted(root.iterdir())
-            if child.is_dir() and not child.name.startswith(("_", ".")) and (child / "__init__.py").exists()]
+    dirs: List[Path] = []
+    for child in sorted(root.iterdir()):
+        if child.name.startswith(("_", ".")):
+            continue
+        try:
+            if child.is_dir() and (child / "__init__.py").exists():
+                dirs.append(child)
+        except OSError as exc:  # one mode-000 / ACL-denied child must not abort the listing
+            _log.warning("Skipping unreadable plugin directory %s: %s", child, exc)
+    return dirs
 
 
 def read_plugin_description(plugin_dir: Path) -> str:

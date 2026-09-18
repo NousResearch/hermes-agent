@@ -156,6 +156,21 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     return str(reasoning_config.get("effort") or "").strip().lower() or None
 
 
+def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
+    """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
+    configs without an effort pass through untouched).
+
+    The entry clamp for an OpenAI-compatible chat-completions request builder: Hermes-internal
+    ``ultra`` never reaches a wire (#89503 main transport, #112010 aux/MoA), while provider
+    profiles with narrower vocabularies clamp again downstream. Unset stays unset.
+    """
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    clamped = clamp_effort(effort, supported) if effort else effort
+    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+
+
 def thinking_toggle_extras(
     reasoning_config: Optional[dict],
     efforts: Sequence[str],
@@ -182,8 +197,8 @@ def thinking_toggle_extras(
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
-    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation, shared by the
-    opencode-zen and opencode-free profiles (low/high/max only; anything else 400s)."""
+    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation for the
+    opencode-zen profile (low/high/max only; anything else 400s)."""
     if (model or "").strip().rsplit("/", 1)[-1].lower() != "x-preview-f-free":
         return {}, {}
     effort = requested_effort(reasoning_config)

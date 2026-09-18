@@ -79,7 +79,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
         is_anthropic = fb_provider == "anthropic"
-        effective_key = credential or (resolve_anthropic_token() if is_anthropic else None) or ""
+        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
@@ -123,7 +123,17 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def forget_file_state() -> None:
+            # File tools key their read stamps / writer claims by the per-turn task_id (cron:
+            # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
+            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            from tools.file_tools import clear_file_ops_cache
+            for owner in getattr(self, "_process_owner_task_ids", ()):
+                if owner and owner != task_id:
+                    clear_file_ops_cache(owner)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+                     release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:
@@ -606,8 +616,9 @@ class ClientLifecycleMixin:
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
             return False
-        if str(api_key).strip() == str(self.api_key or "").strip():
-            return False  # store holds the same key: nothing to adopt, no client rebuild
+        if (str(api_key).strip() == str(self.api_key or "").strip()
+                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
+            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
                 from hermes_cli.auth_constants import _decode_jwt_claims
@@ -868,7 +879,7 @@ class ClientLifecycleMixin:
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

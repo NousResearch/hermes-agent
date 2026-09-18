@@ -11,13 +11,21 @@ import {
 } from '@/lib/connector-tools'
 import { buildConnectionStartMessage, canStartWithConnections } from '@/lib/first-build-start'
 import { readKey, writeKey } from '@/lib/storage'
-import type { ConnectorFlowDeps, ConnectorFlowRow } from '@/store/connector-flow'
-
 export type FirstBuildConnectorPart = Pick<ToolCallMessagePart, 'toolCallId' | 'toolName' | 'args' | 'result'>
 
-export interface FirstBuildConnectorRow extends ConnectorFlowRow {
+// Onboarding's own poller; PR3 (NS-869) moves the guided flow onto the connection operation.
+export type FirstBuildConnectorPhase = 'idle' | 'opening' | 'waiting' | 'connected' | 'timeout' | 'error' | 'skipped'
+
+export interface FirstBuildConnectorRow extends ConnectorRow {
+  phase: FirstBuildConnectorPhase
+  error?: string
   connectUrl?: string
 }
+
+export type FirstBuildConnectorRequest = <T>(
+  method: string,
+  params: { session_id: string; connectors?: string[]; reconnect?: boolean }
+) => Promise<T>
 
 export interface FirstBuildConnectorState {
   toolCallId: string
@@ -128,7 +136,7 @@ export function watchFirstBuildRows(
   storedId: string,
   runtimeId: string,
   part: FirstBuildConnectorPart,
-  request: ConnectorFlowDeps['request']
+  request: FirstBuildConnectorRequest
 ) {
   const action = recordOf(part.args).action
 

@@ -330,6 +330,34 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "https://generativelanguage.googleapis.com/v1beta"),
+        ("https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta"),
+        ("http://localhost:4000/gemini///", "http://localhost:4000/gemini/v1beta"),
+        ("https://proxy.example/gemini/v1alpha/", "https://proxy.example/gemini/v1alpha"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta"),
+    ],
+)
+def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
+    """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
+    ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    assert normalize_gemini_base_url(configured) == expected
+
+
+def test_native_client_appends_v1beta_to_host_root_base_url():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com", http_client=SimpleNamespace(close=lambda: None)
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
@@ -398,6 +426,54 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
+
+
+def _fc_event(name, args, call_id=None, finish=None):
+    fc = {"name": name, "args": args}
+    if call_id:
+        fc["id"] = call_id
+    cand = {"content": {"parts": [{"functionCall": fc}]}}
+    if finish:
+        cand["finishReason"] = finish
+    return {"candidates": [cand]}
+
+
+def _tool_call_deltas(chunks):
+    return [(tc.index, tc.function.arguments) for c in chunks for tc in (c.choices[0].delta.tool_calls or [])]
+
+
+def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
+    """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
+    different calls to one tool must not share a slot, and a resend of the second must land on
+    the slot it opened instead of concatenating onto the first."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = []
+    for args in ({"q": "A"}, {"q": "B"}, {"q": "B"}):
+        out += translate_stream_event(_fc_event("search", args), model="gemini-2.5-flash", tool_call_indices=slots)
+
+    assert _tool_call_deltas(out) == [(0, '{"q": "A"}'), (1, '{"q": "B"}'), (1, "")]
+    for (_, arguments) in _tool_call_deltas(out)[:2]:
+        json.loads(arguments)
+
+
+def test_provider_call_id_is_the_slot_identity():
+    """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
+    (with drifting part_index / signature) is one call."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
+    out += translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c2"), model="gemini-3-pro", tool_call_indices=slots)
+    resend = {"candidates": [{"content": {"parts": [{"text": "x"}, {"functionCall": {"name": "search", "args": {"q": "A"}, "id": "c1"},
+                                                        "thoughtSignature": "sig"}]}}]}
+    out += translate_stream_event(resend, model="gemini-3-pro", tool_call_indices=slots)
+
+    deltas = _tool_call_deltas(out)
+    assert deltas == [(0, '{"q": "A"}'), (1, '{"q": "A"}'), (0, "")]
+    ids = [tc.id for c in out for tc in (c.choices[0].delta.tool_calls or [])]
+    assert ids == ["c1", "c2", "c1"]
 
 
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
@@ -711,3 +787,46 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 
     resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
     assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # Express key + default Studio host: the only place it can never work → aiplatform express surface.
+        ("AQ.express-key", None, "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # Control: Studio key keeps the Studio host.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.express-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configured, expected_prefix):
+    """Vertex express keys (``AQ.``) 403 on generativelanguage; the request must hit
+    ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…`` unless the user pointed elsewhere."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )

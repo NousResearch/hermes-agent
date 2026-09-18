@@ -40,11 +40,23 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
+from hermes_cli import __version__ as _HERMES_VERSION
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.perplexity.ai"
 _KEY_URL = "https://www.perplexity.ai/account/api"
+
+# Identify Hermes to Perplexity: the same static harness identity Hermes sends Kimi and
+# OpenCode, plus Perplexity's integration header. No per-user identifier and no separate
+# request; the call already carries the user's own API key.
+_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "X-Pplx-Integration": "hermes-agent",
+}
+
 
 # Search API hard cap for search_type=web.
 _MAX_SEARCH_RESULTS = 20
@@ -80,6 +92,7 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            **_HEADERS,
         },
     )
     if response.status_code >= 400:

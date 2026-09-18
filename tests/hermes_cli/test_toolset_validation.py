@@ -197,3 +197,49 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# The config call site: `_warn_invalid_platform_toolsets` must not report a
+# config-declared PLUGIN toolset as unknown. Plugin toolsets enter the tool
+# registry only when plugins are discovered, which happens later than this
+# migration step, so registry-only validation is a false positive by
+# construction (#81163: a2a/buzz/eikon warned at every startup).
+# ---------------------------------------------------------------------------
+
+def _plugins_declare(monkeypatch, keys):
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_toolset_keys_cached", lambda: set(keys))
+
+
+def _raw_config_declares(monkeypatch, platform_toolsets):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config", lambda: {"platform_toolsets": platform_toolsets},
+    )
+
+
+def test_declared_plugin_toolset_is_not_reported_unknown(monkeypatch):
+    from hermes_cli.config import _warn_invalid_platform_toolsets
+    from toolsets import validate_toolset
+
+    # Precondition of the bug: the registry does not know the plugin toolset yet.
+    assert not validate_toolset("a2a"), "a2a is already registered — the premise no longer holds"
+    _plugins_declare(monkeypatch, ["a2a"])
+    _raw_config_declares(monkeypatch, {"discord": ["a2a", "terminal"]})
+
+    results = {"warnings": []}
+    _warn_invalid_platform_toolsets(results, True)
+
+    assert results["warnings"] == [], results["warnings"]
+
+
+def test_genuinely_unknown_toolset_still_reported(monkeypatch):
+    """Widening the predicate must not turn the warning off entirely."""
+    from hermes_cli.config import _warn_invalid_platform_toolsets
+
+    _plugins_declare(monkeypatch, ["a2a"])
+    _raw_config_declares(monkeypatch, {"discord": ["terminal", "bogus_toolset"]})
+
+    results = {"warnings": []}
+    _warn_invalid_platform_toolsets(results, True)
+
+    assert any("unknown toolset 'bogus_toolset'" in w for w in results["warnings"])

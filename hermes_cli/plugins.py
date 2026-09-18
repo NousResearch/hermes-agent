@@ -1651,6 +1651,33 @@ def _persist_plugin_toolset_keys() -> None:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 
 
+def _cached_plugin_set(cache_field: str) -> "set[str]":
+    """Last completed discovery's persisted set for ``cache_field``; empty when absent/unreadable."""
+    try:
+        blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    values = blob.get(cache_field) if isinstance(blob, dict) else None
+    if isinstance(values, list) and all(isinstance(v, str) for v in values):
+        return set(values)
+    return set()
+
+
+def get_plugin_toolset_keys_cached() -> "set[str]":
+    """Plugin toolset keys without discovering anything and without blocking.
+
+    For callers that only EXCLUDE these keys — a toolset-validation warning at config load or CLI
+    construction, which runs before plugin discovery has populated the tool registry. Discovery
+    there would cost ~0.9 s of startup for a warning, so: the live registry when it is already
+    populated, otherwise the set the last launch recorded (absent on a first-ever launch — which
+    self-heals, because a stale-too-small set can only make a later run warn, never the reverse).
+    """
+    manager = get_plugin_manager()
+    if getattr(manager, "_discovered", False):
+        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+    return _cached_plugin_set("toolset_keys")
+
+
 def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[str]"]) -> "set[str]":
     """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache, else block."""
     manager = get_plugin_manager()
@@ -1659,11 +1686,9 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
     if manager._discovered and not in_flight:
         return live(manager)
     if in_flight:
-        with suppress(Exception):
-            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
-            values = blob.get(cache_field) if isinstance(blob, dict) else None
-            if isinstance(values, list) and all(isinstance(v, str) for v in values):
-                return set(values)
+        cached = _cached_plugin_set(cache_field)
+        if cached:
+            return cached
     discover_plugins()
     return live(manager)
 

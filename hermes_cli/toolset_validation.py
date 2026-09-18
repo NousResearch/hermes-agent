@@ -1,11 +1,49 @@
 """Validation for the ``platform_toolsets`` config section."""
 
-from typing import Callable, List
+from typing import Callable, List, Set
 
 from hermes_cli.platforms import PLATFORMS
 from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
+
+
+def known_plugin_toolset_keys() -> Set[str]:
+    """Toolset keys declared by installed plugins, without discovering anything or blocking.
+
+    Plugin toolsets enter the tool registry only when plugins are discovered — later than both
+    config validation and CLI construction. A validator that consults the registry alone
+    therefore reports a config-declared plugin toolset (``a2a``, ``eikon``, ``buzz``) as
+    "unknown", so anything validating a configured toolset name widens its predicate with these
+    keys. Discovery here would cost ~0.9 s of startup for a warning, so this reads the registry
+    only when it is already populated and otherwise the set the last launch recorded.
+    Best-effort: an unavailable plugin layer yields an empty set, never a raise.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_toolset_keys_cached
+
+        return set(get_plugin_toolset_keys_cached())
+    except Exception:
+        return set()
+
+
+def with_plugin_toolsets(is_valid_toolset: Callable[[str], bool]) -> Callable[[str], bool]:
+    """``is_valid_toolset`` widened with every plugin toolset key declared by an installed plugin.
+
+    The injected-predicate contract of :func:`validate_platform_toolsets` is preserved — the
+    plugin layer is probed here, and only once the base predicate has REJECTED a name, so a
+    config that validates clean costs nothing.
+    """
+    plugin_keys: Set[str] = set()
+
+    def predicate(name: str) -> bool:
+        if is_valid_toolset(name):
+            return True
+        if not plugin_keys:
+            plugin_keys.update(known_plugin_toolset_keys())
+        return name in plugin_keys
+
+    return predicate
 
 
 def _platform_default_toolset(platform: object) -> str:

@@ -248,9 +248,14 @@ export function SidebarSessionsSection({
   // Lanes count as content even with no rows left in them: the backend only
   // emits a lane that has sessions, so a lane surviving with zero rows means
   // they were filtered out (pinned) — the branch is real and must still render.
-  // A genuinely empty project has no lanes at all and keeps its empty state.
+  // Multi-folder projects (repos.length > 1) also count as content even with 0
+  // sessions so their per-repo headers and "+" buttons remain accessible.
+  // A genuinely empty single-repo project has no lanes at all and keeps its empty state.
   const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.some(repo => repo.groups.length > 0))
+    projectContent &&
+      (projectContent.sessionCount > 0 ||
+        projectContent.repos.length > 1 ||
+        projectContent.repos.some(repo => repo.groups.length > 0))
   )
 
   const showEmptyState =

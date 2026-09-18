@@ -333,6 +333,40 @@ describe('project-associated new-session drag sources', () => {
     })
   })
 
+  it('renders entered project content when a multi-folder project has 0 sessions and 0 lane groups', () => {
+    const onNewSessionInWorkspace = vi.fn()
+    const repoA = { groups: [], id: '/repo/a', label: 'Repo A', path: '/repo/a', sessionCount: 0 }
+    const repoB = { groups: [], id: '/repo/b', label: 'Repo B', path: '/repo/b', sessionCount: 0 }
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        emptyState={<div data-testid="empty-project">No sessions</div>}
+        onNewSessionInWorkspace={onNewSessionInWorkspace}
+        projectContent={project({ repos: [repoA, repoB], sessionCount: 0 })}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'New session in Repo A' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New session in Repo B' })).toBeTruthy()
+    expect(screen.queryByTestId('empty-project')).toBeNull()
+  })
+
+  it('renders emptyState when a single-folder project has 0 sessions and 0 lane groups', () => {
+    const repoA = { groups: [], id: '/repo/a', label: 'Repo A', path: '/repo/a', sessionCount: 0 }
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        emptyState={<div data-testid="empty-project">No sessions</div>}
+        projectContent={project({ repos: [repoA], sessionCount: 0 })}
+      />
+    )
+
+    expect(screen.getByTestId('empty-project')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'New session in Repo A' })).toBeNull()
+  })
+
   it('drags profile-group add buttons to start a session in that profile', async () => {
     const onNewSessionSplit = vi.fn()
 

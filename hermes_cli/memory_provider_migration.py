@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 _attempted: set[str] = set()
 
+# Core provider sentinels that never resolve to a plugin — the built-in MEMORY.md/USER.md file
+# store and its "explicitly off" spellings. ``hermes_cli/update_cmd_deps.py`` skips the same set
+# when collecting pip deps; a migration pass must not try to "install" them either.
+_CORE_PROVIDER_SENTINELS = frozenset({"default", "builtin", "none"})
+
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
@@ -53,7 +58,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     update or the agent down with it.
     """
     name = configured_provider(home)
-    if not name or provider_present(name):
+    if not name or name in _CORE_PROVIDER_SENTINELS or provider_present(name):
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "

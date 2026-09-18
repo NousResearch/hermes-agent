@@ -40,3 +40,14 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+def test_core_provider_sentinels_migrate_to_nothing(home, monkeypatch):
+    """builtin" is the built-in file store, not a plugin: no catalog lookup, no warning, no install."""
+    monkeypatch.setattr(mig, "provider_present", lambda name: (_ for _ in ()).throw(AssertionError("looked up")))
+    monkeypatch.setattr(mig, "catalog_source", lambda name: (_ for _ in ()).throw(AssertionError("looked up")))
+    for sentinel in ("builtin", "default", "none"):
+        (home / "config.yaml").write_text(f"memory:\n  provider: {sentinel}\n")
+        said: list[str] = []
+        assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
+        assert said == []

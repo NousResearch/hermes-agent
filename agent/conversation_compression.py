@@ -1956,6 +1956,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
                 aux_base_url=aux_base_url,
             )
+        elif getattr(agent, "_last_feasibility_notice", None) is not None:
+            # Symmetric un-clamp: the summariser fits again, so the stale "auto-lowered" notice must not be
+            # replayed (``replay_compression_warning``) for a session that is no longer clamped (#114707).
+            agent._last_feasibility_notice = None
+            agent._compression_warning = None
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate so the session refuses to start.
         raise
@@ -1975,6 +1980,25 @@ def revalidate_compression_feasibility(agent: Any) -> None:
         check_compression_model_feasibility(agent)
     except Exception as exc:
         logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
+        return
+    agent._compression_feasibility_checked = True
+
+
+def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) -> None:
+    """Run the deferred aux feasibility probe once a request first reaches ``MINIMUM_CONTEXT_LENGTH`` — the
+    smallest window any summariser may have — so an aux clamp lands before the first compaction fires on the
+    main-window threshold instead of after it (#114707). Below that size no summariser can be too small, so
+    short sessions keep the probe-free cold start (#28957). A probe failure leaves the latch unset for the
+    lazy probe in ``compress_context`` to re-raise hard rejections."""
+    if getattr(agent, "_compression_feasibility_checked", False) or not getattr(agent, "context_compressor", None):
+        return
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    if int(estimated_tokens or 0) < MINIMUM_CONTEXT_LENGTH:
+        return
+    try:
+        check_compression_model_feasibility(agent)
+    except Exception as exc:
+        logger.debug("Compression feasibility probe deferred to the first compaction: %s", exc)
         return
     agent._compression_feasibility_checked = True
 
@@ -4186,7 +4210,8 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 __all__ = [
     "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
-    "check_compression_model_feasibility", "revalidate_compression_feasibility", "replay_compression_warning",
+    "check_compression_model_feasibility", "ensure_compression_feasibility_checked",
+    "revalidate_compression_feasibility", "replay_compression_warning",
     "compress_context",
     "try_shrink_image_parts_in_messages",
 ]

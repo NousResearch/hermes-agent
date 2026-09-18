@@ -12,6 +12,7 @@ Windows runner.
 from __future__ import annotations
 
 import asyncio
+import ast
 import os
 import signal
 import subprocess
@@ -1173,3 +1174,159 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         assert argv_used[2] not in rendered  # watcher script body
         assert "argv" not in fmt.lower()
         assert "env=" not in fmt.lower()
+
+
+# ---------------------------------------------------------------------------
+# tests/ must not evaluate a POSIX-only probe at import time
+# ---------------------------------------------------------------------------
+
+
+# ``os`` members that do not exist on Windows. Touching one where Python evaluates it at
+# import time -- a decorator expression, a class body, module scope -- raises AttributeError
+# during collection, and pytest turns a collection error into ``Interrupted`` for the whole
+# directory, not one skipped file.
+_POSIX_ONLY_OS_MEMBERS = frozenset({
+    "geteuid", "getuid", "getegid", "getgid", "getpgid", "getpgrp",
+    "mkfifo", "fork", "forkpty", "setsid", "setpgrp", "killpg", "getpriority",
+})
+_WINDOWS_LITERALS = ("nt", "win32", "win")
+
+
+def _names_the_platform(node: ast.AST) -> bool:
+    """``os.name`` or ``sys.platform``."""
+    if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+        return False
+    return (node.value.id, node.attr) in (("os", "name"), ("sys", "platform"))
+
+
+def _is_windows_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value in _WINDOWS_LITERALS
+
+
+def _true_on_windows(node: ast.AST) -> bool:
+    """``os.name == "nt"`` / ``sys.platform.startswith("win")`` -- short-circuits an ``or``."""
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        return _names_the_platform(node.left) and _is_windows_literal(node.comparators[0])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith":
+        return _names_the_platform(node.func.value) and any(_is_windows_literal(a) for a in node.args)
+    return False
+
+
+def _false_on_windows(node: ast.AST) -> bool:
+    """``hasattr(os, ...)`` / ``os.name != "nt"`` -- short-circuits an ``and``."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "hasattr":
+        return True
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.NotEq):
+        return _names_the_platform(node.left) and _is_windows_literal(node.comparators[0])
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return _true_on_windows(node.operand)
+    return False
+
+
+def _posix_probes(node: ast.AST) -> set[str]:
+    """POSIX-only ``os.<member>()`` calls Windows would actually reach in this subtree.
+
+    ``and``/``or`` short-circuit, so ``os.name == "nt" or os.geteuid() == 0`` and
+    ``hasattr(os, "geteuid") and os.geteuid() == 0`` are both safe -- Windows stops at the
+    first operand. Two *stacked* ``skipif`` decorators are not: each is evaluated on its own.
+    """
+    found: set[str] = set()
+
+    def visit(inner: ast.AST) -> None:
+        if isinstance(inner, ast.BoolOp):
+            short_circuits = _true_on_windows if isinstance(inner.op, ast.Or) else _false_on_windows
+            for operand in inner.values:
+                visit(operand)
+                if short_circuits(operand):
+                    return
+            return
+        if (
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and isinstance(inner.func.value, ast.Name) and inner.func.value.id == "os"
+            and inner.func.attr in _POSIX_ONLY_OS_MEMBERS
+        ):
+            found.add(inner.func.attr)
+        for child in ast.iter_child_nodes(inner):
+            visit(child)
+
+    visit(node)
+    return found
+
+
+def _import_time_nodes(tree: ast.Module):
+    """Every expression Python evaluates while importing the module.
+
+    Module- and class-level statements, plus every decorator, base class and default
+    argument -- a ``@pytest.mark.skipif(...)`` on a method still runs while the class body
+    is being built. Function *bodies* are deliberately excluded: a bare call there raises at
+    run time, in that one test, which is a failure and not a lost directory.
+    """
+    def walk(body):
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield from stmt.decorator_list
+                if isinstance(stmt, ast.ClassDef):
+                    yield from stmt.bases
+                    yield from walk(stmt.body)
+                else:
+                    yield from (d for d in stmt.args.defaults if d is not None)
+                    yield from (d for d in stmt.args.kw_defaults if d is not None)
+            else:
+                yield stmt
+    return walk(tree.body)
+
+
+class TestNoImportTimePosixProbesInTests:
+    """A POSIX-only probe evaluated at import time costs the whole directory on Windows.
+
+    ``@pytest.mark.skipif(os.geteuid() == 0, ...)`` reads naturally, but the condition runs
+    when the class body executes: on Windows the module raises AttributeError during
+    collection and pytest reports ``Interrupted: 1 error during collection``, so every other
+    test under that directory never runs. The guarded form costs one ``hasattr``:
+
+        @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason=...)
+
+    Linux has these members, so on CI this is a source-level invariant.
+    """
+
+    def test_no_test_module_probes_a_posix_only_os_member_at_import_time(self):
+        root = Path(__file__).resolve().parents[2]
+        offenders = []
+        for path in sorted((root / "tests").rglob("test_*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):  # not this test's business
+                continue
+            for node in _import_time_nodes(tree):
+                for member in sorted(_posix_probes(node)):
+                    offenders.append(f"{path.relative_to(root).as_posix()}:{node.lineno}: os.{member}()")
+        assert not offenders, (
+            "POSIX-only probe evaluated at import time (aborts collection of the whole "
+            'directory on Windows). Guard it: hasattr(os, "NAME") and os.NAME() ...: '
+            + ", ".join(offenders)
+        )
+
+    def test_the_guard_tells_the_safe_shapes_from_the_fatal_ones(self):
+        shapes = {
+            "bare": "@skipif(os.geteuid() == 0)\ndef t(): pass",
+            "hasattr_and": '@skipif(hasattr(os, "geteuid") and os.geteuid() == 0)\ndef t(): pass',
+            "windows_or": '@skipif(os.name == "nt" or os.geteuid() == 0)\ndef t(): pass',
+            "platform_or": '@skipif(sys.platform == "win32" or os.geteuid() == 0)\ndef t(): pass',
+            "stacked": '@skipif(os.name == "nt")\n@skipif(os.geteuid() == 0)\ndef t(): pass',
+            "in_body": "def t():\n    return os.geteuid()",
+        }
+        flagged = {
+            label: sorted(m for node in _import_time_nodes(ast.parse(src)) for m in _posix_probes(node))
+            for label, src in shapes.items()
+        }
+        assert flagged == {
+            "bare": ["geteuid"],
+            "hasattr_and": [],
+            "windows_or": [],
+            "platform_or": [],
+            # Stacked decorators do NOT short-circuit each other: each one is evaluated.
+            "stacked": ["geteuid"],
+            # A bare call inside a test body is fine -- it fails that one test, at run time.
+            "in_body": [],
+        }

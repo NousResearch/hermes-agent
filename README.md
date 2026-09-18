@@ -52,6 +52,12 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
 
+#### Windows Desktop launcher
+
+After building the packaged Desktop app, run `hermes desktop install` in PowerShell to create per-user shortcuts in both the Desktop and Start Menu. Hermes asks Windows for its Known Folders rather than assuming `%USERPROFILE%\Desktop`, so redirected, OneDrive-managed, and localized corporate profiles resolve to the real user destinations. The Start Menu shortcut uses the canonical `com.nousresearch.hermes` AppUserModel ID for consistent Windows identity and launch behavior.
+
+This is user-level only: it does not request elevation or write machine-wide locations. The command requires an existing packaged app (`hermes desktop --build-only`); shortcut repair after an app update and non-Windows desktop entries remain outside this command. Focused verification covers redirected/localized paths, unavailable Known Folder APIs, shortcut properties, and canonical identity with `python -m pytest -q tests/hermes_cli/test_windows_desktop_shortcuts.py` (5 passed on the development host). Runtime shell/API validation still requires a Windows desktop session.
+
 If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.

@@ -1552,6 +1552,13 @@ def _load_cfg_raw() -> dict:
     return {}
 
 
+def _expand_cfg(cfg: dict) -> dict:
+    """``${ENV_VAR}`` expansion (same as ``load_config_readonly``); non-dict results keep the input."""
+    from hermes_cli.config import _expand_env_vars
+    expanded = _expand_env_vars(cfg)
+    return expanded if isinstance(expanded, dict) else cfg
+
+
 def _load_cfg() -> dict:
     """Behavioral config read: raw user file + managed overlay + ${VAR} expansion — ``load_config_readonly``
     minus the DEFAULT_CONFIG merge (callers treat a missing key as "unset"; merging would break

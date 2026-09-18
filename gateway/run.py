@@ -3149,9 +3149,12 @@ def _normalize_empty_agent_response(
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or /reset to start fresh.")
+        # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
+        logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session.")
+            "⚠️ Something went wrong and I couldn't finish this reply. Use /retry to try again, "
+            "or /new to start a fresh conversation. Technical details are in the gateway log "
+            "(`hermes logs`).")
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):
@@ -3180,8 +3183,19 @@ def _normalize_empty_agent_response(
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             return ""
         if agent_result.get("partial"):
-            err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            err = str(agent_result.get("error") or "processing incomplete")
+            from agent.turn_failure_copy import SITE_FAILURE_CODES
+            if (str(agent_result.get("failure_reason") or "") in SITE_FAILURE_CODES
+                    and err.strip() and not _looks_like_gateway_provider_error(err)):
+                return err if err.startswith("⚠️") else f"⚠️ {err}"
+            if _looks_like_gateway_provider_error(err):
+                logger.warning("Agent turn ended partially; reply sanitized for chat. Detail: %s", err[:500])
+                reason = ""
+            else:
+                reason = f": {err[:200]}"
+            return (
+                f"⚠️ I had to stop before finishing{reason}. Use /retry to try again, or /compress "
+                "if this conversation has grown very long.")
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again.")

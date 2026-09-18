@@ -3280,6 +3280,31 @@ class TestCompressionChainProjection:
         assert rows[0]["title"] == "Current title"
         assert rows[0]["_lineage_ids"] == ["root", "continued"]
 
+    def test_v31_repairs_only_post_reap_ui_delegate_marker(self, db):
+        db.create_session("root", "desktop")
+        db.create_session(
+            "delegate", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.end_session("root", "ws_orphan_reap")
+        ended_at = db.get_session("root")["ended_at"]
+        db.create_session(
+            "continued", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root", "kept": True},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (ended_at + 1, "continued"),
+        )
+        db._conn.execute("UPDATE schema_version SET version = 30")
+        db._conn.commit()
+
+        db._run_data_migrations(db._conn.cursor(), 30, fts5_available=True)
+        repaired = json.loads(db.get_session("continued")["model_config"])
+        delegate = json.loads(db.get_session("delegate")["model_config"])
+
+        assert repaired == {"kept": True}
+        assert delegate["_delegate_from"] == "root"
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

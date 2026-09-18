@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import subprocess
+from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -663,8 +664,9 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
         # Some SDK versions drop optional message_delta metadata from the final snapshot.
+        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
         stop_details = None
-        for event in stream:
+        for event in (stream if isinstance(stream, Iterable) else ()):
             if getattr(event, "type", None) == "message_delta":
                 details = getattr(getattr(event, "delta", None), "stop_details", None)
                 if details is not None:

@@ -190,6 +190,12 @@ hermes skills uninstall <skill-name>
 | [**oss-forensics**](/user-guide/skills/optional/security/security-oss-forensics) | 针对 GitHub 仓库的供应链调查、证据恢复和取证分析。涵盖已删除提交恢复、强制推送检测、IOC 提取、多源证据收集、假设形成/验证等。 |
 | [**sherlock**](/user-guide/skills/optional/security/security-sherlock) | 跨 400+ 社交网络的 OSINT 用户名搜索。通过用户名追踪社交媒体账号。 |
 
+## social-media
+
+| 技能 | 描述 |
+|-------|-------------|
+| [**social-har-api-connectivity**](/user-guide/skills/optional/social-media/social-media-social-har-api-connectivity) | 通过驱动 Chrome 捕获登录流程和网络流量来连接社交平台 API（仅授权使用）。 |
+
 ## software-development
 
 | 技能 | 描述 |

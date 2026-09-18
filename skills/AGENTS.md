@@ -53,6 +53,11 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    live network. Run `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`.
 8. **`.env.example` additions sit in a clearly delimited block.** Contributor copies of the file are
    usually stale; edits outside the skill's own block are dropped during salvage.
+9. **Every written file must end with a trailing newline (`\n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files (e.g. `...final claim.` with no `\n`). This corrupts markdown/frontmatter and fails docs generation — it has been a recurring PR review issue. Behaviour is automatic, not a post-step:
+   * After any write or patch, confirm `content.endswith('\n')`; if not, append the trailing newline and re-verify.
+   * Before `git add`, batch-verify every file in the change set ends in `\n`; fix any straggler in the same pass.
+   * Never ship a file missing its trailing newline. Add a unit check to the skill test (e.g. `assert SKILL_MD.endswith('\n')`).
+
 
 No `offset`/`limit` pagination on skill-loading tools — the agent must read a skill fully (root).
 The salvage/modernisation checklist for external skill PRs is `references/new-skill-pr-salvage.md`

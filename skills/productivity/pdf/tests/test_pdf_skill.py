@@ -351,7 +351,7 @@ def test_stamp_text_rotated_opacity(report_pdf: Path, workdir: Path):
     run("pdf_stamp.py", str(report_pdf), "-o", str(out),
         "--text", "DRAFT", "--x", "150", "--y", "400", "--font-size", "60",
         "--rotation", "45", "--opacity", "0.3")
-    # Rotated glyphs confuse pdfplumber's line grouping; verify via pypdf.
+    # Rotated glyphs can confuse PDF text ordering; verify via pypdf.
     from pypdf import PdfReader
     text = PdfReader(str(out)).pages[0].extract_text()
     assert "DRAFT" in text

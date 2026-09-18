@@ -11,6 +11,8 @@ Usage:
 """
 import sys
 import json
+import contextlib
+import io
 
 def extract_text(path, pages=None):
     import pymupdf
@@ -30,11 +32,16 @@ def extract_tables(path):
     import pymupdf
     doc = pymupdf.open(path)
     for i, page in enumerate(doc):
-        tables = page.find_tables()
+        with contextlib.redirect_stdout(io.StringIO()):
+            tables = page.find_tables()
         for j, table in enumerate(tables.tables):
             print(f"\n--- Page {i+1}, Table {j+1} ---\n")
-            df = table.to_pandas()
-            print(df.to_markdown(index=False))
+            rows = table.extract()
+            if rows:
+                print("| " + " | ".join("" if cell is None else str(cell) for cell in rows[0]) + " |")
+                print("| " + " | ".join("---" for _ in rows[0]) + " |")
+                for row in rows[1:]:
+                    print("| " + " | ".join("" if cell is None else str(cell) for cell in row) + " |")
 
 def extract_images(path, output_dir):
     import pymupdf

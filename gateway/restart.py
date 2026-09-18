@@ -101,7 +101,7 @@ def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bo
     env = os.environ if environ is None else environ
     if env.get("HERMES_SUPERVISED_CHILD"):
         return True
-    return is_gateway_supervisor_process() if environ is None else is_gateway_supervisor_process(environ)
+    return is_gateway_supervisor_process(environ)
 
 
 def is_container_restart_context() -> bool:

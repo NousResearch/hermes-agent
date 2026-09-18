@@ -128,7 +128,7 @@ def acp(tmp_path, monkeypatch):
                 "SELECT role, content FROM messages WHERE session_id = ? AND active = 1 "
                 "AND role NOT IN ('session_meta', 'system') ORDER BY id", (sid,))]
 
-    yield provider, prompt, conversation_rows, db, sid, conn
+    yield provider, prompt, conversation_rows, db, sid, conn, server
     provider.shutdown()
     db.close()
 
@@ -146,7 +146,7 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     """
     from agent.turn_failure_copy import FAILED_TURN_NOTICE
 
-    provider, prompt, conversation_rows, db, sid, conn = acp
+    provider, prompt, conversation_rows, db, sid, conn, server = acp
 
     provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
     prompt(_REFUSED)
@@ -165,6 +165,22 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
     assert [m["role"] for m in sent] == ["user", "assistant", "user"], sent
     assert [m["content"] for m in sent if m["role"] == "user"] == [_REFUSED, _NEW_REQUEST]
+
+    # Turn 3: cancelled mid-turn. The interrupt envelope carries ``final_response=None``
+    # (no assistant text yet); ``_finish_turn`` must still report ``cancelled`` — never crash
+    # on the missing text and fall through the executor-error path as ``end_turn``.
+    state = server.session_manager.get_session(sid)
+    history_before = list(state.history)
+
+    def interrupted_run_conversation(**kwargs):
+        asyncio.run(server.cancel(sid))  # the editor cancels while the turn is in flight
+        return {"final_response": None, "interrupted": True, "completed": False,
+                "messages": history_before + [{"role": "user", "content": "stop"}]}
+
+    state.agent.run_conversation = interrupted_run_conversation
+    response = prompt("stop")
+    assert response.stop_reason == "cancelled"
+    assert state.history[-1] == {"role": "user", "content": "stop"}
 
 
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):

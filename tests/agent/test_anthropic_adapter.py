@@ -1907,7 +1907,9 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
                 "role": "system",
                 "content": (
                     "Hermes Agent by Nous Research uses hermes-agent skills. "
-                    "Docs: https://hermes-agent.nousresearch.com/docs"
+                    "Docs: https://hermes-agent.nousresearch.com/docs ; "
+                    "interpreter ~/.hermes/hermes-agent/venv/bin/python ; "
+                    "source github.com/NousResearch/hermes-agent"
                 ),
             },
             {"role": "user", "content": "Hi"},
@@ -1921,4 +1923,8 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     system_text = "\n".join(block["text"] for block in kwargs["system"])
     assert "Claude Code by Anthropic uses claude-code skills." in system_text
     assert "https://hermes-agent.nousresearch.com/docs" in system_text
-    assert "claude-code.nousresearch.com" not in system_text
+    # Paths and repo slugs are addresses too: a subagent told to run
+    # ``~/.hermes/claude-code/venv/bin/python`` fails on a file that does not exist.
+    assert "~/.hermes/hermes-agent/venv/bin/python" in system_text
+    assert "github.com/NousResearch/hermes-agent" in system_text
+    assert "claude-code" not in system_text.replace("claude-code skills", "")

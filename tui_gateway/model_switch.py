@@ -76,12 +76,12 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         home = Path(_hermes_home)
         secrets = launch_secret_scope(home)
-        scopes.secret = set_secret_scope(secrets)
+        scopes.secret = set_secret_scope(secrets, home=home)
         if not is_multiplex_active():
             return scopes
         overlay = launch_terminal_env()
     if scopes.secret is None:
-        scopes.secret = set_secret_scope(secrets)
+        scopes.secret = set_secret_scope(secrets, home=home)
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
     from tools.terminal_scope import install_profile_terminal_scope

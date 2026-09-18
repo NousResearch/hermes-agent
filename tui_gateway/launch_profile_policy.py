@@ -89,7 +89,7 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
-    secret_token = set_secret_scope(launch_secret_scope(home))
+    secret_token = set_secret_scope(launch_secret_scope(home), home=home)
     terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
     try:
         yield

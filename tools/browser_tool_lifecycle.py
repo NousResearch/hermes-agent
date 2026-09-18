@@ -124,7 +124,7 @@ def _session_owner_scope(task_id: str):
     home_token = set_hermes_home_override(owner_home)
     try:
         hydrate_profile_secret_sources(Path(owner_home))
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(owner_home)), home=owner_home)
         try:
             yield
         finally:

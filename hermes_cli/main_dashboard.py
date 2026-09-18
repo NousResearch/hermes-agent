@@ -61,6 +61,7 @@ def _dashboard_probe_host(host: str | None) -> str:
 
 
 _DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+_DASHBOARD_LAUNCHD_LABEL = "ai.hermes.dashboard"
 
 _SYSTEMCTL_ERRORS = (FileNotFoundError, subprocess.TimeoutExpired, OSError)
 
@@ -71,13 +72,84 @@ def _run_probe(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTEMD_UNIT) -> bool:
-    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+def _launchd_dashboard_jobs(
+    label: str = _DASHBOARD_LAUNCHD_LABEL,
+) -> list[tuple[str, int | None, Path | None]] | None:
+    """Loaded jobs, ``[]`` when absent, or ``None`` when discovery is uncertain."""
+    if sys.platform != "darwin":
+        return []
+    jobs: list[tuple[str, int | None, Path | None]] = []
+    uid = os.getuid()
+    for domain in ("gui", "user"):
+        target = f"{domain}/{uid}/{label}"
+        try:
+            result = _run_probe(["launchctl", "print", target], timeout=10)
+        except _SYSTEMCTL_ERRORS:
+            return None
+        if result.returncode == 113:  # launchctl: service not found in this domain
+            continue
+        if result.returncode != 0:
+            return None
+        output = result.stdout or ""
+        pid_match = re.search(r"(?m)^\s*pid = (\d+)\s*$", output)
+        home_match = re.search(r"(?m)^\s*HERMES_HOME => (.+?)\s*$", output)
+        pid = int(pid_match.group(1)) if pid_match else None
+        launchd_home = None
+        if home_match:
+            try:
+                launchd_home = Path(home_match.group(1)).expanduser().resolve()
+            except (OSError, RuntimeError):
+                pass
+        jobs.append((target, pid, launchd_home))
+    return jobs
+
+
+def _launchd_home_matches_active(launchd_home: Path | None) -> bool:
+    if launchd_home is None:
+        return False
+    from hermes_constants import get_hermes_home
+    try:
+        return launchd_home == get_hermes_home().expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _restart_managed_dashboard_service(
+    reason: str,
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+    *,
+    launchd_target: str | None = None,
+) -> bool:
+    """Restart a launchd- or systemd-managed dashboard instead of raw-killing its PID.
 
     True when a unit was found and handled (success or printed failure) — which
-    deliberately stops the caller's ``os.kill`` fallback: systemd treats a direct
-    SIGTERM as a clean stop, so ``Restart=on-failure`` won't bring it back.
+    deliberately stops the caller's raw-kill/manual-respawn fallback.
     """
+    if sys.platform == "darwin":
+        if launchd_target is None:
+            jobs = _launchd_dashboard_jobs()
+            if jobs is None:
+                return False
+            matching = [
+                target for target, _pid, home in jobs
+                if _launchd_home_matches_active(home)
+            ]
+            if len(matching) != 1:
+                return False
+            launchd_target = matching[0]
+        print(f"\n⟲ Restarting managed dashboard service ({reason})")
+        try:
+            result = _run_probe(["launchctl", "kickstart", "-k", launchd_target], timeout=60)
+        except _SYSTEMCTL_ERRORS as exc:
+            result = subprocess.CompletedProcess([], 1, "", str(exc))
+        if result.returncode == 0:
+            print(f"    ✓ restarted {_DASHBOARD_LAUNCHD_LABEL}")
+        else:
+            detail = (result.stderr or result.stdout or "unknown launchctl error").strip()
+            print(f"    ✗ failed to restart {_DASHBOARD_LAUNCHD_LABEL}: {detail}")
+            print(f"  Restart manually: launchctl kickstart -k {launchd_target}")
+        return True
+
     if sys.platform == "win32":
         return False
 

@@ -625,8 +625,21 @@ def is_shared_multi_user_session(
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
-    profiles serving the same chat never collide."""
-    return "agent:main" if not profile or profile == "default" else f"agent:{profile}"
+    profiles serving the same chat never collide. A profile literally named ``main`` would
+    otherwise produce the default's namespace and share every session (routing index, agent
+    cache, store) with it, so it is marked ``main~``: ``~`` is outside the profile-id alphabet,
+    so the marked form can never be another profile's id."""
+    if not profile or profile == "default":
+        return "agent:main"
+    return "agent:main~" if profile == "main" else f"agent:{profile}"
+
+
+def profile_from_session_key_namespace(namespace: str) -> str:
+    """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
+    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
+    if namespace == "main":
+        return "default"
+    return "main" if namespace == "main~" else namespace
 
 
 def _canonical_participant(source: SessionSource) -> Optional[str]:
@@ -1107,6 +1120,53 @@ class SessionStore(
         self._entries[session_key] = new_entry
         self._save()
         return new_entry
+
+    def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
+        """Rekey the live routing index and reject target collisions before mutation."""
+        from dataclasses import replace as _dc_replace
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        if not old or not new or old == new:
+            return 0
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        with self._lock:
+            moving = [key for key in self._entries if key.startswith(old_ns)]
+            collisions = [
+                new_ns + key[len(old_ns):] for key in moving
+                if new_ns + key[len(old_ns):] in self._entries]
+            if collisions:
+                raise ValueError(
+                    f"profile routing collision while renaming {old!r} to {new!r}: "
+                    f"{collisions[0]!r} already exists")
+            for key in moving:
+                new_key = new_ns + key[len(old_ns):]
+                entry = self._entries.pop(key)
+                origin = entry.origin
+                if origin is not None and getattr(origin, "profile", None) == old:
+                    origin = _dc_replace(origin, profile=new)
+                self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
+            if moving:
+                self._save()
+        return len(moving)
+
+    def purge_profile_routing(self, profile: str) -> int:
+        """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_routing`, and it has to happen here for the same reason:
+        this index is written back by the owning process, so a durable DB delete made elsewhere is
+        undone by the next save of this in-memory copy — which is how a deleted profile kept
+        resolving. Idempotent; returns the number of entries dropped.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return 0
+        ns = f"agent:{name}:"
+        with self._lock:
+            dropped = [key for key in self._entries if key.startswith(ns)]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                self._save()
+        return len(dropped)
 
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the

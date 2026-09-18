@@ -175,8 +175,11 @@ def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
-    normalized = _normalize_command_for_detection(command)
-    _, malformed_grep = _grep_safe_detection_variant(normalized)
+    # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
+    # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
+    # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
+    # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
+    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -286,6 +289,19 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
+    # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
+    # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
+    # The host literals have no other use, so their appearance ANYWHERE in the command (any HTTP
+    # client, env assignment, or script argument) is the signal; lookarounds keep other 169.254.x.x
+    # link-local addresses and longer dotted strings out. This prompts for approval (legit uses
+    # exist on real cloud VMs) — it is NOT a hardline block. Covers the link-local IPv4 endpoint
+    # (AWS/Azure/GCP/OpenStack), its AWS IPv6 form fd00:ec2::254, the GCP hostname, and Alibaba
+    # Cloud's 100.100.100.200.
+    (r'(?<![\d.])(?:169\.254\.169\.254|100\.100\.100\.200)(?![\d.])'
+     r'|(?<![\w.-])metadata\.google\.internal(?![\w.-])'
+     r'|fd00:ec2::254',
+     "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
     (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe decoded content to shell (possible command obfuscation)"),
@@ -302,7 +318,19 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
+    # Unquoted brace/glob spellings the shell can expand into the flags above at run time
+    # (`find . -{delete,print}`, `find . -del*`). Additive: catches these spellings only; approval is
+    # still decided from source text, so `$var`/`$(...)`-built words are not covered here. `find` must
+    # be the command word and the dynamic word a whitespace-delimited token; both rules are matched
+    # against the quote-masked variant (_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS) because a quoted glob
+    # (`find . -name 'log-del*'`) is a literal predicate argument the shell never expands.
+    (_CMDPOS + r'find\s[^;|&\n]*(?<!\S)-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
+     "find dynamic shell word may expand to destructive flag"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Same for program-bearing read-tool options, which _execution_flag_findings() parses structurally
+    # only when the option is spelled literally.
+    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*(?<!\S)--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
+     "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
@@ -336,7 +364,9 @@ DANGEROUS_PATTERNS = [
     # sequential match: a for-loop building the label from a list defined EARLIER (`for item in 'ai.hermes...'; do
     # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
     # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
-    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
+    # Anchor whole-input lookaheads: re.search otherwise rescans every suffix of
+    # long non-matching commands, holding the GIL and starving Gateway threads.
+    (r'\A(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
@@ -410,6 +440,12 @@ DANGEROUS_PATTERNS = [
 
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+# Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
+# (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
+_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
+    "find dynamic shell word may expand to destructive flag",
+    "dynamic shell word may expand to arbitrary program execution flag",
+})
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1074,7 +1110,11 @@ def _iter_shell_command_starts(command: str):
                 starts.append(inner)
                 scan(inner, end if j is None else j - 1)
             elif kind == "char" and quote is None and i != skip:
-                if command[i] in "({;\n":
+                # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
+                # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
+                # marked inside either splits the word the flat patterns need to see intact.
+                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                                                                   or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]
@@ -1094,14 +1134,14 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str) -> str:
-    """Insert a newline before each real (quote-aware) command start.
+def _mark_command_starts(command: str, marker: str = "\n") -> str:
+    """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
     offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
-    return _splice(command, [(o, o, "\n") for o in offsets]) if offsets else command
+    return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
 def _mask_quoted_newlines(command: str) -> str:
@@ -1363,14 +1403,39 @@ def _command_detection_variants(command: str):
     marked = _mark_command_starts(grep_safe)
     if marked != grep_safe and fresh(marked):
         yield marked
+    # Every variant above tracks quotes on NORMALIZED text, where `\"` has already become `"`. That
+    # flips quote parity, so in `cat "f\"n.txt"; rm -rf /` the `; rm` start sat "inside" a phantom
+    # quote, no start was marked, and the hardline floor let it through. Mark starts on the RAW
+    # command (only quoted newlines masked), then normalize; the leading space keeps the marker
+    # from being eaten as a `\<newline>` continuation when the preceding text ends in a backslash.
+    faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
+    if fresh(faithful):
+        yield faithful
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
-    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
-        deobfuscated = _deobfuscate_shell_word_for_detection(word)
-        if deobfuscated and deobfuscated != word:
-            variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
-            if fresh(variant):
-                yield variant
+    # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc
+    # body of quoted lines has hundreds of quoted command words, and per-word variants made both
+    # detection passes O(words * len) — minutes of GIL-held regex on a 15 KB command (#113535).
+    # Spans arrive out of order (loop/conditional bodies after their keywords) and can nest (a
+    # backtick word and the command inside it), so apply them sorted; spans overlapping an applied
+    # one wait for the next round, one combined variant per nesting level.
+    pending = sorted(
+        ((word_start, word_end, deobfuscated) for word_start, word_end, word in _iter_shell_command_word_spans(normalized)
+         if (deobfuscated := _deobfuscate_shell_word_for_detection(word)) and deobfuscated != word),
+        key=lambda span: span[:2],
+    )
+    while pending:
+        applied, carry, cursor = [], [], 0
+        for span in pending:
+            if span[0] < cursor:
+                carry.append(span)
+            else:
+                applied.append(span)
+                cursor = span[1]
+        variant = _splice(normalized, applied)
+        if fresh(variant):
+            yield variant
+        pending = carry
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
@@ -1419,8 +1484,14 @@ def detect_dangerous_command(command: str) -> tuple:
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
+        masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if pattern_re.search(command_lower):
+            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+                if masked_lower is None:
+                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                if pattern_re.search(masked_lower):
+                    return (True, description, description)
+            elif pattern_re.search(command_lower):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

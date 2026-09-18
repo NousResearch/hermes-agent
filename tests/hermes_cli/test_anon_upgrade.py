@@ -115,7 +115,7 @@ def portal(monkeypatch, tmp_path):
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth._mint_failed = False
+    anon_auth.reset_mint_memo_for_tests()
     return fake
 
 
@@ -149,7 +149,7 @@ class TestUpgrade:
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 1
-        assert "Sign-in was rejected in the browser." in out
+        assert anon_auth.UPGRADE_REASON_COPY["user_declined"] in out
         assert portal.token_grants == 0
         assert _auth_file_path().read_bytes() == before
         assert _shared_store(tmp_path) == shared_before

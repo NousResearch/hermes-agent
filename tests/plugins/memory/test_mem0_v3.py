@@ -335,7 +335,7 @@ class TestMem0V3Config:
 
 class TestMem0ModeSwitch:
 
-    def test_oss_mode_initializes_without_unscoped_platform_key(
+    def test_oss_mode_initializes_without_platform_key_in_scope(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -349,7 +349,11 @@ class TestMem0ModeSwitch:
             )
         )
 
-        token = secret_scope.set_secret_scope(None)
+        # Contract (#99121, restated for fail-loud reads): every production caller is scoped
+        # (turn/cron/kanban scope installers); an OSS profile whose scope simply lacks MEM0_API_KEY
+        # must initialize. A scope-LESS multiplex caller is a spawn-site bug and raises instead —
+        # see test_load_config_fails_closed_without_scope_even_for_identity_settings.
+        token = secret_scope.set_secret_scope({})
         secret_scope.set_multiplex_active(True)
         try:
             provider = Mem0MemoryProvider()
@@ -375,6 +379,23 @@ class TestMem0ModeSwitch:
         try:
             with pytest.raises(secret_scope.UnscopedSecretError):
                 Mem0MemoryProvider().is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+    def test_load_config_fails_closed_without_scope_even_for_identity_settings(
+        self, monkeypatch, tmp_path
+    ):
+        """A scope-less multiplex caller is a spawn-site bug: identity/mode reads must surface it,
+        not degrade to '' and route the turn's memories into the default profile's account."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}))
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                mem0_plugin._load_config()
         finally:
             secret_scope.set_multiplex_active(False)
             secret_scope.reset_secret_scope(token)

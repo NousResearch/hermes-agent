@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -156,6 +157,17 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
     label, templates = _ASSET_TEMPLATES[os_name]
     if backend not in templates:
         raise BinaryResolutionError(f"unsupported {label} backend {backend}")
+    # release.yml switched both HIP names at b10356 (0666ad2b2b), then
+    # ROCm 7.14 -> 10.0 at b10767 (cff184438e). Keep older explicit pins.
+    if backend == "hip" and tag.startswith("b") and tag[1:].isascii() and tag[1:].isdigit():
+        build = int(tag[1:])
+        if build >= 10356:
+            if arch != "x64":
+                raise BinaryResolutionError(f"no {label} HIP {arch} asset at {tag}")
+            rocm_ver = "10.0" if build >= 10767 else "7.14"
+            extension = "zip" if os_name == "win" else "tar.gz"
+            return AssetPlan(tag, backend, [
+                f"llama-{tag}-bin-{os_name}-rocm-{rocm_ver}-{arch}.{extension}"])
     cuda_ver = _WIN_CUDA_VERSION_ARM64 if arch == "arm64" else _WIN_CUDA_VERSION
     return AssetPlan(tag, backend, [t.format(tag=tag, arch=arch, cuda_ver=cuda_ver)
                                     for t in templates[backend]])
@@ -174,19 +186,29 @@ def _download(url: str, dest: Path,
     """Stream url -> dest. ``progress(done_bytes, total_bytes)`` ticks per chunk (total 0 when
     the server sends no Content-Length) — a several-hundred-MB archive must never look hung."""
     logger.info("downloading %s", url)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            chunk = r.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-            done += len(chunk)
-            if progress is not None:
-                progress(done, total)
-    tmp.replace(dest)
+    staging = tempfile.NamedTemporaryFile(
+        mode="wb", dir=dest.parent, prefix=f"{dest.name}.", suffix=".part", delete=False)
+    tmp = Path(staging.name)
+    try:
+        with staging as f, urllib.request.urlopen(url, timeout=120) as r:
+            length = r.headers.get("Content-Length")
+            total = int(length) if length is not None else 0
+            done = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(done, total)
+            # Chunked reads can return EOF without raising IncompleteRead.
+            if length is not None and done != total:
+                raise BinaryResolutionError(
+                    f"incomplete download for {dest.name}: expected {total} bytes, got {done}")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _extract(archive: Path, dest: Path,

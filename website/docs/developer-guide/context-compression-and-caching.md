@@ -143,11 +143,31 @@ default applies.
 #### Failure cooldown and provider-proven overflow
 
 A failed or stalled summary attempt arms a per-session **failure cooldown**
-(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
-ordinary threshold-triggered compaction is deferred so a broken summary backend
-does not re-fire every turn. Two paths run a real attempt anyway:
+(escalating 60s → 300s → 900s, never shorter than
+`compression.context_timeout_seconds`, persisted in `state.db`). While it is
+armed, ordinary threshold-triggered compaction is deferred so a broken summary
+backend does not re-fire every turn. Three paths run a real attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- The same-turn `fallback_chain` retry after a stalled primary route — the
+  cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
+  If that pinned route's summary call fails, compress() still commits its
+  deterministic fallback summary (default `abort_on_summary_failure: false`);
+  the log then says "committed a deterministic fallback summary", not
+  "recovered".
+- **Repeated stall → deterministic fallback.** A first stall keeps the
+  transcript, arms the cooldown and lets the LLM route retry after it lapses.
+  When the route stalls *again* while a stall-class failure is still on the
+  ladder (`_consecutive_timeout_failures >= 1`), the retry ladder ends with a
+  deterministic rung: the worker is re-run with the summary LLM skipped
+  (`DETERMINISTIC_SUMMARY_ROUTE` pin) and commits the static fallback summary
+  through the ordinary lease/fence/watermark pipeline — the same degrade a
+  failed summary call gets — instead of "continuing without compression" and
+  re-entering the same silent stream every turn (#112420).
+  `abort_on_summary_failure: true` still aborts (nothing dropped). A committed
+  compaction rebinds the compressor and resets the ladder count, so each
+  compaction cycle grants the LLM route one stall before escalating; the
+  persisted cooldown row still paces attempts across turns and restarts.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring

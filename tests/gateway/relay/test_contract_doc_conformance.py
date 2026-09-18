@@ -1,4 +1,4 @@
-"""Cross-repo contract conformance: docs/relay-connector-contract.md ⟷ Python.
+"""Cross-repo contract conformance: website/docs/developer-guide/relay-connector-contract.md ⟷ Python.
 
 The contract doc is the formal interface the connector repo
 (NousResearch/gateway-gateway) implements against. The connector's TypeScript
@@ -34,7 +34,7 @@ from gateway.session import SessionSource
 
 # Repo root: tests/gateway/relay/ -> repo root is parents[3]
 _CONTRACT_DOC = (
-    Path(__file__).resolve().parents[3] / "docs" / "relay-connector-contract.md"
+    Path(__file__).resolve().parents[3] / "website" / "docs" / "developer-guide" / "relay-connector-contract.md"
 )
 
 

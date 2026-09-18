@@ -447,7 +447,9 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "gave_up": lambda ev, n: (
         _format_gave_up_notification(board_tag=n.board_tag, tag=n.worker_tag, task_id=n.task_id, payload=ev.payload), None, None,
     ),
-    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
+    "crashed": lambda ev, n: (
+        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
+    ),
     "timed_out": lambda ev, n: (
         f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
     ),

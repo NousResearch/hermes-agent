@@ -13,7 +13,10 @@ import pytest
 def kanban_with_profiles(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_per_model_cap_test_")
     for profile in ("alpha", "beta", "default"):
-        os.makedirs(os.path.join(test_home, "profiles", profile), exist_ok=True)
+        profile_dir = os.path.join(test_home, "profiles", profile)
+        os.makedirs(profile_dir, exist_ok=True)
+        # named_profile_is_live requires an identity marker (config.yaml, .env, etc.)
+        open(os.path.join(profile_dir, ".env"), "w").close()
     monkeypatch.setenv("HERMES_HOME", test_home)
     def is_hermes_module(name):
         return (

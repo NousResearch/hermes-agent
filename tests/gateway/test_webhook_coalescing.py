@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+pytest.importorskip("aiohttp", reason="webhook adapter requires aiohttp [messaging] extra")
+
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 

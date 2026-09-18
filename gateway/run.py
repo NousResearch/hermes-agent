@@ -2314,12 +2314,39 @@ class _GatewayModelContext:
     context_source: str
 
 
-def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
-    """Resolve the configured gateway route and effective context window. Call off-loop (may block)."""
+def _resolve_gateway_model_context(
+    model: Optional[str] = None, route: Optional[dict] = None
+) -> _GatewayModelContext:
+    """Resolve the configured gateway route and effective context window. Call off-loop (may block).
+
+    ``route`` bypasses config + runtime resolution when provided (e.g. a session /model override):
+    its ``provider``, ``base_url``, and ``api_key`` are used directly with no config_context_length.
+    """
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
     resolved_model = model or _resolve_gateway_model()
     config_context_length = provider = base_url = api_key = custom_providers = None
     configured_model = configured_provider = configured_base_url = None
+
+    if route is not None and ("api_key" in route or "base_url" in route):
+        # Session override supplies a full endpoint; skip config + runtime lookup (no config pin).
+        provider = route.get("provider") or None
+        base_url = route.get("base_url") or None
+        api_key = route.get("api_key") or None
+        context_length = get_model_context_length(
+            resolved_model, base_url=base_url or "", api_key=api_key or "",
+            config_context_length=None, provider=provider or "",
+            custom_providers=None)
+        # A catalog hit with a context length that happens to equal DEFAULT_FALLBACK_CONTEXT is
+        # "detected", not "default". Check the hardcoded table directly (not mocked by callers).
+        if context_length == DEFAULT_FALLBACK_CONTEXT:
+            from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+            catalog_hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, resolved_model.lower())
+            context_source = "detected" if catalog_hit else "default"
+        else:
+            context_source = "detected"
+        return _GatewayModelContext(
+            model=resolved_model, provider=provider or "", base_url=base_url or "",
+            context_length=context_length, context_source=context_source)
 
     def _read_config() -> None:
         nonlocal config_context_length, provider, base_url, custom_providers
@@ -2945,17 +2972,17 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update command argv: ``hermes`` on PATH, else ``python -m hermes_cli.main``, else None."""
+    """Hermes update command argv: prefer module argv (safe re-exec), then PATH binary, then None."""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("hermes_cli.main") is not None:
+            return [sys.executable, "-m", "hermes_cli.main"]
+    except Exception:
+        pass
     import shutil
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return [hermes_bin]
-    try:
-        import importlib.util
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
-    except Exception:
-        pass
     return None
 
 

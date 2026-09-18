@@ -427,8 +427,12 @@ class TestAgentBrowserCliCapture:
         # Pipe capture would stall here for the full 15s timeout on POSIX and
         # hang past the outer tool deadline on Windows.
         assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
-        # The capture temp files are cleaned up after the call.
-        assert not list(tmp_path.glob("_std*_rp-*"))
+        # The capture temp files are cleaned up after the call. POSIX unlinks
+        # files a live grandchild still holds open; on Windows the daemon's
+        # inherited handles keep them until it exits, and the unlink is
+        # best-effort by design (_unlink_command_output_files swallows OSError).
+        if sys.platform != "win32":
+            assert not list(tmp_path.glob("_std*_rp-*"))
 
     def test_capture_cli_surfaces_stdout_stderr_and_exit_code(self, tmp_path):
         import sys

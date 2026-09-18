@@ -853,7 +853,19 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        return agent._swap_credential(next_entry) is not False
+        swapped = agent._swap_credential(next_entry) is not False
+        if (
+            swapped
+            and credential_id
+            and getattr(next_entry, "id", None) != credential_id
+            and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
+        ):
+            # Transient quota bench (429 / 402): the benched credential recovers when
+            # its cooldown expires. Arm the per-turn hook to swap back (#114501);
+            # auth and other failures keep today's behavior.
+            agent._credential_pool_revert_id = credential_id
+            agent._credential_pool_rotated_to = getattr(next_entry, "id", None)
+        return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
@@ -1108,6 +1120,50 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         )
 
 
+def _maybe_revert_credential_rotation(agent) -> None:
+    """Swap back to a transiently benched credential once it is available again (#114501).
+
+    Best-effort and exception-proof: the per-turn restore hook calls this every turn,
+    so it must never raise. Uses the read-only ``_available_entries()`` check (the same
+    side-effect profile as ``pool.peek()``) — never ``select()``, which would bump
+    request counts and rotate round-robin order on a mere check.
+    """
+    try:
+        revert_id = getattr(agent, "_credential_pool_revert_id", None)
+        if not revert_id:
+            return
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None:
+            agent._credential_pool_revert_id = None
+            return
+        if getattr(agent, "_provider_fallback_active", False):
+            return  # A provider fallback owns the binding right now; don't fight it.
+        bound = getattr(agent, "_credential_pool_entry_id", None)
+        if bound == revert_id:
+            # Already home (manual switch-back or another path restored it).
+            agent._credential_pool_revert_id = None
+            agent._credential_pool_rotated_to = None
+            return
+        if bound != getattr(agent, "_credential_pool_rotated_to", None):
+            # The binding moved elsewhere by hand; stand down rather than yank it.
+            agent._credential_pool_revert_id = None
+            agent._credential_pool_rotated_to = None
+            return
+        available, _pending = pool._available_entries(model=getattr(agent, "model", None))
+        target = next((e for e in available if getattr(e, "id", None) == revert_id), None)
+        if target is None:
+            return  # Preferred still cooling (or gone); keep waiting.
+        if agent._swap_credential(target) is not False:
+            logger.info(
+                "credential pool: preferred credential %s available again, reverted",
+                getattr(target, "label", None) or revert_id[:8],
+            )
+        agent._credential_pool_revert_id = None
+        agent._credential_pool_rotated_to = None
+    except Exception:
+        logger.debug("credential pool revert check failed", exc_info=True)
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
@@ -1115,6 +1171,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
+        _maybe_revert_credential_rotation(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)

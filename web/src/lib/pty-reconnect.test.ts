@@ -36,6 +36,19 @@ describe('shouldReconnectPtyOnPageResume', () => {
     }
   })
 
+  it('does not restart the ladder on focus/online after it gave up; only the Reconnect button does', () => {
+    expect(
+      shouldReconnectPtyOnPageResume({
+        isActive: true,
+        visibilityState: 'visible',
+        online: true,
+        socketReadyState: 3,
+        ptyState: 'closed',
+        reconnectGaveUp: true
+      })
+    ).toBe(false)
+  })
+
   it('does not reconnect an open socket on visible resume', () => {
     expect(
       shouldReconnectPtyOnPageResume({

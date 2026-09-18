@@ -67,6 +67,10 @@ BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
 )
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
+# Bedrock-hosted xAI Grok (any regional inference-profile prefix) rejects temperature/topP in Converse
+# with a hard 400 ("This model doesn't support the temperature field"); reasoning-first, same
+# restriction as Claude Opus 4.6+ but _forbids_sampling_params is Claude-only, so it needs its own gate.
+_BEDROCK_XAI_GROK_NO_SAMPLING_RE = re.compile(r"^(?:[a-z]+\.)?xai\.grok", re.IGNORECASE)
 _MIN_BOTO3_VERSION = (1, 34, 59)
 
 
@@ -809,7 +813,10 @@ def stream_converse_with_callbacks(
     """boto3 ``converse_stream()`` response + callbacks → the ``normalize_converse_response()`` shape.
     ``on_text_delta`` only fires while no toolUse block has been seen (as on the Anthropic/chat_completions
     paths); ``on_interrupt_check`` True stops streaming; ``on_event`` fires for EVERY event before branching
-    and its exceptions are swallowed so a watchdog hook can never abort the stream."""
+    and its exceptions are swallowed so a watchdog hook can never abort the stream.
+
+    Blocks are keyed by the ``contentBlockIndex`` Bedrock stamps on every contentBlockStart/Delta/Stop:
+    text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200)."""
     parts = _ResponseParts()
     stream_blocks: Dict[int, Dict[str, Any]] = {}
     current_block_index: Optional[int] = None
@@ -819,9 +826,13 @@ def stream_converse_with_callbacks(
     stop_reason = "end_turn"
     usage_data: Dict[str, int] = {}
 
-    def current_block(default: Dict[str, Any]) -> Dict[str, Any]:
-        idx = current_block_index if current_block_index is not None else len(stream_blocks)
-        return stream_blocks.setdefault(idx, default)
+    def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
+        """Index of the block a contentBlock* event addresses. Without ``contentBlockIndex`` (test doubles,
+        proxies) a start opens a fresh slot and a delta/stop continues the current one."""
+        idx = payload.get("contentBlockIndex")
+        if isinstance(idx, int):
+            return idx
+        return len(stream_blocks) if new_block or current_block_index is None else current_block_index
 
     def flush_text() -> None:
         if current_text_buffer:
@@ -836,20 +847,22 @@ def stream_converse_with_callbacks(
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
-            current_block_index = start_event.get("contentBlockIndex", len(stream_blocks))
+            idx = current_block_index = block_index(start_event, new_block=True)
             start = start_event.get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
                 flush_text()
                 current_tool = {"toolUseId": start["toolUse"].get("toolUseId", ""), "name": start["toolUse"].get("name", ""), "input_json": ""}
-                stream_blocks[current_block_index] = _tool_use_block(current_tool["toolUseId"], current_tool["name"], {})
+                stream_blocks[idx] = _tool_use_block(current_tool["toolUseId"], current_tool["name"], {})
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
-            delta = event["contentBlockDelta"].get("delta", {})
+            delta_event = event["contentBlockDelta"]
+            idx = current_block_index = block_index(delta_event)
+            delta = delta_event.get("delta", {})
             if "text" in delta:
                 text = delta["text"]
-                block = current_block({"text": ""})
+                block = stream_blocks.setdefault(idx, {"text": ""})
                 block["text"] = block.get("text", "") + text
                 current_text_buffer.append(text)
                 if on_text_delta and not has_tool_use:
@@ -859,14 +872,16 @@ def stream_converse_with_callbacks(
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
-                    block = current_block({"reasoningContent": {}}).setdefault("reasoningContent", {})
+                    block = stream_blocks.setdefault(idx, {"reasoningContent": {}}).setdefault("reasoningContent", {})
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
+            idx = block_index(event["contentBlockStop"])
+            current_block_index = None  # a following index-less delta opens a fresh slot, not this one
             if current_tool is not None:
                 input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
                 parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
-                if current_block_index is not None and current_block_index in stream_blocks:
-                    stream_blocks[current_block_index]["toolUse"]["input"] = input_dict
+                if "toolUse" in stream_blocks.get(idx, {}):
+                    stream_blocks[idx]["toolUse"]["input"] = input_dict
                 current_tool = None
             else:
                 flush_text()
@@ -897,7 +912,7 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
     from agent.anthropic_adapter import _forbids_sampling_params
-    if not _forbids_sampling_params(model):
+    if not _forbids_sampling_params(model) and not _BEDROCK_XAI_GROK_NO_SAMPLING_RE.match(model or ""):
         inference_config.update({k: v for k, v in (("temperature", temperature), ("topP", top_p)) if v is not None})
     if stop_sequences:
         inference_config["stopSequences"] = stop_sequences
@@ -1045,6 +1060,8 @@ def _extract_provider_from_arn(arn: str) -> str:
 # substring, so versioned entries win over the generic "anthropic.claude-opus-4".
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
+    "xai.grok-4.6": 500_000,
     # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
     # DEFAULT_CONTEXT_LENGTHS or context compresses early.
     **dict.fromkeys((

@@ -43,6 +43,7 @@ def _make_profile_home(tmp_path, monkeypatch, profile="coder"):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     profile_home = tmp_path / "profiles" / profile
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     return profile_home
 
 
@@ -233,6 +234,7 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "profiles" / "worker").mkdir(parents=True)
+    (tmp_path / "profiles" / "worker" / "config.yaml").write_text("{}\n")  # identity marker
     session_id, _session = _rt_oauth._new_oauth_session(
         "xai-oauth", "device_code", profile="worker"
     )

@@ -3,6 +3,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
 
 import type { ClientSessionState } from '../../../../types'
 
@@ -21,7 +22,12 @@ export interface GatewayEventDeps {
     failure?: { error: string; partial: boolean },
     occurredAt?: number
   ) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
+  failAssistantMessage: (
+    sessionId: string,
+    errorMessage: string,
+    occurredAt?: number,
+    surface?: ErrorSurface | null
+  ) => void
   flushQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
   hydrateFromStoredSession: (

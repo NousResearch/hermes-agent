@@ -852,6 +852,8 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 `"main"` provider 选项表示"使用我的主 agent 使用的任何 provider" —— 它仅在 `auxiliary:`、`compression:` 和 `fallback_model:` 配置中有效。它**不是**顶级 `model.provider` 设置的有效值。如果您使用自定义 OpenAI 兼容端点，请在 `model:` 部分设置 `provider: custom`。所有主模型 provider 选项请参阅 [AI Providers](/integrations/providers)。
 :::
 
+如果端点直接拒绝推理字段（例如 OpenAI 兼容中继后面的纯聊天模型返回 `400 Unrecognized request argument supplied: reasoning_effort`），辅助调用会去掉所有推理字段重试一次，因此该任务（例如会话标题）仍会以端点的默认行为完成。
+
 **后台审查有所不同：** 与主会话使用同一模型的审查分支始终继承主会话的推理强度；`auxiliary.background_review.reasoning_effort` 在这条路径上不会生效，即使显式指定了主会话的 provider/model 也一样。推理设置、系统 prompt、完整会话快照和工具定义保持逐字节一致，以复用 prompt 缓存前缀。没有用于同模型审查的独立推理强度开关。详见[同模型审查的推理强度](/user-guide/features/memory#same-model-review-reasoning)。路由到其他模型时的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。
 
 ### 完整辅助配置参考
@@ -1099,6 +1101,10 @@ auxiliary:
 运行 `hermes config` 查看您当前的辅助模型设置。覆盖仅在与默认值不同时显示。
 :::
 
+### 原生视觉嵌入预算（顶层 `vision:`）
+
+与 `auxiliary.vision`（选择描述器模型）不同：当*主*模型支持视觉时，`vision_analyze` 和浏览器截图会把真实像素嵌入工具结果，并在之后的每一轮请求中重复发送。`vision.embed_target_bytes`（默认 `262144`，限制在 64 KiB..4 MiB 之间）控制单次嵌入的大小；`vision.max_calls_per_image` 限制同一张图片在一个会话中可被嵌入的次数（未设置 = 委派子代理内为 3，主代理不限；`0` = 不限）。参见 [视觉 → 原生嵌入伴随整个会话](/user-guide/features/vision#原生嵌入伴随整个会话visionembed_target_bytes-与-visionmax_calls_per_image)。
+
 ## 推理努力程度
 
 控制模型在响应前进行多少"思考"：
@@ -1232,7 +1238,7 @@ display:
 示例页脚：
 
 ```
-⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 3 file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.
   • concepts/automatic-organization.md — [patch] Could not find match for old_string
   • concepts/lora.md — [patch] Could not find match for old_string
   • concepts/rag-pipeline.md — [patch] Could not find match for old_string
@@ -1571,6 +1577,8 @@ timezone: "America/New_York"   # IANA 时区（默认："" = 服务器本地时�
 ```
 
 支持的值：任何 IANA 时区标识符（例如 `America/New_York`、`Europe/London`、`Asia/Kolkata`、`UTC`）。留空或省略以使用服务器本地时间。
+
+代理时钟、cron 调度和时间相关工具在所有操作系统上都遵循此时区。通过 `execute_code` 运行的代码在 Linux 和 macOS 上也会以 `TZ` 的形式继承它；在 Windows 上这些子进程保留操作系统配置的时区（Windows C 运行时只解析 POSIX 形式的 `TZ` 字符串，IANA 名称会产生错误的 UTC 偏移量），因此若子脚本必须以此时区显示本地时间，请直接设置 Windows 系统时区。
 
 ## Discord
 

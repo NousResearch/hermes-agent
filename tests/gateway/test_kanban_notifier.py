@@ -326,7 +326,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
     # First crash delivered.
     assert len(adapter.sent) == 1
-    assert "crashed" in adapter.sent[0]["text"].lower()
+    assert "stopped unexpectedly" in adapter.sent[0]["text"].lower()
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.
@@ -354,7 +354,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "crashed" in adapter.sent[1]["text"].lower()
+    assert "stopped unexpectedly" in adapter.sent[1]["text"].lower()
 
 
 def test_notifier_subscription_survives_done_reopen_until_archive(
@@ -625,6 +625,58 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# #111125 — a repeated-block circuit breaker establishes that orchestration
+# attention is needed, NOT that a human decision exists. The formatter must
+# use neutral wording unless the block was typed as a genuine owner-input
+# request (`needs_input`, the only kind that carries a concrete question).
+# ---------------------------------------------------------------------------
+
+
+class _StubEvent:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+class _StubNotif:
+    head = "H123"
+
+
+def _fmt_block_loop(payload):
+    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+
+    msg, _, _ = _EVENT_FORMATTERS["block_loop_detected"](_StubEvent(payload), _StubNotif())
+    return msg
+
+
+def test_block_loop_technical_kind_uses_neutral_orchestration_wording():
+    """A repeated technical block (transient/capability/untyped) routed to
+    triage is an orchestration handoff with no question for the owner, so the
+    ping must not claim a human decision (#111125)."""
+    payload = {"reason": "waiting on upstream", "kind": "transient", "recurrences": 2}
+    msg = _fmt_block_loop(payload)
+    assert "for orchestration attention" in msg
+    assert "human decision" not in msg
+    # Circuit-breaker visibility is preserved.
+    assert "TRIAGE" in msg
+    assert "waiting on upstream" in msg
+
+
+def test_block_loop_owner_input_keeps_decision_wording():
+    """A `needs_input` block carries a concrete question for the owner, so the
+    owner-decision wording is correct and must be retained (#111125)."""
+    payload = {
+        "reason": "Which API key should this use?",
+        "kind": "needs_input",
+        "recurrences": 2,
+        "limit": kb.BLOCK_RECURRENCE_LIMIT,
+    }
+    msg = _fmt_block_loop(payload)
+    assert "needs a human decision" in msg
+    assert "for orchestration attention" not in msg
+    assert "Which API key should this use?" in msg
 
 
 # ---------------------------------------------------------------------------

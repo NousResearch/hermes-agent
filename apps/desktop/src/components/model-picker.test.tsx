@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionsResult } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -26,7 +26,7 @@ import { requestModelOptions } from '@/lib/model-options'
 stubResizeObserver()
 stubMenuDomApis()
 
-const OPTIONS: ModelOptionsResponse = {
+const OPTIONS: ModelOptionsResult = {
   model: 'Qwen3.6-27B-UD-Q4_K_XL',
   provider: 'llamacpp',
   providers: [

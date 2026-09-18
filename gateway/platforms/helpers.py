@@ -537,6 +537,32 @@ def _chunk_newline_preferred(text, limit, len_fn):
     return chunks
 
 
+# ─── Discord channel obfuscation (Bot API change, mandatory Nov 16 2026) ───────
+# Channels a bot lacks VIEW_CHANNEL on are still dispatched over the Gateway with the
+# name replaced by "___hidden___", sensitive fields nulled and flag 1 << 17 set; over
+# HTTP they are omitted. https://discord.com/developers/docs/change-log (Aug 12, 2026)
+DISCORD_CHANNEL_OBFUSCATED_FLAG = 1 << 17
+DISCORD_OBFUSCATED_CHANNEL_NAME = "___hidden___"
+
+
+def is_discord_channel_obfuscated(channel) -> bool:
+    """True when a discord.py channel object is an obfuscated placeholder.
+
+    Skip these wherever guild channels are enumerated (channel directory, message
+    backfill): history reads and sends always fail with a permission error. Flag
+    first; the sentinel name is the fallback for discord.py builds that don't
+    expose the flag (a visible channel literally named ``___hidden___`` is then
+    also skipped — deliberate bias toward hiding). #90154
+    """
+    try:
+        flag_value = channel.flags.value
+    except AttributeError:
+        flag_value = None
+    if isinstance(flag_value, int) and flag_value & DISCORD_CHANNEL_OBFUSCATED_FLAG:
+        return True
+    return getattr(channel, "name", None) == DISCORD_OBFUSCATED_CHANNEL_NAME
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

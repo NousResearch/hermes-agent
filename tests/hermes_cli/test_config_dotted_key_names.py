@@ -344,9 +344,9 @@ class TestBackwardCompatibility:
         assert cfg["custom_providers"][0]["name"] == "p2"
 
     def test_deep_creation_without_siblings_unchanged(self, _isolated_hermes_home):
-        set_config_value("agent.max_iterations", "50")
+        set_config_value("agent.max_turns", "50")
         saved = _read_config(_isolated_hermes_home)
-        assert saved["agent"]["max_iterations"] == 50
+        assert saved["agent"]["max_turns"] == 50
 
     def test_greedy_never_beats_exact_nested_structure(self):
         """A literal dotted key never shadows the plain-split path when the

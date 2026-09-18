@@ -32,6 +32,8 @@ Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use image generation through the **[Tool Gateway](tool-gateway.md)** without a FAL API key. Your model selection persists across both paths. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the image-gen backend via `hermes tools`.
 
+The **Nous Subscription** row is the only managed row. Its model picker spans every gateway the subscription runs — the FAL catalog above, native **Krea 2** (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) and any Nous Portal image models — each model listed once, and the model you pick decides which gateway serves the request. Free tool-pool accounts see the FAL models only; Krea and Portal models are paid-subscription.
+
 If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't yet proxied on the portal side — the agent will tell you so, with remediation steps (switch to FAL.ai in `hermes tools` with your own `FAL_KEY` for direct access, or pick a different model).
 :::
 
@@ -182,10 +184,10 @@ does not estimate 2.5 token consumption. See the official
 [Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare) and
 [Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst) docs.
 
-The **OpenAI (Codex auth)** provider remains separate: its backend can accept
-an image-model value without honoring that selection, so a successful image
-alone does not verify Flare or Sunburst routing. These selections are offered
-through the direct OpenAI API provider and FAL, not as verified Codex-auth selections.
+The **OpenAI (Codex auth)** provider does not offer 2.5. The Codex backend
+accepts any `model` value (including nonexistent ids) and generates with its
+own server-managed engine, so a "selected" Flare or Sunburst tier would be a
+label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
 ## Usage
 
@@ -231,7 +233,7 @@ Two inputs drive the edit:
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
-| **OpenAI (Codex auth)** | ✓ | up to 16 | Codex Responses `image_generation` tool with `input_image` content parts |
+| **OpenAI (Codex auth)** | ✓ | up to 16 | `POST /backend-api/codex/images/edits` with inline `images[]` data URLs (remote URLs are fetched client-side) |
 | **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
@@ -240,16 +242,18 @@ FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
 `krea/*`) reject image inputs with a clear error pointing you at an
 edit-capable model.
 
-:::note OpenAI (Codex auth) is best-effort
+:::note OpenAI (Codex auth): the backend decides quality and size
 
-The Codex surface (`chatgpt.com/backend-api/codex`) hosts `image_generation`
-as a tool the chat model may call, and Hermes cannot force the call — the
-backend rejects every `tool_choice` shape for hosted tools, so the request
-relies on instructions to steer the model. When the host model declines to
-invoke the tool, the call fails with `empty_response`. Whether the hosted
-image tool is reachable at all has also been reported to vary between
-accounts. If you need image generation to work deterministically, configure
-the **OpenAI** (API key), **FAL**, or **xAI** backend instead.
+Hermes posts straight to the Codex backend's native
+`images/generations` / `images/edits` endpoints (the same route the official
+Codex client uses), so no chat model is involved and the call does not depend
+on which chat models your ChatGPT plan currently has. The backend, however,
+treats `model`, `quality` and `size` as advisory: it may return a different
+quality tier or geometry than requested (a portrait request can come back
+square). The result carries `reported_quality`, `reported_size` and
+`pixel_size` alongside what was requested, plus `imagegen_request_id` for
+OpenAI support. For exact control over quality and size, configure the
+**OpenAI** (API key), **FAL**, or **xAI** backend instead.
 
 :::
 

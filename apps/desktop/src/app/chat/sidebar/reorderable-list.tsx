@@ -63,10 +63,17 @@ export function ReorderableList({
 
 export function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
+  // The FULL handle (role/tabIndex + dnd-kit's keyboard and pointer
+  // activators) belongs on the grabber only. Row shells forward just
+  // `onPointerDown` from it: a keyboard activator on a container makes every
+  // focused descendant control (the ⋯ menu button) arm a drag on Space, and
+  // an armed KeyboardSensor then eats Space/Enter window-wide — the rename
+  // dialog swallowed spaces (#83617).
+  const dragHandleProps: React.HTMLAttributes<HTMLElement> = { ...attributes, ...listeners }
 
   return {
     dragging: isDragging,
-    dragHandleProps: { ...attributes, ...listeners },
+    dragHandleProps,
     ref: setNodeRef,
     reorderable: true as const,
     style: {

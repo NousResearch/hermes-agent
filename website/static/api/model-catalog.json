@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-10T16:09:08Z",
+  "updated_at": "2026-09-16T16:50:25Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -244,6 +244,10 @@
         {
           "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
+        },
+        {
+          "id": "stealth/union-alpha",
+          "description": "free, stealth model"
         }
       ]
     },

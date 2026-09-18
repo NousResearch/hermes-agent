@@ -223,7 +223,7 @@ export function PluginInstallModal() {
 
             notify({
               kind: 'warning',
-              message: m.missingEnv(result.missingEnv.join(', ')),
+              message: m.missingEnv(result.pluginName ?? request.repo, result.missingEnv.join(', ')),
               // Deep-link straight to the credential card instead of leaving
               // the user to hunt through Settings → Tools & Keys by hand.
               action: {

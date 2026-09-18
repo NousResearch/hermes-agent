@@ -1,5 +1,55 @@
 # Workstation roadmap
 
+
+## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — ACTIVE
+
+Real native-browser dogfood exposed an architectural overreach in the durable
+compiler boundary: the mechanism introduced to keep repetitive mechanical work
+out of the LLM loop can currently turn a repeatability hint into a broad mutation
+gate and block legitimate stateful/adaptive work before a deterministic procedure
+has been discovered.
+
+Canonical specification:
+[context/ADAPTIVE_EXECUTION_COMPILATION.md](context/ADAPTIVE_EXECUTION_COMPILATION.md).
+
+This correction preserves the Canonical Execution Reliability Gate and its
+canary, uncertainty, fencing, acceptance, reconciliation and evidence invariants.
+It changes **when compilation is mandatory**.
+
+Target execution ladder:
+
+~~~text
+novel/drifted work
+  -> ADAPTIVE reasoning + bounded tools
+  -> stable segment captured
+  -> COMPILED segment/work
+  -> validated Procedure/Recipe
+  -> PROMOTED ROUTINE
+  -> drift => compact NEEDS_REASONING handoff
+  -> adapt only the unresolved segment
+~~~
+
+Immediate implementation order:
+
+1. replace the session/turn-wide _work_batch_candidate latch with an
+   operation-scoped compilation candidate / policy decision;
+2. add ALLOW_ADAPTIVE | SUGGEST_COMPILE | REQUIRE_COMPILE | REQUIRE_HUMAN;
+3. normalize browser tool constraints to native_browser and make tools.effects
+   the single effect taxonomy;
+4. allow bounded stateful native-browser interaction during discovery while
+   retaining BrowserTask/TaskRun leases, approvals and effect uncertainty;
+5. add compact NEEDS_REASONING escape/resume semantics to deterministic work;
+6. capture successful adaptive traces into existing Recipe/ProceduralMemory
+   owners and automatically reuse verified procedures;
+7. measure LLM calls/tokens/tool calls per verified outcome plus Guardrail
+   Obstruction Rate;
+8. add regressions proving both sides: native-browser adaptive progress works and
+   homogeneous fan-out still cannot bypass TaskCompiler/canary.
+
+**Sequencing:** this is the active correction before further feature expansion.
+Do not weaken fan-out safety to fix usability, and do not require determinism as a
+precondition for discovering a safe deterministic path.
+
 ## Canonical Execution Reliability Gate (2026-09-17) — IMPLEMENTED & VERIFIED
 
 **Milestone implemented and verified on branch `antigravity/canonical-execution-reliability-gate`.**

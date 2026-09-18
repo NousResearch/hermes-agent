@@ -81,6 +81,7 @@ import { requestForSessionProfile, type SessionProfileRoute } from '@/store/sess
 import {
   $sessionTiles,
   knownOwnerForSession,
+  recordSessionEventScope,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
@@ -348,6 +349,44 @@ describe('connection-qualified session deletion', () => {
         profile: 'worker'
       })
     ])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({} as never)
+
+    render(
+      <Harness
+        activeSessionId="runtime-shared"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('shared-session')
+    })
+
+    expect(deleteSession).toHaveBeenCalledWith('shared-session', {
+      connectionId: 'source-a',
+      profile: 'worker'
+    })
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'worker', 'session.close', {
+      session_id: 'runtime-shared'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it('deletes an untagged registry row through the runtime-proven owner, not a bare profile', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    let actions: HarnessHandle | null = null
+
+    // A row fetched right after activating a registry gateway can arrive untagged
+    // (no connection_id) — but an inbound runtime event for this session already
+    // proved its real (connectionId, profile) owner (#97511).
+    setSessions([storedSession({ id: 'shared-session', profile: 'worker' })])
+    recordSessionEventScope({ connectionId: 'source-a', profile: 'worker', session_id: 'runtime-shared' })
     vi.mocked(deleteSession).mockResolvedValue({ ok: true })
     vi.mocked(requestGatewayForAgent).mockResolvedValue({} as never)
 

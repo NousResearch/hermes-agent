@@ -15,8 +15,10 @@ edge (``PENDING`` -> ``RUNNING``) and asserts that no state is skipped.
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 from concurrent.futures import Future
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,6 +33,8 @@ from agent.subagent_lifecycle import (
     bind_subagent_parent,
     get_active_subagent_parent,
 )
+
+FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evals" / "subagent_lifecycle" / "fixture.json"
 
 # ── Canonical observed transition matrix ────────────────────────────────────
 # (from_state, event, to_state).  Events are the observable API actions that
@@ -264,6 +268,27 @@ def test_canonical_matrix_is_well_formed():
         seen.add(key)
     for from_state, event in CANONICAL_INVALID_TRANSITIONS:
         assert from_state in states, f"unknown source state: {from_state}"
+
+
+def test_fixture_documents_every_non_graph_state():
+    """Every enum state is either a graph source, terminal, or documented.
+
+    ``STARTING`` and ``UNKNOWN`` are enum values the service never reports as a
+    live lifecycle state; the fixture must keep explaining why they have no
+    outgoing edges so the artifact stays self-describing if the enum grows.
+    Terminal states legitimately end the graph and are covered by
+    ``terminal_states``.
+    """
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    graph_sources = {edge["from"] for edge in fixture["transitions"]}
+    terminal = set(fixture["terminal_states"])
+    for state in SubagentState:
+        if state.name not in graph_sources and state.name not in terminal:
+            assert state.name in fixture.get("state_notes", {}), (
+                f"{state.name} has no outgoing graph edge, is not terminal, "
+                "and has no state_notes entry; document why it is not an "
+                "observable lifecycle state"
+            )
 
 
 def test_canonical_transition_matrix_is_observed(contract):

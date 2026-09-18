@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { resolveProfileHermesHome } from './profile-hermes-home'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -1100,9 +1101,12 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     `owner=$(IFS= read -r owner < ${marker} && printf '%s' "$owner"); ` +
     `case "$owner" in ''|*[!0-9]*) return 1;; esac; if kill -0 "$owner" 2>/dev/null; then return 1; fi; return 0; }`
 
+  const installHome = opts.hermesHome || '~/.hermes'
+  const spawnHome = resolveProfileHermesHome(installHome, profile)
+
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1 HERMES_HOME=${shq(spawnHome)}${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
@@ -1221,6 +1225,8 @@ async function spawnRemoteDashboard(
     assertInstallClear = async () => {}
   }
 ) {
+  const profileHome = resolveProfileHermesHome(hermesHome, profile)
+
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
       'The remote Hermes install does not support --ssh-session-token-file and --ssh-owner-nonce. ' +
@@ -1298,7 +1304,7 @@ async function spawnRemoteDashboard(
           port: 0,
           profile,
           hermesPath,
-          hermesHome,
+          hermesHome: profileHome,
           logPath,
           tokenFingerprint: fingerprintToken(token),
           protocolVersion: PROTOCOL_VERSION,
@@ -1448,8 +1454,9 @@ async function connect(deps) {
   assertBootstrapNotSuperseded(signal)
   const platform = deps.platform ?? (await probeRemotePlatform(ssh))
   log(`remote platform ${platform.os}/${platform.arch}`)
-  const hermesHome = await probeRemoteHermesHome(ssh)
-  await assertRemoteInstallUpdateClear(ssh, hermesHome)
+  const installHome = await probeRemoteHermesHome(ssh)
+  await assertRemoteInstallUpdateClear(ssh, installHome)
+  const hermesHome = resolveProfileHermesHome(installHome, profile)
   const hermesPath = await locateHermes(ssh, remoteHermesPath)
   log(`located hermes at ${hermesPath}`)
   const hermesVersion = await probeHermesVersion(ssh, hermesPath)
@@ -1515,7 +1522,7 @@ async function connect(deps) {
       }
 
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, installHome)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -1534,7 +1541,7 @@ async function connect(deps) {
         if (reuseClassification === 'authenticated-stale') {
           assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
-          await assertRemoteInstallUpdateClear(ssh, hermesHome)
+          await assertRemoteInstallUpdateClear(ssh, installHome)
           await cleanupStale(ssh, ownershipId, lock)
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
@@ -1578,13 +1585,13 @@ async function connect(deps) {
       }
     } else {
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, installHome)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertRemoteInstallUpdateClear(ssh, hermesHome)
+  await assertRemoteInstallUpdateClear(ssh, installHome)
   const spawnToken = mintToken()
 
   const spawned = await spawnRemoteDashboard(ssh, {
@@ -1592,9 +1599,9 @@ async function connect(deps) {
     profile,
     token: spawnToken,
     ownershipId,
-    hermesHome,
+    hermesHome: installHome,
     guestOnboarding,
-    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
+    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, installHome)
   })
 
   if (spawned.existing) {

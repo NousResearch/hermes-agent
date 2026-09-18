@@ -285,6 +285,57 @@ test('Windows SSH reuse requires the requested remote profile to match the lock'
   assert.equal(reusableWindowsLock({ ...lock, profile: '' }, state, '', token, runtime), true)
 })
 
+test('Windows named-profile lock with default-root hermesHome is not reusable', () => {
+  const token = 'stored-token'
+  const fingerprint = crypto.createHash('sha256').update(token).digest('hex').slice(0, 32)
+
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'homelab-delegator',
+    tokenFingerprint: fingerprint,
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  const state = { alive: true, owned: true }
+
+  const runtime = {
+    hermesPath: lock.hermesPath,
+    hermesHome: 'C:\\h\\profiles\\homelab-delegator'
+  }
+
+  assert.equal(reusableWindowsLock(lock, state, 'homelab-delegator', token, runtime), false)
+})
+
+test('Windows named-profile lock is reusable when hermesHome is the profile home', () => {
+  const token = 'stored-token'
+  const fingerprint = crypto.createHash('sha256').update(token).digest('hex').slice(0, 32)
+
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'homelab-delegator',
+    tokenFingerprint: fingerprint,
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h\\profiles\\homelab-delegator'
+  }
+
+  const state = { alive: true, owned: true }
+  const runtime = { hermesPath: lock.hermesPath, hermesHome: lock.hermesHome }
+  assert.equal(reusableWindowsLock(lock, state, 'homelab-delegator', token, runtime), true)
+})
+
 test('Windows integrated terminal uses encoded PowerShell and preserves cwd as literal data', () => {
   const command = buildWindowsInteractiveCommand("C:\\Users\\O'Brien\\repo")
   const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')

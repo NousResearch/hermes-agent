@@ -106,6 +106,16 @@ function fakeSsh(rules: any[] = []) {
           return false
         }
 
+        // Spawn now exports HERMES_HOME=...; do not let the probe rule steal the pid line.
+        if (
+          (cmd.includes('marker_clear()') || /setsid|nohup/.test(cmd)) &&
+          matcher instanceof RegExp &&
+          /HERMES_HOME/.test(matcher.source) &&
+          !/setsid|nohup|marker/.test(matcher.source)
+        ) {
+          return false
+        }
+
         return !(mutexWrapped && matcher instanceof RegExp && /python3 -c/.test(matcher.source))
       })
 
@@ -782,6 +792,62 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
+test('buildSpawnCommand sets HERMES_HOME to the named profile home', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'homelab-delegator', {
+    hermesHome: '/tmp/hermes-root',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.match(cmd, /exec env HERMES_DESKTOP=1 HERMES_HOME=/)
+  assert.ok(
+    cmd.includes('/tmp/hermes-root/profiles/homelab-delegator'),
+    'named profile must spawn under <root>/profiles/<name>'
+  )
+})
+
+test('buildSpawnCommand sets HERMES_HOME to the canonical default home', () => {
+  for (const profile of ['', 'default']) {
+    const cmd = buildSpawnCommand('/x/hermes', profile, {
+      hermesHome: '/tmp/hermes-root',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+    })
+
+    assert.match(cmd, /exec env HERMES_DESKTOP=1 HERMES_HOME=/)
+    assert.ok(cmd.includes('/tmp/hermes-root'), `profile ${JSON.stringify(profile)} must keep the install root`)
+    assert.ok(
+      !cmd.includes('/tmp/hermes-root/profiles/'),
+      `profile ${JSON.stringify(profile)} must not nest under profiles/`
+    )
+  }
+})
+
+test('buildSpawnCommand shell-escapes HERMES_HOME', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'homelab-delegator', {
+    hermesHome: '/tmp/hermes-root',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.match(cmd, /HERMES_HOME=/)
+  assert.doesNotMatch(cmd, /HERMES_HOME=\/tmp\/hermes-root/)
+  assert.match(cmd, /HERMES_HOME='/)
+})
+
+test('buildSpawnCommand does not put the session token in argv or HERMES_HOME env', () => {
+  const token = 'tok_secret_value_do_not_leak'
+
+  const cmd = buildSpawnCommand('/x/hermes', 'homelab-delegator', {
+    hermesHome: '/tmp/hermes-root',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.match(cmd, /--ssh-session-token-file/)
+  assert.ok(!cmd.includes(token))
+  assert.doesNotMatch(cmd, /HERMES_DASHBOARD_SESSION_TOKEN/)
+  assert.match(cmd, /HERMES_HOME=/)
+})
+
 test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
   assert.match(cmd, /serve --isolated/)
@@ -1115,6 +1181,43 @@ test('connect() respawns when the requested remote profile differs from the lock
   )
 })
 
+test('connect() does not reuse a named-profile lock whose hermesHome is the default root', async () => {
+  const reuseToken = 'stored-token'
+
+  const lock = ownedLock({
+    profile: 'homelab-delegator',
+    hermesHome: '/home/alice/.hermes',
+    tokenFingerprint: fingerprintToken(reuseToken)
+  })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/HERMES_HOME/, '/home/alice/.hermes\n'],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [cmd => /pidfd_open/.test(cmd), 'TERMINATED\n'],
+    [/kill 333/, ''],
+    [/--version/, 'Hermes Agent v0.18.2\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '890\n'],
+    [/kill -0 890/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
+  ])
+
+  const result = await connect(
+    connectDeps(ssh, { profile: 'homelab-delegator', reuseToken, adoptServedToken: async () => 'fresh' })
+  )
+
+  assert.equal(result.reused, false)
+  assert.ok(
+    ssh.calls.some(c => /setsid/.test(c)),
+    'legacy default-root hermesHome must not reuse as a canonical named-profile lock'
+  )
+})
+
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ hermesPath: '/old/stale/hermes', tokenFingerprint: fingerprintToken(reuseToken) })
@@ -1197,6 +1300,38 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
   const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
   assert.match(lockWrite, new RegExp(`"protocolVersion":${PROTOCOL_VERSION}`))
   assert.match(lockWrite, /"hermesHome":"\/home\/alice\/\.hermes"/)
+})
+
+test('connect() named-profile spawn writes profile-specific hermesHome into the lockfile', async () => {
+  const writes: string[] = []
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/HERMES_HOME/, '/home/alice/.hermes\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '700\n'],
+    [/kill -0 700/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=45500\n'],
+    [
+      /printf '%s' '/,
+      c => {
+        writes.push(c)
+
+        return ''
+      }
+    ]
+  ])
+
+  await connect(connectDeps(ssh, { profile: 'homelab-delegator', adoptServedToken: async () => 'fresh' }))
+  const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
+  assert.ok(
+    lockWrite.includes('"hermesHome":"/home/alice/.hermes/profiles/homelab-delegator"'),
+    `expected profile home in lock, got: ${lockWrite}`
+  )
 })
 
 test('connect() respawns when the lockfile pid is dead (killed dashboard)', async () => {

@@ -371,6 +371,13 @@ def _resolve_direct_interpreter(python_entry: str) -> tuple[str, list[str]]:
     return base, py_path
 
 
+def apply_spawn_hermes_home(env: dict[str, str], payload: dict[str, Any]) -> None:
+    """Copy caller-resolved profile home into the spawn env. Do not re-derive it."""
+    hermes_home = payload.get("hermesHome")
+    if hermes_home:
+        env["HERMES_HOME"] = str(hermes_home)
+
+
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     ownership_id = _ownership(str(payload["ownershipId"]))
     spawn_nonce = _nonce(str(payload["spawnNonce"]))
@@ -401,6 +408,7 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     env = dict(os.environ)
     env["VIRTUAL_ENV"] = os.path.dirname(venv_dir)
     env.pop("PYTHONPATH", None)
+    apply_spawn_hermes_home(env, payload)
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)
     win32con = _win32().win32con

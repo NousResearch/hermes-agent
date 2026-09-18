@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { resolveProfileHermesHome } from './profile-hermes-home'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -564,7 +565,9 @@ async function connectWindowsRemote(deps) {
 
   assertBootstrapNotSuperseded(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+  const installHome = runtime.hermesHome
+  const hermesHome = resolveProfileHermesHome(installHome, profile, 'win32')
+  await assertWindowsRemoteInstallUpdateClear(ssh, installHome)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
   if (!inspection.supported) {
@@ -590,7 +593,7 @@ async function connectWindowsRemote(deps) {
       throw error
     }
 
-    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
+    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, { ...runtime, hermesHome })
 
     if (reusable) {
       await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
@@ -615,7 +618,7 @@ async function connectWindowsRemote(deps) {
             ownershipId,
             spawnNonce: lock.spawnNonce,
             creationTimeNs: lock.creationTimeNs,
-            hermesHome: runtime.hermesHome,
+            hermesHome,
             pythonPath: runtime.python
           }
         }
@@ -654,13 +657,13 @@ async function connectWindowsRemote(deps) {
     spawned = await atomicWindowsSpawn(
       ssh,
       runtime,
-      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath }),
+      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath, hermesHome }),
       {
         ownershipId,
         spawnNonce,
         profile,
         hermesPath: runtime.hermesPath,
-        hermesHome: runtime.hermesHome,
+        hermesHome,
         tokenFingerprint,
         startedAt
       }
@@ -701,7 +704,7 @@ async function connectWindowsRemote(deps) {
     port: 0,
     profile,
     hermesPath: runtime.hermesPath,
-    hermesHome: runtime.hermesHome,
+    hermesHome,
     tokenFingerprint,
     startedAt
   }
@@ -737,7 +740,7 @@ async function connectWindowsRemote(deps) {
       ownershipId,
       spawnNonce,
       creationTimeNs: spawned.creationTimeNs,
-      hermesHome: runtime.hermesHome,
+      hermesHome,
       pythonPath: runtime.python
     }
   } catch (error) {

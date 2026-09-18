@@ -30,6 +30,7 @@ class _WedgeAgent:
         self._last_activity_desc = "wedge"
         self.interrupts = []
         self.statuses = []
+        self.tool_reasons = []
         self._lock = threading.Lock()
 
     def _liveness_activity_lock(self):
@@ -44,8 +45,10 @@ class _WedgeAgent:
     def _emit_status(self, text):
         self.statuses.append(text)
 
-    def interrupt(self, message, *, hard_cancel=False, require_generation=None):
+    def interrupt(self, message=None, *, hard_cancel=False, tool_reason=None,
+                  require_generation=None):
         self.interrupts.append((message, hard_cancel, require_generation))
+        self.tool_reasons.append(tool_reason)
         return True
 
 
@@ -79,6 +82,10 @@ def test_no_progress_guard_stops_renewal_so_the_wedged_lease_is_reclaimable(tmp_
 
     assert agent.interrupts, "the guard did not hard-interrupt the wedged turn"
     assert agent.interrupts[0][1] is True
+    assert agent.interrupts[0][2] == agent._turn_liveness_activity_generation, (
+        "the abort must be claimed against the generation the stall was observed at, or a turn "
+        "that resumed meanwhile is hard-cancelled"
+    )
     assert lease.stop.is_set() is True
     assert lease.is_turn_active() is False, "lease renewal was not stopped; the row would renew forever"
 

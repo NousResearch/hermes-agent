@@ -77,6 +77,10 @@ _VALID_POLICIES = frozenset(
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
 
+# Maximum consecutive reconnect attempts after at least one successful attach
+# before abandoning the supervisor and evicting it from the registry (#114897).
+MAX_POST_ATTACH_RECONNECT_FAILURES = 5
+
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
 FRAME_TREE_MAX_OOPIF_DEPTH = 2
@@ -347,6 +351,10 @@ class CDPSupervisor:
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
+
+        # Post-attach reconnect failure tracking (#114897)
+        self._attached_once: bool = False
+        self._consecutive_reconnect_failures: int = 0
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -667,6 +675,17 @@ class CDPSupervisor:
                     self._start_error = e
                     self._ready_event.set()
                     return
+                if self._attached_once:
+                    self._consecutive_reconnect_failures += 1
+                    if self._consecutive_reconnect_failures >= MAX_POST_ATTACH_RECONNECT_FAILURES:
+                        logger.warning(
+                            "CDP supervisor %s: reconnect failed %d consecutive times after successful attach; abandoning supervisor: %s",
+                            self.task_id,
+                            self._consecutive_reconnect_failures,
+                            _redact_cdp_error_text(e),
+                        )
+                        SUPERVISOR_REGISTRY.remove(self.task_id, supervisor=self)
+                        return
                 logger.warning(
                     "CDP supervisor %s: connect failed (attempt %s): %s",
                     self.task_id, attempt, _redact_cdp_error_text(e),
@@ -690,6 +709,8 @@ class CDPSupervisor:
                 await self._attach_initial_page()
                 with self._state_lock:
                     self._active = True
+                self._attached_once = True
+                self._consecutive_reconnect_failures = 0
                 last_success_at = time.time()
                 backoff = 0.5  # reset after a successful attach
                 if not self._ready_event.is_set():
@@ -702,6 +723,18 @@ class CDPSupervisor:
                     self._start_error = e
                     self._ready_event.set()
                     raise
+                if self._attached_once and not self._active:
+                    # Initial page attach failed during reconnect
+                    self._consecutive_reconnect_failures += 1
+                    if self._consecutive_reconnect_failures >= MAX_POST_ATTACH_RECONNECT_FAILURES:
+                        logger.warning(
+                            "CDP supervisor %s: attach failed %d consecutive times after initial attach; abandoning supervisor: %s",
+                            self.task_id,
+                            self._consecutive_reconnect_failures,
+                            _redact_cdp_error_text(e),
+                        )
+                        SUPERVISOR_REGISTRY.remove(self.task_id, supervisor=self)
+                        return
                 logger.warning(
                     "CDP supervisor %s: session dropped after %.1fs: %s",
                     self.task_id,
@@ -1489,6 +1522,19 @@ class _SupervisorRegistry:
         if supervisor is not None:
             supervisor.stop()
 
+    def remove(self, task_id: str, supervisor: Optional[CDPSupervisor] = None) -> bool:
+        """Remove supervisor for ``task_id`` from the registry if present.
+
+        If ``supervisor`` is specified, only removes if the currently registered
+        instance is identically that supervisor (avoiding racing with a newer one).
+        """
+        with self._lock:
+            existing = self._by_task.get(task_id)
+            if existing is not None and (supervisor is None or existing is supervisor):
+                self._by_task.pop(task_id, None)
+                return True
+            return False
+
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
@@ -1511,6 +1557,7 @@ __all__ = [
     "DIALOG_POLICY_MUST_RESPOND",
     "DialogRecord",
     "FrameInfo",
+    "MAX_POST_ATTACH_RECONNECT_FAILURES",
     "PendingDialog",
     "SUPERVISOR_REGISTRY",
     "SupervisorSnapshot",

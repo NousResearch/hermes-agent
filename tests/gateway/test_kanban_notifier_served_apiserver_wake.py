@@ -43,10 +43,13 @@ class RecordingApiServerAdapter:
     def __init__(self, *, fail_first: bool = False):
         self.turns = []
         self.homes = []
+        self.profiles = []
         self._fail_first = fail_first
 
-    async def run_internal_session_turn(self, *, session_id, text, notification_category="result"):
+    async def run_internal_session_turn(self, *, session_id, text, notification_category="result",
+                                        profile=""):
         self.homes.append(str(get_hermes_home()))
+        self.profiles.append(profile)
         if self._fail_first:
             self._fail_first = False
             raise RuntimeError("simulated wake failure")
@@ -189,8 +192,10 @@ def test_served_profile_api_server_subscription_wakes_in_process(served, monkeyp
     assert [turn["session_id"] for turn in adapter.turns] == [SESSION]
     assert WORKER_SESSION not in [turn["session_id"] for turn in adapter.turns]
     assert task in adapter.turns[0]["text"] and "done once" in adapter.turns[0]["text"]
-    # The wake ran under the OWNING profile's runtime scope, not the launch profile's.
+    # The wake ran under the OWNING profile's runtime scope, not the launch profile's, and the
+    # adapter was told which profile the authorization proved (no re-derivation from HERMES_HOME).
     assert adapter.homes == [str(served.builder)]
+    assert adapter.profiles == ["builder"]
     # No HTTP self-post: no shared-listener request, so no secondary API_SERVER_KEY is involved.
     assert _FakeHttpSession.calls == []
     assert _unseen(task) == []
@@ -315,7 +320,7 @@ def test_internal_session_turn_binds_profile_and_targets_the_session(served, mon
     monkeypatch.setattr(adapter, "_run_agent", fake_run_agent)
 
     with _profile_runtime_scope(served.builder):
-        asyncio.run(adapter.run_internal_session_turn(session_id=SESSION, text="wake"))
+        asyncio.run(adapter.run_internal_session_turn(session_id=SESSION, text="wake", profile="builder"))
 
     assert seen["session_id"] == SESSION
     assert seen["user_message"] == "wake"
@@ -328,11 +333,163 @@ def test_internal_session_turn_binds_profile_and_targets_the_session(served, mon
     # A session the active profile's store does not own fails closed.
     with _profile_runtime_scope(served.builder):
         with pytest.raises(RuntimeError):
-            asyncio.run(adapter.run_internal_session_turn(session_id="not-a-session", text="wake"))
+            asyncio.run(adapter.run_internal_session_turn(session_id="not-a-session", text="wake",
+                                                          profile="builder"))
 
-    # The concurrent-run cap defers the wake instead of bypassing it (caller rewinds the cursor).
-    adapter._max_concurrent_runs = 1
-    adapter._inflight_agent_runs = 1
+
+def test_internal_session_turn_adopts_the_compression_tip(served, monkeypatch):
+    """A rotated (compressed) origin wakes on the live continuation, not the retired parent."""
+    from gateway.platforms.api_server import APIServerAdapter
+
+    parent, tip = "20260918_010000_parent", "20260918_020000_tip"
+    db = SessionDB(served.builder / "state.db")
+    try:
+        db.create_session(parent, source="webui", profile_name="builder")
+        db.append_message(parent, "user", "old turn")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", profile_name="builder", parent_session_id=parent)
+        db.append_message(tip, "user", "live turn")
+        assert db.resolve_resume_session_id(parent) == tip, "fixture must produce a live tip"
+    finally:
+        db.close()
+
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    seen = {}
+
+    async def fake_run_agent(**kwargs):
+        seen.update(kwargs)
+        return {}, {}
+
+    monkeypatch.setattr(adapter, "_run_agent", fake_run_agent)
+    with _profile_runtime_scope(served.builder):
+        asyncio.run(adapter.run_internal_session_turn(session_id=parent, text="wake", profile="builder"))
+
+    assert seen["session_id"] == tip
+    assert "live turn" in str(seen["conversation_history"])
+
+
+def test_internal_session_turn_retries_a_saturated_cap(served, monkeypatch):
+    """The concurrent-run cap is transient: back off and retry (as the HTTP 429 path does)."""
+    from gateway.platforms.api_server import APIServerAdapter
+
+    _own_session(served.builder, SESSION, "builder")
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    seen, sleeps = {}, []
+
+    async def fake_run_agent(**kwargs):
+        seen.update(kwargs)
+        return {}, {}
+
+    calls = {"n": 0}
+
+    def limited_once():
+        calls["n"] += 1
+        return object() if calls["n"] == 1 else None
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(adapter, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(adapter, "_concurrency_limited_response", limited_once)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    with _profile_runtime_scope(served.builder):
+        asyncio.run(adapter.run_internal_session_turn(session_id=SESSION, text="wake", profile="builder"))
+    assert seen["session_id"] == SESSION
+    assert sleeps == [2.0]  # first backoff step, then the retry succeeds
+
+    # Exhausting the attempts raises, so the caller rewinds instead of silently dropping the event.
+    sleeps.clear()
+    monkeypatch.setattr(adapter, "_concurrency_limited_response", lambda: object())
     with _profile_runtime_scope(served.builder):
         with pytest.raises(RuntimeError):
-            asyncio.run(adapter.run_internal_session_turn(session_id=SESSION, text="wake"))
+            asyncio.run(adapter.run_internal_session_turn(session_id=SESSION, text="wake", profile="builder"))
+    assert sleeps == [2.0, 5.0, 10.0]
+
+
+def test_standalone_named_profile_gateway_keeps_the_http_self_post(served, monkeypatch):
+    """Without a multiplexer the profile owns its own listener/key: the self-post is unchanged."""
+    import aiohttp
+
+    _FakeHttpSession.calls = []
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeHttpSession)
+    kb.init_db()
+    adapter = RecordingApiServerAdapter()
+    adapter._api_key, adapter._host, adapter._port, adapter._model_name = "k" * 20, "127.0.0.1", 8642, "hermes"
+    runner = _make_runner(served, adapter=adapter)
+    runner.config = SimpleNamespace(multiplex_profiles=False, profile_routes=[])
+    # A standalone ``hermes -p builder`` gateway: no multiplexer, no secondary adapter map, and the
+    # profile IS the primary profile of this process (so it owns its own listener and key).
+    runner._primary_profile_name = "builder"
+    runner._kanban_notifier_profile = "builder"
+    runner._profile_adapters = {}
+    task = _subscription()  # notifier_profile="builder" on a non-multiplex gateway
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.turns == []
+    assert len(_FakeHttpSession.calls) == 1
+    assert _FakeHttpSession.calls[0]["url"].endswith("/v1/chat/completions")
+    assert _unseen(task) == []
+
+
+def test_missing_session_store_fails_closed(served):
+    """No state.db at all for the served profile is not ownership."""
+    runner = _make_runner(served)
+    assert not (served.builder / "state.db").exists()
+    assert _adapter_for_subscription(runner, Platform.API_SERVER, _api_sub(), "builder") is None
+
+
+def test_failed_connect_profile_does_not_borrow_but_still_wakes_in_process(served):
+    """A profile whose own bot failed to connect still owns its session wake (no adapter is used).
+
+    The in-process turn reads no credential and sends through no transport, so the transport
+    boundary documented in ``authz_mixin._is_shared_bot_satellite`` (a failed/reconnecting bot is
+    still that profile's credential) does not gate it. A profile that DID connect its own adapter
+    keeps the hard boundary: it never falls back to the primary listener.
+    """
+    _own_session(served.builder, SESSION, "builder")
+    failed = _make_runner(served)
+    failed._profile_failed_platforms = {"builder": {Platform.DISCORD}}
+    assert _adapter_for_subscription(failed, Platform.API_SERVER, _api_sub(), "builder") \
+        is failed.adapters[Platform.API_SERVER]
+
+    connected = _make_runner(served, builder_adapters={Platform.DISCORD: object()})
+    assert _adapter_for_subscription(connected, Platform.API_SERVER, _api_sub(), "builder") is None
+
+
+def test_adapter_without_in_process_delivery_fails_closed(served, monkeypatch):
+    """A non-push adapter that cannot run in-process must never self-post as the default profile."""
+    import aiohttp
+
+    class InProcesslessAdapter:
+        supports_async_delivery = False
+
+        async def send(self, chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+            return SendResult(success=False, error="stateless")
+
+    _own_session(served.builder, SESSION, "builder")
+    _FakeHttpSession.calls = []
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeHttpSession)
+    kb.init_db()
+    runner = _make_runner(served, adapter=InProcesslessAdapter())
+    task = _subscription()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert _FakeHttpSession.calls == []
+    assert _unseen(task)  # denied and retryable, never delivered as the wrong profile
+
+
+def test_platform_wide_api_server_route_denies_the_default_profiles_destinations(served):
+    """Why the ownership rule exists: a platform-wide api_server route is not a narrow fix."""
+    _own_session(served.builder, SESSION, "builder")
+    _own_session(served.root, "default-session", "default")
+    runner = _make_runner(served, routes=[
+        {"name": "api-builder", "platform": "api_server", "profile": "builder"}])
+    assert _adapter_for_subscription(runner, Platform.API_SERVER, _api_sub(), "builder") \
+        is runner.adapters[Platform.API_SERVER]
+    # The same route matches the default profile's own api_server destination and denies it.
+    assert _adapter_for_subscription(runner, Platform.API_SERVER,
+                                     _api_sub(chat_id="default-session"), "default") is None

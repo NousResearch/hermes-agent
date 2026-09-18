@@ -166,7 +166,8 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
             raise RuntimeError(
                 f"wake self-post for served profile {profile!r} requires in-process session "
                 "delivery; refusing to self-post as the default profile")
-        await in_process(session_id=session_id, text=text, notification_category=notification_category)
+        await in_process(session_id=session_id, text=text, profile=str(profile),
+                         notification_category=notification_category)
         return
     import aiohttp
     host = str(getattr(adapter, "_host", "") or "127.0.0.1")

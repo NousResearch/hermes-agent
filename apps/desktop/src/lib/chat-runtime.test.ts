@@ -149,6 +149,18 @@ describe('toRuntimeMessage timeline metadata', () => {
 
     expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
   })
+
+  it('forwards turnStats on the assistant custom metadata', () => {
+    const turnStats = { durationS: 12, input: 100, output: 20, cacheRead: 80, cacheWrite: 0, calls: 2 }
+    const runtime = toRuntimeMessage({
+      id: 'with-stats',
+      parts: [{ text: 'ok', type: 'text' }],
+      role: 'assistant',
+      turnStats
+    })
+
+    expect((runtime.metadata?.custom as { turnStats?: typeof turnStats }).turnStats).toEqual(turnStats)
+  })
 })
 
 describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {

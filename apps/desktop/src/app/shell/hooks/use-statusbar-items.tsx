@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
@@ -31,7 +31,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { cacheHitLabel, CacheTtlCountdown, cacheTtlRemainingLabel, cacheTtlRemainingSeconds, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -318,6 +318,24 @@ export function useStatusbarItems({
         : currentUsage,
     [contextBreakdown, currentUsage]
   )
+
+  // Nothing re-renders this hook between turns, so without a timer the lapsed window
+  // would keep its slot until the next event. Fire once, exactly when it expires.
+  const [, markCacheLapsed] = useState(0)
+  const cacheTtlS = gaugeUsage.cache_ttl_s
+  const cacheRefreshedAt = gaugeUsage.cache_refreshed_at
+
+  useEffect(() => {
+    const remaining = cacheTtlRemainingSeconds(cacheTtlS, cacheRefreshedAt)
+
+    if (remaining === null || remaining <= 0) {
+      return
+    }
+
+    const timer = setTimeout(() => markCacheLapsed(tick => tick + 1), remaining * 1000)
+
+    return () => clearTimeout(timer)
+  }, [cacheRefreshedAt, cacheTtlS])
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
@@ -687,6 +705,19 @@ export function useStatusbarItems({
         label: tokensPerSecond || '—',
         title: copy.tokensPerSecondTitle,
         toggleLabel: copy.toggleTokensPerSecond,
+        variant: 'text'
+      },
+      {
+        // Gate on the remaining seconds, not on the pair being present: a lapsed window
+        // would otherwise keep its slot, and a statusbar item's chrome outlives a label
+        // that renders nothing.
+        hidden: !cacheTtlRemainingSeconds(gaugeUsage.cache_ttl_s, gaugeUsage.cache_refreshed_at),
+        id: 'cache-ttl',
+        label:
+          gaugeUsage.cache_ttl_s && gaugeUsage.cache_refreshed_at ? (
+            <CacheTtlCountdown refreshedAt={gaugeUsage.cache_refreshed_at} ttlS={gaugeUsage.cache_ttl_s} />
+          ) : null,
+        title: copy.cacheTtl(cacheTtlRemainingLabel(gaugeUsage.cache_ttl_s, gaugeUsage.cache_refreshed_at)),
         variant: 'text'
       },
       {

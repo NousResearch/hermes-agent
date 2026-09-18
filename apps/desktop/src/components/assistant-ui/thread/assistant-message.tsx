@@ -9,7 +9,7 @@ import {
   useThreadRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { type FC, Fragment, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
 import { requestModelMenuToggle } from '@/app/chat/composer/focus'
@@ -51,6 +51,7 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   AudioLines,
+  BarChart3,
   GitForkIcon,
   KeyRound,
   Loader2Icon,
@@ -75,6 +76,7 @@ import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
+import type { TurnStats } from '@/types/hermes'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -244,6 +246,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // Whole-turn wall-clock seconds (set once at completion — referentially
   // stable across the 30 Hz delta stream, so this adds no per-token renders).
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
+  const turnStats = useAuiState(s => s.message.metadata?.custom?.turnStats as TurnStats | undefined)
 
   const getMessageText = useCallback(
     () =>
@@ -327,6 +330,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
               getMessageText={getMessageText}
               messageId={messageId}
               onBranchInNewChat={onBranchInNewChat}
+              turnStats={turnStats}
             />
           )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
@@ -936,12 +940,14 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
-  durationS,
-  messageId,
-  getMessageText,
-  onBranchInNewChat
-}) => {
+const AssistantActionBar: FC<
+  MessageActionProps & {
+    durationS?: number
+    onToggleStats?: () => void
+    statsOpen?: boolean
+    turnStats?: TurnStats
+  }
+> = ({ durationS, messageId, getMessageText, onBranchInNewChat, onToggleStats, statsOpen, turnStats }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -955,6 +961,8 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     },
     [react]
   )
+
+  const hasStats = Boolean(turnStats) || durationS !== undefined
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
@@ -989,6 +997,18 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             tooltip={copy.branchNewChat}
           >
             <GitForkIcon className="size-3.5" />
+          </TooltipIconButton>
+        )}
+        {hasStats && (
+          <TooltipIconButton
+            aria-pressed={statsOpen}
+            onClick={() => {
+              triggerHaptic('selection')
+              onToggleStats?.()
+            }}
+            tooltip={copy.turnStats}
+          >
+            <BarChart3 className="size-3.5" />
           </TooltipIconButton>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
@@ -1086,7 +1106,15 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   )
 }
 
-const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
+const AssistantFooter: FC<MessageActionProps & { durationS?: number; turnStats?: TurnStats }> = ({
+  durationS,
+  turnStats,
+  ...props
+}) => {
+  const { t } = useI18n()
+  const [statsOpen, setStatsOpen] = useState(false)
+  const segments = useMemo(() => turnStatsSegments(t.assistant.thread, turnStats, durationS), [durationS, t, turnStats])
+
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
       <BranchPickerPrimitive.Root
@@ -1103,7 +1131,77 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar durationS={durationS} {...props} />
+      <AssistantActionBar
+        durationS={durationS}
+        onToggleStats={() => setStatsOpen(open => !open)}
+        statsOpen={statsOpen}
+        turnStats={turnStats}
+        {...props}
+      />
+      {statsOpen && segments.length > 0 && (
+        <div
+          className="flex flex-wrap justify-end gap-x-1.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground select-none"
+          data-slot="aui_turn-stats"
+        >
+          {segments.map((segment, index) => (
+            <Fragment key={segment}>
+              {index > 0 && <span className="opacity-45">·</span>}
+              <span className="whitespace-nowrap">{segment}</span>
+            </Fragment>
+          ))}
+        </div>
+      )}
     </div>
   )
+}
+
+function turnStatsSegments(
+  copy: {
+    turnStatsIn: (n: string) => string
+    turnStatsOut: (n: string) => string
+    turnStatsReasoning: (n: string) => string
+    turnStatsCached: (n: string) => string
+    turnStatsHit: (n: string) => string
+    turnStatsCalls: (n: string) => string
+  },
+  turnStats: TurnStats | undefined,
+  durationS: number | undefined
+): string[] {
+  const segments: string[] = []
+  const elapsed = turnStats?.durationS ?? durationS
+  if (elapsed !== undefined) segments.push(formatElapsed(elapsed))
+
+  if (turnStats?.input !== undefined) segments.push(copy.turnStatsIn(turnStats.input.toLocaleString()))
+  if (turnStats?.output !== undefined) segments.push(copy.turnStatsOut(turnStats.output.toLocaleString()))
+  if (turnStats?.reasoning !== undefined) {
+    segments.push(copy.turnStatsReasoning(turnStats.reasoning.toLocaleString()))
+  }
+
+  const cacheRead = turnStats?.cacheRead ?? 0
+  const cacheWrite = turnStats?.cacheWrite ?? 0
+  const cached = cacheRead + cacheWrite
+  if (cached > 0) {
+    segments.push(copy.turnStatsCached(cached.toLocaleString()))
+    const denom = (turnStats?.input ?? 0) + cached
+    if (denom > 0) {
+      segments.push(copy.turnStatsHit(`${Math.round((cacheRead / denom) * 100)}%`))
+    }
+  }
+
+  if (turnStats?.calls !== undefined && turnStats.calls > 1) {
+    segments.push(copy.turnStatsCalls(turnStats.calls.toLocaleString()))
+  }
+
+  // A zero delta is dropped rather than rendered as `$0.0000`: free routes and
+  // providers that report no price both land there, and neither is worth a segment.
+  if (turnStats?.costUsd) {
+    segments.push(formatTurnCost(turnStats.costUsd))
+  }
+
+  return segments
+}
+
+/** Turn cost, four decimals below a dollar so sub-cent turns stay readable, two above. */
+function formatTurnCost(costUsd: number): string {
+  return `$${costUsd.toFixed(costUsd < 1 ? 4 : 2)}`
 }

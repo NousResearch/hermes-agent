@@ -1060,7 +1060,8 @@
    duration stamp — regenerate/branch would derail the scripted flow. */
 [data-thread-type='onboarding'] [data-slot='aui_msg-actions'],
 [data-thread-type='onboarding'] [data-slot='aui_msg-reactions'],
-[data-thread-type='onboarding'] [data-slot='aui_turn-duration'] {
+[data-thread-type='onboarding'] [data-slot='aui_turn-duration'],
+[data-thread-type='onboarding'] [data-slot='aui_turn-stats'] {
   display: none;
 }
 

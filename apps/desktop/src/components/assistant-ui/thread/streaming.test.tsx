@@ -5,7 +5,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime
 } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -530,6 +530,85 @@ describe('assistant-ui streaming renderer', () => {
     )
 
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
+  })
+
+  it('tucks the turn stats behind a toggle on the action bar row', () => {
+    const settled = {
+      ...assistantMessage('All done.', false),
+      metadata: {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: { durationS: 12 }
+      }
+    } as ThreadMessage
+
+    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    // Nothing visible by default — the stats ride a toggle inside the action
+    // bar, so settling a turn adds no chrome to the transcript.
+    expect(container.querySelector('[data-slot="aui_turn-stats"]')).toBeNull()
+
+    const toggle = screen.getByRole('button', { name: 'Turn stats' })
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+
+    // Same row as the (always-mounted) action bar: the footer's height is
+    // already reserved while the turn streams, so the toggle lands without
+    // shifting layout.
+    expect(actions?.contains(toggle)).toBe(true)
+
+    fireEvent.click(toggle)
+    expect(container.querySelector('[data-slot="aui_turn-stats"]')?.textContent).toContain('12s')
+  })
+
+  it('renders every segment the payload carries, and drops a zero cost', () => {
+    // Shape and figures taken from a real deepseek turn: 14 calls against a warm prefix cache.
+    const withStats = (turnStats: Record<string, number>) =>
+      ({
+        ...assistantMessage('All done.', false),
+        metadata: {
+          unstable_state: null,
+          unstable_annotations: [],
+          unstable_data: [],
+          steps: [],
+          custom: { turnStats }
+        }
+      }) as ThreadMessage
+
+    const strip = (message: ThreadMessage) => {
+      const { container } = render(<TranscriptHarness messages={[userMessage(), message]} />)
+      fireEvent.click(screen.getAllByRole('button', { name: 'Turn stats' })[0])
+
+      return container.querySelector('[data-slot="aui_turn-stats"]')?.textContent ?? ''
+    }
+
+    const full = strip(
+      withStats({
+        cacheRead: 609_920,
+        calls: 14,
+        costUsd: 0.01662936,
+        durationS: 89,
+        input: 53_132,
+        output: 11_383,
+        reasoning: 7_491
+      })
+    )
+
+    // toLocaleString() on both sides: the grouping separator follows the host locale.
+    expect(full).toContain('1:29')
+    expect(full).toContain(`${(53_132).toLocaleString()} in`)
+    expect(full).toContain(`${(11_383).toLocaleString()} out`)
+    expect(full).toContain(`${(7_491).toLocaleString()} reasoning`)
+    expect(full).toContain(`${(609_920).toLocaleString()} cached`)
+    expect(full).toContain('92% hit')
+    expect(full).toContain('14 calls')
+    expect(full).toContain('$0.0166')
+
+    cleanup()
+
+    // Free route: the cost delta is zero, so the segment is absent rather than `$0.0000`.
+    expect(strip(withStats({ costUsd: 0, durationS: 3, input: 10 }))).not.toContain('$')
   })
 
   it('renders assistant provider errors inline', () => {

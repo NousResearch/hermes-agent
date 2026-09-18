@@ -3,7 +3,7 @@ import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, typ
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
-import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
+import type { MessageReaction, SessionMessage, TurnStats, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
   toolResultMetadata?: ToolResultMetadata
@@ -54,6 +54,9 @@ export type ChatMessage = {
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
   durationS?: number
+  /** Per-turn token/cache/call stats from `message.complete.turn_stats`
+   *  (live) or `display_metadata.turn_stats` (history). */
+  turnStats?: TurnStats
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
@@ -201,6 +204,8 @@ export type GatewayEventPayload = {
   refs_done?: number
   refs_total?: number
   phase?: string
+  // message.complete — per-turn token/cache/call stats (snake_case dict).
+  turn_stats?: unknown
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean

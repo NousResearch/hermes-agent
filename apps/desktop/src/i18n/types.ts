@@ -3786,6 +3786,7 @@ export interface Translations {
       toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
+      cacheTtl: (t: string) => string
       tokensPerSecondTitle: string
       agents: string
       closeAgents: string
@@ -4084,6 +4085,13 @@ export interface Translations {
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
       turnDuration: (duration: string) => string
+      turnStats: string
+      turnStatsIn: (n: string) => string
+      turnStatsOut: (n: string) => string
+      turnStatsReasoning: (n: string) => string
+      turnStatsCached: (n: string) => string
+      turnStatsHit: (n: string) => string
+      turnStatsCalls: (n: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

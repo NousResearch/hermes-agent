@@ -2,9 +2,13 @@
 
 ``server._event_frame`` proves a payload's SHAPE once it has found the event's contract; it cannot prove
 that every emitted event NAME has one (an undeclared or mistyped literal is a ``KeyError`` on the first
-execution of that path). The source inventory below keeps that closure mechanical, and the same scan
-refuses a dict literal at a typed emit helper — the producer-side crossing the frame check catches only
-at runtime.
+execution of that path). The source inventory below keeps that closure mechanical.
+
+The producer side is guarded at RUNTIME, never by a source scan (root ``AGENTS.md``: a test must not
+read production source). ``test_every_registered_event_refuses_a_non_model_payload`` sweeps the whole
+registry through the real frame builder, and the producer regressions
+(``test_typed_event_producers_settle.py``, ``test_pet_generate_rpc.py``) drive the real handlers so a
+dict-handed payload — which ``_pet_emit`` swallows at debug level — fails instead of passing silently.
 """
 
 from __future__ import annotations
@@ -59,10 +63,6 @@ _SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
 _DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_][a-z0-9_.]*)\"")
 _BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.M)
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.M)
-# A dict literal where the typed helpers expect a Payload instance (the event-name string, the session
-# id, then ``{``): the exact producer-side crossing that lands as TypeError after state already changed.
-_DICT_PAYLOAD = re.compile(r"\b(?:_emit|_broadcast_global_event|_voice_emit|_pet_emit|desktop_ui\.emit|desktop_ui\.emit_or_error)"
-                           r"\(\s*\"[a-z_][a-z0-9_.]*\"\s*,(?:(?:[^,()]|\([^()]*\))*,)?\s*\{")
 
 
 def _read(path: Path) -> str:
@@ -117,18 +117,6 @@ def test_catalog_covers_the_whole_wire():
     registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())
 
 
-def test_no_producer_hands_a_dict_to_a_typed_emit_helper():
-    """Gateway siblings and the desktop-only tools (whose ``desktop_ui`` sink is ``server._emit``)."""
-    from tools.registry import _tool_module_candidates
-
-    offenders = []
-    for src in sorted([*(REPO / "tui_gateway").glob("*.py"), *_tool_module_candidates(REPO / "tools")]):
-        for match in _DICT_PAYLOAD.finditer(_read(src)):
-            line = _read(src).count("\n", 0, match.start()) + 1
-            offenders.append(f"{src.relative_to(REPO)}:{line}")
-    assert offenders == [], f"dict literal payloads at typed emit helpers: {offenders}"
-
-
 def test_openrpc_validates_against_vendored_meta_schema(gen):
     schema = json.loads(META_SCHEMA.read_text(encoding="utf-8"))
     document = json.loads(gen.render_openrpc())
@@ -155,3 +143,24 @@ def test_check_detects_stale_output_in_an_explicit_output_directory(tmp_path):
     stale = _generator("--check", "--out-dir", str(tmp_path))
     assert stale.returncode == 1
     assert "gateway-contract.generated.ts" in stale.stderr
+
+
+def test_every_registered_event_refuses_a_non_model_payload():
+    """Runtime seam over the WHOLE registry: a payload-carrying event accepts its registered model and
+    refuses anything else (a dict, the crossing class that lands as TypeError after state changed).
+
+    ``model_construct`` builds an instance without validation, so the sweep covers every event
+    regardless of which fields are required.
+    """
+    from tui_gateway import server
+    from tui_gateway.contracts import registry
+
+    assert registry.EVENTS, "the event registry is empty"
+    for name, contract in registry.EVENTS.items():
+        with pytest.raises(TypeError):
+            server._event_frame(name, "sid", {})  # a dict is never a payload, for any event
+        if contract.payload is None:
+            continue
+        frame = server._event_frame(name, "sid", contract.payload.model_construct())
+        assert frame["params"]["type"] == name
+        assert isinstance(frame["params"]["payload"], dict)

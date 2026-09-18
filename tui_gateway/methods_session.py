@@ -18,7 +18,8 @@ from .contracts.billing_delegation_pets import (
     SubscriptionResumeResult, SubscriptionStateResult, SubscriptionUpgradeParams, SubscriptionUpgradeResult, UsageModel)
 from .contracts.common import OkResult, SessionLiveInfo, TranscriptMessage, Usage
 from .contracts.config_free_tier_control import VerificationStatusParams, VerificationStatusResult
-from .contracts.events import BillingStepUpVerificationPayload, PetGenerateProgressPayload, SessionInfoPayload
+from .contracts.events import (BillingStepUpVerificationPayload, PetGenerateProgressPayload,
+                           PetHatchProgressPayload, SessionInfoPayload)
 from .contracts.projects_pets import (
     PetCellsParams, PetCellsResult, PetExportResult, PetGalleryParams, PetGalleryResult,
     PetInfoMetaResult, PetInfoParams, PetInfoResult, PetRenameParams, PetScaleParams,
@@ -1478,9 +1479,10 @@ def _(rid, params: PetHatchParams) -> PetHatchResult | dict:
     except GenerationError as exc: return srv._err(rid, 5031, str(exc))
     srv._pet_cancel_arm(cancel_token); slug = store.unique_slug(name)
     def _on_progress(event: str, detail: str) -> None:
-        payload = {"event": event, "detail": detail}
+        payload = PetHatchProgressPayload(event=event, detail=detail)
         if event == "row" and detail.count(":") == 2:
-            state, done, total = detail.split(":"); payload = {"event": "row", "state": state, "done": done, "total": total}
+            state, done, total = detail.split(":")
+            payload = PetHatchProgressPayload(event="row", state=state, done=done, total=total)
         srv._pet_emit("pet.hatch.progress", payload, "pet.hatch progress")
     try:
         result = hatch_pet(base_image=base, slug=slug, display_name=name, description=params.description or "", concept=params.prompt or name, style=params.style, provider=sprite, on_progress=_on_progress, is_cancelled=lambda: srv._pet_is_cancelled(cancel_token))

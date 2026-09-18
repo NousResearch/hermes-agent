@@ -19,6 +19,8 @@ def _reset_bridge_state(monkeypatch):
     """Each test starts with an un-attempted bridge and clean mapped env."""
     monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
     for name in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_WORKSPACE",
         "TERMINAL_ENV",
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
@@ -83,6 +85,23 @@ def test_explicit_config_key_overrides_matching_env_value(monkeypatch):
 
     assert config["env_type"] == "docker"
     assert config["docker_image"] == "config/image:1"
+
+
+def test_kanban_workspace_survives_profile_terminal_cwd_bridge(monkeypatch, tmp_path):
+    """A worker's assigned workspace wins over its profile's stable cwd."""
+    stable = tmp_path / "stable-base"
+    workspace = tmp_path / "task-worktree"
+    stable.mkdir()
+    workspace.mkdir()
+    _write_config(f"terminal:\n  cwd: {stable}\n")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_workspace")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == str(workspace)
+    assert os.environ["TERMINAL_CWD"] == str(workspace)
 
 
 def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):

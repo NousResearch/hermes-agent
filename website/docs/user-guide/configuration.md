@@ -2556,6 +2556,14 @@ web:
   provider_tier:
     parallel: free
     exa: paid
+
+  # SearXNG HTTP request timeout in seconds (default: 15, matching the
+  # historical hardcoded value). Raise this for a self-hosted instance
+  # fanning out to many upstream engines that needs longer than 15s to
+  # answer. Must be a positive, finite number — 0, negative, NaN and
+  # non-numeric values are rejected with a clear error rather than
+  # silently accepted.
+  searxng_timeout: 15
 ```
 
 | Backend | Env Var | Search | Extract |
@@ -2569,7 +2577,7 @@ web:
 
 **Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
 
-**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions. The HTTP request timeout is `web.searxng_timeout` in `config.yaml`, in seconds, defaulting to `15` — a self-hosted instance querying many engines within its own timeout budget may need a higher value than the default; the setting takes precedence over the code default the moment it's set, and an invalid value (zero, negative, NaN, or non-numeric) is rejected with a clear error at search time rather than silently falling back.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 

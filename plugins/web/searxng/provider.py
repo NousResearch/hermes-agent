@@ -2,16 +2,50 @@
 
 Search-only — SearXNG aggregates upstream engines but does not fetch URLs.
 Env: ``SEARXNG_URL=http://localhost:8080``.
+HTTP timeout: ``web.searxng_timeout`` in config.yaml (seconds, default 15).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+import math
+from typing import Any, Dict, Optional, Tuple
 
 from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_env, search_fail, search_ok, setup_schema, titled_rows
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SEARXNG_TIMEOUT = 15.0
+
+
+def _resolve_searxng_timeout() -> Tuple[Optional[float], Optional[str]]:
+    """``web.searxng_timeout`` from config.yaml -> ``(timeout, None)`` or ``(None, error)``.
+
+    Unset (or explicit YAML ``null``) falls back to :data:`DEFAULT_SEARXNG_TIMEOUT`, preserving
+    the historical hardcoded 15-second behavior exactly. An explicitly configured value that is
+    not a positive, finite number (zero, negative, NaN, Inf, a YAML boolean, an integer too large
+    to represent as a float, or non-numeric) is rejected outright rather than silently
+    substituted — a bad timeout should surface immediately as a config error, not manifest later
+    as unpredictable search failures or a hang.
+    """
+    from tools.web_tools import _load_web_config  # lazy: tests patch tools.web_tools._load_web_config
+
+    raw = _load_web_config().get("searxng_timeout")
+    if raw is None:
+        return DEFAULT_SEARXNG_TIMEOUT, None
+    # bool is a subclass of int in Python, so `True`/`False` from YAML would otherwise pass
+    # straight through float() as 1.0/0.0 — reject explicitly rather than accept a nonsense value.
+    if isinstance(raw, bool):
+        return None, f"web.searxng_timeout must be a positive number of seconds, got {raw!r}"
+    try:
+        value = float(raw)
+    except OverflowError:
+        return None, f"web.searxng_timeout must be a positive, finite number of seconds, got {raw!r}"
+    except (TypeError, ValueError):
+        return None, f"web.searxng_timeout must be a positive number of seconds, got {raw!r}"
+    if not math.isfinite(value) or value <= 0:
+        return None, f"web.searxng_timeout must be a positive, finite number of seconds, got {raw!r}"
+    return value, None
 
 
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
@@ -25,9 +59,14 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         base_url = provider_env("SEARXNG_URL").rstrip("/")
         if not base_url:
             return search_fail("SEARXNG_URL is not set")
+        timeout, timeout_error = _resolve_searxng_timeout()
+        if timeout_error is not None or timeout is None:
+            logger.warning("SearXNG search rejected: %s", timeout_error)
+            return search_fail(timeout_error or "web.searxng_timeout is invalid")
         data, failure = http_get_json(
             "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
-            headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
+            headers={"Accept": "application/json"}, timeout=timeout, logger=logger,
+            reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:
             return failure

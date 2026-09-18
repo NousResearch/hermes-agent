@@ -150,15 +150,35 @@ def _codex_cancelled(sess: Dict[str, Any], session_id: str, stage: str = "") -> 
     return True
 
 
+def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
+    """One 15s POST for the device-login flow, mirroring ``auth_codex._codex_login_post``.
+
+    A transient transport blip (a dropped connection mid-flow) is retried twice with a small
+    linear backoff before propagating: losing the token exchange to a single SSL EOF wastes a
+    device-code approval the user already completed in the browser (#114610).
+    """
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
+    attempt, attempts = 1, 3
+    while True:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise
+            time.sleep(attempt)
+            attempt += 1
+
+
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
     from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
 
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        resp = client.post(
-            f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
-            headers=_JSON_HEADERS,
-        )
+    resp = _codex_post(
+        httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
+        headers=_JSON_HEADERS,
+    )
     if resp.status_code != 200:
         raise RuntimeError(_codex_device_code_start_error(resp))
     device_data = resp.json()
@@ -170,8 +190,12 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
 
 def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> Any:
     """Step 2: poll until authorized. ``None`` = expired; ``_CANCELLED`` = user cancelled."""
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
     deadline = time.monotonic() + sess["expires_in"]
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
+    max_consecutive_blips = 6  # same cap as the CLI poll loop: survives drops, fails fast on a dead network
+    consecutive_blips = 0
     with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
         while time.monotonic() < deadline:
             if _codex_cancelled(sess, session_id):
@@ -179,7 +203,20 @@ def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> A
             time.sleep(sess["interval"])
             if _codex_cancelled(sess, session_id):
                 return _CANCELLED
-            poll = client.post(f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            try:
+                poll = client.post(
+                    f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            except Exception as exc:
+                if not _is_transient_transport_error(exc):
+                    raise
+                consecutive_blips += 1
+                if consecutive_blips >= max_consecutive_blips:
+                    raise RuntimeError(
+                        f"deviceauth/token poll failed after {consecutive_blips} consecutive"
+                        f" transport errors: {exc}") from exc
+                _log.info("oauth/device: openai-codex poll transport blip, retrying (session=%s)", session_id)
+                continue
+            consecutive_blips = 0
             if poll.status_code == 200:
                 return poll.json()
             if poll.status_code in {403, 404}:
@@ -196,16 +233,15 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
     code_verifier = code_resp.get("code_verifier", "")
     if not authorization_code or not code_verifier:
         raise RuntimeError("device-auth response missing authorization_code/code_verifier")
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        token_resp = client.post(
-            CODEX_OAUTH_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code", "code": authorization_code,
-                "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
-                "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+    token_resp = _codex_post(
+        httpx, CODEX_OAUTH_TOKEN_URL,
+        data={
+            "grant_type": "authorization_code", "code": authorization_code,
+            "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
+            "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
     if token_resp.status_code != 200:
         raise RuntimeError(f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
@@ -720,6 +756,8 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
         # Nous over a free-tier identity: why a transfer ended, who signed in, and the default model
         # the completion settled on (None when the config was on the user's own model).
         "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
+        # Failed sign-ins over a free-tier identity: can a later attempt succeed, and after how long.
+        "retryable": sess.get("retryable"), "retry_after": sess.get("retry_after"),
     }
 
 

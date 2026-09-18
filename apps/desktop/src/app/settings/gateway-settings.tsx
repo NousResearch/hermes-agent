@@ -6,7 +6,13 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionProbeResult,
+  DesktopRegistryConnection
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -33,6 +39,7 @@ import {
 } from '@/store/connections'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
+import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
@@ -306,17 +313,25 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // prefers a fresh probe result over the saved value.
   const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
-  const savedAgent = (agent: DesktopCloudAgent) =>
-    registry?.connections.find(
-      connection =>
-        (connection.kind === 'cloud' || connection.kind === 'remote') &&
-        connection.url &&
-        agent.dashboardUrl &&
-        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: connection.url }) ===
-          savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: agent.dashboardUrl })
-    )
+  const savedAgent = (agent: DesktopCloudAgent) => {
+    const dashboardUrl = agent.dashboardUrl
 
-  const isConnectedAgent = (agent: DesktopCloudAgent) => savedAgent(agent)?.id === activeConnectionId
+    if (!dashboardUrl) {
+      return undefined
+    }
+
+    const target = savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: dashboardUrl })
+
+    return registry?.connections.find(
+      (connection): connection is DesktopRegistryConnection & { url: string } =>
+        (connection.kind === 'cloud' || connection.kind === 'remote') &&
+        typeof connection.url === 'string' &&
+        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: connection.url }) === target
+    )
+  }
+
+  const isConnectedAgent = (agent: DesktopCloudAgent) =>
+    savedAgent(agent)?.id === activeConnectionId && !cloudTeamChanged(savedAgent(agent), cloudOrg)
 
   const activateSavedCloud = async (id: string) => {
     setCloudConnectingId(id)
@@ -714,6 +729,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         // Multi-org user with no org chosen yet: show the picker. Don't clear a
         // previously-chosen org list on a refresh.
         setCloudOrgs(result.orgs)
+        setCloudOrg(null)
         setCloudAgents([])
         setCloudDiscover('done')
 
@@ -908,12 +924,37 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
     setCloudConnectingId(agent.id)
 
+    const warnSignInIncomplete = () =>
+      notify({
+        kind: 'warning',
+        title: t.boot.failure.signInIncompleteTitle,
+        message: t.boot.failure.signInIncompleteMessage
+      })
+
     try {
       // Saved sources keep their identity, credentials and default gateway.
       // The activation path reuses healthy sockets and validates auth on a new dial.
       const saved = savedAgent(agent)
 
       if (saved) {
+        const org = cloudOrgRef.current
+
+        if (org && cloudTeamChanged(saved, org)) {
+          const reconnected = await reconnectMovedCloudAgent(desktop, saved, org, () => seq === contextSeq.current)
+
+          if (seq !== contextSeq.current) {
+            return
+          }
+
+          if (!reconnected) {
+            warnSignInIncomplete()
+
+            return
+          }
+
+          await refreshConnectionsRegistry()
+        }
+
         await selectConnection(saved.id)
 
         return
@@ -926,11 +967,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       }
 
       if (!result.connected) {
-        notify({
-          kind: 'warning',
-          title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
-        })
+        warnSignInIncomplete()
 
         return
       }

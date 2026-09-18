@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -789,6 +790,30 @@ def _same_model_parity_kwargs(agent: Any) -> Dict[str, Any]:
     return kwargs
 
 
+def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> None:
+    """One-shot user-visible notice: ``auxiliary.background_review.reasoning_effort`` is IGNORED on
+    the same-model path (#104116). The fork inherits the parent's ``reasoning_config`` verbatim so
+    its request bytes keep the parent's prompt-cache prefix (#30532: a diverged ``thinking`` field
+    on the fork-birth request re-created a large share of the cache); the no-op used to be silent,
+    so a user who set the key saw no feedback at all. Gated on the parent so a nudge-per-turn
+    session warns once, not per fork."""
+    effort = str(_background_review_task_config(task_cfg).get("reasoning_effort") or "").strip()
+    if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
+        return
+    agent._warned_bg_review_reasoning_effort = True
+    message = (
+        f"⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review "
+        "runs on the main model: the fork inherits the conversation's reasoning effort to keep the "
+        "parent's prompt-cache prefix (see memory docs, same-model review reasoning). Route the "
+        "review elsewhere via auxiliary.background_review.provider/model to use a different effort."
+    )
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
+    logger.warning("%s", message)
+
+
 def _detach_fork_compression(review_agent: Any) -> None:
     """Detached in-memory compaction for a fork sharing the parent's session_id. Disabling
     compression (the old guard against compacting the parent's live session) removed the only
@@ -820,7 +845,27 @@ def _detach_fork_compression(review_agent: Any) -> None:
         review_agent._review_defer_compaction_before_first_response = True
 
 
-def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int) -> Dict[str, Any]:
+def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """``reasoning_config`` for a ROUTED fork from ``auxiliary.background_review.reasoning_effort``
+    (#94825). The routed branch never inherits the parent's effort (its vocabulary may be invalid for
+    the routed provider), but an explicit per-task pin is the user's choice for THAT model and must
+    win over provider defaults, as every other aux task already does via ``_get_task_extra_body``.
+    None = unset (provider default); an unknown level warns and falls through to the default."""
+    effort = _background_review_task_config(task_cfg).get("reasoning_effort")
+    if effort is None or effort == "":
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    parsed = parse_reasoning_effort(effort)
+    if parsed is None:
+        logger.warning(
+            "auxiliary.background_review.reasoning_effort %r is not a valid level (none, %s) — using "
+            "the routed provider's default", effort, ", ".join(VALID_REASONING_EFFORTS),
+        )
+    return parsed
+
+
+def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int,
+                      task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """AIAgent constructor kwargs for the review fork. skip_memory=True: an external memory plugin
     scoped to the parent's session_id would leak the harness prompt into the user's real memory
     namespace; built-in MEMORY.md/USER.md state is re-bound by the caller. Toolsets match the
@@ -841,6 +886,8 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+    elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
+        kwargs["reasoning_config"] = routed_cfg
     return kwargs
 
 
@@ -877,7 +924,12 @@ def build_cache_parity_fork(
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
     _routed = bool(_rt.get("routed"))
-    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
+    # A configured effort is dropped on the same-model path (cache parity) — say so once, visible,
+    # instead of leaving the set-but-ignored key invisible (#104116). Routed forks honor it
+    # (_routed_reasoning_config).
+    if not _routed and write_origin == "background_review":
+        _warn_ignored_reasoning_effort(agent, task_cfg)
+    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
@@ -906,6 +958,22 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        # Cache-scope parity (#109964): the fork shares the parent's physical session_id and
+        # byte-identical prefix, but is _persist_disabled (declared scope fails closed) and
+        # _session_db=None (lineage walk skipped) — so BOTH cache-identity resolvers keyed it
+        # into a different bucket than the gateway parent, costing one cold ~full-context
+        # request per review. Inherit the parent's ALREADY-RESOLVED scope once, here: no DB
+        # access from the fork, persistence stays fully detached, and both consumers (the
+        # affinity header via set_affinity_scope and the body prompt_cache_key via
+        # cache_scope_id) resolve the parent's bucket together. Routed (different-model)
+        # forks do NOT inherit: their prefix is cache-cold anyway.
+        inherited_scope = resolve_prompt_cache_scope_safe(agent)
+        if inherited_scope:
+            review_agent._inherited_cache_scope = inherited_scope
+        # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
+        # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
+        # rotation the review's usage was attributed to a different conversation than its parent.
+        review_agent._cached_conversation_root = agent._conversation_root_id()
         _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in

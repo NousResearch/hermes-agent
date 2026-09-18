@@ -346,7 +346,7 @@ class TestRunConversationCodexPath:
         assert not client_mock.chat.completions.create.called
 
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
-        """Gateway sessions set TERMINAL_CWD without stamping agent.session_cwd.
+        """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
         Codex app-server must still start in that configured workspace instead
         of falling back to the Hermes daemon process cwd."""
         from agent.transports.codex_app_server_session import (
@@ -372,7 +372,7 @@ class TestRunConversationCodexPath:
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
 
         agent = _make_codex_agent()
-        assert not hasattr(agent, "session_cwd")
+        assert agent.session_cwd is None
         with patch.object(agent, "_spawn_background_review", return_value=None):
             agent.run_conversation("hi")
 

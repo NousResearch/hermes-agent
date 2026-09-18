@@ -40,6 +40,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 # Reasoning/codex fields are role-gated (assistant-only) inside _insert_message_rows.
 _ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
+_PERSIST_AFTER_ADMISSION_INTERRUPT = "_persist_after_admission_interrupt"
 
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
@@ -201,9 +202,16 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
-        if id(msg) in history_ids or id(msg) in seed_ids:
+        if (
+            id(msg) in history_ids or id(msg) in seed_ids
+        ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
             continue
+        if getattr(agent, "_mute_notification_reply", False):
+            # Only new rows, never the cached history prefix. Keep evidence/model
+            # context intact while transcript pollers omit unsolicited presentation.
+            msg["display_kind"] = "hidden"
+            msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs

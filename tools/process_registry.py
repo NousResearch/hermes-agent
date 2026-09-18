@@ -81,16 +81,18 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # Under a systemd gateway with MemoryMax, local background commands inherit the gateway's
 # cgroup, so a memory-heavy executor can get the ENTIRE gateway killed by systemd-oomd;
 # ``systemd-run --user --scope`` gives the worker its own transient cgroup. Usability is
-# probed once (binary present but user D-Bus absent in system services/containers).
+# probed and cached for a bounded TTL (binary present but user D-Bus absent in system services/containers).
 # A memory-heavy executor (Codex, tests, Node) can push the whole cgroup past MemoryMax and trigger
 # systemd-oomd to kill the ENTIRE gateway — taking down the messaging control plane and silently losing the
-# active turn. We probe *once* whether ``systemd-run --user --scope`` is actually usable (the binary can
+# active turn. We probe whether ``systemd-run --user --scope`` is actually usable (the binary can
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
-# containers), and cache the result for the process lifetime. See #70716.
+# containers), and cache the verdict for a bounded TTL. See #70716.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
-_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+# Both verdicts expire: the user bus can vanish after a True (session logout without linger,
+# #110803) and reappear after a False (linger enabled later, #104893).
+_SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -204,12 +206,11 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
 
 
 def _systemd_scope_cached() -> Optional[bool]:
-    """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
-    expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
-    if _SYSTEMD_SCOPE_AVAILABLE is True:
-        return True
-    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
-    return None if _SYSTEMD_SCOPE_AVAILABLE is None or stale else False
+    """Cached probe verdict, or None when a (re)probe is due."""
+    if _SYSTEMD_SCOPE_AVAILABLE is None:
+        return None
+    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_PROBE_TTL_SECONDS
+    return None if stale else _SYSTEMD_SCOPE_AVAILABLE
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -262,14 +263,17 @@ def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
     importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs."""
+    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
+    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
+    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
+    gated here must protect it too (#113667)."""
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
     try:
-        from gateway.restart import is_gateway_supervisor_process
+        from gateway.restart import is_supervised_gateway_launch
         from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process() and get_running_pid(cleanup_stale=False) == os.getpid()
+        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
@@ -294,19 +298,36 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
 _scope_degraded_warned = False
 
 
-def _warn_scope_degraded_once(detail: str) -> None:
+class RestartSafeScopeUnavailable(RuntimeError):
+    """A ``require_restart_safe_scope=True`` child could not get its transient scope.
+
+    Host-level (no user D-Bus / no ``systemd-run``), never a property of the
+    child being launched: callers that keep per-job retry budgets must not
+    charge it (a kanban card parked ``blocked`` for an unreachable bus, #114720).
+    """
+
+
+def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
     """Warn once per process: the condition is host-level and the probe verdict
     is cached, so this would otherwise fire on every cron dispatch."""
     global _scope_degraded_warned
     if _scope_degraded_warned:
         return
     _scope_degraded_warned = True
-    logger.warning(
-        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
-        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
-        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
-        detail,
-    )
+    logger.warning("%s; %s", detail, consequence)
+
+
+_CRON_DEGRADED_CONSEQUENCE = (
+    "cron children are dispatched as direct external subprocesses without restart-safe "
+    "cgroup isolation (killed if the gateway restarts mid-job). Set "
+    "cron.require_restart_safe_scope=true in config.yaml to fail closed instead."
+)
+_UNIT_DEGRADED_CONSEQUENCE = (
+    "workers are spawned unmanaged inside this systemd unit's cgroup and will be KILLED when the "
+    "unit exits (Type=oneshot dispatch timers lose every worker within a second). Give the unit's "
+    "user a session bus (`loginctl enable-linger <user>`) so workers get their own scope, or set "
+    "KillMode=process on the unit."
+)
 
 
 class GatewayChildDispatch(NamedTuple):
@@ -324,8 +345,30 @@ class GatewayChildDispatch(NamedTuple):
     argv: List[str]
 
 
+def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
+    """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
+    when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
+    cached True verdict is replaced so the next dispatch re-probes and degrades instead of
+    consuming another occurrence on the same dead wrapper (#110803).
+
+    *spawn_env* is the environment the wrapper was launched with: re-deriving from it (minus the
+    bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
+    an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
+    misread as a lost bus."""
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    base_env = dict(spawn_env)
+    base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):
+        return False
+    with _SYSTEMD_SCOPE_PROBE_LOCK:
+        _SYSTEMD_SCOPE_AVAILABLE = False
+        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+    return True
+
+
 def restart_safe_gateway_child_argv(
     command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+    outlives_parent: bool = False,
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
@@ -333,20 +376,38 @@ def restart_safe_gateway_child_argv(
     cgroup, so children that must survive it run in a transient user scope.
     Hosts with no user systemd session (containers, LXCs without linger) cannot
     create one; hard-failing there is a silent cron outage, so callers state the
-    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
-    workers), ``False`` degrades to a direct external subprocess with a
-    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
+    policy: ``require_restart_safe_scope=True`` raises
+    :class:`RestartSafeScopeUnavailable` (kanban's long-lived workers), ``False``
+    degrades to a direct external subprocess with a once-per-process warning
+    (cron, behind ``cron.require_restart_safe_scope``).
+
+    ``outlives_parent=True`` (fire-and-forget kanban workers): any *other*
+    systemd unit — a ``Type=oneshot`` dispatch timer, an operator's sequencer
+    service — tears its cgroup down when it exits, so the child is scope-wrapped
+    there too (#113612). Whether that unit actually kills its children
+    (``KillMode``, lifetime) is not knowable here, so without a user bus it
+    degrades with a loud warning instead of refusing: a long-lived
+    ``Type=simple`` sequencer without linger keeps working. A cron job blocks its
+    caller until it finishes and never needs this.
     """
     if not _IS_LINUX:
         return GatewayChildDispatch("in_process", command)
-    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+    if not os.environ.get("INVOCATION_ID"):
+        return GatewayChildDispatch("in_process", command)
+    supervised_gateway = _is_supervised_gateway_process()
+    if not supervised_gateway and not outlives_parent:
         return GatewayChildDispatch("in_process", command)
 
     def _degrade(detail: str) -> GatewayChildDispatch:
-        if require_restart_safe_scope:
-            # Stored as the cron execution's error and shown on the job row: name the remedy.
-            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
-        _warn_scope_degraded_once(detail)
+        if supervised_gateway:
+            if require_restart_safe_scope:
+                # Stored as the cron execution's error and shown on the job row: name the remedy.
+                raise RestartSafeScopeUnavailable(
+                    f"cannot create restart-safe systemd scope for gateway child: {detail}"
+                )
+            _warn_scope_degraded_once(f"managed gateway: {detail}", consequence=_CRON_DEGRADED_CONSEQUENCE)
+        else:
+            _warn_scope_degraded_once(f"systemd unit dispatch: {detail}", consequence=_UNIT_DEGRADED_CONSEQUENCE)
         return GatewayChildDispatch("degraded", command)
 
     if not _systemd_run_user_scope_available():
@@ -796,9 +857,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
-        it — a leaked orphan beats tree-killing someone's browser. POSIX: psutil SIGTERMs
-        children before the parent (so trees aren't reparented to init and survive), then
-        SIGKILLs survivors after ``terminal.daemon_term_grace_seconds``. Windows:
+        it — a leaked orphan beats tree-killing someone's browser. POSIX: snapshot descendants,
+        SIGTERM the parent alone so it can perform an orderly shutdown, then clean up snapshot
+        descendants that survive its grace window. Survivors are SIGKILLed after a second
+        ``terminal.daemon_term_grace_seconds`` window. Windows:
         ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
         is the fallback."""
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
@@ -828,26 +890,52 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except (OSError, PermissionError):
             _sigterm_quietly()
             return
-        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        # Snapshot before signalling: once the parent exits, psutil can no longer
+        # reliably find children that it failed to reap.
         try:
-            targets = parent.children(recursive=True)
+            descendants = parent.children(recursive=True)
         except gone:
-            targets = []
-        targets.append(parent)
-        for proc in targets:
+            descendants = []
+
+        # Let self-managing parents (notably Chromium/Electron) shut down their
+        # tree before touching children. Killing their zygotes first can turn a
+        # graceful browser shutdown into a crash dump.
+        with suppress(gone):
+            parent.terminate()
+
+        grace = cls._daemon_term_grace_seconds()
+
+        def _wait_for_exit(targets) -> None:
+            if grace <= 0:
+                return
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline and any(cls._proc_alive(p) for p in targets):
+                time.sleep(0.05)
+
+        # Preserve descendants during the parent's configured shutdown window.
+        _wait_for_exit([parent])
+
+        # The snapshot is an anti-orphan guarantee: only descendants still alive
+        # after the parent had its chance are asked to terminate themselves.
+        remaining = descendants if grace <= 0 else [
+            proc for proc in descendants if cls._proc_alive(proc)
+        ]
+        for proc in remaining:
             with suppress(gone):
                 proc.terminate()
+
+        # Preserve the existing SIGKILL escalation semantics for every owned
+        # process that remains after its SIGTERM grace window. The parent is
+        # included in case it ignored the first signal.
+        targets = [parent, *remaining]
         # Escalate to SIGKILL for anything that ignored SIGTERM within the grace window.
         # ``psutil.wait_procs``' gone/alive partition is deliberately NOT trusted: it
         # reaps via ``Process.wait()`` and mis-partitions across zombie transitions in a
         # parent/child tree, leaving survivors un-killed. Re-probing every target is
         # deterministic.
-        grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
             return
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and any(cls._proc_alive(_p) for _p in targets):
-            time.sleep(0.05)
+        _wait_for_exit(targets)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -1161,11 +1249,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
+                session.process.wait, lambda: session.process.returncode)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        """
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -1173,7 +1266,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         try:
             wait()
         except Exception as e:
-            logger.debug("%s wait timed out or failed: %s", label, e)
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if exit_code() is None:
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+                return
+            logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
     @staticmethod
@@ -1323,10 +1421,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         session.mark_exited(exit_code)
         self._move_to_finished(session)
 
-    def _move_to_finished(self, session: ProcessSession):
+    def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.
         Idempotent: kill_process() and the reader thread can both call this; only
-        the FIRST move enqueues the completion notification, so no duplicates."""
+        the FIRST move enqueues the completion notification, so no duplicates.
+        Returns True when this call is the one that persisted the session."""
         with self._lock:
             was_running = session.id in self._running
             if was_running:
@@ -1335,6 +1434,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        # Release the retained Popen/PTY handles now: otherwise every
+        # finished-but-unpruned session keeps its stdout pipe (or PTY master)
+        # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
+        # churn can exhaust the gateway's FD limit. On the reader-thread path
+        # the pipe is already at EOF; on the kill/reconcile paths the reader
+        # may still be draining — its next read raises on the closed stream
+        # and the loop exits, dropping at most the unread tail of a process
+        # that was just killed. poll()/wait()/read_log() serve from the
+        # buffered ``output_buffer``, never from the pipe.
+        self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1354,6 +1463,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             _redact_process_result(notification)
             self.completion_queue.put(notification)
         session._completion_event.set()
+        return was_running
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1362,6 +1472,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
         }
+
+    def _release_finished_handles(self, session: ProcessSession):
+        """Close a finished session's OS handles (Popen pipes / PTY master).
+
+        Best-effort and idempotent: the session may have no local Popen (env
+        backends, detached recovery), or the handles may already be closed by
+        the reader loop / kill path. Closing a Popen's stream objects does not
+        kill anything — the child has already exited — it only releases the
+        parent's pipe FDs, which is exactly the retained-resource leak.
+        """
+        proc = session.process
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is not None:
+                    with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
+                        stream.close()
+        if session._pty is not None:
+            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # closes the master fd exactly once; it raises only if the child
+            # ignores SIGKILL, which we don't want to surface on the finish path.
+            with suppress(Exception):
+                session._pty.close()
 
     # ----- Query Methods -----
 
@@ -1406,8 +1538,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             timeout = self._oneshot_completion_wait_seconds()
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
+            # `_finished` too: `_move_to_finished` pops a session from `_running` and enqueues its completion
+            # only after releasing handles and writing the checkpoint. A parent whose turn ends inside that
+            # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
-                s for s in self._running.values()
+                s for store in (self._running, self._finished) for s in store.values()
                 if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
@@ -1820,7 +1955,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
                 session.termination_source = source
-            self._move_to_finished(session)
+            # The reader thread can finalise the session while the signal path
+            # blocks in the SIGKILL grace window: its ``save_completed_result``
+            # then persists this kill as a plain ``exited``. Re-write the receipt
+            # so the durable record matches what the caller was told.
+            if not self._move_to_finished(session):
+                save_completed_result(session)
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
@@ -2101,6 +2241,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
+            # Belt-and-suspenders handle release: sessions normally arrive in
+            # _finished via _move_to_finished(), which already released their
+            # Popen/PTY handles — but any session inserted into _finished
+            # directly (defensive paths, historical checkpoints) would
+            # otherwise carry its OS handles to the grave unreleased. The
+            # release is idempotent, so double-closing is safe.
+            self._release_finished_handles(self._finished[sid])
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.

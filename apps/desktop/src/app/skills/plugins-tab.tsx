@@ -1,13 +1,5 @@
 import { useStore } from '@nanostores/react'
-import {
-  memo,
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { memo, type ReactNode, useEffect, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
@@ -24,8 +16,6 @@ import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
   $agentPlugins,
-  $agentPluginsError,
-  $agentPluginsStatus,
   type AgentPluginRow,
   type GatewayRequest,
   isDesktopRelevantPlugin,
@@ -34,45 +24,16 @@ import {
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
-import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 
-import { PanelEmpty } from '../overlays/panel'
 import { Pill } from '../settings/primitives'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
 
+import type { CapabilityView } from './capability-tabs'
+import { CatalogBrowser } from './catalog-browser'
+import { type CatalogEntry, parseCatalog } from './catalog-data'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
-
-// The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
-// the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
-// hides the docs chrome and adds "+ Add to this Agent" per card, which posts
-//   { type: 'hermes-plugin-pick', name, repo, sha, subdir, tier, installCmd }
-// to the parent window. We validate the origin and open the shared
-// dual-target install modal (agent half → catalog-pinned install into the
-// scoped profile; desktop half → this app), so unified packages install both
-// halves in one flow.
-const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
-const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
-
-// Catalog viewport: persisted through the shared pane store, dragged from the
-// section's TOP edge ("pull the catalog up"), clamped so neither the catalog
-// nor the plugin list above can vanish. Same contract as EmbeddedHubPicker.
-const CATALOG_PANE_ID = 'capabilities-plugin-catalog'
-const CATALOG_DEFAULT_PX = 380
-const CATALOG_MIN_PX = 120
-const CATALOG_MAX_VH = 0.75
-const CATALOG_COLLAPSED_PX = 4
-const CATALOG_LIST_RESERVED_PX = 176
-
-interface PluginPickMessage {
-  installCmd?: string
-  name?: string
-  repo?: string
-  sha?: string
-  subdir?: string
-  tier?: string
-  type?: string
-}
 
 /** Deep-link anchor for a package row (`/skills?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
@@ -192,15 +153,11 @@ function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   return null
 }
 
-/** Column widths shared by the header and every row so the two control
- *  columns line up down the page like a table. */
-const HALF_COL = 'flex w-36 shrink-0 items-center gap-1.5'
-
-/** One control cell; `label` is the accessible name for screen readers only
- *  (the visible column label lives once, in the header). */
+/** Controls for one installed plugin half in the detail pane. */
 function HalfCell({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div aria-label={label} className={HALF_COL} role="cell">
+    <div aria-label={label} className="flex w-full items-center gap-3" role="cell">
+      <span className="min-w-0 flex-1 text-xs text-(--ui-text-tertiary)">{label}</span>
       {children}
     </div>
   )
@@ -237,15 +194,18 @@ function PackageRow({
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
+  // Electron's desktop-half reconcile only walks THIS machine's homes, so a
+  // package installed on a remote backend can never materialize here (#114079).
+  const remoteBackend = useStore($connection)?.mode === 'remote'
 
   return (
     <div
-      className="flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5 last:border-b-0"
+      className="flex flex-col gap-5"
       data-testid={`plugin-row-${pkg.key}`}
       id={pluginElementId(agent?.key ?? agent?.name ?? desktop?.id ?? pkg.key)}
       role="row"
     >
-      <div className="flex min-w-0 flex-1 items-start gap-2" role="cell">
+      <div className="flex w-full min-w-0 flex-1 items-start gap-2" role="cell">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
             <span>{pkg.name}</span>
@@ -294,8 +254,10 @@ function PackageRow({
             }}
           />
         ) : pkg.desktopMissing ? (
-          <Tip label={p.desktopHalfPendingTip}>
-            <span className="text-[0.65rem] text-(--ui-text-tertiary)">{p.desktopHalfPending}</span>
+          <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
+            <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+              {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
+            </span>
           </Tip>
         ) : (
           <Dash />
@@ -313,7 +275,7 @@ function PackageRow({
                 size="xs"
                 variant="outline"
               >
-                {p.updateToPin(agent.catalog_sha?.slice(0, 8) ?? '')}
+                {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
               </Button>
             )}
             {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
@@ -354,31 +316,49 @@ function PackageRow({
   )
 }
 
+export function PluginActions({ profile }: { profile: ProfileScope }) {
+  const { t } = useI18n()
+  const d = t.settings.plugins
+  const { requestGateway } = useGatewayRequest()
+  const scope = profileParam(profile)
+
+  return <>
+    <Button className="underline" onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="text">
+      {d.installModal.installFromGit}
+    </Button>
+    <Tip label={d.openFolder}>
+      <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost"><FolderOpen /></Button>
+    </Tip>
+    <Tip label={d.rescan}>
+      <Button aria-label={d.rescan} onClick={() => void rescanAll(requestGateway, scope)} size="icon-xs" variant="ghost"><RefreshCw /></Button>
+    </Tip>
+  </>
+}
+
 /** THE plugins surface: one row per package. Each row shows its Desktop half
  *  (this app — the same for every profile, gateway, or machine) and its Agent
- *  half (the selected profile's backend). Discovery sits underneath: the live
- *  catalog picker plus Install from Git for anything not in the catalog. */
+ *  half (the selected profile's backend). Browse uses the shared native
+ *  catalog; Install from Git remains available for unlisted packages. */
 export const PluginsTab = memo(function PluginsTab({
   profile,
-  scopeSelector,
-  scopeLabel
+  scopeLabel,
+  view = 'installed',
+  query = '',
+  onQueryChange
 }: {
+  query?: string
+  onQueryChange?: (value: string) => void
+  view?: CapabilityView
   profile: ProfileScope
-  /** The Capabilities profile selector; rendered in the Agent column header so
-   *  it visibly governs only that column. */
-  scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent column label. */
   scopeLabel?: string
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const d = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
-  const status = useStore($agentPluginsStatus)
-  const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
@@ -395,255 +375,67 @@ export const PluginsTab = memo(function PluginsTab({
 
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
-  const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
-  const height = heightOverride ?? CATALOG_DEFAULT_PX
-  const open = height > CATALOG_COLLAPSED_PX
-  const [pickerMounted, setPickerMounted] = useState(open)
-  const [dragging, setDragging] = useState(false)
-  const sectionRef = useRef<HTMLElement>(null)
-
-  if (open && !pickerMounted) {
-    setPickerMounted(true)
-  }
-
-  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return
-    }
-
-    event.preventDefault()
-    const startY = event.clientY
-    const startHeight = height
-    const column = sectionRef.current?.parentElement
-    const columnMax = column ? column.clientHeight - CATALOG_LIST_RESERVED_PX : Number.POSITIVE_INFINITY
-    const max = Math.max(CATALOG_MIN_PX, Math.round(Math.min(window.innerHeight * CATALOG_MAX_VH, columnMax)))
-    setDragging(true)
-
-    const onMove = (move: globalThis.PointerEvent) => {
-      setPaneHeightOverride(
-        CATALOG_PANE_ID,
-        Math.round(Math.min(max, Math.max(CATALOG_MIN_PX, startHeight + (startY - move.clientY))))
-      )
-    }
-
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      setDragging(false)
-    }
-
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp, { once: true })
-  }
-
-  useEffect(() => {
-    if (!open) {
-      return undefined
-    }
-
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== CATALOG_ORIGIN) {
-        return
-      }
-
-      const data = event.data as null | PluginPickMessage
-
-      if (!data || data.type !== 'hermes-plugin-pick' || !data.name || !data.repo) {
-        return
-      }
-
-      const existing = $agentPlugins.get().find(row => row.catalog_name === data.name || row.name === data.name)
-
-      if (existing && !existing.update_available) {
-        notify({ kind: 'success', message: p.alreadyInstalled(String(data.name)) })
-
-        return
-      }
-
-      openPluginInstallRequest({
-        catalogName: String(data.name),
-        profile: scope,
-        repo: data.subdir ? `${String(data.repo)}#${String(data.subdir)}` : String(data.repo),
-        sha: data.sha ? String(data.sha) : undefined
-      })
-    }
-
-    window.addEventListener('message', onMessage)
-
-    return () => window.removeEventListener('message', onMessage)
-  }, [open, p, scope])
-
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+  const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
+    name: pkg.name,
+    identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
+    description: pkg.description,
+    category: pkg.kind === 'desktop' ? 'desktop' : 'general',
+    tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
+    repo: pkg.desktop?.packageOrigin?.repo ?? '',
+    sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
+    version: pkg.agent?.version ?? ''
+  }))).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })), [packages])
+  const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
+  const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id) || agentRows.some(row =>
+    (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available
+  )
+  const install = (entry: CatalogEntry) => openPluginInstallRequest({
+    catalogName: entry.name,
+    profile: scope,
+    repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
+    sha: entry.sha
+  })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-32 flex-1 overflow-y-auto">
-        {/* Header: what the two columns mean, and the controls that act on
-            the whole page (install, folder, rescan). */}
-        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
-          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.pageBlurb}
-          </p>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              {d.installModal.installFromGit}
-            </Button>
-            <Tip label={d.openFolder}>
-              <Button
-                aria-label={d.openFolder}
-                onClick={() => void revealPluginsDir()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <FolderOpen className="size-3.5" />
-              </Button>
-            </Tip>
-            <Tip label={d.rescan}>
-              <Button
-                aria-label={d.rescan}
-                onClick={() => {
-                  triggerHaptic('selection')
+      <CatalogBrowser
+        installedEntries={installedEntries}
+        isInstalled={isInstalled}
+        kind="plugins"
+        onInstall={install}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
+
+          if (!pkg) {
+            return null
+          }
+
+          return <PackageRow
+            busy={pkg.agent ? agentBusy(pkg.agent) : false}
+            key={pkg.key}
+            onAgentToggle={(row, enable) => {
+              if (row.key) {
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }
+            }}
+            onAgentUpdate={row => {
+              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
+                if (applied) {
+                  notify({ kind: 'success', message: p.updated(row.name) })
                   void rescanAll(requestGateway, scope)
-                }}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <RefreshCw className="size-3.5" />
-              </Button>
-            </Tip>
-          </div>
-        </div>
-
-        {status === 'error' ? (
-          <PanelEmpty
-            action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
-                {t.skills.refresh}
-              </Button>
-            }
-            description={error ?? undefined}
-            icon="error"
-            title={p.loadFailed}
+                }
+              })
+            }}
+            pkg={pkg}
+            scope={scope}
+            scopeLabel={label}
           />
-        ) : packages.length === 0 && status === 'ready' ? (
-          <p className="px-3 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.emptyAll} {p.emptyHint}
-          </p>
-        ) : (
-          <div className="flex flex-col" role="table">
-            {/* Column header: the visible labels for the two control columns,
-                aligned with the cells below. The profile selector sits INSIDE
-                the Agent header so it visibly governs only that column. */}
-            <div
-              className="flex items-center gap-3 border-y border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[0.68rem] text-(--ui-text-tertiary)"
-              role="row"
-            >
-              <div className="min-w-0 flex-1" role="columnheader" />
-              <div className={HALF_COL} role="columnheader">
-                <Monitor aria-hidden className="size-3.5 shrink-0" />
-                <Tip label={p.halfDesktopHint}>
-                  <span className="font-medium">{p.halfDesktop}</span>
-                </Tip>
-              </div>
-              <div className={HALF_COL} role="columnheader">
-                <Package aria-hidden className="size-3.5 shrink-0" />
-                {scopeSelector ?? <span className="truncate font-medium">{p.halfAgentIn(label)}</span>}
-              </div>
-            </div>
-            {packages.map(pkg => (
-              <PackageRow
-                busy={pkg.agent ? agentBusy(pkg.agent) : false}
-                key={pkg.key}
-                onAgentToggle={(row, enable) => {
-                  if (!row.key) {
-                    return
-                  }
-
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-                }}
-                onAgentUpdate={row => {
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
-                    if (applied) {
-                      notify({ kind: 'success', message: p.updated(row.name) })
-                      void rescanAll(requestGateway, scope)
-                    }
-                  })
-                }}
-                pkg={pkg}
-                scope={scope}
-                scopeLabel={label}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <section
-        className="relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)"
-        ref={sectionRef}
-      >
-        <div
-          className="group/catsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
-          data-testid="plugin-catalog-sash"
-          onDoubleClick={() => setPaneHeightOverride(CATALOG_PANE_ID, undefined)}
-          onPointerDown={startDrag}
-        >
-          <div
-            className={cn(
-              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
-              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/catsash:bg-(--ui-stroke-secondary)'
-            )}
-          />
-        </div>
-        <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
-          <span className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
-            {p.catalogTitle}
-          </span>
-          <Button onClick={() => setPaneHeightOverride(CATALOG_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
-            {open ? p.catalogHide : p.catalogBrowse}
-          </Button>
-        </div>
-        {pickerMounted && (
-          <div className={cn('flex min-h-0 flex-col gap-1 px-3 pb-2', !open && 'hidden')}>
-            <div
-              style={{
-                border: '1px solid var(--ui-stroke-secondary)',
-                borderRadius: 8,
-                flex: `0 1 ${height}px`,
-                maxWidth: '100%',
-                minHeight: 0,
-                minWidth: 320,
-                overflow: 'hidden',
-                position: 'relative',
-                width: '100%'
-              }}
-            >
-              <iframe
-                sandbox="allow-scripts allow-same-origin"
-                src={CATALOG_PICKER_URL}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  height: '133.34%',
-                  pointerEvents: dragging ? 'none' : 'auto',
-                  transform: 'scale(0.75)',
-                  transformOrigin: 'top left',
-                  width: '133.34%'
-                }}
-                title={p.catalogTitle}
-              />
-            </div>
-            <p className="shrink-0 px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{p.catalogHint}</p>
-          </div>
-        )}
-      </section>
+        }}
+        view={view}
+      />
     </div>
   )
 })

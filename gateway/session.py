@@ -782,7 +782,9 @@ class SessionStore(
         self._transcript_reroutes: Dict[str, str] = {}
         self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
         self._transcript_append_failures: Dict[str, int] = {}
-        self._fts_rebuild_attempted = False
+        # Monotonic timestamp of the last FTS5 rebuild attempt, or None before any attempt; see
+        # SessionTranscriptMixin._rebuild_fts_once for the cooldown this gates.
+        self._fts_rebuild_last_attempt_at: Optional[float] = None
         self._has_active_processes_fn = has_active_processes_fn
         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
@@ -1121,15 +1123,75 @@ class SessionStore(
         self._save()
         return new_entry
 
+    def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
+        """Rekey the live routing index and reject target collisions before mutation."""
+        from dataclasses import replace as _dc_replace
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        if not old or not new or old == new:
+            return 0
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        with self._lock:
+            moving = [key for key in self._entries if key.startswith(old_ns)]
+            collisions = [
+                new_ns + key[len(old_ns):] for key in moving
+                if new_ns + key[len(old_ns):] in self._entries]
+            if collisions:
+                raise ValueError(
+                    f"profile routing collision while renaming {old!r} to {new!r}: "
+                    f"{collisions[0]!r} already exists")
+            for key in moving:
+                new_key = new_ns + key[len(old_ns):]
+                entry = self._entries.pop(key)
+                origin = entry.origin
+                if origin is not None and getattr(origin, "profile", None) == old:
+                    origin = _dc_replace(origin, profile=new)
+                self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
+            if moving:
+                self._save()
+        return len(moving)
+
+    def purge_profile_routing(self, profile: str) -> int:
+        """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_routing`, and it has to happen here for the same reason:
+        this index is written back by the owning process, so a durable DB delete made elsewhere is
+        undone by the next save of this in-memory copy — which is how a deleted profile kept
+        resolving. Idempotent; returns the number of entries dropped.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return 0
+        ns = f"agent:{name}:"
+        with self._lock:
+            dropped = [key for key in self._entries if key.startswith(ns)]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                self._save()
+        return len(dropped)
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def switch_session(
+        self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
-        reopens the target so resume matches the CLI."""
+        reopens the target so resume matches the CLI.
+
+        ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
+        the key no longer points at that session, so a caller that resolved against a snapshot
+        across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
+        """
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
+                return None
+            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+                logger.info(
+                    "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
+                    session_key, expected_session_id, old_entry.session_id,
+                )
                 return None
             if old_entry.session_id == target_session_id:
                 return old_entry

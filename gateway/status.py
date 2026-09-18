@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
+from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -88,8 +88,7 @@ def _get_process_hermes_home() -> Path:
     """Launch-home HERMES_HOME for identity files (PID, lock, status, markers):
     ``get_hermes_home()`` honors the per-session ``_HERMES_HOME_OVERRIDE`` and would misroute
     them."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    return get_process_hermes_home()
 
 
 def _canonical_hermes_home(path: Path | str) -> Path:
@@ -208,6 +207,33 @@ def normalize_updated_at(value: Any) -> Optional[str]:
         except (OverflowError, OSError, ValueError):
             return None
     return None
+
+
+# ``exit_reason`` values the out-of-loop watchdogs (gateway/shutdown_watchdog.py) stamp together with
+# ``gateway_state: degraded`` right before they hard-exit a wedged process (#113372).
+WATCHDOG_EXIT_REASONS = frozenset({"loop_liveness_watchdog", "shutdown_watchdog"})
+
+
+def retained_gateway_state(runtime: Any) -> str:
+    """What a NOT-running gateway's retained ``gateway_state.json`` says about it now:
+    ``"startup_failed"`` (or a watchdog-stamped ``"degraded"``) only while the operator still
+    wants it running, else ``"stopped"``.
+
+    ``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
+    diagnostics and records the durable stop intent as ``desired_state``; a profile the operator
+    stopped is "stopped", not a current failure. A watchdog exit (``degraded`` + an exit_reason in
+    ``WATCHDOG_EXIT_REASONS``) is the same kind of current failure as ``startup_failed`` and is kept
+    under the same rule, so the dashboard agrees with ``hermes gateway status``. Any other retained
+    state of a dead process (``running``, ``starting``, missing) is just "stopped". Shared by
+    ``/api/status`` and ``/api/messaging/platforms`` so the sidebar strip and the Channels page
+    cannot disagree."""
+    rt = runtime if isinstance(runtime, dict) else {}
+    if rt.get("desired_state") != "stopped":
+        if rt.get("gateway_state") == "startup_failed":
+            return "startup_failed"
+        if rt.get("gateway_state") == "degraded" and rt.get("exit_reason") in WATCHDOG_EXIT_REASONS:
+            return "degraded"
+    return "stopped"
 
 
 def terminate_pid(
@@ -806,6 +832,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
 ) -> None:
@@ -838,10 +865,19 @@ def write_runtime_status(
         ("active_work", active_work, lambda v: list(v) if v else None),
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
+        # Why an unset-default (multiplex on) gateway is serving one profile; None clears it.
+        ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
         ("session_store", session_store, _coerce_session_store),
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
+        if platform_state == "connected":
+            # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
+            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
+            # carried the flag into a healthy record for weeks.
+            needs_attention = False if needs_attention is _UNSET else needs_attention
+            retrying_since = None if retrying_since is _UNSET else retrying_since
         _apply_set_fields(platform_payload, (
             ("state", platform_state, None), ("error_code", error_code, None),
             ("error_message", error_message, None),
@@ -872,8 +908,10 @@ def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]
     return _read_json_file(path or _get_runtime_status_path())
 
 
-# Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect:
-# an older record outlived an ungracefully-killed writer (taskkill /F, OOM, power loss).
+# Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect: an older record
+# outlived an ungracefully-killed writer (taskkill /F, OOM, power loss) — or, with the PID alive, the
+# housekeeping thread that re-stamps ``updated_at`` every tick has wedged (#113372). 2x the 60 s
+# housekeeping interval.
 _RUNTIME_STATUS_STALE_TTL_S = 120
 
 
@@ -882,6 +920,15 @@ def runtime_status_is_stale(
 ) -> bool:
     """True when the snapshot's ``updated_at`` is older than ``ttl_s`` (or missing/unparseable)."""
     return not isinstance(record, dict) or _marker_is_stale(record.get("updated_at") or "", ttl_s)
+
+
+def runtime_status_heartbeat_age_s(record: Optional[dict[str, Any]]) -> Optional[int]:
+    """Whole seconds since the snapshot's ``updated_at``; None when missing/unparseable (an
+    unparseable stamp is a stale *file*, not a wedged heartbeat)."""
+    updated_at = normalize_updated_at(record.get("updated_at")) if isinstance(record, dict) else None
+    if not updated_at:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).total_seconds()))
 
 
 def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
@@ -903,7 +950,7 @@ _DRAINABLE_GATEWAY_STATES = frozenset({"running"})
 
 def derive_gateway_busy(*, gateway_running: bool, gateway_state: Any, active_agents: Any) -> bool:
     """Busy iff live, ``running``, and ``active_agents > 0`` -- the contract NAS gates on. Liveness
-    keys off ``gateway_running``, NEVER ``updated_at`` (an idle gateway never advances it)."""
+    keys off ``gateway_running``, NEVER ``updated_at`` (a stale heartbeat is a health warning, not death)."""
     if not derive_gateway_drainable(gateway_running=gateway_running, gateway_state=gateway_state):
         return False
     return parse_active_agents(active_agents) > 0

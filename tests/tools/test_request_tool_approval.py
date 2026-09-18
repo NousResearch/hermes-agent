@@ -182,3 +182,20 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("terminal", "curl PUT", rule_key="ext")
         assert res == {"approved": True, "message": None}
+
+    def test_approvals_mode_off_bypasses_gate(self, monkeypatch):
+        """``approvals.mode: off`` (the Desktop "Approvals: off" toggle) must bypass the shared gate
+        exactly like the shell guards do — otherwise computer_use / plugin-rule / SSH-config-write
+        approvals keep prompting a user who turned approvals off."""
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(
+            approval, "prompt_dangerous_approval",
+            lambda *a, **k: pytest.fail("approvals.mode=off must not prompt"),
+        )
+        monkeypatch.setattr(
+            approval_prompt, "prompt_dangerous_approval",
+            lambda *a, **k: pytest.fail("approvals.mode=off must not prompt"),
+        )
+        res = request_tool_approval("computer_use", "click", rule_key="cua")
+        assert res == {"approved": True, "message": None}

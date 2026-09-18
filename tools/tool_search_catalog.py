@@ -154,6 +154,26 @@ def _gate_token(query_tokens: List[str], doc_freq: Dict[str, int], n_docs: int) 
     return max(query_tokens, key=_idf)
 
 
+# Relevance floor. The rarest-token gate stops queries whose intent word no tool carries; it
+# does not stop a long hunt whose every word exists SOMEWHERE in the catalog while no single
+# tool carries more than one of them (observed: "run shell command execute code python" -> a
+# workflow-rerun tool sharing only "run"; the model read "results exist" as "it is in here"
+# and re-searched 216 times). A document must also match MIN_QUERY_TERM_COVERAGE of the
+# query's ANSWERABLE terms (present in at least one document) before it is offered. Coverage
+# only engages from MIN_ANSWERABLE_TERMS_FOR_COVERAGE terms up: short queries ("list issues")
+# legitimately differ from a tool by a word, and are where a coverage rule costs real recall.
+MIN_QUERY_TERM_COVERAGE = 0.5
+MIN_ANSWERABLE_TERMS_FOR_COVERAGE = 4
+
+
+def _required_term_coverage(answerable_term_count: int) -> int:
+    """How many of a query's ANSWERABLE unique terms a document must match to be offered:
+    one below the engagement floor, else at least half, rounded up."""
+    if answerable_term_count < MIN_ANSWERABLE_TERMS_FOR_COVERAGE:
+        return 1
+    return math.ceil(answerable_term_count * MIN_QUERY_TERM_COVERAGE)
+
+
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> List[CatalogEntry]:
     """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
@@ -162,18 +182,29 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5, *,
     BM25 is additive over the tokens a document shares with the query, so on a large catalog
     ``score > 0`` admits one-token matches and fills every slot with them (measured: "send
     gmail email" returned 5 incident tools that only shared ``email``). A token no document
-    carries admits nothing; the caller's empty-group hint tells the model to retry without it."""
+    carries admits nothing; the caller's empty-group hint tells the model to retry without it.
+    Long queries additionally need :func:`_required_term_coverage` of their answerable terms."""
     query_tokens = _tokenize(query) if catalog and limit > 0 else []
     if not query_tokens:
         return []
     corpus_stats = corpus_stats or _corpus_stats(catalog)
-    gate = _gate_token(query_tokens, corpus_stats[2], corpus_stats[3])
+    doc_freq = corpus_stats[2]
+    gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
+    answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
+    required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()
+
+    def _admitted(entry: CatalogEntry) -> bool:
+        """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
+        if entry.name.lower() == exact_name:
+            return True
+        tokens = set(entry._tokens)
+        return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
+
     scored = [
         (float("inf") if entry.name.lower() == exact_name
          else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
-        for entry in catalog
-        if entry.name.lower() == exact_name or gate in entry._tokens]
+        for entry in catalog if _admitted(entry)]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
 

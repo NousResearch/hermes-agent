@@ -1109,3 +1109,86 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Tests: require_mention gating (RSC-delivered history)
+# ---------------------------------------------------------------------------
+
+class TestTeamsRequireMention:
+    """With resource-specific consent Teams delivers every channel/groupChat message, not just
+    mentions. ``require_mention`` must drop unaddressed non-personal posts BEFORE the attachment
+    loop, keep @mentions (wire id ``28:<app id>``) / replies to the bot / personal chats, and be
+    read env-over-YAML like every other adapter."""
+
+    APP_ID = "bot-id"
+
+    def _make_adapter(self, monkeypatch=None, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant", **extra))
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+        return adapter
+
+    def _activity(self, conversation_type, *, text="hello", mentioned_id=None, reply_to_id=None):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = f"act-{conversation_type}-{mentioned_id}-{reply_to_id}"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type=conversation_type, tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        att = MagicMock(content_type="image/png")
+        att.name = "a.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        activity.attachments = [att]
+        activity.reply_to_id = reply_to_id
+        activity.entities = []
+        if mentioned_id:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = mentioned_id
+            activity.entities = [entity]
+        return activity
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("conversation_type, kwargs, dispatched", [
+        ("channel", {}, False),
+        ("groupChat", {}, False),
+        ("channel", {"text": "<at>Alice</at> hi", "mentioned_id": "29:alice"}, False),  # someone else
+        ("channel", {"text": "<at>Hermes</at> hi", "mentioned_id": "28:bot-id"}, True),  # wire form of the bot id
+        ("groupChat", {"text": "<at>Hermes</at> hi", "mentioned_id": "bot-id"}, True),
+        ("channel", {"reply_to_id": "bot-msg-1"}, True),
+        ("personal", {}, True),
+    ])
+    async def test_gate_drops_unaddressed_non_personal_before_attachment_download(
+        self, conversation_type, kwargs, dispatched,
+    ):
+        adapter = self._make_adapter(require_mention=True)
+        adapter._sent_ids.append("bot-msg-1")
+        ctx = MagicMock()
+        ctx.activity = self._activity(conversation_type, **kwargs)
+        await adapter._on_message(ctx)
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert adapter._fetch_attachment_bytes.await_count == (1 if dispatched else 0)
+
+    @pytest.mark.parametrize("yaml_value, env_value, expected", [
+        (None, None, False),      # opt-in: absent key leaves every conversation ungated
+        (True, None, True),
+        ("false", None, False),
+        (True, "false", False),   # explicit env beats YAML, like MATRIX_/MATTERMOST_REQUIRE_MENTION
+        (False, "true", True),
+    ])
+    def test_require_mention_read_env_over_yaml(self, monkeypatch, yaml_value, env_value, expected):
+        monkeypatch.delenv("TEAMS_REQUIRE_MENTION", raising=False)
+        if env_value is not None:
+            monkeypatch.setenv("TEAMS_REQUIRE_MENTION", env_value)
+        extra = {} if yaml_value is None else {"require_mention": yaml_value}
+        adapter = self._make_adapter(**extra)
+        assert adapter._require_mention is expected
+        assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance

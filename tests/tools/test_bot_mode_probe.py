@@ -34,6 +34,25 @@ def _make_bot_profile(root, name, *, managed=True, soul=None):
     return d
 
 
+def test_roster_excludes_infra_dirs_and_tombstones(tmp_path):
+    """The teammate roster applies the same identity predicate as ``profile list``: bare
+    infrastructure dirs (``@sessions``, ``@logs``) and deleted profiles are not teammates (#99392)."""
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    for stray in ("sessions", "logs"):
+        (home / "profiles" / stray / "cron").mkdir(parents=True)
+    ghost = _make_bot_profile(home, "ghost", managed=True)
+    mark_named_profile_deleted(ghost)
+
+    assert [name for name, _ in bot_mode_probe._roster(home)] == ["default", "researcher"]
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert not any(f"`@{s}`" in section for s in ("sessions", "logs", "ghost", ".deleted"))
+
+
 def test_silent_when_no_profile_is_bot_managed(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -273,3 +292,20 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def test_roster_resolves_default_to_root_home_over_stray_directory(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    # A stray profiles/default/ directory must not shadow the reserved root home.
+    stray = home / "profiles" / "default"
+    stray.mkdir()
+    (stray / "state.db").write_bytes(b"")
+
+    roster = bot_mode_probe._roster(home)
+    homes = dict(roster)
+    assert homes["default"] == home
+    assert homes["researcher"] == home / "profiles" / "researcher"
+    names = [name for name, _ in roster]
+    assert names.count("default") == 1

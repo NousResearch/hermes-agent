@@ -86,8 +86,10 @@ class TestSlashCommandsOnUnreadableTranscript:
     def test_history_unreadable_text_is_explicit(self):
         from gateway.slash_commands_status import HISTORY_UNREADABLE
 
-        assert "unreadable" in HISTORY_UNREADABLE
-        assert "not a new conversation" in HISTORY_UNREADABLE
+        # Says the history exists (not a fresh chat), avoids the internal file name, and names a fix.
+        assert "earlier messages exist" in HISTORY_UNREADABLE
+        assert "state.db" not in HISTORY_UNREADABLE
+        assert "hermes doctor --fix" in HISTORY_UNREADABLE and "/new" in HISTORY_UNREADABLE
 
     @pytest.mark.asyncio
     async def test_btw_replies_history_unreadable_on_read_failure(self):

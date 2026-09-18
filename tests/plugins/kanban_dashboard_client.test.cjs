@@ -64,4 +64,23 @@ test('empty columns hide, watched columns remain and new tasks restore columns',
   assert.deepEqual(columns(board.render(populated)).map(n=>n.props.column.name),['ready','running','blocked']);
 });
 
+test('Done defaults to a count stub, expands and persists the toggle', async () => {
+  const x=harness(), page=x.mount(x.Page);
+  x.setData({columns:[{name:'done',tasks:[{id:'done1',status:'done'}]}],tenants:[],assignees:[]});
+  page.render(); await x.flush();
+  const node=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+  const board=x.mount(node.type,node.props);
+  let tree=board.render();
+  const toggle=()=>x.nodes(tree).find(n=>n.type==='button' && n.props['aria-expanded'] !== undefined);
+  assert.ok(toggle(),'Done has an accessible toggle');
+  assert.equal(toggle().props['aria-expanded'],false);
+  assert.match(toggle().props.children.join(''),/Done · 1/);
+  assert.equal(x.nodes(tree).filter(n=>n.type?.name==='Column').length,0);
+  toggle().props.onClick(); tree=board.render();
+  assert.equal(x.nodes(tree).filter(n=>n.type?.name==='Column').length,1);
+  board.unmount();
+  const remount=x.mount(node.type,node.props);
+  assert.equal(x.nodes(remount.render()).filter(n=>n.type?.name==='Column').length,1,'expanded preference survives remount');
+});
+
 module.exports = {harness};

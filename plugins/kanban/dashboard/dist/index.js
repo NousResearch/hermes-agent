@@ -275,6 +275,7 @@
   // can inspect any board without shifting the CLI's active board out
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
+  const LS_DONE_EXPANDED_KEY = "hermes.kanban.doneExpanded";
 
   function readSelectedBoard() {
     try {
@@ -815,7 +816,7 @@
       };
       return Object.assign({}, boardData, {
         columns: boardData.columns.map(function (col) {
-          return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
+          return Object.assign({}, col, { totalCount: col.tasks.length, tasks: col.tasks.filter(filterTask) });
         }),
       });
     }, [boardData, tenantFilter, assigneeFilter, search]);
@@ -2695,6 +2696,17 @@
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
+    const { t } = useI18n();
+    const [doneExpanded, setDoneExpanded] = useState(function () {
+      try { return window.localStorage.getItem(LS_DONE_EXPANDED_KEY) === "true"; }
+      catch (_e) { return false; }
+    });
+    const toggleDone = function () {
+      const expanded = !doneExpanded;
+      setDoneExpanded(expanded);
+      try { window.localStorage.setItem(LS_DONE_EXPANDED_KEY, String(expanded)); }
+      catch (_e) { /* private mode / storage unavailable */ }
+    };
     const columnsRef = useRef(null);
     const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
     const [isPanning, setIsPanning] = useState(false);
@@ -2716,7 +2728,7 @@
       }
       window.addEventListener("resize", checkScrollable);
       return function () { window.removeEventListener("resize", checkScrollable); };
-    }, [checkScrollable, props.board]);
+    }, [checkScrollable, props.board, doneExpanded]);
 
     const isPanBlockedTarget = useCallback(function (target) {
       if (!target) return true;
@@ -2804,9 +2816,16 @@
     },
       props.board.columns.map(function (col) {
         if (!col.tasks.length && col.name !== "running" && col.name !== "blocked") return null;
+        if (col.name === "done" && !doneExpanded) {
+          return h("div", { key: col.name, className: "hermes-kanban-column hermes-kanban-column--collapsed" },
+            h("button", { type: "button", className: "hermes-kanban-done-toggle",
+              "aria-expanded": false, onClick: toggleDone },
+              `${getColumnLabel(t, "done")} · ${col.totalCount ?? col.tasks.length}`));
+        }
         return h(Column, {
           key: col.name,
           column: col,
+          onToggleDone: col.name === "done" ? toggleDone : null,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -2901,6 +2920,11 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
+        props.onToggleDone ? h("button", {
+          type: "button", className: "hermes-kanban-done-toggle",
+          "aria-expanded": true, "aria-label": tx(t, "collapseDone", "Collapse Done"),
+          onClick: props.onToggleDone,
+        }, "−") : null,
         h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",

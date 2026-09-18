@@ -4,6 +4,11 @@ import importlib
 import sys
 import types
 
+import pytest
+
+_aio_skip = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(_aio_skip, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 import aiohttp.web_request
 from aiohttp import web
 

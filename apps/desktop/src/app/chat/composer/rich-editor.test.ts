@@ -383,3 +383,29 @@ describe('deleteSelectionInEditor', () => {
     editor.remove()
   })
 })
+
+describe('composerPlainText', () => {
+  it('does not add a trailing newline for browser-created block wrappers', () => {
+    const editor = document.createElement('div')
+    const line = document.createElement('div')
+
+    editor.dataset.slot = RICH_INPUT_SLOT
+    line.textContent = 'help me debug this'
+    editor.append(line)
+
+    expect(composerPlainText(editor)).toBe('help me debug this')
+  })
+
+  it('keeps newlines between browser-created block wrappers', () => {
+    const editor = document.createElement('div')
+    const first = document.createElement('div')
+    const second = document.createElement('div')
+
+    editor.dataset.slot = RICH_INPUT_SLOT
+    first.textContent = 'first line'
+    second.textContent = 'second line'
+    editor.append(first, second)
+
+    expect(composerPlainText(editor)).toBe('first line\nsecond line')
+  })
+})

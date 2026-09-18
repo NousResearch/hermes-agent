@@ -197,8 +197,11 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
-    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
+    # so it remains destructive along with every other path rooted at "/".
+    (r'rm\s+-rf\s+/(?:'
+     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
@@ -515,45 +518,36 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
+# A fenced code block opens with 3+ backticks or 3+ tildes indented at most 3 spaces (CommonMark
+# §4.5); a backtick fence's info string may not contain a backtick. It closes only on a line whose
+# fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
+# inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
+_FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+# A fence may open (and close) inside a container: a bullet ``- ```sh``, an ordered item ``1. ```sh``,
+# a blockquote ``> ```sh``, or a nest of them (§5.1/§5.2). Strip those prefixes before fence matching.
+_CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
+
+
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
-    """Mask link destinations only in Markdown prose.
-
-    Track fenced code blocks by marker and length, as required by CommonMark:
-    a tilde line does not close a backtick fence, and a shorter fence does not
-    close a longer one. Four-space/tab-indented blocks are code too.
-    """
+    """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
+    ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
+    scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
+    mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
+    code to EOF (fail-safe)."""
     out: List[str] = []
-    fence: Optional[Tuple[str, int]] = None
-    indented_code = False
+    fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
-        content = line.rstrip("\\r\\n")
+        match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
         if fence is not None:
-            marker, length = fence
-            closing = re.match(rf"^ {{0,3}}{re.escape(marker)}{{{length},}}[ \\t]*$", content)
-            out.append(line)
-            if closing:
+            if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
+                    and not match["info"].strip()):
                 fence = None
-            continue
-
-        if indented_code:
-            if content.strip() == "" or content.startswith("    ") or content.startswith("\\t"):
-                out.append(line)
-                continue
-            indented_code = False
-
-        if content.startswith("\\t") or content.startswith("    "):
-            indented_code = True
-            out.append(line)
-            continue
-
-        opening = re.match(r"^ {0,3}(`{3,}|~{3,})([^`\\n]*)$", content)
-        if opening:
-            marker = opening.group(1)[0]
-            fence = (marker, len(opening.group(1)))
-            out.append(line)
-            continue
-
-        out.append(_mask_markdown_link_destinations(line))
+            code = True
+        else:
+            if match and not (match["marker"][0] == "`" and "`" in match["info"]):
+                fence = (match["marker"][0], len(match["marker"]))
+            code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
+        out.append(line if code else _mask_markdown_link_destinations(line))
     return out
 
 

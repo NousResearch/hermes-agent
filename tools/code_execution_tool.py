@@ -694,8 +694,21 @@ def execute_code(
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
     # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
     # SIGTERM'd the gateway mid-task.
+    # The identity probe ends in a kernel process query that has wedged on macOS
+    # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
+    from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+    _probe = run_bounded_sync(
+        _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
+    )
+    if _probe.timed_out:
+        return tool_error(
+            f"execute_code lifecycle guard did not finish within {_probe_timeout}s "
+            "(process-identity probe wedged); the code was not run. Retry the call."
+        )
+    if _probe.value:
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
         if contains_gateway_lifecycle_command(code):
             return tool_error(

@@ -86,6 +86,30 @@ def test_injects_only_into_bot_chat_on_managed_install(tmp_path):
     assert len(agent.tools) == 1
 
 
+def test_restores_allowlist_when_schema_survives_surface_refresh(tmp_path):
+    """#96105: success must restore the executor allowlist on the
+    schema-present branch.
+
+    A long-lived Bot Chat whose tool surface is reconstructed can keep the
+    schema while the executor's allowlist is rebuilt empty. The injector then
+    returned True while dispatch would reject every ``message_agent`` call —
+    advertised but non-dispatchable. Restore-on-success contract: whenever
+    ``ensure_message_agent_tool()`` returns True, ``MESSAGE_AGENT_TOOL_NAME``
+    is in ``valid_tool_names`` whenever that attribute is a set.
+    """
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert len(agent.tools) == 1
+
+    # capability refresh: schema survives, executor allowlist rebuilt empty
+    agent.valid_tool_names = set()
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME in agent.valid_tool_names
+    # byte-stable: no duplicate schema was appended
+    assert len(agent.tools) == 1
+
+
 @pytest.mark.parametrize(
     "title",
     ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"],
@@ -288,6 +312,54 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
+    lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
+    if title:
+        lines.append(f"    title: {title}")
+    if display_name:
+        lines.append(f"display_name: {display_name}")
+    (home / "profiles" / folder / "profile.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ["Scribe", "@scribe", "Dr. Foo", "dr-foo", "drfoo", "Builder"])
+def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkeypatch, target):
+    """A display name, Bot Mode title or the Desktop's @-slug of either lands on the
+    folder id message_agent keys on — the same aliases the composer autocompletes (#100671)."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("writer", "foo", "builder"))
+    _rename(home, "writer", display_name="Scribe")
+    _rename(home, "foo", title="Dr. Foo")
+    _rename(home, "builder", display_name="Builder")
+    expected = {"Scribe": "writer", "@scribe": "writer", "Dr. Foo": "foo", "dr-foo": "foo", "drfoo": "foo",
+                "Builder": "builder"}[target]
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping", agent=_FakeAgent(home)))
+
+    assert result["status"] == "sent", result
+    assert result["to"] == f"@{expected}"
+    _mode, _dm_file, argv = _runner_parts(calls[0]["command"])
+    assert argv[1:3] == ["-p", expected]
+
+
+def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
+    """Two bots titled the same must not let a DM land on whichever sorts first; the
+    reserved @hermes alias can never be hijacked by a rename."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("aaa", "bbb", "ops"))
+    _rename(home, "aaa", display_name="Scribe")
+    _rename(home, "bbb", display_name="Scribe")
+    _rename(home, "ops", display_name="Hermes")
+
+    ambiguous = json.loads(bot_mode_dm.message_agent_tool(target="Scribe", message="ping", agent=_FakeAgent(home)))
+    hijack = json.loads(bot_mode_dm.message_agent_tool(target="hermes", message="ping",
+                                                       agent=_FakeAgent(home / "profiles" / "aaa")))
+
+    assert "error" in ambiguous and "No teammate named 'Scribe'" in ambiguous["error"]
+    assert hijack.get("to") == "@hermes"
+    assert [_runner_parts(c["command"])[2][1:3] for c in calls] == [["-p", "default"]]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):
@@ -393,6 +465,36 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
 
     assert _runner_author(calls[0]["command"]) == {"id": "bot:erimac.local/coder", "name": "coder", "is_bot": True}
     assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
+
+
+def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp_path, monkeypatch):
+    """#89720: `hermes profile rename default Maia` writes profile.yaml ``display_name`` (no Bot Mode
+    title). The primary must then sign `Maia (@hermes)`, not `hermes (@hermes)`, and a teammate must
+    reach it as `maia` / `@maia` — the tag the Desktop roster inserts — while `@hermes` keeps resolving.
+    A Bot Mode title outranks the display_name in the signature, as in the Desktop's botFriendlyNames."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("coder",))
+    (home / "profile.yaml").write_text("display_name: Maia\n", encoding="utf-8")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    assert result["status"] == "sent"
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
+
+    coder = _FakeAgent(home / "profiles" / "coder")
+    for target in ("maia", "@maia", "@hermes"):
+        result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="pong", agent=coder))
+        assert result["status"] == "sent", (target, result)
+        _mode, _dm_file, argv = _runner_parts(calls[-1]["command"])
+        assert argv[1:3] == ["-p", "default"], (target, argv)
+
+    (home / "profile.yaml").write_text(
+        "display_name: Maia\nui_meta:\n  hermes-bots:\n    title: Maia Prime\n", encoding="utf-8"
+    )
+    json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    _mode, dm_file, _argv = _runner_parts(calls[-1]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia Prime (@hermes): ")
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -976,3 +1078,48 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+
+
+def test_pending_approval_spawn_names_the_approval_and_reclaims_the_dm_file(tmp_path, monkeypatch):
+    """terminal_tool's approval gate answers pending_approval with an EMPTY error and no session_id;
+    a local delivery must say the runner needs approval (nothing was sent), not blame the spawn."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 runner", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._spawn_delivery("unused", "@researcher", dm_file=str(dm_file),
+                                                    task_id=None, agent=None))
+
+    assert "approval" in result["error"] and "nothing was sent" in result["error"]
+    assert "no process id" not in result["error"]
+    assert not dm_file.exists()
+
+
+def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monkeypatch):
+    """The relay envelope is queued before the reply waiter spawns and the Desktop drains it on its
+    own: a waiter that cannot start is a lost wake-up, not a failed delivery (a hard error makes the
+    sender resend and deliver twice)."""
+    from tools import bot_relay
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "default").mkdir(parents=True)
+    bot_relay.write_remote_roster(root, [{"profile": "researcher", "handle": "researcher",
+                                          "connection_id": "laptop-1", "connection_label": "laptop"}])
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 waiter", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
+                                                        task_id=None, agent=None))
+
+    assert result["status"] == "queued"
+    assert "error" not in result
+    assert "Do NOT resend" in result["detail"]
+    assert "approval" in result["notification_error"]
+    assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"

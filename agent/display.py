@@ -910,11 +910,11 @@ def _degraded_suffix(data: dict) -> str:
     return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
 
     # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
     # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).

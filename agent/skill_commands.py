@@ -323,7 +323,7 @@ def _scaffold_header(
     return "\n".join(lines)
 
 
-_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive'}
+_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:

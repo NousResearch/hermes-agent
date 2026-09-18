@@ -4,6 +4,8 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -115,18 +117,81 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-def _sessions_sig():
-    """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
-    all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
+_SESSION_SIGNATURE_FIELDS = (
+    "id", "source", "session_key", "display_name", "model", "parent_session_id",
+    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
+    "cwd", "git_branch", "git_repo_root", "title", "title_source",
+    "last_activity_at", "last_activity_description", "profile_name", "archived",
+    "pinned", "hidden", "last_read_at", "handoff_state",
+)
+# path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
+# normal 0.5 s watch pass stat-only; SQLite is read only after another process
+# actually commits.
+_sessions_db_sig_cache: dict[str, tuple[int | None, tuple | None]] = {}
 
-    signal. Messaging-gateway turns and cron runs are written by OTHER processes that never touch this
-    gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
-    several profiles owns one store per profile, so every served sibling home is
+
+def _session_db_content_sig(db_path: Path):
+    """Digest list/transcript-relevant session rows, excluding unrelated tables.
+
+    ``gateway_heartbeats`` shares state.db and writes every minute. Using the
+    database mtime directly therefore emits sessions.changed while no session
+    changed (#98005). Cache behind the DB/WAL mtime, then inspect only the
+    sessions columns that drive Desktop projections. Legacy stores safely use
+    the subset of columns they have.
     """
-    return _newest_mtime_ns(
-        root / name
+    mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
+    cache_key = str(db_path)
+    cached = _sessions_db_sig_cache.get(cache_key)
+
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    if not db_path.exists():
+        _sessions_db_sig_cache[cache_key] = (mtime, None)
+
+        return None
+
+    conn = None
+    try:
+        import hashlib
+        import sqlite3
+        from urllib.parse import quote
+
+        conn = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=0.05)
+        available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
+        if not fields:
+            signature = None
+        else:
+            order = " ORDER BY id" if "id" in available else ""
+            rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
+            digest = hashlib.blake2b(digest_size=16)
+            for row in rows:
+                digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
+                digest.update(b"\0")
+            signature = (fields, digest.digest())
+    except Exception:  # noqa: BLE001 - preserve the old wake-up signal if the read probe cannot run
+        signature = ("mtime-fallback", mtime)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    _sessions_db_sig_cache[cache_key] = (mtime, signature)
+
+    return signature
+
+
+def _sessions_sig():
+    """Session-table content across the active and served profile stores.
+
+    Messaging-gateway turns and cron runs are written by other processes that
+    never touch this gateway's transports, so their session rows are the shared
+    change signal. Hashing only those rows avoids false Desktop refreshes from
+    unrelated state.db writes such as gateway heartbeats.
+    """
+    return tuple(
+        _session_db_content_sig(root / "state.db")
         for root in (_watcher_home(), *_served_profile_homes)
-        for name in ("state.db", "state.db-wal"))
+    )
 
 
 def _pairing_sig():

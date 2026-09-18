@@ -1111,6 +1111,32 @@ describe('typing-aware sessions.changed deferral', () => {
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
+
+  it('holds sessions.changed list refreshes while the active turn is busy, then lands one when it settles', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderTypingSync(refreshSessions)
+    await primeThrottle(refreshSessions)
+
+    act(() => setBusy(true))
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      setBusy(false)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('an empty persisted page over a populated runtime', () => {

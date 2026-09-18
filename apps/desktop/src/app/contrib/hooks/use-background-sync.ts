@@ -1055,6 +1055,7 @@ export function useBackgroundSync({
     let lastRunAt = 0
     let timer: null | number = null
     let typingDeferTimer: null | number = null
+    let busyDeferPending = false
 
     const run = () => {
       lastRunAt = Date.now()
@@ -1092,6 +1093,18 @@ export function useBackgroundSync({
     // extends lastRendererInputAt, and the firing callback re-arms if still
     // warm. There is no starvation cap: a continuous burst keeps holding.
     const runWhenKeyboardQuiet = () => {
+      // A live turn already owns the active transcript through stream events.
+      // Pulling the full stored-session list underneath it can replace sidebar
+      // rows and remount interactive surfaces (composer / clarify cards). Hold
+      // the heavy pass until the turn settles, then consume all accumulated
+      // sessions.changed ticks with one refresh.
+      if ($busy.get()) {
+        busyDeferPending = true
+
+        return
+      }
+
+      busyDeferPending = false
       const now = Date.now()
 
       if (!isTypingBurstActive(now)) {
@@ -1113,6 +1126,12 @@ export function useBackgroundSync({
       }
     }
 
+    const unsubscribeBusy = $busy.listen(busy => {
+      if (!busy && busyDeferPending) {
+        runWhenKeyboardQuiet()
+      }
+    })
+
     const unsubscribe = $sessionsChangeTick.listen(() => {
       const since = Date.now() - lastRunAt
 
@@ -1130,6 +1149,7 @@ export function useBackgroundSync({
 
     return () => {
       unsubscribe()
+      unsubscribeBusy()
 
       if (timer !== null) {
         window.clearTimeout(timer)

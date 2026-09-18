@@ -376,6 +376,30 @@ def check_macos_tcc_anchor(should_fix: bool = False) -> None:
         check_warn("macOS TCC anchor missing" if status == "missing" else "macOS TCC anchor stale", f"({detail})")
 
 
+def check_macos_gateway_app(should_fix: bool = False) -> None:
+    """Report (and with --fix install) the launchd Local Network helper .app. Silent off macOS.
+
+    See #71206.
+    """
+    with warn_on_error("macOS gateway Local Network helper check failed"):
+        from hermes_cli import macos_gateway_app as helper
+        status, detail = helper.gateway_app_state()
+        if status == "skip":
+            return
+        if status == "active":
+            return check_ok("macOS gateway Local Network helper active", f"({detail})")
+        installed = helper.ensure_gateway_app() if should_fix else None
+        if installed is not None:
+            return check_ok("macOS gateway Local Network helper installed", f"({installed})")
+        check_warn(
+            "macOS gateway Local Network helper missing" if status == "missing"
+            else "macOS gateway Local Network helper stale",
+            f"({detail}) — LAN devices can fail with No route to host under launchd. "
+            "Run `hermes doctor --fix` then `hermes gateway restart`, and allow "
+            "Hermes Gateway in System Settings → Privacy & Security → Local Network.",
+        )
+
+
 def check_macos_full_disk_access() -> None:
     """One-grant guidance: Full Disk Access silences every per-folder TCC prompt. Silent on non-macOS.
 
@@ -450,6 +474,9 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)
+    # macOS launchd Local Network identity (#71206): helper .app so nehelper can prompt.
+    # Silent on non-macOS.
+    check_macos_gateway_app(should_fix=should_fix)
     # macOS Full Disk Access (issue #52010 follow-up): one grant silences every per-folder prompt
     # permanently. Silent on non-macOS.
     check_macos_full_disk_access()

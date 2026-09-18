@@ -12,7 +12,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -442,7 +442,8 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect,
+                                                            _make_http_rejection_recorder(self._http_rejection)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
@@ -462,6 +463,8 @@ class MCPServerTransportMixin:
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
+        logger.debug("MCP server '%s': connecting to %s", self.name, url)
+        self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         headers = dict(config.get("headers") or {})
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — capture their names BEFORE client-generated headers are merged in.
@@ -486,6 +489,9 @@ class MCPServerTransportMixin:
         try:
             return await self._serve_transport(transport, label, float(connect_timeout))
         except Exception as exc:
+            # The SDK folds a non-2xx it cannot parse into ``-32603 Server returned an error response``;
+            # the recorder hook kept the status/URL/body the server actually sent (#114350, #113359).
+            http_detail = _describe_http_failure(exc, self._http_rejection)
             # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
             # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
             # previously a permanent failure with 0 active tools unless the user set
@@ -496,12 +502,15 @@ class MCPServerTransportMixin:
             # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
             # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
             if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
+                if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
+                    raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
+                                          f"({http_detail})") from exc
                 raise
             logger.warning(
                 "MCP server '%s': Streamable HTTP rejected the initial connect (%s) — retrying "
                 "over SSE. If this connects, set `transport: sse` for this server in config.yaml "
                 "to skip the failed attempt on future startups.",
-                self.name, _unwrap_exception_group(exc))
+                self.name, http_detail)
             try:
                 self._sse_fallback = True
                 return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
@@ -511,7 +520,7 @@ class MCPServerTransportMixin:
                 self._sse_fallback = False
                 raise ConnectionError(
                     f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
-                    f"(Streamable HTTP: {_unwrap_exception_group(exc)}; SSE: "
+                    f"(Streamable HTTP: {http_detail}; SSE: "
                     f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 

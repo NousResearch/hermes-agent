@@ -348,6 +348,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._ever_connected: bool = False
         # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
         self._sse_fallback: bool = False
+        # Status/URL/body of the last HTTP rejection the Streamable HTTP client saw; names the real
+        # cause when the SDK reports only ``Server returned an error response``.
+        self._http_rejection: dict = {}
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
         # Why the server is parked (the revival_reason handed to _park), None once healthy again.

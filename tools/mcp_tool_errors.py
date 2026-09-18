@@ -82,6 +82,49 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
     return code == -32603 and "server returned an error response" in str(root).lower()
 
 
+_HTTP_REJECTION_BODY_CHARS = 300
+
+
+def _make_http_rejection_recorder(sink: dict):
+    """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
+    sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
+    parse as a JSON-RPC error into the opaque ``-32603 Server returned an error response`` — the
+    status and the server's own words (e.g. ``400 {"code":-32020,"message":"Unsupported
+    MCP-Protocol-Version"}``) never reach the exception, so this is the only place they can be
+    observed. SSE bodies are never read (a stream would block the hook)."""
+
+    async def _record(response):
+        if response.status_code < 400:
+            return
+        body = ""
+        if response.headers.get("content-type", "").split(";")[0].strip().lower() != "text/event-stream":
+            try:
+                raw = await response.aread()  # buffered: the SDK's own aread() afterwards sees the same bytes
+                body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
+            except Exception:  # the failure itself is still reported, just without the body
+                body = ""
+        sink.update(status=response.status_code, method=response.request.method,
+                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+
+    return _record
+
+
+def _describe_http_failure(exc: BaseException, rejection: dict) -> str:
+    """``str(root cause)`` of a Streamable HTTP connect failure; when that root is the SDK's opaque
+    ``-32603 Server returned an error response`` and the recorder saw the rejection, the HTTP status,
+    request URL and body head are appended so the message names what the server actually said."""
+    root = _unwrap_exception_group(exc)
+    text = str(root)
+    opaque = (getattr(getattr(root, "error", None), "code", None) == -32603
+              and "server returned an error response" in text.lower())
+    if not (opaque and rejection):
+        return text
+    detail = f"HTTP {rejection['status']} from {rejection['method']} {rejection['url']}"
+    if rejection["body"]:
+        detail += f": {rejection['body']}"
+    return f"{text} ({detail})"
+
+
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Root-cause leaf of anyio ``(Base)ExceptionGroup`` wrappers (group ``str()`` is opaque). A
     ``KeyboardInterrupt``/``SystemExit`` leaf anywhere is re-raised, never flattened into a loggable

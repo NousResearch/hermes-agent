@@ -800,6 +800,22 @@ npx --version
 
 Then verify your config and restart Hermes.
 
+### Remote (HTTP) server rejects the connection
+
+`hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
+`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Hermes appends
+the HTTP status, the URL it requested and the start of the response body:
+
+```
+Streamable HTTP: Server returned an error response (HTTP 400 from POST http://host:27200/mcp:
+{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}})
+```
+
+Read the status and body first: a `400`/`405` on the `initialize` POST usually means the endpoint
+speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the request; a `401`/`403`
+means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
+endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
+
 ### Tools not appearing
 
 Possible causes:

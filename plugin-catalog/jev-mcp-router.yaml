@@ -1,0 +1,14 @@
+name: jev-mcp-router
+repo: https://github.com/Pinutss/jev-mcp-router
+sha: 1b9c3488246dfdcd010c3c7b1de9ac5946362279
+description: Selects MCP tools that fit the query inside a context budget, without executing them. Portable Agent Plugins v1 package with mcp_select MCP.
+maintainer: Pinutss
+tier: community
+category: tools
+docs_url: https://github.com/Pinutss/jev-mcp-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

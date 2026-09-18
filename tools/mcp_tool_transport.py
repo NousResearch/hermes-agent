@@ -255,7 +255,8 @@ class MCPServerTransportMixin:
     # ------------------------------------------------------------------- HTTP
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
-                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0) -> None:
+                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
+                                      strict_redirect_headers: bool = False) -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -272,9 +273,15 @@ class MCPServerTransportMixin:
             ct = _content_type_base(resp)
             return _is_2xx(resp) and bool(ct) and ct not in self._MCP_CONTENT_TYPES
         probe_headers = dict(headers) if headers else {}
+        # Same redirect boundary as the transport client: httpx strips Authorization on a cross-origin
+        # hop natively, but forwards every other configured header verbatim — under
+        # strict_redirect_headers those must not leave the configured origin on the probe either.
+        _client_cls = _make_redirect_header_stripper(
+            _httpx, _httpx.URL(url), strict=strict_redirect_headers,
+            configured_header_names={key.lower() for key in probe_headers})
         try:
-            async with _httpx.AsyncClient(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
-                                          **_present(cert=client_cert)) as client:
+            async with _client_cls(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
+                                   **_present(cert=client_cert)) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
                 if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)
@@ -377,19 +384,18 @@ class MCPServerTransportMixin:
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()
-        _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
-            httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        _client_cls = _make_redirect_header_stripper(
+            httpx, httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
                                "transport": _make_mcp_body_cap_transport(
                                    httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
                                **_present(auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
+            async with _client_cls(**client_kwargs) as http_client:
                 async with _core.streamable_http_client(url, http_client=http_client) as streams:
                     yield streams
         return _owned_client_streams()

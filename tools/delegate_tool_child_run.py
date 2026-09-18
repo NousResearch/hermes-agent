@@ -45,6 +45,8 @@ def _route_telemetry(child: Any) -> Dict[str, Any]:
         "resolved_provider": _str_or_none(getattr(child, "_route_resolved_provider", None)),
         "resolved_model": _str_or_none(getattr(child, "_route_resolved_model", None)),
         "fallback_policy": _str_or_none(getattr(child, "_route_fallback_policy", None)),
+        # Effort label / "disabled" / None (None = inherited or unknown at spawn time, never inferred).
+        "resolved_reasoning": _str_or_none(getattr(child, "_route_resolved_reasoning", None)),
     }
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:

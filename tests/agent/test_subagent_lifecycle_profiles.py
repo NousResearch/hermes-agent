@@ -82,6 +82,65 @@ def test_parity_lifecycle_and_delegate_task_resolve_same_route(captured, fake_ro
     assert kwargs["override_provider"] == oracle.provider == "openrouter"
 
 
+def test_handle_carries_resolved_reasoning_for_profile_and_none_without_profile(monkeypatch):
+    """SubagentHandle.resolved_reasoning is the label of the reasoning the child was BUILT with:
+    "low" for a profile pinning reasoning_effort: low; None on a profile-less launch (inherited/unknown)."""
+    from types import SimpleNamespace as _NS
+    from hermes_constants import parse_reasoning_effort
+
+    cfg = {"profiles": {"small": {
+        "provider": "openrouter", "model": "prof/small-model", "reasoning_effort": "low",
+    }}}
+    import hermes_cli.runtime_provider as rp
+    import agent.models_dev as md
+    monkeypatch.setattr(rp, "resolve_runtime_provider", lambda **kw: {
+        "provider": kw.get("requested"), "model": kw.get("target_model"),
+        "base_url": "https://api.example.test/v1", "api_key": "sk-test",
+        "api_mode": "chat_completions",
+    })
+    monkeypatch.setattr(md, "get_model_capabilities", lambda *a, **k: _NS(supports_tools=True))
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
+
+    calls = []
+
+    def build(**kwargs):
+        calls.append(kwargs)
+        child = FakeChild(f"sa-{len(calls)}")
+        # Mirror what _build_child_agent stamps from child.reasoning_config for profile routes.
+        if kwargs.get("requested_profile"):
+            child.reasoning_config = kwargs.get("override_reasoning_config")
+            from tools.delegate_tool import _reasoning_label
+            child._route_requested_profile = kwargs["requested_profile"]
+            child._route_resolved_reasoning = _reasoning_label(child.reasoning_config)
+        return child
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", _run)
+    parent = SimpleNamespace(session_id="parent-reasoning", enabled_toolsets=["file"])
+    service = SubagentLifecycleService(lambda: parent)
+
+    routed = service.launch(SubagentLaunchRequest(goal="routed", model_profile="small"))
+    assert calls[0]["override_reasoning_config"] == parse_reasoning_effort("low")
+    assert routed.resolved_reasoning == "low"
+    assert routed.to_dict()["resolved_reasoning"] == "low"
+
+    plain = service.launch(SubagentLaunchRequest(goal="plain", model="raw-model"))
+    assert plain.resolved_reasoning is None
+
+
+def test_handle_from_dict_without_resolved_reasoning_defaults_none():
+    from agent.subagent_lifecycle import PUBLIC_CONTRACT_VERSION, SubagentHandle
+    payload = {
+        "contract_version": PUBLIC_CONTRACT_VERSION, "subagent_id": "sa-1", "parent_session_id": "p",
+        "correlation_id": None, "created_at": 1.0, "provider": "openai", "model": "gpt-x",
+        "role": "leaf", "depth": 1, "capability": "cap", "requested_profile": "small",
+        "resolved_provider": "openrouter", "resolved_model": "prof/small-model", "fallback_policy": "none",
+    }
+    handle = SubagentHandle.from_dict(payload)
+    assert handle.requested_profile == "small"
+    assert handle.resolved_reasoning is None
+
+
 def test_both_model_and_model_profile_rejected(captured, fake_routing):
     service, calls = captured
     with pytest.raises(SubagentLifecycleError, match="model_profile"):

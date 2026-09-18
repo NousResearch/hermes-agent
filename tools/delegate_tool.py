@@ -281,7 +281,7 @@ def _build_child_agent(
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     # Spawn-time route provenance (telemetry only; never consulted for routing). Legacy profile-less
-    # children get no stamp so every reader reports all four as None. resolved_model is frozen HERE —
+    # children get no stamp so every reader reports all five as None. resolved_model is frozen HERE —
     # the child's live ``model`` may later diverge when a fallback fires, and that divergence between
     # the entry's "resolved_model" and "model" keys IS the requested-vs-effective signal.
     if requested_profile:
@@ -291,6 +291,9 @@ def _build_child_agent(
         # 'none' = profile route with an empty fallback chain (no model promotion);
         # 'profile:<name>' = profile route whose own fallback chain replaces the parent's.
         setattr(child, "_route_fallback_policy", f"profile:{requested_profile}" if override_fallback_model else "none")
+        # Reasoning the child was BUILT with (profile route > delegation.reasoning_effort > parent, as
+        # resolved by _resolve_child_runtime). None = inherited/unknown at spawn time, never inferred.
+        setattr(child, "_route_resolved_reasoning", _reasoning_label(getattr(child, "reasoning_config", None)))
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -386,6 +389,20 @@ def _run_single_child(
     finally:
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
+
+def _reasoning_label(cfg: Any) -> Optional[str]:
+    """Route-provenance label for a child's effective ``reasoning_config``: ``"<effort>"`` when reasoning is
+    enabled with a string effort, ``"disabled"`` when explicitly off, otherwise None (None config = inherited
+    from the parent / provider default and NOT known at spawn time — never inferred; malformed = None)."""
+    if not isinstance(cfg, dict):
+        return None
+    enabled = cfg.get("enabled")
+    if enabled is False:
+        return "disabled"
+    if enabled is True:
+        effort = cfg.get("effort")
+        return effort if isinstance(effort, str) and effort else None
+    return None
 
 def _profile_task_overrides(c: Dict[str, Any], routing_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """override_* kwargs for one task's credential bundle. Profile-only keys are added ONLY when the bundle

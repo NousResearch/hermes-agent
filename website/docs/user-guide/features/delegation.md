@@ -328,7 +328,7 @@ A profile's `max_iterations` can only tighten the configured delegation budget, 
 
 **Letting the model pick a tier (`delegation.agent_routing`).** By default profiles are config-driven only: the parent model never sees them. Setting `delegation.agent_routing: true` (with at least one profile configured) adds a `model_profile` enum of your configured profile names to the `delegate_task` schema, per task and batch-wide, so the parent can route each subtask to a tier. The model picks names, never providers or models: operators define the menu, models choose from it. With the gate off, a model-supplied `model_profile` is rejected with a clean tool error before any child is built.
 
-**Route telemetry.** Profile-routed children carry four provenance fields on delegation result entries, progress events, and lifecycle subagent handles:
+**Route telemetry.** Profile-routed children carry five provenance fields on delegation result entries, progress events, and lifecycle subagent handles:
 
 | Field | Meaning |
 |-------|---------|
@@ -336,8 +336,9 @@ A profile's `max_iterations` can only tighten the configured delegation budget, 
 | `resolved_provider` | The provider the profile resolved to at spawn time |
 | `resolved_model` | The model pinned at spawn time (frozen; never updated afterward) |
 | `fallback_policy` | `"none"` (empty profile fallback chain) or `"profile:<name>"` (the profile's own chain) |
+| `resolved_reasoning` | The reasoning setting the child was built with: the effort level (for example `"low"`) when reasoning is enabled, `"disabled"` when the profile turns it off, or `null`. `null` means inherited or unknown at spawn time; it is never inferred |
 
-All four are omitted on legacy profile-less children, so profile-free result entries keep their original shape. The existing `model` key stays live: when it diverges from `resolved_model`, a fallback fired, which is the requested-versus-effective audit signal.
+All five are omitted on legacy profile-less children, so profile-free result entries keep their original shape. The existing `model` key stays live: when it diverges from `resolved_model`, a fallback fired, which is the requested-versus-effective audit signal. Comparing a profile's `reasoning_effort` with `resolved_reasoning` gives the same requested-versus-effective view for reasoning.
 
 ## The `/review` Command
 

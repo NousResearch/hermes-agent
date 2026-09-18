@@ -1,6 +1,6 @@
 name: microsoft365
 repo: https://github.com/fabiomotta0311/hermes-microsoft365-plugin
-sha: 723738f2a9b4a6d98e17fecd2ad5def284375464
+sha: fee660891ab1661c4fb8d08b35ff153d903ca06f
 description: Pre-release Microsoft 365 Graph tools for Outlook, SharePoint, OneDrive, Calendar, Teams, To Do, and Planner.
 maintainer: Fabio Motta
 tier: community
@@ -8,7 +8,7 @@ category: platform
 requires_hermes: ">=0.21.3,<0.22"
 subdir: microsoft365
 docs_url: https://github.com/fabiomotta0311/hermes-microsoft365-plugin#readme
-version: "0.1.0a2"
+version: "0.1.0a3"
 platforms: []
 capabilities:
   provides_tools:

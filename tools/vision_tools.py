@@ -439,7 +439,8 @@ def _profile_rejects_tool_media(provider: str, model: str = "") -> bool:
 def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     """Whether provider+model accepts image content inside a tool-result message. Unknown
     providers are False (caller falls back to aux-LLM text) unless their ``ProviderProfile``
-    declares ``supports_vision``; ``supports_vision_tool_messages=False`` is a hard veto."""
+    declares ``supports_vision`` or the model catalog attests the model as vision-capable
+    (#115248); ``supports_vision_tool_messages=False`` is a hard veto."""
     p = provider.strip().lower() if isinstance(provider, str) else ""
     if not p or _profile_rejects_tool_media(p, model):
         return False
@@ -451,18 +452,32 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
-        return profile is not None and bool(profile.supports_vision)
+        if profile is not None and profile.supports_vision:
+            return True
     except Exception:
-        return False
+        pass
+    # Model-catalog fallback: a model the catalog attests as vision-capable may
+    # carry tool-result images even when its provider is absent from the static
+    # whitelist and declares no profile-level vision flag (e.g.
+    # deepseek/deepseek-flash — the vendor API accepts and honors tool-message
+    # images, see #115248). Consulted LAST so the veto, the whitelist and the
+    # gemini model gate keep their authority.
+    try:
+        from agent.models_dev import get_model_capabilities
+        caps = get_model_capabilities(provider, model)
+    except Exception:
+        caps = None
+    return caps is not None and bool(getattr(caps, "supports_vision", False))
 
 
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
-    results, or the user set the ``model.supports_vision`` override (escape hatch for
-    custom/local providers). Any failure → False."""
+    results (vendor contract or model-catalog vision — see
+    :func:`_supports_media_in_tool_results`), or the user set the ``model.supports_vision``
+    override (escape hatch for custom/local providers). Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode, _supports_vision_override
         from hermes_cli.config import load_config
         provider = _read_main_provider()
         model = _read_main_model()
@@ -474,9 +489,12 @@ def _should_use_native_vision_fast_path() -> bool:
         # not re-open the multimodal-envelope route the profile rejects.
         if _profile_rejects_tool_media(provider, model):
             return False
+        # One source of truth with the capture gate (#115248): the catalog
+        # hit lives inside _supports_media_in_tool_results now, so only the
+        # user's config override remains as the separate escape hatch.
         return (
             _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+            or _supports_vision_override(cfg, provider, model) is True)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

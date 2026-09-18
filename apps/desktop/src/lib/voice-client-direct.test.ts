@@ -77,6 +77,33 @@ describe('fetchVoiceClientConfig', () => {
     expect(api).toHaveBeenCalledTimes(2)
   })
 
+  it('honors an explicit Bot owner profile over the ambient active gateway profile (#100864)', async () => {
+    const api = mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    setApiRequestConnection('local')
+    setApiRequestProfile('launch-profile')
+
+    await fetchVoiceClientConfig({ profile: 'bot-rachel', connectionId: 'local' })
+
+    expect(api).toHaveBeenCalledTimes(1)
+
+    const request = api.mock.calls[0][0] as { connectionId?: string; path: string; profile?: string }
+    expect(request.path).toBe('/api/audio/voice-config')
+    expect(request.profile).toBe('bot-rachel')
+    expect(request.connectionId).toBe('local')
+  })
+
+  it('keeps distinct Bot profile configs in separate cache entries', async () => {
+    const api = mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    setApiRequestProfile('launch-profile')
+
+    await fetchVoiceClientConfig({ profile: 'bot-rachel' })
+    await fetchVoiceClientConfig({ profile: 'bot-adam' })
+
+    expect(api).toHaveBeenCalledTimes(2)
+    expect((api.mock.calls[0][0] as { profile?: string }).profile).toBe('bot-rachel')
+    expect((api.mock.calls[1][0] as { profile?: string }).profile).toBe('bot-adam')
+  })
+
   it('resolves null on an older backend without the endpoint', async () => {
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,

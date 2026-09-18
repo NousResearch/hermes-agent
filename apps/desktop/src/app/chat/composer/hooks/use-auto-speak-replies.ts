@@ -43,7 +43,7 @@ export function useAutoSpeakReplies({
   const enabled = useStore($autoSpeakReplies)
   // Wake on THIS composer's transcript: a tile subscribed to the primary's
   // would never fire on its own replies (and would fire on someone else's).
-  const { $messages } = useComposerScope()
+  const { $messages, ownerConnectionId, ownerProfile } = useComposerScope()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
 
@@ -75,9 +75,12 @@ export function useAutoSpeakReplies({
       // ran in every window, so peers just stay quiet.
       void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
         if (owns) {
-          void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
-            notifyError(error, failureLabel)
-          )
+          void playSpeechText(reply.text, {
+            messageId: reply.id,
+            source: 'read-aloud',
+            ...(ownerProfile ? { profile: ownerProfile } : {}),
+            ...(ownerConnectionId ? { connectionId: ownerConnectionId } : {})
+          }).catch(error => notifyError(error, failureLabel))
         }
       })
     }
@@ -87,5 +90,5 @@ export function useAutoSpeakReplies({
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => stops.forEach(f => f())
-  }, [$messages, enabled, sessionId])
+  }, [$messages, enabled, ownerConnectionId, ownerProfile, sessionId])
 }

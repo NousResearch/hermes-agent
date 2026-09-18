@@ -16,8 +16,7 @@ from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin,
-    _send_whatsapp_with_mentions, _send_yuanbao)
+    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -264,13 +263,15 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        mention_args = ({"mentions": args["mentions"]}
-                        if platform_name == "whatsapp" and args.get("mentions") else {})
-        # Only custom plugin handlers receive the complete typed request.
+        # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
+        # contract (the CLI rejects it elsewhere); other platforms' standalone senders don't accept the kwarg.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        mentions = args.get("mentions")
+        if mentions and platform_name == "whatsapp":
+            handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
-                                              **mention_args, **handler_args))
+                                              **handler_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -616,22 +617,29 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
+                                  max_len, force_document, mentions=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
-    rides as the media caption."""
+    rides as the media caption. WhatsApp re-pings recipients on every message that carries
+    ``mentions``, so only the first payload of a logical send gets them."""
     label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
+    first_only = {"mentions": mentions} if mentions else {}
     if captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
-                                caption=caption, **extra)
-    return await _send_chunks(chunks, lambda chunk, is_last: sender(
-        pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
+                                caption=caption, **extra, **first_only)
+
+    def send_one(chunk, is_last):
+        kwargs = {**extra, **first_only}
+        first_only.clear()
+        return sender(pconfig, chat_id, chunk, thread_id=thread_id,
+                      media_files=media_files if is_last else empty_media, **kwargs)
+    return await _send_chunks(chunks, send_one)
 
 
 def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
@@ -684,13 +692,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
-    if platform_name == "whatsapp" and mentions:
-        return await _send_whatsapp_with_mentions(
-            pconfig, chat_id, message, chunks, media_files, thread_id=thread_id,
-            max_len=max_len, force_document=force_document, mentions=mentions)
-    if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
+    if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
+            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             mentions=mentions)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route

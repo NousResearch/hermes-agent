@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 # Explicit ASCII class so full-width digits / Unicode word chars can't sneak through.
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
 
-# "Just a phone number": optional ``+`` then ASCII digits and human separators.
+# "Just a phone number": optional ``+`` then digits and human separators.
 # Anything carrying ``@`` is already a JID (``@g.us``, ``@lid``, ``status@broadcast``).
-_BARE_PHONE_RE = re.compile(r"^\+?[0-9\s().\-]+$")
+_BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
 
 
 def normalize_whatsapp_identifier(value: str) -> str:
@@ -46,7 +46,7 @@ def to_whatsapp_jid(value: str) -> str:
     if "@" in normalized:
         return normalized
     if _BARE_PHONE_RE.fullmatch(normalized):
-        digits = re.sub(r"[^0-9]+", "", normalized)
+        digits = re.sub(r"\D+", "", normalized)
         if digits:
             return f"{digits}@s.whatsapp.net"
     return normalized

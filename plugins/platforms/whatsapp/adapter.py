@@ -884,21 +884,9 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document" if force_document else "audio" if is_voice else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
 
 
-def _normalize_outbound_mentions(mentions: Any) -> list[str]:
-    """Normalize valid outbound phone numbers and participant JIDs, preserving order."""
-    if not isinstance(mentions, (list, tuple)):
-        return []
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for candidate in mentions:
-        if not isinstance(candidate, str):
-            continue
-        jid = normalize_whatsapp_mention_jid(candidate)
-        if not jid or jid in seen:
-            continue
-        seen.add(jid)
-        normalized.append(jid)
-    return normalized
+def _normalize_outbound_mentions(mentions: list[str] | None) -> list[str]:
+    """Valid participant JIDs, deduplicated, order preserved."""
+    return list(dict.fromkeys(jid for m in mentions or () if (jid := normalize_whatsapp_mention_jid(m))))
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

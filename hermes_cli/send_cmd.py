@@ -210,7 +210,7 @@ def cmd_send(args: argparse.Namespace) -> None:
     mentions = list(getattr(args, "mentions", None) or [])
     if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
         _fail("hermes send: --mention is only supported for WhatsApp targets.", _USAGE_EXIT)
-    invalid_mentions = _invalid_whatsapp_mentions(mentions) if mentions else []
+    invalid_mentions = _invalid_whatsapp_mentions(mentions)
     if invalid_mentions:
         _fail(
             "hermes send: invalid --mention value(s): "

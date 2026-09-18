@@ -33,12 +33,12 @@ snapshot/navigation, special-case `browser_*` as always adaptive, disable
 TaskCompiler/canary, or weaken route/effect/TaskRun/lease/approval checks.
 
 Run the new focused tests together with `test_execution_policy.py`,
-`test_progressive_compilation.py`, `test_task_compiler.py`,
-`test_readonly_preflight.py`, `test_durable_agent_integration.py`,
-`test_durable_hardening.py`, `test_browser_workstation_route.py` and
-`test_routines.py`; then run all `workstation/tests`, adjacent executor/
-guardrail tests, Work100 and Desktop owner contracts. Native packaged browser
-evidence remains a separate gate.
+`test_operational_capabilities.py`, `test_progressive_compilation.py`,
+`test_task_compiler.py`, `test_readonly_preflight.py`,
+`test_durable_agent_integration.py`, `test_durable_hardening.py`,
+`test_browser_workstation_route.py` and `test_routines.py`; then run all
+`workstation/tests`, adjacent executor/guardrail tests, Work100 and Desktop owner
+contracts. Native packaged browser evidence remains a separate gate.
 
 ## Adaptive execution / progressive compilation regression gate
 

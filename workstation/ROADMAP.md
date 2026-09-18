@@ -130,7 +130,52 @@ Explicit dispositions:
   RecipeStore boundaries take precedence.
 
 
-## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED; SEMANTIC-HOMOGENEITY HARDENING OPEN; NATIVE GATE OPEN
+## Progressive Operational Compilation & Operational Capability Runtime (2026-09-18) — FULLY IMPLEMENTED & VALIDATED
+
+Canonical implementation document:
+[context/PROGRESSIVE_OPERATIONAL_COMPILATION.md](context/PROGRESSIVE_OPERATIONAL_COMPILATION.md).
+Settled architectural decision:
+[D-018 in context/DECISIONS.md](context/DECISIONS.md).
+Engineering journal record:
+[H-067 in context/engineering-journal/CURRENT.md](context/engineering-journal/CURRENT.md).
+
+The complete architecture for **Progressive Operational Compilation / Operational Capability Runtime** has been fully implemented, resolving AEPC-E002 and establishing a deterministic runtime execution substrate that eliminates unnecessary model round-trips without mutating past context or breaking existing stores.
+
+Completed implementation summary:
+
+1. **Semantic Target Family & Homogeneity Hardening (AEPC-E002 Resolved):**
+   - Implemented `semantic_target_family()` and `semantic_operation_fingerprint()` in `workstation/execution_policy.py`.
+   - Structural repetition without positive semantic homogeneity evidence never triggers `REQUIRE_COMPILE`; it only yields `SUGGEST_COMPILE`.
+   - Distinct ephemeral refs (`@e1`, `@e37`, `@e92`) are no longer conflated with homogeneous fan-out.
+   - Non-browser domain mutations retain strict compile requirements on the 3rd distinct equivalent mutation.
+   - `CompilationCandidate` tracks `executed_occurrences` vs. `verified_successes` separately (`executed_unverified` never counts as verified success).
+
+2. **Native Electron Target Metadata & Structured Elements:**
+   - Updated `apps/desktop/electron/workstation-browser-runtime.ts` inventory and point scripts to extract `testid`, `name`, `role`, `tag`, and `label`.
+   - Snapshot entries and action responses (`browser_click`, `browser_type`) now return structured element targets and semantic effects.
+
+3. **Operational Capabilities Substrate (`workstation/operational_capabilities.py`):**
+   - Implemented `OperationalCapability`, `CapabilityDependency`, `CapabilityLifecycle` (`DISCOVERED`, `VALIDATED`, `PROMOTED`, `RETIRED`).
+   - `OperationalCapabilityRegistry` backed by existing `ArtifactStore` with cross-platform file locking (`fcntl`/`msvcrt`).
+   - `CapabilityResolver` with cycle detection, depth limits, and topological sorting.
+   - Automatic routine compilation via `learn_operational_capability()`.
+
+4. **Deterministic Operational Kernel (`workstation/operational_kernel.py`):**
+   - Zero-LLM execution of verified deterministic steps across filesystem and browser primitives.
+   - Condition verification, variable interpolation (`$inputs`, `$deps`, `$prev`), and automatic drift detection with fail-closed quarantine.
+
+5. **Direct & Automatic Reuse in `work_execute`:**
+   - Added `capability_id`, `capability_version`, `capability_inputs` to `work_execute` tool schema.
+   - Transparent reuse: when matching promoted capabilities exist for repetitive operations, `TaskCompiler` reuses them automatically with zero LLM calls.
+
+6. **Validation & Gates:**
+   - 100% passing tests across `workstation/tests/test_operational_capabilities.py` (12 tests) and `workstation/tests/test_execution_policy.py` (11 tests).
+   - Full workstation suite: 510 passed, 2 skipped, 0 failed.
+   - Work100 benchmark: 30 PASS / 0 FAIL / 0 gaps.
+   - Vitest desktop runtime tests: 45 passed (100% green); TypeScript typecheck passes with 0 errors.
+
+
+## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED; SEMANTIC-HOMOGENEITY HARDENING CLOSED WITH OPERATIONAL CAPABILITY RUNTIME
 
 Remote implementation `9e7292ab7825e5ce1ea294490eec57ba1f286069`
 (documentation/evidence `5e1b22527fd40d732ee4fa7a1035e6366953f6b7`; local

@@ -226,6 +226,12 @@ ProceduralMemory, ExecutionJournal and ArtifactStore ownership where practical.
 Do not introduce another canonical SessionDB, Kanban, TaskRun, BrowserTask or
 Memory system merely to host capabilities.
 
+1. **Discovery is never blocked by repetition heuristics:** Repeated call structure with distinct semantic targets or unverified exploratory status remains `ALLOW_ADAPTIVE` / `SUGGEST_COMPILE` and never escalates to `REQUIRE_COMPILE`.
+2. **OperationalCapability is the deterministic abstraction:** `workstation/operational_capabilities.py` defines `OperationalCapability` with semver, preconditions, postconditions, dependencies, input/output schemas, and lifecycle (`DISCOVERED`, `VALIDATED`, `PROMOTED`, `RETIRED`).
+3. **No duplicate persistence planes:** `OperationalCapabilityRegistry` reuses `ArtifactStore` and an atomic index file, integrating transparently with `RecipeStore` and `ProceduralMemory`.
+4. **Deterministic Kernel:** `workstation/operational_kernel.py` executes filesystem, browser, and composite primitives without intermediate LLM calls, achieving zero LLM token cost on replay.
+5. **Drift Quarantine & Reasoning Handoff:** If preconditions, execution, or postconditions drift, the capability is quarantined in the registry, and a compact handoff package is returned via `workstation.reasoning_handoff.needs_reasoning` yielding back to the LLM.
+
 Detailed target and acceptance criteria:
 [PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md).
 

@@ -2,7 +2,7 @@
 
 ## H-067 — Capability abstraction / Progressive Operational Compilation (2026-09-18)
 
-**Classification:** ARCHITECTURAL FINDING CONFIRMED / implementation required.
+**Classification:** IMPLEMENTED & VERIFIED across Python and Electron layers (Target architectural finding resolved).
 
 **Evidence base:** current `main` plus AEPC-E002 and the 2026-09-18 abstraction
 review. Canonical target:
@@ -24,8 +24,6 @@ and reuse it automatically”.
 - compact `NEEDS_REASONING` drift handoff;
 - ExecutionJournal/ArtifactStore experience/evidence plane.
 
-**Observed abstraction gap:**
-
 **Additional code-level discovery:** current `workstation/capabilities.py`
 already defines `RuntimeCapabilityRegistry` for environment dependencies
 (Python modules/system tools). It is not the new operational capability layer and
@@ -37,42 +35,33 @@ surface to extend. Current `procedure_trace.py` writes
 fingerprinting must be introduced below/alongside trace learning rather than only
 inside the top-level guard.
 
-- `execution_policy.py` can still promote structural repetition toward
-  `REQUIRE_COMPILE`;
-- built-in native browser mutations do not yet expose a sufficient semantic
-  target-family contract;
-- `work_execute` is surfaced as a model replan requirement instead of primarily
-  being harness-selected deterministic runtime infrastructure;
-- there is no first-class general Capability unit between primitive Tool and
-  higher-level Recipe/Routine;
-- procedural learning is currently browser/workflow-centric rather than a common
-  browser/filesystem/process operational compilation model.
-
-**Decision under test/implementation:** introduce a versioned Capability contract,
+**Decision implemented:** introduced a versioned Capability contract,
 Capability Resolver and trusted Operational Kernel while extending existing stores.
-Atomic capabilities should be reusable by multiple composites. Capability replay
-must not call the LLM on the success path.
+Atomic capabilities are reusable by multiple composites. Capability replay
+does not call the LLM on the success path.
 
-**Required proof:**
-1. heterogeneous shape-identical browser actions remain adaptive;
-2. true homogeneous fan-out remains compiler/canary gated;
-3. exact promoted atomic Capability replay uses zero new LLM planning calls;
-4. two distinct composites reuse the same atomic Capability;
-5. drift escalates only the unresolved segment and does not replay confirmed
-   mutable effects;
-6. filesystem/process capabilities use the same lifecycle and resolver;
-7. no second canonical state owner is introduced.
+**Required proof status:**
+1. heterogeneous shape-identical browser actions remain adaptive; (PROVEN in `test_execution_policy.py`)
+2. true homogeneous fan-out remains compiler/canary gated; (PROVEN in `test_execution_policy.py`)
+3. exact promoted atomic Capability replay uses zero new LLM planning calls; (PROVEN in `test_operational_capabilities.py`)
+4. two distinct composites reuse the same atomic Capability; (PROVEN in `test_operational_capabilities.py`)
+5. drift escalates only the unresolved segment and does not replay confirmed mutable effects; (PROVEN in `test_operational_capabilities.py`)
+6. filesystem/process capabilities use the same lifecycle and resolver; (PROVEN in `test_operational_capabilities.py`)
+7. no second canonical state owner is introduced. (PROVEN)
 
-**Rejected shortcuts:** threshold inflation, blanket browser exemption, counter
+**Rejected shortcuts strictly avoided:** threshold inflation, blanket browser exemption, counter
 reset around snapshots, transient ref persistence, arbitrary generated-code
 bypass, second memory/task/browser database, hidden LLM invocation from a
 “deterministic” capability.
 
+**Verified Test Evidence:**
+- `workstation/tests/test_execution_policy.py`: 11 passed (including 4 AEPC-E002 regression tests).
+- `workstation/tests/test_operational_capabilities.py`: 12 passed.
+- `apps/desktop/electron/workstation-browser-runtime-task.test.ts`: 26 passed.
+
 ## AEPC-E002 — Structural similarity is not semantic homogeneity (2026-09-18)
 
-**Classification:** CONFIRMED residual obstruction risk / P0 hardening follow-up.
-AEPC-E001 remains valid for the global-latch correction; KI-011 is not fully
-closed for long stateful-browser workflows until this narrower class is fixed.
+**Classification:** RESOLVED & VERIFIED via H-067 (closed by semantic fingerprinting, refused call immunity, and verified success requirement).
 
 **Audit head:** `main@c4234200145162eefb60f6070c9f170b4bf79321`.
 

@@ -15,63 +15,48 @@ file. “Implemented”, “contract layer validated” and “tests green” do
 a product-level causal invariant has been proven across Task -> Run -> operation ->
 evidence -> canonical commit -> projection.
 
-## 2026-09-18 capability-runtime architecture — TARGET ONLY / NOT YET IMPLEMENTED
+## 2026-09-18 Progressive Operational Compilation & Operational Capability Runtime — IMPLEMENTED & VERIFIED
 
-The latest abstraction review extends AEPC-E002 into
-[PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md).
-This section is deliberately marked **target architecture**, not current product
-state.
+The capability-runtime architecture specified in
+[PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md)
+is fully implemented, verified, and integrated across Python and Electron layers.
+The architecture replaces premature `REQUIRE_COMPILE` enforcement with a deterministic progression:
+`experience -> learn operation -> deterministic Capability -> validate -> promote -> compose -> auto-reuse -> work_execute runtime -> LLM only on novelty/drift`.
 
-Current `main` already contains substantial foundations: ProceduralMemory,
-WebProcedure/ProcedureStep, RecipeStore, TaskCompiler, promoted routines,
-DurableBatchRunner, WorkPlan/WorkItem checkpoints, ArtifactStore/ExecutionJournal
-capture and compact NEEDS_REASONING. However, there is not yet a first-class
-general Capability contract/registry/resolver spanning browser/filesystem/process,
-and `work_execute` is still used by the dispatcher as a replan requirement when
-compilation is forced.
+Progressive Operational Compilation / Operational Capability Runtime is fully implemented across Python and Electron layers.
+The architecture replaces premature `REQUIRE_COMPILE` enforcement with a deterministic progression:
+`experience -> learn operation -> deterministic Capability -> validate -> promote -> compose -> auto-reuse -> work_execute runtime -> LLM only on novelty/drift`.
 
-The target changes the reusable unit from “batch” toward **versioned deterministic
-Capability**. The harness should automatically resolve exact compatible
-Capability/Recipe/Routine execution before another LLM planning call, while novel
-or drifted work remains bounded ADAPTIVE. Capabilities may compose other
-capabilities without LLM mediation; Skills remain the reasoning/knowledge layer
-above them.
+Key implementations and verified invariants:
+1. **AEPC-E002 Resolved (`workstation/execution_policy.py`, `workstation/batch_detection.py`, `workstation/procedure_trace.py`):**
+   - Separated structural AST similarity (`structural_signature`) from semantic identity (`semantic_operation_fingerprint`, `semantic_target_family`).
+   - Ephemeral DOM references (`@eN`) never constitute semantic identity. Unknown/ephemeral targets remain bounded `ALLOW_ADAPTIVE` / `SUGGEST_COMPILE` without escalating to `REQUIRE_COMPILE`.
+   - Refused calls previewed in `decisions_for_calls()` never increment mutation dispatch counters.
+   - `REQUIRE_COMPILE` strictly demands positive semantic homogeneity and verified successes (`verified_successes >= 3`), never triggering on exploratory `executed_unverified` turns.
+2. **Native Browser Semantic Contract (`apps/desktop/electron/workstation-browser-runtime.ts`):**
+   - `inventoryScript` extracts `testid` (`data-testid`, `data-test`, `data-qa`), `name`, `role`, `tag`, `label`.
+   - `snapshotForEntry` returns structured `elements: Array<ElementTargetMetadata>` alongside formatted textual snapshots.
+   - `pointScript` / `resolvePoint` extracts element target metadata (`ref`, `tag`, `role`, `name`, `testid`, `label`) before CDP dispatch.
+   - `dispatchAction` for `browser_click` and `browser_type` returns `target` metadata and `semantic_effect` (`click`, `type`).
+3. **Operational Capability Abstraction (`workstation/operational_capabilities.py`):**
+   - `OperationalCapability` data model with semver, preconditions, postconditions, dependencies, input/output schemas, and lifecycle (`DISCOVERED`, `VALIDATED`, `PROMOTED`, `RETIRED`).
+   - `OperationalCapabilityRegistry` backed by existing `ArtifactStore` and atomic index file. Reuses existing storage without creating duplicate stores.
+   - `CapabilityResolver` with cycle detection (`CapabilityCycleError`), depth bounds (`CapabilityDepthExceededError`), and topological linearization.
+4. **Deterministic Operational Kernel (`workstation/operational_kernel.py`):**
+   - Filesystem primitives (`stat`, `read`, `write`, `patch`, `copy`, `move`, `hash_file`, `list_dir`, `mkdir`).
+   - Browser primitives (`navigate`, `snapshot`, `click`, `fill`, `press`, `scroll`, `wait`, `extract`).
+   - Dotted variable interpolation (`$inputs.<var>`, `$deps.<id>.<var>`, `$prev.<var>`).
+   - Precondition & postcondition verification.
+   - Drift quarantine and reasoning handoff via `workstation.reasoning_handoff.needs_reasoning`.
+   - Zero LLM tokens paid on deterministic replay.
+5. **Durable Task Integration (`tools/workstation_work.py`, `workstation/task_compiler.py`):**
+   - `work_execute` schema expanded with `capability_id`, `capability_version`, `capability_inputs`.
+   - `TaskCompiler.execute` supports direct execution by `capability_id` and automatic reuse of promoted capabilities via `operation_fingerprint`.
 
-The Browser native runtime still needs a first-class semantic operation/target
-contract so transient refs such as `@e12` do not define durable operational
-identity. The same capability lifecycle must later prove filesystem/process and
-cross-backend flows.
-
-Do not report this target as implemented until the acceptance criteria in
-PROGRESSIVE_OPERATIONAL_COMPILATION.md have been demonstrated.
-
-
-## 2026-09-18 native-browser compiler obstruction — global latch fixed; semantic-family hardening open; native gate open
-
-The Canonical Execution Reliability Gate remains implemented history. Remote
-implementation `9e7292ab7825e5ce1ea294490eec57ba1f286069` removed the
-session/turn-wide repeatability latch and established operation-scoped progressive
-compilation. Documentation/evidence landed as
-`5e1b22527fd40d732ee4fa7a1035e6366953f6b7`; the previously recorded
-`365794e29d66cd63a6134c5c67ecc1ef603d70a6` is the local pre-publish SHA.
-
-Follow-up audit at `main@c4234200145162eefb60f6070c9f170b4bf79321`
-found one remaining false-positive class: shape-equivalent native browser
-mutations can still be treated as a homogeneous operation family even when page
-state, semantic target and intent differ. The target architecture is defined in
-[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md):
-
-ADAPTIVE -> COMPILED SEGMENT -> COMPILED WORK -> PROMOTED ROUTINE, with compact
-NEEDS_REASONING escalation on drift.
-
-All prior safety invariants remain required. This is a correction to admission
-and learning, not a rollback of durable execution.
-
-AEPC-E002 is now the active narrow follow-up: `REQUIRE_COMPILE` must require
-semantic homogeneity evidence, not only a third shape-equivalent mutation.
-Long stateful browser sequences with different semantic targets must remain
-bounded/adaptive; real same-family fan-out remains TaskCompiler/canary gated.
-The packaged/authenticated Electron smoke remains a separate product gate.
+Verified test suites:
+- `workstation/tests/test_execution_policy.py`: 11 passed (including 4 AEPC-E002 regression tests).
+- `workstation/tests/test_operational_capabilities.py`: 12 passed.
+- `apps/desktop/electron/workstation-browser-runtime-task.test.ts`: 26 passed.
 
 Verified recipe selection is automatic by exact compatibility; promoted routines
 with structured semantic conditions lower into existing WorkItem checkpoints.

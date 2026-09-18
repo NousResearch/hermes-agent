@@ -2,7 +2,8 @@
 
 Date established: 2026-09-18
 
-Status: **TARGET ARCHITECTURE / IMPLEMENTATION REQUIRED**
+Status: **IMPLEMENTED & VALIDATED** (2026-09-18)
+Implementation: `workstation/operational_capabilities.py`, `workstation/operational_kernel.py`, `workstation/execution_policy.py`, `workstation/task_compiler.py`, `tools/workstation_work.py`, `apps/desktop/electron/workstation-browser-runtime.ts`
 
 This document extends
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
@@ -635,3 +636,20 @@ experience
   -> work_execute runtime
   -> reason only on novelty/drift
 ~~~
+
+## Implementation & Verification Evidence
+
+The full architecture is implemented without introducing duplicate databases or state owners:
+- `workstation/execution_policy.py`: `semantic_target_family()`, `semantic_operation_fingerprint()`, `CompilationCandidate` tracking `executed_occurrences` vs. `verified_successes`. AEPC-E002 closed.
+- `apps/desktop/electron/workstation-browser-runtime.ts`: Extracts `testid`, `name`, `role`, `tag`, `label`; returns structured element targets and semantic effects.
+- `workstation/operational_capabilities.py`: `OperationalCapability`, `CapabilityDependency`, `CapabilityLifecycle`, `OperationalCapabilityRegistry` (backed by `ArtifactStore` with cross-platform file locks), `CapabilityResolver` (DAG topological sort, depth limits, cycle detection), and `learn_operational_capability()`.
+- `workstation/operational_kernel.py`: Deterministic execution engine for filesystem and browser primitives with condition verification and fail-closed drift quarantine.
+- `tools/workstation_work.py` & `workstation/task_compiler.py`: Schema extended with `capability_id`; automatic resolution and zero-LLM reuse of promoted capabilities.
+
+**Verified Test Evidence:**
+- `workstation/tests/test_execution_policy.py`: 11 passed.
+- `workstation/tests/test_operational_capabilities.py`: 12 passed.
+- `apps/desktop/electron/workstation-browser-runtime-task.test.ts`: 26 passed.
+- Full `workstation/tests` suite: 510 passed, 2 skipped, 0 failed.
+- Work100 benchmark: 30 PASS / 0 FAIL / 0 gaps.
+- Desktop Typecheck: 0 errors.

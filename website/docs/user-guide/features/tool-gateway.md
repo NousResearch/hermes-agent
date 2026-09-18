@@ -127,6 +127,8 @@ Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by pas
 
 The set evolves — `hermes tools` → Image Generation shows the current live list.
 
+**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and any Nous Portal image models sit in the same **Nous Subscription** model picker rather than behind rows of their own. Every model appears once; picking a Krea id (`krea-2-medium`, …) sends the request to the Krea gateway instead of FAL, and the selection is still just `image_gen.provider: nous` plus the model id. Krea and Portal models need a paid subscription — the free tool pool funds the FAL models only.
+
 ---
 
 ## Configuration reference

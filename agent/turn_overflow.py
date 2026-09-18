@@ -25,6 +25,7 @@ from agent.model_metadata import (
     get_context_length_from_provider_error, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
+from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from utils import base_url_host_matches
 
@@ -95,11 +96,11 @@ class _Recovery(OverflowVerdict):
         if notices:
             agent._flush_status_buffer()
             for line in notices:
-                agent._vprint(f"{agent.log_prefix}{line}", force=True)
+                agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         if log:
             logger.error(*log)
         agent._persist_session(self.messages, self.conversation_history)
-        result = {
+        result = stamp_failure({
             "final_response": final_response,
             "messages": self.messages,
             "completed": False,
@@ -107,7 +108,7 @@ class _Recovery(OverflowVerdict):
             "error": final_response,
             "partial": True,
             "failed": True,
-        }
+        }, "context_overflow", False)
         if compression_exhausted:
             # Reuse the gateway's existing context-recovery contract (#98722, salvaged from #98741). The
             # bloated transcript remains intact while future input can move to a clean session instead of
@@ -124,7 +125,7 @@ class _Recovery(OverflowVerdict):
             return None
         if payload_too_large:
             return self.fail_turn(
-                f"Request payload too large: max compression attempts ({cap}) reached.",
+                site_copy("payload_too_large", model=self.agent.model),
                 notices=(
                     f"❌ Max compression attempts ({cap}) reached for payload-too-large error.",
                     _RETRY_HINT,
@@ -132,7 +133,7 @@ class _Recovery(OverflowVerdict):
                 log=("%s413 compression failed after %d attempts.", self.agent.log_prefix, cap),
             )
         return self.fail_turn(
-            f"Context length exceeded: max compression attempts ({cap}) reached.",
+            site_copy("context_overflow", model=self.agent.model),
             notices=(f"❌ Max compression attempts ({cap}) reached.", _RETRY_HINT),
             log=("%sContext compression failed after %d attempts.", self.agent.log_prefix, cap),
         )
@@ -202,9 +203,9 @@ class _Recovery(OverflowVerdict):
         new_tokens = estimate_messages_tokens_rough(messages)
         shrank_tokens = new_tokens > 0 and new_tokens < original_tokens * 0.95
         if len(messages) < original_len:
-            self.agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         elif shrank_tokens:
-            self.agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
         return None, len(messages) < original_len or shrank_tokens, new_tokens
 
     def request_tokens(self) -> int:
@@ -225,7 +226,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted
-    agent._buffer_status(
+    agent._buffer_diagnostic_status(
         f"⚠️  Request payload too large (413) — compression attempt "
         f"{st.compression_attempts}/{st.max_compression_attempts}..."
     )
@@ -251,9 +252,9 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     new_bytes = serialized_messages_bytes(messages)
     if len(messages) < original_len or (new_bytes > 0 and new_bytes < original_bytes * 0.95):
         if len(messages) < original_len:
-            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         else:
-            agent._buffer_status(
+            agent._buffer_diagnostic_status(
                 f"🗜️ Compressed {original_bytes:,} → {new_bytes:,} " f"payload bytes, retrying..."
             )
         time.sleep(2)  # Brief pause between compression retries
@@ -261,14 +262,14 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
         return st.done("break")
 
     if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             "📐 Compression could not reduce the request further — "
             "removed retained vision payloads and retrying..."
         )
         return st.done("continue")
 
     return st.fail_turn(
-        "Request payload too large (413). Cannot compress further.",
+        site_copy("payload_too_large", model=agent.model),
         notices=("❌ Payload too large and cannot compress further.", _RETRY_HINT),
         log=("%s413 payload too large. Cannot compress further.", agent.log_prefix),
     )
@@ -389,7 +390,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     exhausted = st.count_attempt()
     if exhausted is not None:
         return exhausted
-    agent._buffer_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(
+    agent._buffer_diagnostic_status(COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(
         tokens=st.approx_tokens, attempt=st.compression_attempts, cap=st.max_compression_attempts,
     ))
 
@@ -407,10 +408,10 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 
     # Can't compress further and already at minimum tier.
     return st.fail_turn(
-        f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further.",
+        site_copy("context_overflow", model=agent.model),
         notices=(
-            "❌ Context length exceeded and cannot compress further.",
-            "   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.",
+            f"❌ The conversation is too long for the model ({new_tokens:,} tokens) and cannot be shrunk further.",
+            _RETRY_HINT,
         ),
         log=("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}"),
     )
@@ -446,7 +447,7 @@ def recover_from_overflow(
         and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
     ):
         for line in _GITHUB_MODELS_HINT:
-            agent._vprint(f"{agent.log_prefix}{line}", force=True)
+            agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
     if classified.reason == FailoverReason.payload_too_large:
         return _recover_payload_too_large(st, _retry)

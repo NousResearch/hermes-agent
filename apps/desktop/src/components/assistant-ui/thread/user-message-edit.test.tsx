@@ -87,6 +87,53 @@ describe('click-to-edit user message', () => {
     })
   })
 
+  it('hides the placeholder when a cleared inline edit receives text again', async () => {
+    render(<IncrementalHarness onEdit={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    // jsdom does not make contenteditable focusable like Chromium does.
+    editor.tabIndex = 0
+    editor.focus()
+    expect(document.activeElement).toBe(editor)
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+
+    editor.textContent = 'fade'
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.matches(':is(:empty, [data-empty])')).toBe(false))
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+    fireEvent.paste(editor, { clipboardData: { getData: () => 'pasted edit' } })
+    expect(editor.textContent).toBe('pasted edit')
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(false)
+  })
+
+  it('hides the inline edit placeholder during IME preedit and restores it on cancellation', async () => {
+    render(<IncrementalHarness onEdit={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.tabIndex = 0
+    editor.focus()
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+
+    fireEvent.compositionStart(editor)
+    editor.textContent = 'に'
+    fireEvent.input(editor)
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(false)
+
+    editor.replaceChildren()
+    fireEvent.compositionEnd(editor)
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(true)
+  })
+
   it('does not submit an inline edit while IME composition is active', async () => {
     const onEdit = vi.fn(async (_message: AppendMessage) => {})
 

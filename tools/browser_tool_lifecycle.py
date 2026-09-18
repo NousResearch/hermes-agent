@@ -72,9 +72,14 @@ def _emergency_cleanup_all_sessions():
     """atexit: close this process's sessions, then sweep orphans left by crashed
     hermes processes — every clean exit reaps accumulated orphans, not only
     processes that used the browser tool."""
-    if _bt._cleanup_done:
+    try:
+        if _bt._cleanup_done:
+            return
+        _bt._cleanup_done = True
+    except Exception:
+        # Interpreter shutdown (or a half-updated tree mid-`hermes update` where the
+        # origin's fresh import fails, e.g. #112437): no resolvable state, nothing to clean.
         return
-    _bt._cleanup_done = True
 
     # Own sessions first so their owner_pid files are gone before the reaper scans.
     # Real-profile Chrome is launched directly (not by agent-browser), so the
@@ -422,12 +427,18 @@ def _start_browser_cleanup_thread():
 
 def _stop_browser_cleanup_thread():
     """Stop the background cleanup thread."""
-    _bt._cleanup_running = False
-    if _bt._cleanup_thread is not None:
+    try:
+        _bt._cleanup_running = False
+        thread = _bt._cleanup_thread
+    except Exception:
+        # Same unimportable-origin case as _emergency_cleanup_all_sessions (#112437):
+        # no resolvable thread state, nothing to stop.
+        return
+    if thread is not None:
         # A second Ctrl+C during the timed join lands here as KeyboardInterrupt; the janitor is a
         # daemon thread, so letting it propagate only prints "Exception ignored in atexit callback".
         try:
-            _bt._cleanup_thread.join(timeout=5)
+            thread.join(timeout=5)
         except (SystemExit, KeyboardInterrupt):
             pass
 

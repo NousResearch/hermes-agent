@@ -243,6 +243,10 @@ def _setup_backend_ssh(config: dict) -> None:
         values.append(value)
         if value and (env_var != "TERMINAL_SSH_PORT" or value != "22"):
             _setup.save_env_value(env_var, value)
+        elif env_var == "TERMINAL_SSH_PORT" and value == "22":
+            # Answering the default must undo a previously saved non-default port:
+            # skipping the save alone would leave the stale value in .env.
+            _setup.remove_env_value(env_var)
     host, user, port, ssh_key = values
     if host and _setup.prompt_yes_no("  Test SSH connection?", True):
         _setup.print_info("  Testing connection...")

@@ -21,27 +21,35 @@ from agent.interrupt_compat import request_hard_interrupt
 _ACTIVE_SCOPE: ContextVar[Optional["InterruptScope"]] = ContextVar("hermes_interrupt_scope", default=None)
 
 
+_TOOL_REASON_HOST_CANCELLED = "host cancelled the command"
+
+
 class InterruptScope:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._agents: list[Any] = []
         self.reason: Optional[str] = None
+        self._tool_reason: Optional[str] = _TOOL_REASON_HOST_CANCELLED
 
-    def cancel(self, reason: str) -> None:
-        """Latch ``reason`` and hard-interrupt every agent running under this scope."""
+    def cancel(self, reason: str, *, tool_reason: Optional[str] = _TOOL_REASON_HOST_CANCELLED) -> None:
+        """Latch ``reason`` and hard-interrupt every agent running under this scope.
+
+        ``tool_reason`` names the system issuer; pass ``None`` for a human stop so the turn is
+        attributed to the user rather than to the host (#112647)."""
         with self._lock:
             self.reason = reason
+            self._tool_reason = tool_reason
             agents = list(self._agents)
         for agent in agents:
-            request_hard_interrupt(agent, reason, tool_reason="host cancelled the command")
+            request_hard_interrupt(agent, reason, tool_reason=tool_reason)
 
     @contextmanager
     def track(self, agent: Any) -> Iterator[None]:
         with self._lock:
             self._agents.append(agent)
-            reason = self.reason
+            reason, tool_reason = self.reason, self._tool_reason
         if reason is not None:
-            request_hard_interrupt(agent, reason, tool_reason="host cancelled the command")
+            request_hard_interrupt(agent, reason, tool_reason=tool_reason)
         try:
             yield
         finally:

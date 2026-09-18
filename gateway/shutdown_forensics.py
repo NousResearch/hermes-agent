@@ -54,7 +54,8 @@ def _proc_summary_psutil(pid: int, summary: Dict[str, Any]) -> None:
 
     Kept to attribute lookups on an already-constructed ``Process``: measured ~0.1ms on macOS,
     well inside the signal handler's <10ms budget. Never raises — a dead or unreadable parent
-    leaves the fields absent, exactly as the /proc path does.
+    leaves the fields absent, exactly as the /proc path does. Identity only: ``cmdline`` is
+    never read here either, so the non-Linux path stays argv-free too.
     """
     try:
         import psutil  # type: ignore
@@ -68,20 +69,19 @@ def _proc_summary_psutil(pid: int, summary: Dict[str, Any]) -> None:
                     summary[key] = getter()
             with contextlib.suppress(Exception):  # noqa: BLE001
                 summary["uid"] = str(proc.uids().real)
-            with contextlib.suppress(Exception):  # noqa: BLE001
-                # truncate aggressively — these can be 4KB
-                summary["cmdline"] = " ".join(proc.cmdline()).strip()[:300]
     except Exception:  # noqa: BLE001 — NoSuchProcess/AccessDenied/anything: never raise
         return
 
 
 def _proc_summary(pid: int) -> Dict[str, Any]:
-    """Compact process snapshot (pid, ppid, state, uid, cmdline); missing fields omitted.
+    """Compact process identity (pid, name, state, ppid, uid); missing fields omitted.
 
-    Reads /proc on Linux and falls back to psutil elsewhere. Without the fallback the parent
-    is ``{"pid": N}`` on macOS/Windows, so ``format_context_for_log`` prints
-    ``parent_name=? parent_cmdline='(unknown)'`` — the single most useful field for
-    "who killed my gateway" is blank on exactly the hosts where the question gets asked.
+    Reads /proc on Linux and falls back to psutil elsewhere, so the parent is identified on
+    macOS/BSD too — without the fallback ``format_context_for_log`` prints ``parent_name=?``
+    on exactly the hosts where "who killed my gateway" gets asked.
+
+    Never reads cmdline/argv on EITHER path — those bytes are not safe to persist (tokens,
+    URIs, ``-e KEY=`` overlays). See the argv-free policy in #112459.
     """
     summary: Dict[str, Any] = {"pid": pid}
     if pid <= 0:
@@ -94,13 +94,7 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
             summary["ppid"] = int(ppid)
     if (uid := _read_proc_field(pid, "Uid")) is not None:
         summary["uid"] = uid.split()[0] if uid else uid  # "real effective saved fs"
-    try:
-        data = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        data = b""
-    if data:  # truncate aggressively — these can be 4KB
-        summary["cmdline"] = data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()[:300]
-    if "cmdline" not in summary:  # no /proc (macOS/BSD/Windows), or an unreadable entry
+    if "name" not in summary:  # no /proc (macOS/BSD/Windows), or an unreadable entry
         _proc_summary_psutil(pid, summary)
     return summary
 
@@ -185,9 +179,8 @@ def _format_ancestor_chain(chain: List[Dict[str, Any]]) -> str:
     Deliberately never the full cmdline. This text is persisted to
     ``gateway-shutdown-diag.log``, and argv routinely carries secrets (a connection string
     with a password, an API token, an ``--mcp-config {...}`` blob). The forensic question is
-    *which* process killed us, which the name and pid answer; see the parallel argument in
-    NousResearch/hermes-agent#59929. ``parent_cmdline`` in the in-memory context line is left
-    alone here — that is that PR's call to make, not this platform fix's.
+    *which* process killed us, which the name and pid answer; see the argv-free policy in
+    #112459 and the parallel argument in NousResearch/hermes-agent#59929.
 
     Control characters are collapsed to spaces so one ancestor stays on one line.
     """
@@ -216,14 +209,17 @@ def _diagnostic_timeout_argv(timeout_seconds: float) -> list[str]:
 def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
                            timeout_seconds: float = 5.0) -> Optional[int]:
     """Fire-and-forget ``ps``-style snapshot appended to ``log_path``: a detached subprocess (own
-    ``timeout`` when available so a wedged ``ps`` self-cleans) rather than a blocking ``ps aux`` in
-    the signal handler, which can freeze the loop >2s on a busy host. Returns the subprocess PID,
-    or ``None`` on failure / Windows (bash -c is available on every POSIX target; Windows has no ps).
+    ``timeout``/``gtimeout`` when available so a wedged ``ps`` self-cleans) rather than a blocking
+    ``ps aux`` in the signal handler, which can freeze the loop >2s on a busy host. Returns the
+    subprocess PID, or ``None`` on failure / Windows (bash -c is available on every POSIX target;
+    Windows has no ps anyway).
 
     Every probe is platform-guarded with a fallback: BSD ``ps`` (macOS) rejects the GNU ``auxf
     --sort=-pcpu`` spelling outright, and ``pstree``/``/proc``/``dmesg`` do not exist there. A
     diagnostic that emits nothing on the developer's own machine is worse than no diagnostic —
     it looks like the hook never ran.
+
+    The listing is comm/identity-only: no process's argv is persisted.
     """
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,11 +238,13 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
     script = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        # GNU `ps auxf --sort=-pcpu` is a hard usage error on BSD/macOS; `ps aux -r` is its
-        # sort-by-cpu equivalent. Probe support instead of relying on pipeline exit status.
-        "echo '--- ps (top 60 by cpu) ---'; "
-        "if ps auxf --sort=-pcpu >/dev/null 2>&1; then ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "else ps aux -r 2>/dev/null | head -60; fi; "
+        # GNU `--sort=-pcpu` is a hard usage error on BSD/macOS (`ps auxf` is too — BSD reads
+        # `f` as an illegal option); `-r` is its sort-by-cpu equivalent. Probe support instead
+        # of relying on pipeline exit status. COMM only: `ps aux` would persist every argv.
+        "echo '--- ps (top 60 by cpu, comm only) ---'; "
+        "if ps -eo pid,ppid,user,%cpu,%mem,stat,comm --sort=-pcpu >/dev/null 2>&1; then "
+        "ps -eo pid,ppid,user,%cpu,%mem,stat,comm --sort=-pcpu 2>/dev/null | head -60; "
+        "else ps -eo pid,ppid,user,%cpu,%mem,stat,comm -r 2>/dev/null | head -60; fi; "
         f"echo '--- parent chain of self ---'; printf '%s\\n' {chain_text}; "
         "echo '--- loadavg ---'; "
         "if [ -r /proc/loadavg ]; then cat /proc/loadavg; else uptime 2>/dev/null || true; fi; "
@@ -259,9 +257,11 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         "echo '=== end ==='"
     )
     try:  # O_APPEND so concurrent diagnostics from rapid signals don't trample each other
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
+    with contextlib.suppress(OSError):  # tighten logs created 0644 by earlier releases
+        os.fchmod(fd, 0o600)
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             [*_diagnostic_timeout_argv(timeout_seconds), "bash", "-c", script], stdout=fd,
@@ -275,7 +275,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
 
 
 def format_context_for_log(ctx: Dict[str, Any]) -> str:
-    """Render a shutdown context dict as one scannable log line (parent cmdline is key)."""
+    """Render a shutdown context dict as one scannable log line (parent identity, never argv)."""
     parent = ctx.get("parent") or {}
     load_str = f"{load:.2f}" if isinstance(load := ctx.get("loadavg_1m"), (int, float)) else "?"
     extras: List[str] = []
@@ -290,7 +290,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     return (
         f"signal={ctx.get('signal', '?')} under_systemd={'yes' if ctx.get('under_systemd') else 'no'} "
         f"parent_pid={parent.get('pid') or '?'} parent_name={parent.get('name') or '?'} "
-        f"loadavg_1m={load_str}{extras_str} parent_cmdline={parent.get('cmdline', '(unknown)')!r}"
+        f"loadavg_1m={load_str}{extras_str}"
     )
 
 

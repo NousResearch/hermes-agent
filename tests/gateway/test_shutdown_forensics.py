@@ -196,6 +196,75 @@ class TestParseSystemdDuration:
 
 
 # ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutStopUS:
+
+    @staticmethod
+    def _result(stdout="", returncode=0):
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr="",
+        )
+
+    @pytest.mark.parametrize("user_load_state", ["not-found", "masked"])
+    def test_skips_unloaded_user_unit_and_uses_system_unit(self, monkeypatch, user_load_state):
+        responses = iter([
+            self._result(f"LoadState={user_load_state}\nTimeoutStopUSec=1min 30s\n"),
+            self._result("LoadState=loaded\nTimeoutStopUSec=210s\n"),
+        ])
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return next(responses)
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert calls == [
+            ["systemctl", "--user", "show", "hermes-gateway.service",
+             "--property=LoadState,TimeoutStopUSec"],
+            ["systemctl", "show", "hermes-gateway.service",
+             "--property=LoadState,TimeoutStopUSec"],
+        ]
+
+    def test_uses_loaded_user_unit_without_system_fallback(self, monkeypatch):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return self._result("LoadState=loaded\nTimeoutStopUSec=45s\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 45 * 1_000_000
+        assert len(calls) == 1
+        assert calls[0][1] == "--user"
+
+    @pytest.mark.parametrize("failure", [
+        subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
+        subprocess.TimeoutExpired("systemctl", timeout=2.0),
+        OSError("systemctl unavailable"),
+    ])
+    def test_falls_back_after_user_scope_command_failure(self, monkeypatch, failure):
+        responses = iter([failure, self._result("LoadState=loaded\nTimeoutStopUSec=210s\n")])
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            response = next(responses)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
 

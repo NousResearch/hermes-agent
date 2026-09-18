@@ -45,13 +45,13 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId } from '@/store/session'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
-import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
-import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../master-detail'
-import { PanelAddButton, PanelEmpty } from '../overlays/panel'
-import { prettyName } from '../settings/helpers'
-import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
+import { useOnProfileSwitch } from '../../hooks/use-on-profile-switch'
+import { useProfileSwitchLatch } from '../../hooks/use-profile-switch-latch'
+import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../../master-detail'
+import { PanelAddButton, PanelEmpty } from '../../overlays/panel'
+import { prettyName } from '../../settings/helpers'
+import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
 // The editor always speaks the ecosystem's mcp.json document format — names
 // are the JSON keys, transport is inferred from `command` vs `url` — so any

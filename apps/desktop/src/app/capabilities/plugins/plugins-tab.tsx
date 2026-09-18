@@ -38,9 +38,9 @@ import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
-import { PanelEmpty } from '../overlays/panel'
-import { Pill } from '../settings/primitives'
-import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
+import { PanelEmpty } from '../../overlays/panel'
+import { Pill } from '../../settings/primitives'
+import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
@@ -75,7 +75,7 @@ interface PluginPickMessage {
   type?: string
 }
 
-/** Deep-link anchor for a package row (`/skills?tab=plugins&plugin=<key>`).
+/** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
 export const pluginElementId = (target: string) => `plugin-${target}`
 

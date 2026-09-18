@@ -20,7 +20,7 @@ const POLL_MS = 1200
 // Shared with hub.tsx's sources useQuery so a finished action refreshes the
 // installed map.
 export const HUB_SOURCES_KEY = ['skill-hub-sources'] as const
-// The Capabilities Skills-list query key (see app/skills/index.tsx) — kept in
+// The Capabilities Skills-list query key (see app/capabilities/index.tsx) — kept in
 // sync here so a hub (un)install updates the Skills tab, not just the hub.
 const SKILLS_LIST_KEY = ['skills-list'] as const
 // The built-in optional-skills catalog rows in the Skills tab: an install

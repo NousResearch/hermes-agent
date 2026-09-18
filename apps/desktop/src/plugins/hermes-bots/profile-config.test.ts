@@ -64,7 +64,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     SelectItem: () => null,
     SelectTrigger: () => null,
     SelectValue: () => null,
-    SkillsView: undefined,
+    CapabilitiesView: undefined,
     surfaceModelSwitchConfirm: confirmMock,
     Textarea: () => null,
     ToolsetConfigPanel: undefined,

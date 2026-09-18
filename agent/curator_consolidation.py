@@ -198,7 +198,14 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
             raise RuntimeError("required pre-operation snapshot could not be created")
         receipt["rollback_handle"] = snapshot.name
         usage_file = get_hermes_home() / "skills" / ".usage.json"
-        before = skill_ledger.snapshot_paths(source_dir, complete_package=True) + skill_ledger.snapshot_paths(jobs_file)
+        usage_before = skill_ledger.snapshot_paths(usage_file)
+        if not usage_before:
+            raise RuntimeError("required usage ledger snapshot could not be captured")
+        before = (
+            skill_ledger.snapshot_paths(source_dir, complete_package=True)
+            + skill_ledger.snapshot_paths(jobs_file)
+            + usage_before
+        )
         if not before:
             raise RuntimeError("required ledger snapshot could not be captured")
 
@@ -215,9 +222,13 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
         _validate_forwarding(readback, source, destination)
         receipt["forwarding"] = {"rewrites": rewrites.get("rewrites", []), "readback": True}
 
+        usage_after = skill_ledger.snapshot_paths(usage_file)
+        if not usage_after:
+            raise RuntimeError("required usage ledger snapshot could not be captured")
         consolidated_after = (
             skill_ledger.snapshot_paths(archive_dir, complete_package=True)
             + skill_ledger.snapshot_paths(jobs_file)
+            + usage_after
         )
         ledger_id = skill_ledger.append_entry(
             "consolidate", source, before=before, after=consolidated_after, actor=actor,
@@ -247,6 +258,7 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
                     failed_after = (
                         skill_ledger.snapshot_paths(archive_dir, complete_package=True)
                         + skill_ledger.snapshot_paths(jobs_file)
+                        + skill_ledger.snapshot_paths(get_hermes_home() / "skills" / ".usage.json")
                     )
                 except Exception:
                     failed_after = []
@@ -276,6 +288,7 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
                         after=(
                             skill_ledger.snapshot_paths(source_dir, complete_package=True)
                             + skill_ledger.snapshot_paths(jobs_file)
+                            + skill_ledger.snapshot_paths(get_hermes_home() / "skills" / ".usage.json")
                         ),
                         actor=actor,
                         evidence=recovery_evidence,

@@ -134,6 +134,49 @@ def test_public_consolidate_archives_forwards_restores_and_rolls_back(consolidat
     assert "skills" not in restored_jobs[1]
 
 
+def test_public_ledger_rollback_restores_exact_preconsolidation_usage_sidecar(
+    consolidation_env, capsys,
+):
+    """The consolidation ledger carries lifecycle state, not just package and cron files."""
+    from hermes_cli import curator as curator_cli
+    from tools import skill_ledger
+
+    usage_file = consolidation_env["skills"] / ".usage.json"
+    original_usage = b'''{
+  "source-skill": {
+    "created_by": "agent",
+    "state": "active",
+    "pinned": false,
+    "use_count": 17,
+    "view_count": 5,
+    "patch_count": 3,
+    "last_used_at": "2026-09-16T23:58:01+00:00",
+    "last_viewed_at": "2026-09-16T23:57:01+00:00",
+    "last_patched_at": "2026-09-16T23:56:01+00:00",
+    "archived_at": null
+  },
+  "destination-skill": {"created_by": "agent", "state": "active", "pinned": false}
+}
+'''
+    usage_file.write_bytes(original_usage)
+    source_manifest = _package_manifest(consolidation_env["source"])
+    original_cron = consolidation_env["jobs_file"].read_bytes()
+
+    assert curator_cli.cli_main(["consolidate", "source-skill", "destination-skill"]) == 0
+    receipt = json.loads(capsys.readouterr().out.removeprefix("curator: "))
+    entry = skill_ledger.get_entry(receipt["ledger_entry"])
+    assert entry is not None
+    assert str(usage_file) in {item["path"] for item in entry["before"]}
+    assert str(usage_file) in {item["path"] for item in entry["after"]}
+    assert json.loads(usage_file.read_text(encoding="utf-8"))["source-skill"]["state"] == "archived"
+
+    assert curator_cli.cli_main(["rollback", receipt["ledger_entry"], "-y"]) == 0
+    assert _package_manifest(consolidation_env["source"]) == source_manifest
+    assert consolidation_env["jobs_file"].read_bytes() == original_cron
+    assert usage_file.read_bytes() == original_usage
+    assert not (consolidation_env["skills"] / ".archive" / "source-skill").exists()
+
+
 @pytest.mark.parametrize("failure", ["save", "readback"])
 def test_consolidate_recovers_source_and_cron_after_post_archive_failure(
     consolidation_env, monkeypatch, capsys, failure,

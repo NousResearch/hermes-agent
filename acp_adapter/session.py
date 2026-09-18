@@ -302,7 +302,7 @@ class SessionManager:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config=session_meta)
+                                  model_config=session_meta, cwd=state.cwd or None)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)

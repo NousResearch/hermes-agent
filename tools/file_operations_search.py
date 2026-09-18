@@ -465,10 +465,9 @@ class SearchMixin:
         return f"\\( {terms} \\) -prune"
 
     def _root_under_hidden_dir(self, path: str) -> bool:
-        """True when the search root or any ancestor is a dot-directory (``~/.hermes/skills``)."""
-        cwd = getattr(self.env, "cwd", None) or self.cwd
-        parts = os.path.normpath(os.path.join(cwd, path or ".")).replace("\\", "/").split("/")
-        return any(part.startswith(".") and part not in (".", "..") for part in parts)
+        """True when the search root or any ancestor is dot-named (``~/.hermes/skills``)."""
+        root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
+        return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
     def _rg_exclusion_globs(self, path: str) -> List[str]:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
@@ -934,14 +933,16 @@ class SearchMixin:
         enumerates files (traversal never enters protected dirs) and hands them to
         grep via ``-exec {} +``; hidden dirs pruned to mirror ``--exclude-dir='.*'``.
         Trade-off: find folds grep's exit code, so a hard grep error surfaces as an
-        empty result — accepted for these two branches (macOS protected dirs, roots
-        under a dot-directory) where grep's own --exclude-dir cannot express the intent."""
+        empty result. That covers every grep-fallback search rooted under a dot-directory
+        (``~/.hermes/...`` included), not just the macOS protected-dir corner."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        # -mindepth 1: the ``-name '.*'`` prune must not swallow a dot-named root itself.
-        find_parts = ["find", self._escape_shell_arg(path or "."), "-mindepth", "1"]
+        q_root = self._escape_shell_arg(path or ".")
+        find_parts = ["find", q_root]
         if protected_paths:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
-        find_parts.extend(["\\( -type d -name '.*' \\) -prune", "-o", "-type f"])
+        # ``! -path <root>`` keeps a dot-named root itself (dir or single file) out of the prune,
+        # mirroring the filename walk in ``_search_files``.
+        find_parts.extend([f"\\( -type d -name '.*' ! -path {q_root} \\) -prune", "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])

@@ -174,6 +174,16 @@ class TestGrepSearchesRootsUnderHiddenDirs:
         assert result.total_count == 1
         assert result.matches[0].path.endswith("SKILL.md")
 
+    def test_single_file_root_under_hidden_dir_is_searched(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home / "skills" / "SKILL.md"), target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+
 
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""

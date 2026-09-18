@@ -113,7 +113,13 @@ class MCPServerRunMixin:
                     # transports — clear the rapid-drop budget without pinging (#62212). An
                     # earlier wake (a hidden-then-missed recycle deadline) is not that proof.
                     if (not self._session_proven and proof_at is not None
-                            and time.monotonic() >= proof_at and not self._stdio_children_dead()):
+                            and time.monotonic() >= proof_at):
+                        if self._stdio_children_dead():
+                            # The child died before the session ever proved itself: no
+                            # lifecycle event will ever fire and the zero-timeout wait
+                            # would spin forever — reconnect now, failing stale
+                            # in-flight calls at the tail below (#115483).
+                            break
                         self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a

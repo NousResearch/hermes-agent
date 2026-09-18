@@ -189,12 +189,16 @@ describe('TitlebarControls fixed clusters', () => {
 
 describe('titlebar app-action cluster', () => {
   afterEach(() => {
-    setTitlebarAppActionsSide('right')
     cleanup()
+    act(() => {
+      setTitlebarAppActionsSide('right')
+    })
   })
 
   it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
-    setTitlebarAppActionsSide('left')
+    act(() => {
+      setTitlebarAppActionsSide('left')
+    })
     renderControls('/')
 
     const left = screen.getByLabelText('Window controls')
@@ -206,3 +210,30 @@ describe('titlebar app-action cluster', () => {
     expect(within(right).queryByLabelText('Open settings')).toBeNull()
   })
 })
+
+describe('titlebar computer use hud', () => {
+  it('renders the center HUD pill on standard routes', () => {
+    const { container } = renderControls('/')
+    expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).not.toBeNull()
+  })
+
+  it('renders the center HUD pill on contributed chrome-owning routes', () => {
+    const dispose = registry.register({
+      area: 'titleBar.left',
+      id: 'test-chrome-hud',
+      render: () => <span>chrome</span>
+    })
+    try {
+      const { container } = renderControls('/kanban')
+      expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).not.toBeNull()
+    } finally {
+      act(() => dispose())
+    }
+  })
+
+  it('does not render the center HUD pill on overlay routes', () => {
+    const { container } = renderControls('/settings')
+    expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).toBeNull()
+  })
+})
+

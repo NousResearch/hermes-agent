@@ -152,3 +152,5 @@ export const ComputerUseStatusPill = memo(function ComputerUseStatusPill({
     </AnimatePresence>
   )
 })
+
+export { ComputerUseStatusPill as ComputerUsePill }

@@ -356,3 +356,18 @@ class TestAuthJsonSiblingReaders:
         # The non-ASCII label round-trips intact.
         assert nous.get("label") == "工作账号"
 
+
+class TestAuthFilePathSeatBelt:
+    def test_platform_default_home_trips_seat_belt(self, monkeypatch):
+        # HERMES_HOME forgotten: get_hermes_home() falls back to the platform
+        # default (LOCALAPPDATA/hermes on Windows, ~/.hermes elsewhere). The
+        # guard must refuse instead of returning the live credential path.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        with pytest.raises(RuntimeError, match="real user auth store"):
+            auth._auth_file_path()
+
+    def test_redirected_home_passes_seat_belt(self, tmp_path, monkeypatch):
+        home = tmp_path / "test-home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert auth._auth_file_path() == home / "auth.json"
+

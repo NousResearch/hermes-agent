@@ -1,4 +1,4 @@
-import type { SessionResumeResult } from '@hermes/plugin-sdk'
+import type { ClarifyParams, SessionResumeResult } from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as groupChat from './group-chat'
@@ -590,6 +590,37 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(turns.syncGroupClarify('Core', { name: 'research' }, 't1', resumeSnapshot({ messages: [] }))).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
+  })
+
+  it('renders a contract-7 batch (no `kind`) as questions instead of a blank single card', async () => {
+    const { chat, turns } = await loadRoom()
+    const member: GroupMember = { name: 'research', title: '' }
+
+    // A contract-7 backend — the same contract number as this Desktop — sends `{questions}` with no
+    // `kind` at all, and the room reads that raw `open_requests` blob. Narrowing on the discriminator
+    // dropped every batch into the single branch, so the card came up with no questions and no
+    // question text: a blank prompt nobody could answer (@yoniebans).
+    turns.syncGroupClarify(
+      'Core',
+      member,
+      't1',
+      resumeSnapshot({
+        open_requests: [
+          clarifyOpenRequest({
+            answers: null,
+            questions: [{ question: 'Which env?', choices: ['staging', 'prod'], multi_select: false }],
+            session_id: 'rt-research-1'
+          } as ClarifyParams)
+        ]
+      })
+    )
+
+    const [card] = Object.values(chat.$groupClarify.get())
+
+    expect(card.questions).toHaveLength(1)
+    expect(card.questions?.[0].question).toBe('Which env?')
+    expect(card.question).toBe('')
+    expect(card.kind).toBe('clarify')
   })
 
   it('answers the open request by id through request.answer and clears the mirror', async () => {

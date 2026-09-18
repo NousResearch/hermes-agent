@@ -216,6 +216,26 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
+def _picker_continuation_edge_sql(parent: str = "parent", child: str = "child") -> str:
+    """A child edge that belongs to the same user-visible picker conversation.
+
+    Compression continuations carry no fork marker.  Legacy Desktop/TUI recovery rows can instead carry a
+    spurious ``_delegate_from`` marker from the v16 heuristic; only accept those when they were created after
+    their ``ws_orphan_reap`` parent ended and retain the same interactive source.  Real delegate children are
+    created while their parent is live, so they stay excluded.
+    """
+    branch = _sql_json_extract(f"{child}.model_config", "$._branched_from")
+    delegate = _sql_json_extract(f"{child}.model_config", "$._delegate_from")
+    return (
+        f"({child}.parent_session_id = {parent}.id AND {branch} IS NULL "
+        f"AND COALESCE({child}.source, '') != 'tool' AND ("
+        f"({parent}.end_reason = 'compression' AND {delegate} IS NULL) OR "
+        f"({parent}.end_reason = 'ws_orphan_reap' AND {parent}.ended_at IS NOT NULL "
+        f"AND {child}.started_at >= {parent}.ended_at "
+        f"AND {child}.source = {parent}.source AND {child}.source IN ('desktop', 'tui'))))"
+    )
+
+
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
     Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
@@ -236,7 +256,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA

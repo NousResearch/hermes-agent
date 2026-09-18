@@ -307,26 +307,18 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
-def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+from gateway.platforms.helpers import strip_markdown
 
-    Also removes MarkdownV2 formatting markers so the fallback
-    doesn't show stray syntax characters from format_message conversion.
-    """
-    # Remove escape backslashes before special characters
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
-    # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
-    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
-    # Remove MarkdownV2 bold markers that format_message converted from **bold**
-    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    # Remove MarkdownV2 italic markers that format_message converted from *italic*
-    # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
-    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
-    # Remove MarkdownV2 strikethrough markers (~text~ → text)
-    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
-    # Remove MarkdownV2 spoiler markers (||text|| → text)
-    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
-    return cleaned
+
+def _strip_mdv2(text: str) -> str:
+    """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)              # bold **
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)                  # italic *
+    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)      # italic _
+    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)                    # strikethrough
+    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)              # spoiler
+    return strip_markdown(cleaned)
 
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
@@ -358,6 +350,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
     convert_table_to_bullets as _wrap_markdown_tables,
+    normalize_latex_math_symbols,
 )
 
 
@@ -6500,6 +6493,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not content:
             return content
+
+        content = normalize_latex_math_symbols(content)
 
         placeholders: dict = {}
         counter = [0]

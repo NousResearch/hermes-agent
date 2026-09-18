@@ -655,6 +655,8 @@ PLATFORM_HINTS = {
         "Standard Markdown is automatically converted to Telegram formatting. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
+        "Telegram DOES NOT support LaTeX math notation ($...$, $$...$$, \\ge, \\le, \\approx) — use Unicode mathematical symbols "
+        "instead: ≥, ≤, ≈, ≠, ±, ×, ÷, →, ², etc. "
         "Telegram now supports rich Markdown, so lean into it: whenever it "
         "makes the answer clearer or easier to scan, actively reach for real "
         "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "

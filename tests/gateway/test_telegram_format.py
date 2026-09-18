@@ -41,6 +41,7 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
     _strip_mdv2,
     _wrap_markdown_tables,
 )
+from gateway.platforms.helpers import normalize_latex_math_symbols, strip_markdown
 
 
 # ---------------------------------------------------------------------------
@@ -1217,3 +1218,130 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# LaTeX Math Normalization Tests (BDD 4.1.1 - 4.1.3)
+# =========================================================================
+
+
+class TestLatexNormalization:
+    """Covers LaTeX math syntax normalization into clean Unicode symbols."""
+
+    def test_latex_inequalities_converted_to_unicode(self, adapter):
+        inp = "Возраст пакета $\\ge 180$ дней, скачивания $\\ge 50$k"
+        out = adapter.format_message(inp)
+        assert "≥ 180" in out
+        assert "≥ 50k" in out
+        assert "\\ge" not in out
+        assert "$" not in out
+
+    def test_latex_macros_standalone(self, adapter):
+        assert "x ≤ 10" in adapter.format_message("x \\le 10")
+        assert "t ≈ 5s" in adapter.format_message("t \\approx 5s")
+        assert "a ≠ b" in adapter.format_message("a \\neq b")
+        assert "± 5%" in adapter.format_message("\\pm 5%")
+        assert "10 × 20" in adapter.format_message("10 \\times 20")
+        assert "a → b" in adapter.format_message("a \\to b")
+        assert "a ← b" in adapter.format_message("a \\leftarrow b")
+        assert "∞" in adapter.format_message("\\infty")
+        assert "…" in adapter.format_message("\\dots")
+        assert "·" in adapter.format_message("\\cdot")
+
+    def test_latex_inside_fenced_code_block_preserved(self, adapter):
+        text = "```python\npattern = r\"\\ge\\d+\"\n```"
+        assert normalize_latex_math_symbols(text) == text
+        out = adapter.format_message(text)
+        assert "≥" not in out
+        assert "\\\\ge" in out
+
+    def test_latex_inside_inline_code_preserved(self, adapter):
+        text = "Run `\\ge 180` in bash"
+        assert normalize_latex_math_symbols(text) == text
+        out = adapter.format_message(text)
+        assert "≥" not in out
+        assert "\\\\ge" in out
+
+    def test_math_delimiters_stripped(self, adapter):
+        assert normalize_latex_math_symbols("$\\ge 180$") == "≥ 180"
+        assert normalize_latex_math_symbols("$$\\approx 100$$") == "≈ 100"
+        assert normalize_latex_math_symbols("$x = 10$") == "x = 10"
+        assert normalize_latex_math_symbols("$N$") == "N"
+        assert "≥ 180" in adapter.format_message("$\\ge 180$")
+        assert "≈ 100" in adapter.format_message("$$\\approx 100$$")
+        assert "x \\= 10" in adapter.format_message("$x = 10$")
+        assert "N" in adapter.format_message("$N$")
+
+    def test_greek_letters_converted(self, adapter):
+        text = "\\alpha, \\beta, \\gamma, \\Delta, \\pi, \\sigma, \\mu, \\theta, \\lambda, \\omega, \\Omega"
+        out = adapter.format_message(text)
+        assert "α, β, γ, Δ, π, σ, μ, θ, λ, ω, Ω" in out
+
+    def test_degree_converted(self, adapter):
+        assert "25°" in adapter.format_message("25\\degree")
+        assert "25°" in adapter.format_message("25^\\circ")
+        assert "25°" in adapter.format_message("25^{\\circ}")
+
+    def test_currency_dollars_preserved(self, adapter):
+        out = adapter.format_message("Price is $5.00!")
+        assert "$5" in out
+        out2 = adapter.format_message("From $5 to $10 per unit")
+        assert "$5" in out2 and "$10" in out2
+
+
+# =========================================================================
+# Cascading Fallback Cleanliness Tests (BDD 4.5.1)
+# =========================================================================
+
+
+class TestCascadingFallbackCleanliness:
+    """Covers Tier 3 plain text fallback cleanliness (zero escape backslashes)."""
+
+    def test_fallback_plain_text_has_no_escape_backslashes(self):
+        escaped = r"This is \*bold\* and \_italic\_ with snake\_case and v2\.0 and wow\!"
+        plain = _strip_mdv2(escaped)
+        assert "\\" not in plain
+        assert plain == "This is bold and italic with snake_case and v2.0 and wow!"
+
+    def test_fallback_preserves_readable_structure(self):
+        text = "# Header\n\n* Item 1\n* Item 2\n\n[Link](https://example.com)\n\n```python\nprint('hello')\n```"
+        plain = strip_markdown(text)
+        assert "\\" not in plain
+        assert "#" not in plain
+        assert "Item 1" in plain
+        assert "Item 2" in plain
+        assert "Link" in plain
+        assert "https://example.com" not in plain
+
+
+# =========================================================================
+# Special Characters and Complex Formatting (BDD 4.2.2, 4.3.2, 4.4.1)
+# =========================================================================
+
+
+class TestSpecialCharactersAndTables:
+    """Covers special character escaping, angle brackets, and table formatting."""
+
+    def test_snake_case_outside_code_escaped(self, adapter):
+        out = adapter.format_message("Check file_name_v2_final.py and user_account_id")
+        assert "file\\_name\\_v2\\_final\\.py" in out
+        assert "user\\_account\\_id" in out
+
+    def test_angle_brackets_outside_code(self, adapter):
+        out = adapter.format_message("if x < 10 and y > 20:")
+        assert "x < 10" in out or "x \\< 10" in out
+        assert "y \\> 20" in out
+
+    def test_table_with_latex_math(self, adapter):
+        table = (
+            "| Metric | Threshold | Status |\n"
+            "|---|---|---|\n"
+            "| Delay | $\\le 100$ms | OK |\n"
+            "| Count | $\\ge 50$ | OK |\n"
+        )
+        out = adapter.format_message(table)
+        assert "≤ 100ms" in out
+        assert "≥ 50" in out
+        assert "\\le" not in out
+        assert "\\ge" not in out
+        assert "$" not in out

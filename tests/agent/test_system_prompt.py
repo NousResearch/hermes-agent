@@ -123,6 +123,25 @@ def test_kanban_guidance_is_gated_for_composition_only_agents(monkeypatch):
     assert _tool_guidance_block(agent) is None
 
 
+def test_bot_protocol_is_gated_for_composition_only_agents():
+    """A canonical Bot Chat title must not add Bot Mode protocol to Preview composition."""
+    from agent.system_prompt import _bot_mode_parts
+    from tools import bot_mode_probe
+
+    agent = _make_agent(
+        _composition_only=True,
+        _session_title_hint=bot_mode_probe.BOT_CHAT_TITLE,
+        _bot_chat_timeless_prompt=False,
+    )
+    with patch.object(
+        bot_mode_probe, "get_bot_mode_protocol_section", return_value="BOT PROTOCOL"
+    ) as get_protocol:
+        assert _bot_mode_parts(agent) == []
+
+    get_protocol.assert_not_called()
+    assert agent._bot_chat_timeless_prompt is False
+
+
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
 @pytest.mark.parametrize("names", [
     set(), {"memory"}, {"memory", "skill_view", "skills_list"},

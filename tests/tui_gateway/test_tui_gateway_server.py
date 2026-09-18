@@ -10437,8 +10437,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         def update_session_meta(self, _session_id, model_config_json, _model=None):
             self.model_config = model_config_json
 
-        def update_system_prompt(self, _session_id, system_prompt):
+        def update_system_prompt(self, _session_id, system_prompt, *, composition_only=None):
             self.system_prompt = system_prompt
+            self.composition_only = composition_only
 
         def append_message(self, session_id, role, content=None, **_kwargs):
             self.messages.append(
@@ -10496,6 +10497,7 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         assert db.system_prompt == (
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
+        assert db.composition_only is False
         assert agent._cached_system_prompt == db.system_prompt
         assert session["history"][-1]["role"] == "user"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
@@ -22418,7 +22420,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
             return f"System prompt from {home}\n{soul}"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, *, composition_only=None):
             pass
 
     agent = FakeAgent()
@@ -22456,7 +22458,7 @@ def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch)
             return "plain prompt"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, *, composition_only=None):
             pass
 
     agent = FakeAgent()
@@ -22501,7 +22503,7 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
             return "inner prompt"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, *, composition_only=None):
             pass
 
     agent = FakeAgent()
@@ -22524,6 +22526,46 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
     finally:
         reset_hermes_home_override(outer_token)
     assert get_hermes_home_override() is None
+
+
+def test_persist_live_session_system_prompt_clears_composition_marker(tmp_path):
+    """A TUI model switch replaces Preview metadata with an untagged normal prompt."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(
+        "model-switch-session",
+        source="tui",
+        model="old-model",
+        model_config={"composition_only": True, "keep": {"nested": "value"}},
+        system_prompt="COMPOSITION PROMPT",
+    )
+
+    class FakeAgent:
+        model = "new-model"
+        provider = "test"
+        session_id = "model-switch-session"
+        _cached_system_prompt = None
+        _session_db = db
+
+        def _build_system_prompt(self, system_message=None):
+            return "NORMAL PROMPT"
+
+    try:
+        server._persist_live_session_system_prompt(
+            {
+                "agent": FakeAgent(),
+                "session_key": "model-switch-session",
+                "profile_home": None,
+            }
+        )
+
+        row = db.get_session("model-switch-session")
+        assert row is not None
+        assert row["system_prompt"] == "NORMAL PROMPT"
+        assert json.loads(row["model_config"]) == {"keep": {"nested": "value"}}
+    finally:
+        db.close()
 
 
 def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_path):
@@ -22561,7 +22603,7 @@ def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_p
             return f"Current working directory: {resolve_agent_cwd()}"
 
     class FakeDB:
-        def update_system_prompt(self, session_id, prompt):
+        def update_system_prompt(self, session_id, prompt, *, composition_only=None):
             persisted["prompt"] = prompt
 
     agent = FakeAgent()

@@ -346,6 +346,8 @@ def _bot_mode_parts(agent: Any) -> List[str]:
     """Bot Mode teammate protocol — only in a bot's canonical "Bot Chat" session.
     Marks the prompt timeless (the volatile date line is dropped) since a birth
     date pinned in a months-long session is misinformation."""
+    if getattr(agent, "_composition_only", False) is True:
+        return []
     parts: List[str] = []
     try:
         from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section

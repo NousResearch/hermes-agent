@@ -1150,6 +1150,7 @@ def test_rotation_child_starts_without_durable_prune_runway(tmp_path: Path) -> N
     assert agent.session_id != parent_sid
     child_config = json.loads(db.get_session(agent.session_id)["model_config"])
     assert "_proactive_prune_rearm_tokens" not in child_config
+    assert "composition_only" not in child_config
     assert json.loads(db.get_session(parent_sid)["model_config"])[
         "_proactive_prune_rearm_tokens"
     ] == 120_000

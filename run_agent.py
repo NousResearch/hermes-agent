@@ -324,8 +324,12 @@ class AIAgent(
         """
         model_config = dict(self._session_init_model_config or {})
         # This mode is assigned by the API adapter after AIAgent construction, so derive it
-        # at row-creation time rather than trusting the construction snapshot.
-        model_config["composition_only"] = getattr(self, "_composition_only", False) is True
+        # at row-creation time rather than trusting the construction snapshot. Normal
+        # sessions remain legacy/untagged rather than persisting composition_only=false.
+        if getattr(self, "_composition_only", False) is True:
+            model_config["composition_only"] = True
+        else:
+            model_config.pop("composition_only", None)
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):

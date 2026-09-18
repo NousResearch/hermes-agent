@@ -636,11 +636,15 @@ class SessionSessionsMixin:
     def update_system_prompt(
         self, session_id: str, system_prompt: Optional[str], *, composition_only: Optional[bool] = None,
     ) -> None:
-        """Store the full assembled system prompt snapshot and, when supplied, its API run mode."""
+        """Store the full assembled system prompt snapshot and, when supplied, its API run mode.
+
+        Composition-only writes the explicit ``True`` marker. Normal writes remove the marker so
+        legacy normal sessions stay untagged; both changes remain atomic with the prompt update.
+        """
         if composition_only is not None:
             def _do_mode_tagged(conn):
                 merged = self._merge_model_config_json(
-                    conn, session_id, {"composition_only": bool(composition_only)},
+                    conn, session_id, {"composition_only": True if composition_only else None},
                 )
                 if merged is _MODEL_CONFIG_ROW_MISSING:
                     return

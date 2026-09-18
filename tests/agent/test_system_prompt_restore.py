@@ -284,17 +284,23 @@ class TestStoredPromptReuse:
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.parametrize(
-        ("stored_mode", "current_mode", "stored_prompt", "rebuilt_prompt"),
+        ("stored_config", "current_mode", "stored_prompt", "rebuilt_prompt", "expected_config"),
         [
-            (False, True, "NORMAL_PROMPT", "COMPOSITION_PROMPT"),
-            (True, False, "COMPOSITION_PROMPT", "NORMAL_PROMPT"),
+            (
+                {"keep": "value"}, True, "NORMAL_PROMPT", "COMPOSITION_PROMPT",
+                {"keep": "value", "composition_only": True},
+            ),
+            (
+                {"keep": "value", "composition_only": True}, False,
+                "COMPOSITION_PROMPT", "NORMAL_PROMPT", {"keep": "value"},
+            ),
         ],
         ids=["normal-to-composition", "composition-to-normal"],
     )
     def test_existing_session_prompt_mode_isolated_and_retagged(
-        self, tmp_path, stored_mode, current_mode, stored_prompt, rebuilt_prompt,
+        self, tmp_path, stored_config, current_mode, stored_prompt, rebuilt_prompt, expected_config,
     ):
-        """A mode switch on an existing row must rebuild, then tag the replacement bytes."""
+        """A mode switch rebuilds the prompt and preserves/removes only the mode marker."""
         from hermes_state import SessionDB
 
         db = SessionDB(tmp_path / "state.db")
@@ -302,7 +308,7 @@ class TestStoredPromptReuse:
             "test-session-id",
             source="api_server",
             model="test-model",
-            model_config={"composition_only": stored_mode},
+            model_config=stored_config,
             system_prompt=stored_prompt,
         )
         agent = _make_agent(session_db=db, prebuilt_prompt=rebuilt_prompt)
@@ -317,7 +323,33 @@ class TestStoredPromptReuse:
             row = db.get_session(agent.session_id)
             assert row is not None
             assert row["system_prompt"] == rebuilt_prompt
-            assert json.loads(row["model_config"])["composition_only"] is current_mode
+            assert json.loads(row["model_config"]) == expected_config
+        finally:
+            db.close()
+
+    def test_normal_prompt_restore_keeps_legacy_model_config_untagged(self, tmp_path):
+        """Restoring a normal prompt must not add or rewrite unrelated session metadata."""
+        from hermes_state import SessionDB
+
+        expected_config = {"keep": "value", "other": {"nested": True}}
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            "test-session-id",
+            source="api_server",
+            model="test-model",
+            model_config=expected_config,
+            system_prompt="NORMAL_PROMPT",
+        )
+        agent = _make_agent(session_db=db)
+        agent._composition_only = False
+        try:
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+            agent._build_system_prompt.assert_not_called()
+            row = db.get_session(agent.session_id)
+            assert row is not None
+            assert json.loads(row["model_config"]) == expected_config
         finally:
             db.close()
 

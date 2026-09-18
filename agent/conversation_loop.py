@@ -107,7 +107,9 @@ def _stored_prompt_matches_composition_mode(agent: Any, session_row: Dict[str, A
         return not current_mode
     if not isinstance(stored_mode, bool):
         return False
-    return stored_mode is current_mode
+    # Only composition-only prompts carry a marker. Treat the old false marker as stale
+    # too, so a normal turn rebuilds once and removes it from durable metadata.
+    return current_mode and stored_mode is True
 
 
 # One-time wrap-up notice appended when a wall-clock run budget (--run-budget) crosses 80%.
@@ -687,7 +689,8 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
     this row every turn, so a silent failure breaks prefix-cache reuse. The composition-only
     mode marker is written with the prompt so a normal and composition-only run can never
-    reuse one another's cached bytes."""
+    reuse one another's cached bytes. Normal writes remove the marker rather than storing
+    ``composition_only: false``."""
     if not agent._session_db:
         return
     try:

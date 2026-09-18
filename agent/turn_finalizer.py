@@ -162,7 +162,8 @@ def _resolve_budget_fallback(
     # close the parent's run and release its claim (#112817).
     _kanban_task = (
         os.environ.get("HERMES_KANBAN_TASK")
-        if budget_exhausted and is_dispatcher_owned_worker_context() else None
+        if (budget_exhausted and getattr(agent, "_composition_only", False) is not True
+            and is_dispatcher_owned_worker_context()) else None
     )
     # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
     # treating it as a protocol violation). This applies whether the user-facing fallback came from the

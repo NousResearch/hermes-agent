@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, _session_key_namespace
+from gateway.session import SessionSource
 from typing import Any, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -28,6 +28,35 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _key_namespace(key: str) -> str:
+    """``agent:<profile>`` prefix of a session key (``build_session_key``'s first two slots)."""
+    return ":".join(key.split(":")[:2])
+
+
+def _same_chat_key_slots(
+    key: str, *, namespace: str, platform: str, chat_id: str, scope_id: Optional[str],
+) -> Optional[tuple]:
+    """``(chat_type, trailing_slots)`` when ``key`` names the SAME chat, else None.
+
+    Key layout: ``agent:<profile>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
+    The namespace occupies the first two slots (``agent:main`` is byte-identical to every legacy
+    key). ``scope_id`` is Slack's workspace slot; it may be absent from either side (an older source
+    without the slot still names the same chat), but a key carrying a DIFFERENT known scope is
+    another workspace's chat.
+    """
+    slots = key.split(":")
+    if len(slots) < 5 or ":".join(slots[:2]) != namespace or slots[2] != platform:
+        return None
+    rest = slots[3:]
+    if rest[1] == chat_id:
+        return rest[0], rest[2:]
+    if len(rest) >= 3 and rest[2] == chat_id:
+        if scope_id and rest[1] != str(scope_id):
+            return None
+        return rest[0], rest[3:]
+    return None
 
 
 class GatewayBusySessionMixin:
@@ -1031,70 +1060,64 @@ class GatewayBusySessionMixin:
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys of OTHER participants in the same thread (per-user thread mode keys
-        are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's own
-        ``/stop``). Excludes the pending sentinel and ``own_key``; callers still gate on authz."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        thread_id = getattr(source, "thread_id", None)
-        chat_id = getattr(source, "chat_id", None)
-        if not thread_id or not chat_id:
+    def _same_chat_runs(self, source: SessionSource, own_key: str) -> list:
+        """``(key, chat_type, trailing_slots)`` for every OTHER running turn in the caller's chat.
+
+        The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
+        stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
+        drops the pending sentinel (a session still being set up has no agent). Callers gate on
+        authorization; ``own_key`` is excluded.
+        """
+        chat_id = str(getattr(source, "chat_id", None) or "")
+        if not chat_id:
             return []
+        namespace = _key_namespace(own_key)
         platform = source.platform.value
+        scope_id = getattr(source, "scope_id", None)
+        runs = []
+        for key in self._snapshot_running_agents():
+            if key == own_key:
+                continue
+            parsed = _same_chat_key_slots(
+                key, namespace=namespace, platform=platform, chat_id=chat_id, scope_id=scope_id,
+            )
+            if parsed is not None:
+                runs.append((key, parsed[0], parsed[1]))
+        return runs
+
+    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Running-agent keys of OTHER participants in the caller's own thread (per-user thread mode
+        keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's
+        own ``/stop``). Callers still gate on authz."""
+        thread_id = getattr(source, "thread_id", None)
         chat_type = getattr(source, "chat_type", None) or ""
-        # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched. The namespace follows the source's profile so a named-profile run
-        # under multiplexing still matches its own keys.
-        prefix = ":".join([
-            _session_key_namespace(getattr(source, "profile", None)),
-            platform,
-            chat_type,
-            str(chat_id),
-            str(thread_id),
-        ])
+        if not thread_id or not chat_type:
+            return []
         return [
             key
-            for key, agent in self._running_agent_items()
-            if key != own_key
-            and agent is not _AGENT_PENDING_SENTINEL and agent
-            and (key == prefix or key.startswith(prefix + ":"))
+            for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
+            if key_chat_type == chat_type and tail[:1] == [str(thread_id)]
         ]
 
     def _chat_scoped_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys for ANY session of the same (platform[, scope], chat), regardless of
-        the chat_type/thread/participant slots. Two supported shapes make a /stop key miss a run in
-        the same chat (found via Slack's native stop button, gateway-gateway#286): a top-level
-        channel turn keys ``channel`` while an in-thread /stop normalizes to ``thread``, and
-        rolling-DM configs key without the thread slot the stop carries. "/stop" means "stop what's
-        running in THIS chat", so the handler falls back chat-wide on an exact+sibling miss.
-        Never crosses chat_id; Slack keys are matched with and without the scope_id slot (older
-        sources may lack it). Excludes the pending sentinel and ``own_key``; callers gate on authz.
+        """Running-agent keys for ANY session of the same chat, regardless of the chat_type/thread/
+        participant slots. Two supported shapes make a /stop key miss a run in the same chat (found
+        via Slack's native stop button, gateway-gateway#286): a top-level channel turn keys
+        ``channel`` while an in-thread /stop normalizes to ``thread``, and rolling-DM configs key
+        without the thread slot the stop carries. "/stop" means "stop what's running in THIS chat",
+        so the handler falls back chat-wide on an exact + thread-sibling miss — which is also what
+        lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
+
+        A run in a DIFFERENT thread of the same channel is a different conversation and stays
+        untouched: only the caller's own thread, a slotless run (top-level channel turn, rolling
+        DM) and non-thread keys (group/channel participant slots) are reachable. Callers gate on
+        authz.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        chat_id = getattr(source, "chat_id", None)
-        if not chat_id:
-            return []
-        platform = source.platform.value
-        # Derive the namespace from the caller's own key (profile-aware), not a literal.
-        marker = f":{platform}:"
-        namespace = own_key.split(marker, 1)[0] if marker in own_key else "agent:main"
-        scope_id = getattr(source, "scope_id", None)
-        chat_types = {getattr(source, "chat_type", None), "dm", "group", "channel", "thread"}
-        prefixes = []
-        for chat_type in chat_types:
-            if not chat_type:
-                continue
-            base = f"{namespace}:{platform}:{chat_type}"
-            prefixes.append(f"{base}:{chat_id}")
-            if scope_id:
-                prefixes.append(f"{base}:{scope_id}:{chat_id}")
+        thread_id = getattr(source, "thread_id", None)
         return [
             key
-            for key, agent in self._running_agent_items()
-            if key != own_key
-            and agent is not _AGENT_PENDING_SENTINEL and agent
-            # Exact key or prefix + ":" so a chat id that merely starts with this one never matches.
-            and any(key == prefix or key.startswith(prefix + ":") for prefix in prefixes)
+            for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
+            if not (key_chat_type == "thread" and thread_id and tail and tail[0] != str(thread_id))
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:

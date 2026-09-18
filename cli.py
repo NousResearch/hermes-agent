@@ -4205,11 +4205,17 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
         # The turn is over and persisted: the one-shot exit linger that follows protects nested
-        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608).
-        write_turn_report(
-            turn_report_path, exit_code=_single_query_exit_code(result),
-            error=str(result.get("error") or "") if isinstance(result, dict) else "agent turn did not run",
-        )
+        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608). The
+        # report carries what this run will print, so a spawner booking a child still lingering
+        # at its cap relays the answer instead of a timeout (#114980).
+        def _report_turn(res) -> None:
+            write_turn_report(
+                turn_report_path, exit_code=_single_query_exit_code(res),
+                error=str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run",
+                reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
+            )
+
+        _report_turn(result)
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history
 
@@ -4242,6 +4248,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
+                # A teammate's reply displaced the answer this run prints; tell the spawner.
+                _report_turn(result)
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.

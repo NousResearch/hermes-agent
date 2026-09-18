@@ -17,12 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
-import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -724,75 +721,24 @@ _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
 _BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
-# After the child reports its turn, a child with nothing to linger for exits at once; give it
-# that long so its real exit code and stream tails are booked instead of the report's summary.
-_BOT_CHAT_EXIT_GRACE_SECONDS = 2.0
 
 
 def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) -> subprocess.CompletedProcess:
-    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process.
+    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process (#113608).
 
-    The child records its turn outcome at *report_path* (``hermes_cli.quiet_single_query``)
-    the moment the turn ends, then runs the one-shot exit linger for nested
-    ``notify_on_complete`` replies — bounded by ``terminal.oneshot_completion_wait_seconds``,
-    whose default equals this lane's cap, so waiting for process exit booked every delivered
-    turn that left a reply pending as a timeout and killed the linger (#113608). Once the
-    report exists the delivery is booked from it and the still-lingering child is left
-    running (a daemon thread drains and reaps it); only a turn that never ends is killed.
+    The booking policy lives with the report contract (``quiet_single_query.run_reported_turn``):
+    this lane needs only the outcome, so a child that reported its turn gets the exit grace and is
+    then left to its linger; only a turn that never ends is killed.
     """
-    from hermes_cli.quiet_single_query import read_turn_report
+    from hermes_cli.quiet_single_query import run_reported_turn
 
     # The scheduler may sit in a directory that no longer exists (a kanban worker whose
     # scratch workspace was reaped): a child inheriting that cwd dies at CLI startup
     # (#102941). The target home is the one directory this lane has already verified.
-    # Lossy decode everywhere; on Windows also decode as the UTF-8 the child writes.
-    # A stray non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a
-    # partial multi-byte write) must not raise UnicodeDecodeError in the drain
-    # thread and take both the reply and the failure tail with it (#105582; same
-    # errors= hardening as _run_job_script). On win32 the child is guaranteed
-    # UTF-8 — hermes_cli reconfigures its own streams via hermes_bootstrap even
-    # under PYTHONIOENCODING=cp1252 — while the gateway parent is NOT started in
-    # UTF-8 mode (its env overlay sets only PYTHONIOENCODING), so text=True alone
-    # decodes the pipes with the ANSI code page: accented replies come back
-    # mojibake'd, or the reader thread dies on bytes undefined in cp1252 and the
-    # captured reply is silently lost while the delivery still books as delivered
-    # (#115894). On POSIX the child keeps the locale codec, so the locale default
-    # stays correct there (#66566).
-    popen_kwargs: dict = {"errors": "replace"}
-    if sys.platform == "win32":
-        popen_kwargs["encoding"] = "utf-8"
-    proc = subprocess.Popen(
-        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, cwd=env.get("HERMES_HOME") or None, creationflags=windows_hide_flags(), **popen_kwargs)
-    streams: dict = {}
-
-    def _drain() -> None:
-        streams["out"], streams["err"] = proc.communicate()
-
-    drain = threading.Thread(target=_drain, name=f"bot-chat-delivery-{proc.pid}", daemon=True)
-    drain.start()
-    deadline = time.monotonic() + timeout
-    report = None
-    while True:
-        drain.join(timeout=0.25 if report is None else _BOT_CHAT_EXIT_GRACE_SECONDS)
-        if not drain.is_alive():
-            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
-        if report is not None:
-            # Turn over, child still lingering for a nested reply: not this lane's wait.
-            return subprocess.CompletedProcess(argv, int(report["exit_code"]), "", report.get("error") or "")
-        report = read_turn_report(report_path, proc.pid)
-        if report is None and time.monotonic() >= deadline:
-            proc.kill()
-            drain.join(timeout=5.0)
-            # A killed child cannot run further, but the turn may have ENDED (and delivered)
-            # in the window between the last report check and the kill landing. Re-read once:
-            # a report that appeared means the turn completed — book it as delivered instead
-            # of misreporting a delivered turn as a timeout (and never re-notifying).
-            late = read_turn_report(report_path, proc.pid)
-            if late is not None:
-                return subprocess.CompletedProcess(
-                    argv, int(late["exit_code"]), "", late.get("error") or "")
-            raise subprocess.TimeoutExpired(argv, timeout)
+    # Decoding is the runner's platform policy: lossy everywhere (#105582), UTF-8 only on
+    # win32 (#115894), the locale codec on POSIX (#66566).
+    return run_reported_turn(argv, env=env, report_path=report_path, timeout=timeout,
+                             cwd=env.get("HERMES_HOME") or None)
 
 
 def _format_failure_streams(result) -> str:

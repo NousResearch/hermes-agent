@@ -256,3 +256,39 @@ class TestCrossProfileProjectTree:
         # The healthy profile's tree still lands; only the broken one drops out.
         assert "Healthy" in [project["label"] for project in payload["projects"]]
         assert [project["sessionCount"] for project in payload["projects"] if project["isNoProject"]] == [1]
+
+
+class TestSidebarTruncation:
+
+    def test_pinned_rows_inside_the_window_still_report_more_on_disk(self, client, profiles_on_disk):
+        # Regression for #81484: the window is a LIMIT page by recency, so a
+        # pin among the newest rows takes a slot. Discounting pins reported 18
+        # < 20 and the sidebar never offered "Load more" for the older rows.
+        from hermes_state import SessionDB
+
+        home = profiles_on_disk["default"]
+        params = {"recents_profile": "default", "recents_limit": 4}
+
+        def truncated():
+            payload = client.get("/api/profiles/sessions/sidebar", params=params).json()
+            return len(payload["recents"]["sessions"]), payload["recents"]["profiles_truncated"]
+
+        for index in range(3):
+            _seed_session(home, f"s-{index}", source="desktop")
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            assert db.set_session_pinned("s-2", True)
+        finally:
+            db.close()
+        # Short list: the pin is already on the page, nothing to back-fill, no "more".
+        assert truncated() == (3, {"default": False})
+
+        for index in range(3, 6):
+            _seed_session(home, f"s-{index}", source="desktop")
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            assert db.set_session_pinned("s-5", True)
+        finally:
+            db.close()
+        # Six on disk, two pins among the newest four: a full window, more below it.
+        assert truncated() == (4, {"default": True})

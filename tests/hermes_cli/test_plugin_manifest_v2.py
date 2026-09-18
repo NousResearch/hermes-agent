@@ -366,7 +366,7 @@ class TestPythonDependenciesSeam:
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
         assert "pip install" in caplog.text
-        assert "does not install plugin dependencies automatically" in caplog.text
+        assert "hermes plugins enable pipful" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
@@ -409,3 +409,51 @@ class TestCtxHasPlugin:
         finally:
             if hasattr(sys, "_m2_probe"):
                 del sys._m2_probe
+
+
+class TestRequiresHermes:
+    def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
+        """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
+        import sys
+        from hermes_cli import plugins_manifest
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.2.3")
+        _write_plugin(hermes_home / "plugins", "future", manifest_extra={"requires_hermes": ">=99.0"},
+                      register_body="import sys; sys._rh_future = True")
+        _write_plugin(hermes_home / "plugins", "current", manifest_extra={"requires_hermes": ">=1.2,<2"},
+                      register_body="import sys; sys._rh_current = True")
+        _enable(hermes_home, ["future", "current"])
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert not hasattr(sys, "_rh_future")
+            assert "requires hermes >=99.0" in (mgr._plugins["future"].error or "")
+            assert getattr(sys, "_rh_current", False) is True
+        finally:
+            for attr in ("_rh_future", "_rh_current"):
+                if hasattr(sys, attr):
+                    delattr(sys, attr)
+
+
+class TestDirectoryPluginKeepsIdentityOverEntryPoint:
+    """A pyproject-wrapper plugin depends on a pip package that ships a ``hermes_agent.plugins``
+    entry point under the SAME name. The installed directory must stay the plugin's identity (it
+    carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
+
+    def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
+        from hermes_cli.plugins_manifest import PluginManifest
+        _write_plugin(hermes_home / "plugins", "twin")
+        _enable(hermes_home, ["twin"])
+        twin_ep = PluginManifest(name="twin", version="9.9.9", description="pip twin",
+                                 source="entrypoint", path="twin_pkg:register", key="twin")
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [twin_ep])
+        monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
+        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["twin"].manifest.source == "user"
+
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
+        assert [r[3] for r in rows] == ["user"]
+        assert str(rows[0][4]).endswith("plugins/twin")

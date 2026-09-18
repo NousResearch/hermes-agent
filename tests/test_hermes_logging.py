@@ -142,6 +142,126 @@ class TestSetupLogging:
             hermes_home / "logs" / "agent.log"
         ).read_text()
 
+    def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
+        """Profile deletion releases its routed log files without disturbing another profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        deleted_home = tmp_path / "profile-deleted"
+        other_home = tmp_path / "profile-other"
+        deleted_home.mkdir()
+        other_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, deleted_home, other_home]
+        ) is True
+
+        logger = logging.getLogger("agent.profile-delete-log-release")
+        token = set_hermes_home_override(deleted_home)
+        try:
+            logger.warning("deleted profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(other_home)
+        try:
+            logger.warning("other profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log
+        assert all(deleted_home.resolve() in handler._profile_handlers for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+
+        assert hermes_logging.release_profile_log_handlers(deleted_home) == 2
+
+        assert all(deleted_home.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(deleted_home.resolve() not in handler._profile_homes for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+        assert "other profile log handles" in (other_home / "logs" / "agent.log").read_text()
+        assert "other profile log handles" in (other_home / "logs" / "errors.log").read_text()
+
+    def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
+        """A dashboard or serve backend builds agents for several profiles in ONE process, and each
+        one calls setup_logging for its own home. The second home must get a router — a bare file
+        handler beside the first home's would receive every profile's records."""
+        from logging.handlers import RotatingFileHandler
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home)
+
+        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)], (
+            "the second home must not add an unfiltered file handler")
+
+        logger = logging.getLogger("agent.conversation_loop.second-home-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("turn of profile b")
+        finally:
+            reset_hermes_home_override(token)
+        logger.info("turn of the launch profile")
+        hermes_logging.flush_log_queue()
+
+        a_log = (hermes_home / "logs" / "agent.log").read_text()
+        b_log = (profile_home / "logs" / "agent.log").read_text()
+        assert "turn of profile b" in b_log and "turn of profile b" not in a_log
+        assert "turn of the launch profile" in a_log and "turn of the launch profile" not in b_log
+
+    def test_setup_for_an_already_routed_home_adds_no_duplicate_writer(self, hermes_home, tmp_path):
+        """Routing already on (multiplexed gateway, Desktop cron ticker): a profile's agent starting
+        up must not add a second writer for its home on top of the router."""
+        from logging.handlers import RotatingFileHandler
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+        hermes_logging.setup_logging(hermes_home=profile_home)
+
+        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
+        token = set_hermes_home_override(profile_home)
+        try:
+            logging.getLogger("agent.conversation_loop.routed-home-test").info("once please")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert (profile_home / "logs" / "agent.log").read_text().count("once please") == 1
+        assert "once please" not in (hermes_home / "logs" / "agent.log").read_text()
+
+    def test_a_component_log_added_after_routing_is_routed_too(self, hermes_home, tmp_path):
+        """setup_logging(mode="gateway") for an already-known home AFTER a second home turned
+        routing on: gateway.log must be a routed writer, not a bare handler taking every home."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home)
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        logger = logging.getLogger("gateway.run.routed-component-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("gw-b")
+        finally:
+            reset_hermes_home_override(token)
+        logger.info("gw-a")
+        hermes_logging.flush_log_queue()
+
+        a_log = (hermes_home / "logs" / "gateway.log").read_text()
+        assert "gw-a" in a_log and "gw-b" not in a_log
+        assert "gw-b" in (profile_home / "logs" / "gateway.log").read_text()
+
 
 
 
@@ -604,6 +724,73 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
+def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
+    """A failing log destination is named once (no per-record traceback) and writes resume
+    once the file is reachable again."""
+    import io
+
+    class _SickStream(io.TextIOBase):
+        def writable(self):
+            return True
+
+        def write(self, *_a):
+            raise OSError(5, "Input/output error")
+
+        seek = tell = flush = write
+
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    try:
+        handler.stream.close()
+        handler.stream = _SickStream()
+        for i in range(5):
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(path)) == 1 and "Input/output error" in err
+
+        # Stream dropped, so the next emit reopens the real file and logging resumes.
+        handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "recovered", (), None))
+        assert "recovered" in path.read_text(encoding="utf-8")
+    finally:
+        handler.close()
+
+
+def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
+    """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
+    not re-arm the notice, or a stuck device prints the path once per record."""
+    import io
+
+    class _SickStream(io.TextIOBase):
+        def writable(self):
+            return True
+
+        def write(self, *_a):
+            raise OSError(5, "Input/output error")
+
+        seek = tell = flush = write
+
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    try:
+        handler._builtin_open = lambda *_a, **_kw: _SickStream()
+        handler.stream.close()
+        handler.stream = _SickStream()
+        for i in range(25):
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(path)) == 1
+    finally:
+        handler.close()
+
+
 class TestSafeStderr:
     """Tests for _safe_stderr() — Unicode tolerance on Windows console."""
 
@@ -685,4 +872,3 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging._queued_file_handlers
         )
-

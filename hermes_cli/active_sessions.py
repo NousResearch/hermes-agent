@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -148,14 +149,17 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
+    """Refusal text for a session another live process holds.
+
+    Contract shared with the TUI/Desktop surfaces: the FIRST line is the plain user sentence
+    (no lease/pid/owner jargon); the second line is ``Details: ...`` for logs and bug reports.
+    """
     surface = str(entry.get("surface") or "another surface")
-    pid = entry.get("pid")
     started = _optional_float(entry.get("started_at"))
-    age = f", running {format_age(time.time() - started)}" if started else ""
+    age = f" {format_age(time.time() - started)} ago" if started else ""
     return (
-        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
-        "Only one surface at a time may run a session, because a second one would "
-        "reason from a transcript that does not include the first one's work."
+        "This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.\n"
+        f"Details: session {session_id} opened by {surface}{age}."
     )
 
 
@@ -286,17 +290,7 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"entries": entries}, fh, sort_keys=True)
-        os.replace(tmp, path)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
 
 
 def _process_start_time(pid: int) -> Optional[float]:
@@ -650,8 +644,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     root = get_default_hermes_root()
     homes = [root]
     try:
-        homes.extend(p for p in (root / "profiles").iterdir()
-                     if p.is_dir() and not p.name.startswith("."))
+        homes.extend(p for p in (root / "profiles").iterdir() if named_profile_is_live(p))
     except OSError:
         pass
 
@@ -665,13 +658,13 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
 
 
 def active_session_registry_snapshot(
-    registry_home: str | Path | None = None,
+    registry_home: str | Path | None = None, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return the pruned active-session registry for diagnostics/tests."""
+    """Return live leases; attachment callers require provable liveness."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries)
+        entries = _prune_dead(raw_entries, strict=strict)
         if entries != raw_entries:
             _write_entries(state_path, entries)
         return entries

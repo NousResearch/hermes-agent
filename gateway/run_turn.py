@@ -21,8 +21,10 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -41,6 +43,72 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+_CONTEXT_OVERFLOW_ERROR_PHRASES = (
+    "context length", "context size", "context window",
+    "maximum context", "token limit", "too many tokens",
+    "reduce the length", "exceeds the limit",
+    "request entity too large", "prompt is too long",
+    "payload too large", "input is too long",
+)
+
+_UNEXPECTED_SILENCE_REPLY = (
+    "⚠️ The model returned only a silence marker for a message that needed a reply. "
+    "Try again or rephrase."
+)
+
+
+def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
+    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
+    text = " ".join(str(prompt or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
+    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
+    (#1630 skip) and the user-facing reply so the two can never disagree.
+
+    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
+    "invalid authentication token"; a bare 400 only counts on a long session."""
+    if not agent_result.get("failed"):
+        return False
+    if agent_result.get("compression_exhausted"):
+        return True
+    err = str(agent_result.get("error") or "").lower()
+    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+
+
+# Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
+# transcript meta row is logging-only — neither reaches the model, but both are the head a
+# fail-closed payload keeps.
+_HYGIENE_SETUP_ROLES = ("system", "session_meta")
+
+
+def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[Any]:
+    """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
+
+    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
+    Deterministic (the same transcript always yields the same cut) and payload-only: the stored
+    transcript is never touched, so the agent's durable-prefix slice (``history_offset``) is
+    unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
+    landed-compression and below-the-limit paths stay byte-identical.
+    """
+    if len(history) <= limit:
+        return history
+    head_end = 0
+    while (head_end < len(history) and isinstance(history[head_end], dict)
+           and history[head_end].get("role") in _HYGIENE_SETUP_ROLES):
+        head_end += 1
+    # Always leave room for the newest row: a setup-only payload would answer nothing.
+    head_end = min(head_end, limit - 1)
+    tail_start = len(history) - (limit - head_end)
+    # Never start the kept tail on a tool result: its parent assistant(tool_calls) row is dropped
+    # with it, and an orphaned tool result is an invalid sequence for every provider.
+    while (tail_start < len(history) and isinstance(history[tail_start], dict)
+           and history[tail_start].get("role") == "tool"):
+        tail_start += 1
+    return history[:head_end] + history[tail_start:]
 
 
 class GatewayTurnMixin:
@@ -114,7 +182,7 @@ class GatewayTurnMixin:
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -472,9 +540,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             raise
         if _lease_token is not None:
-            _lease_state = self._session_state(_quick_key).turn
-            _lease_state.lease_token = _lease_token
-            _lease_state.lease_generation = run_generation
+            self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
 
     @dataclasses.dataclass
     class _HygienePlan:
@@ -757,7 +823,8 @@ class GatewayTurnMixin:
         try:
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
-                await _adapter.send(source.chat_id, message, metadata=meta)
+                await _adapter.emit_warning(source.chat_id, message, metadata=meta,
+                                            logical_platform=source.platform)
         except Exception as _werr:
             logger.warning("Failed to deliver %s to user: %s", what, _werr)
 
@@ -1058,11 +1125,12 @@ class GatewayTurnMixin:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
                 from agent.redact import redact_sensitive_text
                 _err = redact_sensitive_text(getattr(_comp, "_last_summary_error", None) or "unknown error", force=True)
+                logger.warning("Session hygiene compression aborted: %s", _err)
                 await self._hmwa_hygiene_notify(
-                    source, attempt.meta, "⚠️ Context compression aborted "
-                    f"({_err}). No messages were dropped — "
-                    "conversation is unchanged. Run /compress to retry, /reset for a clean "
-                    "session, or check your auxiliary.compression model configuration.",
+                    source, attempt.meta,
+                    "⚠️ Shortening the conversation history failed, so I kept everything as-is. "
+                    "Run /compress to try again or /new to start fresh. If this keeps happening, "
+                    "run `hermes doctor` on the host.",
                     "compression-failure warning",
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
@@ -1203,11 +1271,14 @@ class GatewayTurnMixin:
             return history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
+        # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
         plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        # No compression this turn (under both thresholds, cooldown, or one already in flight): without
+        # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
 
         attempt = self._HygieneAttempt(agent=None, meta=self._event_thread_metadata(event, source), history=history)
         try:
@@ -1233,7 +1304,25 @@ class GatewayTurnMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
+        # A landed compression published a NEW transcript on attempt.history: leave it byte-identical.
+        # Anything else (turn-hold, timeout, unwind, codex path) left the FULL uncompressed transcript
+        # there — that is the fail-closed case (#111988).
+        if attempt.history is history:
+            return self._bound_hygiene_payload(history, hs, session_entry)
         return attempt.history
+
+    @staticmethod
+    def _bound_hygiene_payload(history, hs, session_entry):
+        """``bound_model_input_without_hygiene`` over ``hs.hard_msg_limit``, with one INFO line when the
+        cut is real. Below the limit this is the identity — no allocation, no behaviour change."""
+        bounded = bound_model_input_without_hygiene(history, hs.hard_msg_limit)
+        if bounded is not history:
+            logger.info(
+                "Session hygiene did not land for %s: bounding the model payload to %s of %s "
+                "messages (hard limit %s) — the stored transcript is unchanged",
+                session_entry.session_id, len(bounded), len(history), hs.hard_msg_limit,
+            )
+        return bounded
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
@@ -1341,6 +1430,7 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1356,17 +1446,29 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
-
-        # "(empty)" = the model produced no visible content after exhausting all retries.
-        if response == "(empty)" and not _intentional_silence:
-            response = (
-                "⚠️ The model returned no response after processing tool results. This can happen "
-                "with some models — try again or rephrase your question."
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
             )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
+
+        # "(empty)" = the model produced no visible content after exhausting all retries. One
+        # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
+        # reads the same words on every surface.
+        if response == "(empty)" and not _intentional_silence:
+            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+
+            _model = str(agent_result.get("model") or "").strip() or "The model"
+            response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
         logger.info(
-            "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown",
+            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
+            _platform_name, source.chat_id or "unknown", session_key or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 
@@ -1498,13 +1600,47 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _CONTEXT_OVERFLOW_ERROR_PHRASES = (
-        "context length", "context size", "context window",
-        "maximum context", "token limit", "too many tokens",
-        "reduce the length", "exceeds the limit",
-        "request entity too large", "prompt is too long",
-        "payload too large", "input is too long",
+    _FAILED_TURN_NOTICE = (
+        "Your request was not processed. Send it again if you still want me to carry it out."
     )
+    _PARTIAL_FAILED_TURN_NOTICE = (
+        "This turn did not complete. Some actions may already have run; verify their effects "
+        "before resending."
+    )
+
+    def _hmwa_add_failed_turn_notice(self, response, notice):
+        """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
+        response = str(response or "").strip()
+        return f"{response}\n\n{notice}" if response else notice
+
+    def _hmwa_failed_turn_notice(self, agent_result):
+        """Choose retry guidance without assuming completed tool effects can be repeated safely."""
+        from gateway.media_repair import _current_turn_messages
+        # Compression during the failed turn can move the slice boundary; the shared helper falls
+        # back to the last user row so tool evidence is not silently dropped.
+        turn_messages = _current_turn_messages(
+            agent_result.get("messages", []) or [], agent_result.get("history_offset", 0),
+        )
+        if any(
+            message.get("role") == "tool"
+            or (message.get("role") == "assistant" and message.get("tool_calls"))
+            for message in turn_messages
+        ):
+            return self._PARTIAL_FAILED_TURN_NOTICE
+        return self._FAILED_TURN_NOTICE
+
+    async def _hmwa_close_failed_turn(self, session_id, notice):
+        """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
+
+        The tail, not "did the gateway write the user row", is the key: on the primary path the
+        agent's turn-start flush already persisted the row (so the platform-id dedupe skips the
+        gateway write), and a platform redelivery of an already-closed turn must not stack a
+        second assistant row."""
+        if await self.async_session_store.transcript_tail_role(session_id) != "user":
+            return
+        await self.async_session_store.append_to_transcript(session_id, {
+            "role": "assistant", "content": notice, "timestamp": time.time(),
+        })
 
     def _hmwa_classify_turn_failure(self, agent_result, history, session_entry):
         """Classify a finished turn for transcript persistence. Returns
@@ -1524,13 +1660,7 @@ class GatewayTurnMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        _err = str(agent_result.get("error", "")).lower()
-        # Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded".
-        is_context_overflow_failure = agent_failed_early and (
-            bool(agent_result.get("compression_exhausted"))
-            or any(p in _err for p in self._CONTEXT_OVERFLOW_ERROR_PHRASES)
-            or ("400" in _err and len(history) > 50)
-        )
+        is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
                 "Skipping transcript persistence for context-overflow "
@@ -1595,11 +1725,10 @@ class GatewayTurnMixin:
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
-        # Transient failure (429/timeout/5xx): persist only the user message so the next message can load a
-        # transcript that reflects what was said. Skip the assistant error text since it's a
-        # gateway-generated hint, not model output. Hidden- reasoning-only incomplete turns follow the same
-        # persistence rule so peer-agent channels don't ingest them as completed assistant turns. (#7100,
-        # #51628)
+        # Transient failure (429/timeout/5xx): persist the user message so the next message can load a
+        # transcript that reflects what was said. The caller pairs it with a stable assistant safety
+        # boundary rather than the provider error text. Hidden-reasoning-only incomplete turns follow the
+        # same persistence rule so peer-agent channels don't ingest provider details. (#7100, #51628)
         _user_entry = {
             "role": "user",
             "content": (
@@ -1620,8 +1749,8 @@ class GatewayTurnMixin:
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
     ):
-        """Persist this turn to the transcript (session_meta on first turn, user-only on transient
-        failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
+        """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
+        transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
@@ -1654,8 +1783,8 @@ class GatewayTurnMixin:
                     "timestamp": ts,
                 })
             if agent_failed_early or hidden_reasoning_incomplete:
-                # Transient failure / hidden-reasoning incomplete: persist only the user message (the
-                # assistant error text is a gateway hint, not model output). Dedupe on platform
+                # Transient failure / hidden-reasoning incomplete: persist the user message without
+                # the provider error text (a gateway hint, not model output). Dedupe on platform
                 # message_id (Telegram retries after transient failures).
                 if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
                     logger.info(
@@ -1664,6 +1793,9 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                # Close the failed turn: a user-only tail lets alternation repair merge this request
+                # into an unrelated future message and replay stale side effects (#107070).
+                await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.
@@ -1712,6 +1844,8 @@ class GatewayTurnMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
+        if diagnostic_wake_muted(event):
+            return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -1746,18 +1880,27 @@ class GatewayTurnMixin:
 
         return response
 
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `hermes auth add <provider>` the host equivalent).
     _STATUS_HINTS = {
-        401: " Check your API key or run `claude /login` to refresh OAuth credentials.",
-        402: " Your API balance or quota is exhausted. Check your provider dashboard.",
-        529: " The API is temporarily overloaded. Please try again shortly.",
+        401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
+              "Use /login here, or run `hermes auth add <provider>` on the host."),
+        402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
+        529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
-        turn once, and build the sanitized user-facing error reply."""
+        turn once and close it, and build the sanitized user-facing error reply."""
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
+        status_code = getattr(e, "status_code", None)
+        if status_code in {400, 500} and len(prepared.history) > 50:
+            # Context overflow / payload too large: a deterministic rejection (#107567), and the same
+            # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
+            from gateway.run import _CONTEXT_OVERFLOW_REPLY
+            return _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -1768,10 +1911,11 @@ class GatewayTurnMixin:
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
+                # Tool effects are unknown after an exception.
+                await self._hmwa_close_failed_turn(session_entry.session_id, self._PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
-        status_code = getattr(e, "status_code", None)
         status_hint = self._STATUS_HINTS.get(status_code, "")
         if status_code == 429:
             # Plan usage limit (resets on a schedule) vs a transient rate limit
@@ -1788,18 +1932,13 @@ class GatewayTurnMixin:
                 status_hint = f" Your plan's usage limit has been reached. It resets in ~{math.ceil(_resets_in / 3600)}h."
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
-        elif status_code in {400, 500}:
-            # 400/500 on a large session: context overflow / payload too large.
-            if len(prepared.history) > 50:
-                return (
-                    "⚠️ Session too large for the model's context window.\nUse /compact to "
-                    "compress the conversation, or /reset to start fresh."
-                )
-            elif status_code == 400:
-                status_hint = " The request was rejected by the API."
-        return (
-            f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session."
+        elif status_code == 400:
+            status_hint = " The AI model service rejected the request."
+        return self._hmwa_add_failed_turn_notice(
+            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
+            "Use /retry to try again, or /new to start a fresh conversation. "
+            "Technical details are in the gateway log (`hermes logs`).",
+            self._PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
@@ -1835,7 +1974,7 @@ class GatewayTurnMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
-        persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
@@ -1969,10 +2108,25 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                persist_user_display_metadata={
+                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
                 message_type=event.message_type,
+                scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+
+            # A queued (/queue) chain answered the LAST message of the chain, so the outer final
+            # send (bracketed by the adapter against this event) must be ledgered under that
+            # message's id or it collides with an earlier turn's row carrying the same text. Reply
+            # routing is untouched: the anchor still comes from this event.
+            if isinstance(agent_result, dict):
+                _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
+                if _terminal_inbound:
+                    event.ledger_message_id = str(_terminal_inbound)
+                if "queued_terminal_notification_category" in agent_result:
+                    event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
+                if isinstance(agent_result.get("_notification_reply_muted"), bool):
+                    event._notification_reply_muted = agent_result["_notification_reply_muted"]
 
             await self._hmwa_stop_typing_for_turn(event, source)
 
@@ -1983,6 +2137,7 @@ class GatewayTurnMixin:
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+                persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -1994,6 +2149,8 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            if agent_failed_early and not is_context_overflow_failure:
+                response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
@@ -2016,14 +2173,49 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
 
     def _profile_scope_for_source(self, source: SessionSource):
-        """``_profile_runtime_scope`` for ``source``'s profile when multiplexing, else a no-op context.
+        """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
 
         Under multiplexing config/skills/memory resolve to the source profile's home AND credentials
-        come from its secret scope (never process-global ``os.environ``)."""
+        come from its secret scope (never process-global ``os.environ``). A standalone gateway
+        (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
+        credential guard — see ``_standalone_launch_scope``."""
         from gateway.run import _profile_runtime_scope
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
-        return nullcontext()
+        return self._standalone_launch_scope()
+
+    @staticmethod
+    def _standalone_launch_scope():
+        """Scope for a standalone gateway's own (launch-profile) work: a no-op until the process hosts
+        another profile home, then the launch profile's OWN runtime scope.
+
+        A native hosted room running a second profile calls
+        ``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
+        so ``get_secret`` fails closed for every unscoped read afterwards — including the standalone
+        gateway's ordinary turns, which never bound a scope because ``multiplex_profiles`` is off
+        (#112878). The launch profile is a profile too: bind its ``.env`` over the env frozen at
+        activation (a key injected by systemd / ``op run`` has no file to rebuild it from), never a
+        secondary's scope and never live ``os.environ``."""
+        from agent.secret_scope import is_multiplex_active
+        if not is_multiplex_active():
+            return nullcontext()
+        from hermes_constants import get_process_hermes_home
+        from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+        return launch_profile_runtime_scope(get_process_hermes_home())
+
+    def _media_delivery_scope_for_source(self, source: SessionSource):
+        """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
+        adapter's delivery side, which runs after the routed turn scope was reset.
+
+        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
+        infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
+        scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
+        resolves against the default profile's sandbox and mounts (#109024). No secret hydration:
+        path validation reads no credentials and this runs on the event loop."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
@@ -2051,6 +2243,13 @@ class GatewayTurnMixin:
             f"◆ Provider: {resolved.provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+        if (resolved.provider or "") == "moa":
+            # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+            agg = normalize_moa_config(load_config().get("moa"))["presets"].get(resolved.model, {}).get("aggregator") or {}
+            if agg:
+                lines.append(f"◆ Acting model (billed for the run): {agg.get('provider')}:{agg.get('model')}")
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(f"◆ Endpoint: {base_url}")
@@ -2117,7 +2316,8 @@ class GatewayTurnMixin:
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    "❌ The background task couldn't start because no AI model sign-in is "
+                    "configured. Use /login, or run `hermes setup` on the host.",
                     metadata=_thread_metadata,
                 )
                 return
@@ -2226,10 +2426,13 @@ class GatewayTurnMixin:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            # Automatic failure diagnostic (the task produced no requested result to deliver).
             with suppress(Exception):
-                await adapter.send(
-                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed: {e}",
-                    metadata=_thread_metadata,
+                await adapter.emit_warning(
+                    source.chat_id,
+                    (f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
+                     "Send /bg again to retry, or /agents to see what is still running."),
+                    metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
@@ -2271,8 +2474,9 @@ class GatewayTurnMixin:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_scope_keys
+            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
+            from tools.mcp_tool_scope import _key_name
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -2280,16 +2484,19 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     return {
-                        name for name in _servers
-                        if reload_scope is None or _server_scope_keys.get(name) == reload_scope
+                        _key_name(key) for key in _servers
+                        if _server_visible_in_scope(key, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
             # Explicit reload also re-probes tool availability (check_fn).
             reprobe_tool_availability()
-            # Reconnect by discovering tools (reads config.yaml fresh).
-            new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
+            # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
+            # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
+            from tools.mcp_oauth import suppress_interactive_oauth
+            with suppress_interactive_oauth():
+                new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:
@@ -2334,9 +2541,16 @@ class GatewayTurnMixin:
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:
-        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``)."""
+        """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).
+        Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
+        turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as
+        the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env."""
         from gateway.run import _load_gateway_config
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            url = (get_secret("GATEWAY_PROXY_URL") or "").strip()
+        except UnscopedSecretError:
+            url = os.getenv("GATEWAY_PROXY_URL", "").strip()
         if not url:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
@@ -2429,6 +2643,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2486,18 +2701,48 @@ class GatewayTurnMixin:
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-        _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
+        _stream_consumer = (
+            None if scheduled_heartbeat
+            else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
+        )
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
         _adapter = self._adapter_for_source(source)
-        if _adapter:
+        if _adapter and not scheduled_heartbeat:
             with suppress(Exception):
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 
         full_response = ""
         _start = time.time()
+        saw_done = False
+
+        def _consume_sse_line(line: str) -> bool:
+            """Parse one SSE line into full_response; True when the terminal ``[DONE]`` was seen.
+
+            Malformed frames (bad JSON, ``choices: [null]``, non-dict deltas) are skipped —
+            one bad chunk must not abort the whole stream."""
+            nonlocal full_response
+            line = line.strip()
+            if not line.startswith("data: "):
+                return False
+            data = line[6:]
+            if data.strip() == "[DONE]":
+                return True
+            try:
+                choices = json.loads(data).get("choices") or []
+                content = choices[0].get("delta", {}).get("content", "") if choices else ""
+            except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
+                return False
+            if content:
+                full_response += content
+                if _stream_consumer:
+                    _stream_consumer.on_delta(content)
+            return False
+
         try:
-            _timeout = ClientTimeout(total=0, sock_read=1800)
+            # sock_connect bounds the TCP connect phase so an unreachable proxy host
+            # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
+            _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
@@ -2507,28 +2752,35 @@ class GatewayTurnMixin:
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
+                        if saw_done:
+                            # A buggy upstream that holds the connection open after [DONE]
+                            # would otherwise block us for up to sock_read seconds.
+                            break
                         if not _run_still_current():
                             return _stale_result("stream")
                         buffer += chunk.decode("utf-8", errors="replace")
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
+                            if _consume_sse_line(line):
+                                saw_done = True
                                 break
-                            try:
-                                choices = json.loads(data).get("choices", [])
-                            except json.JSONDecodeError:
-                                continue
-                            content = choices[0].get("delta", {}).get("content", "") if choices else ""
-                            if content:
-                                full_response += content
-                                if _stream_consumer:
-                                    _stream_consumer.on_delta(content)
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
+                    # The final SSE frame may not be newline-terminated: flush the residual
+                    # buffer after EOF instead of silently dropping its content.
+                    if not saw_done and buffer:
+                        saw_done = _consume_sse_line(buffer)
+                    if not saw_done:
+                        # Clean EOF without [DONE] — the upstream dropped the response
+                        # mid-stream. Keep any partial text but say so instead of
+                        # presenting the truncation as a complete answer.
+                        logger.warning(
+                            "Proxy SSE stream from %s ended without [DONE] — response may be truncated "
+                            "(%d chars received)", proxy_url, len(full_response),
+                        )
+                        if not full_response:
+                            return self._proxy_error_result(
+                                "⚠️ Proxy connection closed before the response completed")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -2580,17 +2832,12 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
-        # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
-        _display_cfg = user_config.get("display", {})
-        if not isinstance(_display_cfg, dict):
-            _display_cfg = {}
-
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -2601,16 +2848,10 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = "tool_progress" in _display_cfg or any(
-            isinstance(cfg, dict) and key in cfg
-            for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
+        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
+        progress_mode, _tool_progress_explicit = resolve_tool_progress(
+            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
         )
-        progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []
@@ -2668,8 +2909,16 @@ class GatewayTurnMixin:
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
+        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
+        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
+        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
+        # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if (
+            source.platform == Platform.SLACK
+            and hasattr(adapter, "native_task_cards_enabled")
+            and not (_tool_progress_explicit and progress_mode == "off")
+        ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
@@ -2738,6 +2987,8 @@ class GatewayTurnMixin:
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
         turn_runner = TurnRunner(self, turn_ctx)
+        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
+            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
@@ -3146,12 +3397,12 @@ class GatewayTurnMixin:
         if not _warn_adapter:
             return
         try:
-            await _warn_adapter.send(
-                source.chat_id, f"⚠️ No activity for {int(worker.agent_warning // 60) or 1} min. "
-                "If the agent does not respond soon, it will be timed out in "
-                f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min. "
-                "You can continue waiting or use /reset.",
-                metadata=_interim_metadata(_status_thread_metadata),
+            await _warn_adapter.emit_warning(
+                source.chat_id, f"⚠️ I seem to be stuck (no activity for {int(worker.agent_warning // 60) or 1} min). "
+                "If nothing happens in the next "
+                f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min I'll give up on this task. "
+                "You can keep waiting, send /stop to cancel it, or /new to start a fresh conversation.",
+                metadata=_interim_metadata(_status_thread_metadata), logical_platform=source.platform,
             )
         except Exception as _warn_err:
             logger.debug("Inactivity warning send error: %s", _warn_err)
@@ -3159,7 +3410,7 @@ class GatewayTurnMixin:
     def _run_agent_timeout_result(self, worker, turn_ctx: TurnContext) -> dict:
         """Synthetic failed run dict for an inactivity timeout, with the activity-tracker diagnostic;
         interrupts the agent if it is still running so the thread pool worker is freed."""
-        from gateway.run import _INTERRUPT_REASON_TIMEOUT, request_hard_interrupt
+        from gateway.run import _INTERRUPT_REASON_TIMEOUT, _INTERRUPT_TOOL_REASON_TIMEOUT, request_hard_interrupt
         session_key, result_holder, tools_holder = turn_ctx.session_key, turn_ctx.result_holder, turn_ctx.tools_holder
         _timed_out_agent = turn_ctx.agent_holder[0]
         _activity = self._agent_activity_summary(_timed_out_agent)
@@ -3176,7 +3427,7 @@ class GatewayTurnMixin:
             _cur_tool or "none",
         )
         if _timed_out_agent:
-            request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
+            request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
         _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [
@@ -3257,7 +3508,7 @@ class GatewayTurnMixin:
             _agent_provider = getattr(_agent, 'provider', '') or ''
             if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                 _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+        if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
@@ -3351,6 +3602,8 @@ class GatewayTurnMixin:
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
     ) -> None:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+        if turn_ctx.mute_notification_reply:
+            return
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -3366,11 +3619,20 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            logger.info(
-                "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                session_key or "?",
-            )
-        elif first_response:
+            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+                logger.info(
+                    "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                    session_key or "?",
+                )
+                first_response = ""
+            else:
+                logger.warning(
+                    "Queued follow-up for session %s: replacing a human-turn silence marker.",
+                    session_key or "?",
+                )
+                first_response = _UNEXPECTED_SILENCE_REPLY
+                _already_streamed = False
+        if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
                 if _already_streamed else
@@ -3383,6 +3645,9 @@ class GatewayTurnMixin:
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
                     deliver_media=not _delivery_result.get("failed"), stream_consumer=_sc,
+                    # The text send records a delivery-ledger obligation under this key, keyed on
+                    # the raw inbound id (the anchor above is only the reply target).
+                    session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3436,6 +3701,11 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
+        # distinct from the reply anchor above (None in forum topics). Carry it or two chained
+        # topic turns with the same text would collide on one obligation id (queued-final-ledger).
+        next_inbound_id = None
+        next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3460,6 +3730,7 @@ class GatewayTurnMixin:
             if next_message is None:
                 return result
             next_message_id = self._reply_anchor_for_event(pending_event)
+            next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
 
@@ -3489,16 +3760,54 @@ class GatewayTurnMixin:
         # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
         # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
         # guard will consult. Fail-safe in helper.
-        await self._refresh_agent_cache_message_count(session_key, session_id)
+        # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
+        # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
+        # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
+        # different profile's adapter, and only that instance holds the per-message reaction state.
+        from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+        _hook_adapter = self._adapter_for_source(next_source) if pending_event is not None else None
+        await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
+        # (the helper's own ``except Exception`` does not catch cancellation).
+        try:
+            await self._refresh_agent_cache_message_count(session_key, session_id)
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
-        )
-        return _preserve_queued_followup_history_offset(result, followup_result)
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_display_kind=next_display_kind,
+                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+            )
+        except asyncio.CancelledError:
+            await _run_followup_processing_hook(
+                _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
+            raise
+        except BaseException:
+            await _run_followup_processing_hook(
+                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+            raise
+        await _run_followup_processing_hook(
+            _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+        merged = _preserve_queued_followup_history_offset(result, followup_result)
+        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
+        # the adapter brackets against the event that OPENED the chain. Without this the terminal
+        # reply is recorded under the first message's id, so a first reply that was refused (flood
+        # control) has its outstanding row replaced and marked delivered by an identical-text
+        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
+        # so only fill the key while it is still absent: the innermost turn wins.
+        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+            merged = {
+                **merged,
+                "queued_terminal_inbound_id": next_inbound_id,
+                "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_notification_category": (
+                    (pending_event.metadata or {}).get("notification_category", "result")
+                    if pending_event is not None and pending_event.internal else "result"),
+            }
+        return merged
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",
@@ -3638,9 +3947,11 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
-        elif _sc is not None:
-            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log the
-            # decision inputs ("signal never set" vs "ack-pending race").
+        elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
+            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
+            # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
+            # never fed the final's deltas (interim-only wiring, #105341) — they cannot have raced
+            # the normal final send, so the warning would be a guaranteed false positive.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
@@ -3765,6 +4076,12 @@ class GatewayTurnMixin:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
                 if not (_notify_res and getattr(_notify_res, "success", False)):
+                    # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
+                    # a fresh "Working" bubble after it reads as a contradiction (#10990).
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
                     _notify_res = await _notify_adapter.send(
                         source.chat_id, _heartbeat_text,
                         metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
@@ -3785,6 +4102,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3793,12 +4111,24 @@ class GatewayTurnMixin:
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id,
+                event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
 
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
+        if scheduled_heartbeat:
+            # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
+            # liveness notices would create a user-visible ping before its final result is known.
+            # Keep status callbacks intact for approvals and actionable failures.
+            disp = dataclasses.replace(
+                disp,
+                tool_progress_enabled=False,
+                interim_assistant_messages_enabled=False,
+                _thinking_enabled=False,
+                _native_slack_task_cards=False,
+                needs_progress_queue=False,
+            )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
@@ -3809,13 +4139,16 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
-        self._run_agent_start_streaming_tts(
-            source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
-        )
+        # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
+        if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
+            self._run_agent_start_streaming_tts(
+                source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
+            )
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
@@ -3828,13 +4161,18 @@ class GatewayTurnMixin:
         interrupt_monitor = spawn(self._run_agent_monitor_for_interrupt(turn_ctx, _interrupt_detected))
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
-        _notify_task = spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
+        _notify_task = (
+            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
+            else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
+        )
 
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+            if isinstance(response, dict):
+                response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
             self._run_agent_evict_on_fallback(turn_ctx)
 
             # Interrupted OR queued message (/queue)?

@@ -335,7 +335,12 @@ test('the merged-tail seed recovers a sentinel spliced onto a partial stderr lin
 test('the merged-tail seed does not match prose that merely names the sentinel', async () => {
   const child = makeFakeChild()
 
-  const wait = waitForDashboardPort(child, 50, () => '', () => 'still waiting for HERMES_BACKEND_READY from the backend\n')
+  const wait = waitForDashboardPort(
+    child,
+    50,
+    () => '',
+    () => 'still waiting for HERMES_BACKEND_READY from the backend\n'
+  )
 
   await assert.rejects(wait, /Timed out waiting/)
 })

@@ -1,7 +1,7 @@
+import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
-import type { ModelOptionProvider } from '@/types/hermes'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 

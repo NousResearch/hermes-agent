@@ -49,6 +49,19 @@ class RateLimitCreditsMixin:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _capture_nous_model_switch(self, http_response: Any) -> None:
+        """Record the Nous gateway's ``x-nous-model-switch`` header (a named account asked for the
+        free tier's model; the gateway served its backing model and named it). Applied between
+        calls by ``hermes_cli.anon_auth.apply_model_switch``. Fail-open."""
+        headers = _response_headers(http_response)
+        if not headers:
+            return
+        try:
+            from hermes_cli.anon_auth import note_model_switch
+            note_model_switch(self, headers)
+        except Exception:
+            pass  # Never let header parsing break the agent loop
+
     def _capture_anthropic_response_headers(self, http_response: Any) -> None:
         """Capture rate-limit + credits state from Anthropic Messages response headers (the SDK's
         aggregated ``Message`` drops them). Fail-open."""

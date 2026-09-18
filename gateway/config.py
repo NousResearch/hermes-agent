@@ -42,37 +42,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
-def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
-    """Normalize the optional named-profile allowlist: ``None`` = serve all; a malformed
-    outer value fails safe to ``[]`` (default profile only); bad entries are skipped."""
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        logger.warning(
-            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
-            "serving only the default profile",
-            type(value).__name__,
-        )
-        return []
-
-    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
-
-    normalized: List[str] = []
-    for entry in value:
-        if not isinstance(entry, str):
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r (expected a profile name)", entry)
-            continue
-        try:
-            name = normalize_profile_name(entry)
-            validate_profile_name(name)
-        except ValueError:
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r", entry)
-            continue
-        if name != "default" and name not in normalized:
-            normalized.append(name)
-    return normalized
-
-
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
@@ -162,6 +131,14 @@ def coerce_systemd_watchdog_seconds(
 
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+# "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
+# silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
+UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
+DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
+    "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
+)
 
 
 def _normalize_choice(value: Any, choices: set, default: str) -> str:
@@ -268,15 +245,20 @@ class Platform(Enum):
 # Built-in values snapshotted before any dynamic _missing_ lookup.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
-# Platforms that bind a host TCP port. In a multiplexer only the default profile owns the
-# shared listener, so a SECONDARY profile enabling one is a misconfiguration (single source
-# of truth for gateway/run.py and hermes_cli/web_server.py validation).
+# Platforms that bind a host TCP port. In a multiplexer only the default profile binds: a SECONDARY
+# profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
+# default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook", "api_server", "msgraph_webhook", "feishu", "wecom_callback",
     "bluebubbles", "sms", "whatsapp_cloud", "line", "teams",
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
+# Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
+# never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
+SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
+SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
@@ -411,12 +393,22 @@ class PlatformConfig:
             result["channel_overrides"] = {cid: ov.to_dict() for cid, ov in self.channel_overrides.items()}
         return result
 
+    # Keys consumed by typed fields; everything else at the top of a platform block is adapter
+    # config and belongs in ``extra`` (see from_dict).
+    _TYPED_KEYS = frozenset({
+        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+    })
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
-        # The typing/restart-notification keys may be top-level or bridged into ``extra``; top-level wins.
-        extra = _coerce_dict(data.get("extra", {}))
+        # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
+        # write them where the docs and ``hermes config set platforms.webhook.port`` put them:
+        # directly under the platform block. Promote every non-typed top-level key so neither
+        # spelling is silently dropped (#10206); an explicit ``extra:`` value wins on a clash.
+        extra = {**{k: v for k, v in data.items() if k not in cls._TYPED_KEYS}, **_coerce_dict(data.get("extra", {}))}
 
         def toplevel_or_extra(key: str) -> Any:
             value = data.get(key)
@@ -556,10 +548,14 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
-    # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
-    multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
+    # The default profile's gateway serves every profile on the host (profiles stamped into session
+    # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
+    # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
+    # .resolve_multiplex_mode`` runs the migration preflight (default profile, >= 2 profiles, no
+    # secondary running its own gateway, no blocker, migratable host) and only then writes True/False.
+    # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
+    # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
+    multiplex_profiles: Optional[bool] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -578,7 +574,8 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
+    unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -588,14 +585,13 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
+        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -702,9 +698,10 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
         )
-        # env > config.yaml > False: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
-        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when
-        # not None, else ``gateway.multiplex_profiles``.
+        # env > config.yaml > unset: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
+        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when not
+        # None, else ``gateway.multiplex_profiles``. Nothing set stays ``None`` so the boot-time guard
+        # (``resolve_multiplex_mode``) can tell "the operator chose" from "the default applies".
         multiplex_profiles = data.get("multiplex_profiles")
         if multiplex_profiles is None:
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
@@ -730,8 +727,7 @@ class GatewayConfig:
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
-            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
+            multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -739,7 +735,8 @@ class GatewayConfig:
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
-            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
+            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
+            unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -755,7 +752,7 @@ class GatewayConfig:
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
         """Effective unauthorized-DM behavior. Email is inbox-shaped so it defaults to ``"ignore"``
         unless its own ``unauthorized_dm_behavior`` opts in (a global default does not)."""
-        choice = self._extra_choice(platform, "unauthorized_dm_behavior", {"pair", "ignore"}, self.unauthorized_dm_behavior)
+        choice = self._extra_choice(platform, "unauthorized_dm_behavior", UNAUTHORIZED_DM_BEHAVIORS, self.unauthorized_dm_behavior)
         if choice is not None:
             return choice
         return "ignore" if platform == Platform.EMAIL else self.unauthorized_dm_behavior

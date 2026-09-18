@@ -74,6 +74,80 @@ def _home_and_resolved(path: str) -> tuple[str, str]:
     return tuple(os.path.realpath(os.path.expanduser(p)) for p in ("~", str(path)))
 
 
+# ---------------------------------------------------------------------------
+# Windows NT-namespace path guard
+#
+# Pre-approval file accesses reject Windows NT-namespace (``\??\``) paths so
+# the remaining unguarded path touches cannot be turned into an NTLM
+# credential leak.
+#
+# The vector: on Windows, merely *resolving or touching* a path such as
+# ``\\??\\UNC\\attacker.example\\share\\x`` (or the ``\\\\?\\UNC\\`` /
+# ``GLOBALROOT`` re-entry forms) makes the OS initiate SMB authentication to
+# the remote host, leaking the user's NTLM hash — even when the read itself
+# fails or would later be denied. NT object-namespace paths also bypass
+# normal Win32 path normalization, which lets them dodge deny-prefix checks
+# built on ``realpath()`` string comparison. A model tricked by injected
+# content into "reading" such a path leaks credentials before any denylist
+# built on resolved paths can fire.
+#
+# Consequently this check MUST run on the *raw* path string before any
+# ``Path.resolve()`` / ``os.path.realpath()`` call, and it does — it is the
+# first check in both :func:`get_read_block_error` and the write-denial
+# classifier.
+#
+# Scope (deliberately narrow to avoid false positives):
+#   * ``\\??\\...``            — NT object-namespace paths. Never legitimate
+#                                tool input on any platform.
+#   * ``\\\\.\\...``           — Win32 device namespace (``\\\\.\\pipe\\``,
+#                                ``\\\\.\\PhysicalDrive0``, ...). Not a file
+#                                read/write target for agent tools.
+#   * ``\\\\?\\UNC\\...``      — extended-length UNC form (remote host).
+#   * ``\\\\?\\GLOBALROOT...`` — re-entry into the NT namespace.
+#
+# Plain drive-letter extended-length paths (``\\\\?\\C:\\...``) stay ALLOWED:
+# they are a routine local form (see hermes_cli/windows_ssh_runtime.py) and
+# carry no remote-auth trigger. Plain UNC shares (``\\\\server\\share``) are
+# also unchanged here — blocking ordinary UNC reads is a policy question,
+# not part of this namespace-bypass guard.
+#
+# The guard runs on every platform: these prefixes are never legitimate
+# inputs on POSIX either, and path strings can be relayed toward Windows
+# hosts (remote terminal backends, desktop bridges).
+# ---------------------------------------------------------------------------
+
+def is_nt_namespace_path(path: str) -> bool:
+    """Return True if ``path`` is a Windows NT-/device-namespace path.
+
+    Checks the raw string only — never resolves the path (resolving is the
+    credential-leak trigger this guard exists to prevent).
+    """
+    s = str(path).replace("/", "\\")
+    if s.startswith("\\??\\"):
+        return True
+    if s.startswith("\\\\.\\"):
+        return True
+    if s.startswith("\\\\?\\"):
+        rest = s[4:]
+        upper = rest.upper()
+        if upper.startswith("UNC\\") or upper.startswith("GLOBALROOT\\"):
+            return True
+    return False
+
+
+def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
+    """Return an error message when ``path`` uses the NT/device namespace."""
+    if not is_nt_namespace_path(path):
+        return None
+    return (
+        f"{verb} denied: '{path}' uses a Windows NT/device namespace prefix "
+        "(\\??\\, \\\\.\\, \\\\?\\UNC\\, or GLOBALROOT). These paths bypass "
+        "normal path normalization and can trigger outbound SMB "
+        "authentication (NTLM credential leak) merely by being resolved. "
+        "Use a normal absolute path instead."
+    )
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
@@ -83,11 +157,22 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Both the active-profile and top-level copies: overwriting the root .env leaks
-    # credentials across every profile that inherits from it; the root Anthropic
-    # PKCE store is still read by default/non-profile sessions when a profile is
-    # active; bws_cache.enc.json is the Bitwarden Secrets Manager encrypted cache.
-    hermes_files = (".env", ".anthropic_oauth.json", os.path.join("cache", "bws_cache.enc.json"))
+    # Secret material under HERMES_HOME, on both the active profile and the global
+    # root: overwriting the root .env leaks credentials across every profile that
+    # inherits it, and the root Anthropic PKCE store is still read by default /
+    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
+    # token store; both Bitwarden caches hold Secrets Manager material.
+    #
+    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
+    # deliberately NOT here: #45947 freed those control files on purpose
+    # ("true containment belongs in Docker/remote backends and OS permissions,
+    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
+    hermes_files = (
+        ".env", ".anthropic_oauth.json",
+        os.path.join("auth", "google_oauth.json"),
+        os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
+    )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
         *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
@@ -129,12 +214,20 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/ and pairing/ hold credential material.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
+# browser-profile/ (copied cookies / Login Data) hold credential material.
+# Control files (auth.json, config.yaml, webhook_subscriptions.json) are
+# deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed."""
+    # NT/device-namespace check runs on the RAW string, before realpath():
+    # resolving such a path is itself the NTLM-leak trigger, and namespace
+    # prefixes defeat string-prefix denylist comparison after normalization.
+    if is_nt_namespace_path(path):
+        return "nt_namespace"
     home, resolved = _home_and_resolved(path)
 
     # Approval-gated paths are allowed at this layer so interactive tools can
@@ -174,6 +267,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
         )
+    if denial == "nt_namespace":
+        return get_nt_namespace_error(path, verb=verb)
     return f"{verb} denied: '{path}' is a protected system/credential file." if denial else None
 
 
@@ -211,6 +306,10 @@ _READ_DENIED_DIRS = (
     ("browser-profile",
      "is the Hermes real-profile browser snapshot directory (copied cookies/logins) and cannot be read directly.",
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
+    # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
+    ("vault",
+     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
+     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
 )
 
 
@@ -226,6 +325,14 @@ def get_read_block_error(path: str) -> Optional[str]:
     ``TERMINAL_CWD``) MUST pass an absolute path: ``resolve()`` here anchors at
     the process cwd, so a relative ``"auth.json"`` would miss the denylist.
     """
+    # NT/device-namespace check runs on the RAW string, before resolve():
+    # on Windows, resolving \??\UNC\host\share (or \\?\UNC\, GLOBALROOT)
+    # already triggers outbound SMB auth — the NTLM leak happens before any
+    # resolved-path denylist could fire. Namespace prefixes also bypass
+    # normal path normalization, defeating prefix-comparison denylists.
+    nt_error = get_nt_namespace_error(path, verb="Read")
+    if nt_error:
+        return nt_error
     resolved = Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None

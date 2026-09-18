@@ -69,8 +69,20 @@ def _verify_packaged_entry(resources: Path) -> None:
         raise RuntimeError(f"The updated Desktop renderer entry is invalid: {exc}") from exc
 
 
-def verify_windows_desktop_update(project_root: Path) -> None:
-    """Raise when a zero-exit updater left an incomplete or stale packaged app."""
+def checkout_root() -> Path:
+    """The checkout this module was imported from: the only root the receipt may describe."""
+    return Path(__file__).resolve().parent.parent
+
+
+def verify_windows_desktop_update(project_root: Path | None = None) -> None:
+    """Raise when a zero-exit updater left an incomplete or stale packaged app.
+
+    The root defaults to the imported checkout, never the caller's cwd: the hand-off
+    is spawned from HERMES_HOME by the pre-update Desktop, and a cwd-derived root
+    reported a healthy install as "Desktop executable is missing" (Sep 2026).
+    """
+    if project_root is None:
+        project_root = checkout_root()
     desktop = project_root / "apps" / "desktop"
     executable = _desktop_packaged_executable(desktop)
     if executable is None:

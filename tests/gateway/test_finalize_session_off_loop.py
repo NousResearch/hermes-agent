@@ -133,7 +133,7 @@ def test_shutdown_finalize_path_uses_off_loop_dispatch(monkeypatch):
         GatewayRunner, "_finalize_session_off_loop", _fake_off_loop
     )
 
-    async def _fake_cleanup(self, agent, *, context=""):
+    async def _fake_cleanup(self, agent, *, context="", session_key=None):
         return None
 
     monkeypatch.setattr(

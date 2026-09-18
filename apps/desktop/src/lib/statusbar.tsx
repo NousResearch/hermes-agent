@@ -1,8 +1,8 @@
+import { compactNumber } from '@hermes/shared'
 import { useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
-import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
 export function formatDuration(elapsedMs: number): string {
@@ -43,7 +43,7 @@ export function contextBar(percent: number | undefined, width = 10): string {
 
 export function usageContextLabel(usage: UsageStats): string {
   if (usage.context_max) {
-    return `${usage.context_estimated ? "~" : ""}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
+    return `${usage.context_estimated ? '~' : ''}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
   }
 
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''

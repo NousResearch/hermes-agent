@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { IS_MAC } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { ComposerDirectiveActions } from './directive-actions'
@@ -79,6 +80,22 @@ describe('ComposerDirectiveActions', () => {
     expect(pillValue()).toBeNull()
   })
 
+  // Platform-specific on purpose (same rule as lib/external-link.test.tsx):
+  // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
+  it('sends the pill to the system browser on the platform open-elsewhere modifier', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+
+    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com/docs' }])
+
+    hover(chips(editor, 'url')[0]!)
+    fireEvent.click(screen.getByRole('button'), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
   it('runs the kind-specific action — a session chip opens the session', async () => {
     const editor = mountEditor([{ kind: 'session', value: 'default/20260722_204335_d62c16' }])
 
@@ -153,7 +170,9 @@ describe('ComposerDirectiveActions', () => {
 
     const button = screen.getByRole('button')
     fireEvent.pointerOut(button, { relatedTarget: button.firstElementChild })
-    act(() => { vi.advanceTimersByTime(750) })
+    act(() => {
+      vi.advanceTimersByTime(750)
+    })
     expect(pillValue()).toBe('https://example.com')
   })
 
@@ -167,9 +186,13 @@ describe('ComposerDirectiveActions', () => {
     fireEvent.pointerOut(chip, { relatedTarget: null })
     fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
     fireEvent.mouseLeave(screen.getByRole('button').parentElement!)
-    act(() => { vi.advanceTimersByTime(300) })
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
     fireEvent.pointerOut(document.body, { relatedTarget: document.documentElement })
-    act(() => { vi.advanceTimersByTime(200) })
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
 
     expect(pillValue()).toBeNull()
   })

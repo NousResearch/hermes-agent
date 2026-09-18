@@ -569,3 +569,256 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
 
 
+
+
+class TestDrainQueuedAckHonesty:
+    """A drain-time 'queued' acknowledgement must reflect actual acceptance —
+    the reply is currently chosen from the busy mode, not from whether
+    _queue_or_replace_pending_event stored the event."""
+
+    @pytest.mark.asyncio
+    async def test_drain_notice_does_not_claim_queued_when_enqueue_drops(self):
+        """Adapter has no usable pending map -> the enqueue drops, and the user
+        must NOT be told the message was queued."""
+        runner, _ = _make_runner()
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+        adapter = types.SimpleNamespace()  # no _pending_messages attribute -> enqueue drops
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        sent = []
+
+        async def _capture(evt, ad, content, **kwargs):
+            sent.append(content)
+
+        runner._send_busy_reply = _capture
+        await runner._send_busy_drain_notice(event, sk, "queue")
+        assert sent, "the user should still get a drain reply"
+        assert "queued for the next turn" not in sent[0]
+
+    @pytest.mark.asyncio
+    async def test_draining_reply_does_not_claim_queued_without_adapter(self):
+        """No adapter for the source -> _queue_or_replace_pending_event returns
+        without storing; the returned reply must not claim the message queued."""
+        runner, _ = _make_runner()
+        runner._draining = True
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+        runner.adapters = {}  # no adapter -> drop
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
+        runner._hm_busy_telegram_grace_queue = lambda *a, **k: False
+        runner._effective_busy_input_mode = lambda *a, **k: "queue"
+
+        reply = await runner._hm_handle_running_session_message(event, event.source, sk)
+        assert reply is not None
+        assert "queued for the next turn" not in reply
+
+    @pytest.mark.asyncio
+    async def test_drain_notice_does_not_claim_queued_when_queue_at_cap(self):
+        """Pending queue at _BUSY_QUEUE_MAX_PENDING -> the event is dropped and
+        the notice must not claim it was queued."""
+        runner, _ = _make_runner()
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+        runner._BUSY_QUEUE_MAX_PENDING = 0  # every enqueue hits the cap
+        adapter = _make_adapter()
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        sent = []
+
+        async def _capture(evt, ad, content, **kwargs):
+            sent.append(content)
+
+        runner._send_busy_reply = _capture
+        await runner._send_busy_drain_notice(event, sk, "queue")
+        assert sent, "the user should still get a drain reply"
+        assert "queued for the next turn" not in sent[0]
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_draining_reply_claims_queued_when_enqueue_succeeds(self):
+        """Successful enqueue still produces the queued acknowledgement and
+        stores the event in the adapter's pending slot."""
+        runner, _ = _make_runner()
+        runner._draining = True
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
+        runner._hm_busy_telegram_grace_queue = lambda *a, **k: False
+        runner._effective_busy_input_mode = lambda *a, **k: "queue"
+
+        reply = await runner._hm_handle_running_session_message(event, event.source, sk)
+        assert reply is not None
+        assert "queued for the next turn" in reply
+        assert adapter._pending_messages[sk] is event
+        assert event._gateway_accepted is True
+
+    @pytest.mark.asyncio
+    async def test_queue_command_does_not_claim_queued_without_adapter(self):
+        """/queue with no adapter for the source drops the event — the reply
+        must not claim it was queued."""
+        runner, _ = _make_runner()
+        runner.adapters = {}  # no adapter -> nothing can store the event
+        event = _make_event(text="/queue hold this thought")
+        sk = build_session_key(event.source)
+
+        reply = await runner._busy_queue_command(event, sk, event.source)
+        assert "Queued for the next turn" not in reply
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_does_not_claim_queued_when_queue_at_cap(self, tmp_path, monkeypatch):
+        """Non-drain busy path: _queue_or_replace_pending_event drops at the cap,
+        so the busy-ack must not say the message was queued."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _ = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._BUSY_QUEUE_MAX_PENDING = 0  # every enqueue hits the cap
+        adapter = _make_adapter()
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+
+        runner._is_user_authorized_for_source = lambda _source: True
+        runner._admit_bot_message_for_source = lambda _source: True
+        runner._effective_busy_input_mode = lambda *a, **k: "queue"
+        runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
+        runner._agent_has_active_subagents = lambda _agent: False
+        runner._session_has_compression_in_flight = AsyncMock(return_value=False)
+        sent = []
+
+        async def _capture(evt, ad, content, **kwargs):
+            sent.append(content)
+
+        runner._send_busy_reply = _capture
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert sent, "the user should still get a busy ack"
+        assert "Queued for the next turn" not in sent[0]
+        assert "queued for when it finishes" not in sent[0]
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_claims_queued_when_enqueue_succeeds(self, tmp_path, monkeypatch):
+        """Non-drain busy path, successful enqueue: the ack still claims queued
+        and the event lands in the adapter's pending slot."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _ = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[event.source.platform] = adapter
+
+        runner._is_user_authorized_for_source = lambda _source: True
+        runner._admit_bot_message_for_source = lambda _source: True
+        runner._effective_busy_input_mode = lambda *a, **k: "queue"
+        runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
+        runner._agent_has_active_subagents = lambda _agent: False
+        runner._session_has_compression_in_flight = AsyncMock(return_value=False)
+        sent = []
+
+        async def _capture(evt, ad, content, **kwargs):
+            sent.append(content)
+
+        runner._send_busy_reply = _capture
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert sent, "the user should get a busy ack"
+        assert "Queued for the next turn" in sent[0]
+        assert adapter._pending_messages[sk] is event
+        assert event._gateway_accepted is True
+
+    def test_pending_map_none_drops_cleanly(self):
+        """An adapter with _pending_messages = None has no usable slot — the
+        enqueue must report a drop, not raise TypeError in _queue_depth."""
+        runner, _ = _make_runner()
+        adapter = types.SimpleNamespace(_pending_messages=None)
+        event = _make_event(text="follow up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        assert runner._queue_or_replace_pending_event(sk, event) is False
+        assert event._gateway_accepted is False
+
+
+class TestDrainQueuedAckE2E:
+    """End-to-end through the real adapter guard: handle_message →
+    _handle_message_while_active → _handle_active_session_busy_message →
+    _send_busy_drain_notice → adapter.send. Only the network send is stubbed
+    (RestartTestAdapter captures it)."""
+
+    @pytest.mark.asyncio
+    async def test_e2e_drain_drop_does_not_claim_queued(self, tmp_path, monkeypatch):
+        import asyncio as _asyncio
+
+        import gateway.run as _gr
+        from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, adapter = make_restart_runner()
+        runner._draining = True
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+        runner._BUSY_QUEUE_MAX_PENDING = 0  # every enqueue hits the cap -> drop
+
+        source = make_restart_source()
+        sk = build_session_key(source)
+        adapter._active_sessions[sk] = _asyncio.Event()
+        event = MessageEvent(
+            text="follow up", message_type=MessageType.TEXT, source=source, message_id="m1"
+        )
+
+        await adapter.handle_message(event)
+
+        assert adapter.sent, "the user should still get a drain reply"
+        assert not any("queued for the next turn" in m for m in adapter.sent)
+        assert sk not in adapter._pending_messages
+        assert event._gateway_accepted is False
+
+    @pytest.mark.asyncio
+    async def test_e2e_drain_success_claims_queued(self, tmp_path, monkeypatch):
+        import asyncio as _asyncio
+
+        import gateway.run as _gr
+        from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, adapter = make_restart_runner()
+        runner._draining = True
+        runner._restart_requested = True
+        runner._busy_input_mode = "queue"
+
+        source = make_restart_source()
+        sk = build_session_key(source)
+        adapter._active_sessions[sk] = _asyncio.Event()
+        event = MessageEvent(
+            text="follow up", message_type=MessageType.TEXT, source=source, message_id="m1"
+        )
+
+        await adapter.handle_message(event)
+
+        assert any("queued for the next turn" in m for m in adapter.sent)
+        assert adapter._pending_messages.get(sk) is event
+        assert event._gateway_accepted is True

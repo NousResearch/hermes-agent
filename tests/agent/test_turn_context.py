@@ -345,6 +345,88 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
     assert agent._turn_author is None
 
 
+# ── Per-turn voice context (#109455) ─────────────────────────────────────────
+
+
+def test_voice_context_is_normalized_then_stashed_on_the_agent():
+    agent = _FakeAgent()
+
+    _build(agent, user_message="what's the weather",
+           voice_context={"input_modality": "voice", "voice_session_active": True,
+                          "client_surface": "desktop", "x": 1})
+
+    assert agent._turn_voice_context == {
+        "input_modality": "voice", "voice_session_active": True, "client_surface": "desktop",
+    }
+
+
+def test_turn_without_voice_context_clears_previous_turns_signal():
+    agent = _FakeAgent()
+    _build(agent, user_message="first turn", voice_context={"input_modality": "voice"})
+    assert agent._turn_voice_context["input_modality"] == "voice"
+
+    _build(agent, user_message="second turn")
+
+    assert agent._turn_voice_context == {}
+
+
+def test_garbage_voice_context_normalizes_to_empty_rather_than_raising():
+    agent = _FakeAgent()
+    _build(agent, user_message="hello", voice_context="not a dict")
+    assert agent._turn_voice_context == {}
+
+
+def test_voice_context_reaches_the_pre_llm_call_hook():
+    agent, _mm = _agent_with_memory_manager()
+    voice_context = {"input_modality": "voice", "voice_session_active": True, "client_surface": "cli"}
+
+    with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]) as lifecycle_hook:
+        _build(agent, user_message="what did we decide?", voice_context=voice_context)
+
+    pre_llm_calls = [c for c in lifecycle_hook.call_args_list if c.args[:1] == ("pre_llm_call",)]
+    assert len(pre_llm_calls) == 1
+    assert pre_llm_calls[0].kwargs["voice_context"] == voice_context
+
+
+def test_absent_voice_context_reaches_the_pre_llm_call_hook_as_empty_dict():
+    agent, _mm = _agent_with_memory_manager()
+
+    with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]) as lifecycle_hook:
+        _build(agent, user_message="what did we decide?")
+
+    pre_llm_calls = [c for c in lifecycle_hook.call_args_list if c.args[:1] == ("pre_llm_call",)]
+    assert len(pre_llm_calls) == 1
+    assert pre_llm_calls[0].kwargs["voice_context"] == {}
+
+
+def test_voice_context_reaches_the_agent_through_the_real_facade(monkeypatch):
+    """``AIAgent.run_conversation(voice_context=...)`` crosses the facade and the loop entry
+    point, not only ``build_turn_context``; a kwarg dropped at either hop raised TypeError on
+    every real turn (same regression shape as turn_author, above)."""
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+
+    class _Completions:
+        def create(self, **_kw):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=None, reasoning=None, reasoning_content=None),
+                finish_reason="stop")], usage=None, model="test-model")
+
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+                        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
+                    max_iterations=2, quiet_mode=True, skip_memory=True)
+    agent._disable_streaming = True
+
+    agent.run_conversation("hi", voice_context={"input_modality": "voice", "voice_session_active": True})
+    assert agent._turn_voice_context == {
+        "input_modality": "voice", "voice_session_active": True, "client_surface": "",
+    }
+    agent.run_conversation("hi again")
+    assert agent._turn_voice_context == {}
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

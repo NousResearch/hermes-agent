@@ -325,7 +325,7 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
 def _is_provisional_greeting_title(title: str) -> bool:
     """The prompt's greeting placeholder (also "Friendly greeting in chat" and quoted/bracketed variants)."""
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
-    return normalized.startswith(_PROVISIONAL_GREETING_TITLE)
+    return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
 
 
 def _is_prompt_example_echo(title: str) -> bool:

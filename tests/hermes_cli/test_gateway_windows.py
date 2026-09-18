@@ -481,6 +481,53 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     assert not any(c[0] in ("/Delete", "/Create") for c in calls)
 
 
+def _arrange_uninstalled_start(monkeypatch):
+    """start() with no Scheduled Task / Startup entry; returns (install_calls, spawn_count)."""
+    installs, spawns = [], []
+    monkeypatch.delenv("HERMES_GATEWAY_INSTALL_START_ON_LOGIN", raising=False)
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "install", lambda **kwargs: installs.append(kwargs))
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawns.append(1) or 4242)
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    return installs, spawns
+
+
+def test_start_without_tty_starts_the_gateway_but_never_installs_login_persistence(monkeypatch, capsys):
+    """`hermes gateway start < /dev/null` must not answer the persistence question with a default Yes
+    (#113977); it starts the gateway once and points at the explicit install command."""
+    installs, spawns = _arrange_uninstalled_start(monkeypatch)
+    monkeypatch.setattr(setup, "is_interactive_stdin", lambda: False)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt without a TTY"))
+
+    gateway_windows.start()
+
+    assert installs == [] and spawns == [1]
+    out = capsys.readouterr().out
+    assert "hermes gateway install" in out and "did not complete" not in out
+
+
+def test_start_on_tty_hands_both_answers_to_install_and_honours_the_env_opt_out(monkeypatch):
+    """Yes → one install() carrying start_now+start_on_login (install spawns; start() must not spawn
+    again). HERMES_GATEWAY_INSTALL_START_ON_LOGIN=0 → no question, no install, a plain start."""
+    installs, spawns = _arrange_uninstalled_start(monkeypatch)
+    monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: True)
+
+    gateway_windows.start()
+    assert installs == [{"force": False, "start_now": True, "start_on_login": True}] and spawns == []
+
+    installs.clear()
+    monkeypatch.setenv("HERMES_GATEWAY_INSTALL_START_ON_LOGIN", "0")
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("env override must skip the prompt"))
+    gateway_windows.start()
+    assert installs == [] and spawns == [1]
+
+
 
 
 

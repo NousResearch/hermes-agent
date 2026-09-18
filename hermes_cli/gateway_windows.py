@@ -785,7 +785,7 @@ def install(
             _start_or_report_running()
         else:
             print("ℹ Gateway not started and no auto-start service installed.")
-            print("  Run later with: hermes gateway start")
+            print("  Run in the foreground later with: hermes gateway run")
         return
 
     task_name = get_task_name()
@@ -1493,17 +1493,24 @@ def start() -> None:
         return
 
     if not is_task_registered() and not is_startup_entry_installed():
-        from hermes_cli.setup import prompt_yes_no
+        # Login persistence is a lasting system change: a bare ``start`` installs it only on an explicit
+        # answer — the HERMES_GATEWAY_INSTALL_START_ON_LOGIN override or a real TTY prompt — never on a
+        # non-TTY default (#113977). Declining still starts the gateway; the command is ``start``.
+        start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+        if start_on_login is None:
+            from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
-        print("✗ Gateway service is not installed")
-        if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
-            print("  Run: hermes gateway install")
+            print("✗ Gateway service is not installed")
+            if is_noninteractive() or not is_interactive_stdin():
+                start_on_login = False
+            else:
+                start_on_login = prompt_yes_no("  Install it now so the gateway starts on login?", True)
+        if start_on_login:
+            # install() starts the gateway itself (start_now) and reports the outcome — including a UAC
+            # hand-off to an elevated child — so there is nothing left to spawn or to warn about here.
+            install(force=False, start_now=True, start_on_login=True)
             return
-        install(force=False)
-        if not is_task_registered() and not is_startup_entry_installed():
-            print("⚠ Gateway install did not complete in this process.")
-            print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
-            return
+        print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 

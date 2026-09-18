@@ -24,6 +24,31 @@ def test_buzz_uuid_target_is_explicit() -> None:
     assert _parse_target_ref("buzz", channel_id) == (channel_id, None, True)
 
 
+def test_send_to_platform_routes_whatsapp_template_to_live_adapter() -> None:
+    """Approved templates retain their typed fields rather than degrading to text."""
+    adapter = SimpleNamespace(
+        send_template=AsyncMock(return_value=SimpleNamespace(success=True, message_id="wamid.template"))
+    )
+    template = {"name": "appointment_reminder", "language_code": "en_US", "body_parameters": ["Ada"]}
+
+    with patch("tools.send_message_tool._live_adapter", return_value=(SimpleNamespace(_gateway_loop=None), adapter)):
+        result = asyncio.run(_send_to_platform(
+            Platform.WHATSAPP_CLOUD, SimpleNamespace(), "15551234567", "", args={"whatsapp_template": template},
+        ))
+
+    assert result == {"success": True, "message_id": "wamid.template"}
+    adapter.send_template.assert_awaited_once_with("15551234567", **template)
+
+
+def test_send_to_platform_rejects_whatsapp_template_on_other_platform() -> None:
+    result = asyncio.run(_send_to_platform(
+        Platform.TELEGRAM, SimpleNamespace(), "15551234567", "",
+        args={"whatsapp_template": {"name": "reminder", "language_code": "en_US"}},
+    ))
+
+    assert "only supported for the whatsapp_cloud platform" in result["error"]
+
+
 def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> None:
     from gateway.platforms.base import SendResult
 

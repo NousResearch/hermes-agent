@@ -201,8 +201,17 @@ def _handle_react(args, remove=False):
 
 def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    template = args.get("whatsapp_template")
+    if not target or (not message and template is None):
+        return tool_error("'target' and either 'message' or 'whatsapp_template' are required when action='send'")
+    if template is not None:
+        if not isinstance(template, dict):
+            return tool_error("whatsapp_template must be an object")
+        if message:
+            return tool_error("whatsapp_template cannot be combined with a free-form message")
+        unknown = set(template) - {"name", "language_code", "body_parameters", "header_parameters", "button_parameters"}
+        if unknown or not all(key in template for key in ("name", "language_code")):
+            return tool_error("whatsapp_template requires name and language_code and only accepts template parameter fields")
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
@@ -254,8 +263,9 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        # Only custom plugin handlers receive the complete typed request.
-        handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        # Template sends need their typed fields at the platform boundary; plugin handlers
+        # retain their existing complete-request contract.
+        handler_args = {"args": args} if template is not None or (entry is not None and entry.send_message_handler is not None) else {}
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -496,6 +506,30 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                       f"expected a dict with 'success' or 'error' keys, got {type(result).__name__}")}
 
 
+async def _send_whatsapp_template_via_adapter(platform, chat_id, template):
+    """Template delivery is deliberately live-adapter-only: it uses the Cloud API session.
+
+    Unlike free-form text, a template has no meaningful standalone fallback; refusing
+    preserves the caller's explicit approved-template intent instead of silently
+    sending text that Meta will reject after the customer-service window.
+    """
+    runner, adapter = _live_adapter(platform)
+    if adapter is None:
+        return {"error": "WhatsApp Cloud template delivery requires a live whatsapp_cloud gateway adapter."}
+    send_template = getattr(adapter, "send_template", None)
+    if not callable(send_template):
+        return {"error": "The live whatsapp_cloud adapter does not support approved templates."}
+    result = await _dispatch_on_gateway_loop(
+        runner, lambda: send_template(chat_id, **template),
+        "send_message: failed to schedule WhatsApp Cloud template send on gateway loop",
+    )
+    if isinstance(result, dict):
+        return result
+    if result.success:
+        return {"success": True, "message_id": result.message_id}
+    return {"error": f"WhatsApp Cloud template send failed: {_bounded_send_error(result.error)}"}
+
+
 async def _send_chunks(chunks, send_one):
     """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
     result = None
@@ -594,6 +628,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
+    template = (args or {}).get("whatsapp_template")
+    if template is not None:
+        if platform_name != "whatsapp_cloud":
+            return {"error": "whatsapp_template is only supported for the whatsapp_cloud platform."}
+        if media_files:
+            return {"error": "whatsapp_template cannot be combined with MEDIA attachments."}
+        return await _send_whatsapp_template_via_adapter(platform, chat_id, template)
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).
@@ -677,6 +718,18 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "whatsapp_template": {
+                "type": "object",
+                "description": "Approved Meta template for a whatsapp_cloud target. This replaces free-form message text and can be used outside WhatsApp's 24-hour customer-service window.",
+                "properties": {
+                    "name": {"type": "string", "description": "Exact approved Meta template name."},
+                    "language_code": {"type": "string", "description": "Approved template locale, for example en_US or fr."},
+                    "header_parameters": {"type": "array", "items": {"type": "string"}, "description": "Text values for the template header variables."},
+                    "body_parameters": {"type": "array", "items": {"type": "string"}, "description": "Text values for the template body variables."},
+                    "button_parameters": {"type": "array", "items": {"type": "object"}, "description": "Dynamic quick_reply ({sub_type, index, payload}) or url ({sub_type, index, text}) button values."}
+                },
+                "required": ["name", "language_code"]
             },
             "emoji": {
                 "type": "string",

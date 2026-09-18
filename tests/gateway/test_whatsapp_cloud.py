@@ -218,6 +218,69 @@ class TestSendText:
         assert "Invalid parameter" in result.error
 
 
+class TestSendTemplate:
+    """Approved-template sends for the customer-service-window escape hatch."""
+
+    @pytest.mark.asyncio
+    async def test_send_template_builds_meta_payload(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.template"}]})
+        )
+
+        result = await adapter.send_template(
+            "15551234567", name="appointment_reminder", language_code="en_US",
+            body_parameters=["Ada", "tomorrow"],
+            button_parameters=[{"sub_type": "quick_reply", "index": 0, "payload": "CONFIRM"}],
+        )
+
+        assert result.success is True
+        assert result.message_id == "wamid.template"
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload == {
+            "messaging_product": "whatsapp", "recipient_type": "individual", "to": "15551234567",
+            "type": "template", "template": {
+                "name": "appointment_reminder", "language": {"code": "en_US"}, "components": [
+                    {"type": "body", "parameters": [
+                        {"type": "text", "text": "Ada"}, {"type": "text", "text": "tomorrow"},
+                    ]},
+                    {"type": "button", "sub_type": "quick_reply", "index": "0", "parameters": [
+                        {"type": "payload", "payload": "CONFIRM"},
+                    ]},
+                ],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_template_rejects_invalid_button_without_posting(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+
+        result = await adapter.send_template(
+            "15551234567", name="appointment_reminder", language_code="en_US",
+            button_parameters=[{"sub_type": "quick_reply", "index": 0}],
+        )
+
+        assert result.success is False
+        assert "payload" in result.error
+        adapter._http_client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_reports_template_guidance_for_expired_window(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_httpx_response(
+            400, {"error": {"code": 131047, "message": "Re-engagement message"}},
+        ))
+
+        result = await adapter.send("15551234567", "A delayed reminder")
+
+        assert result.success is False
+        assert "send_message whatsapp_template" in result.error
+
+
 # ---------------------------------------------------------------------------
 # Inbound webhook verify (GET) handshake
 # ---------------------------------------------------------------------------
@@ -1482,4 +1545,3 @@ class TestReplyContextResolution:
         assert event.reply_to_is_own_message is True
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
-

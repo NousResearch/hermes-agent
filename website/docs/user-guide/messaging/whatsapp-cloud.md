@@ -307,9 +307,25 @@ Meta only allows **free-form messages** within a 24-hour window after the user's
 - **Long-running `delegate_task` async results** that take longer than 24h fail the same way.
 - **Webhook subscribers** that route external events to WhatsApp fail when the user hasn't DM'd the bot recently.
 
-Hermes warns the agent about this window in its system prompt, so the model knows to mention it when scheduling delayed messages.
+Hermes exposes Meta-approved templates through `send_message` for scheduled work and explicit outbound sends. Supply a `whatsapp_cloud` target and a `whatsapp_template` object; the exact name and locale must already be approved in Meta. Text header/body variables and dynamic quick-reply or URL buttons are supported:
 
-Message-template support (the workaround for outside-window sends) is not yet implemented in Hermes. If you need it, please [open an issue](https://github.com/NousResearch/hermes-agent/issues) — it's planned but waiting on a clear demand signal.
+```json
+{
+  "target": "whatsapp_cloud:15551234567",
+  "whatsapp_template": {
+    "name": "appointment_reminder",
+    "language_code": "en_US",
+    "header_parameters": ["Hermes Clinic"],
+    "body_parameters": ["Ada", "tomorrow at 09:00"],
+    "button_parameters": [
+      {"sub_type": "quick_reply", "index": 0, "payload": "CONFIRM"},
+      {"sub_type": "url", "index": 1, "text": "booking/123"}
+    ]
+  }
+}
+```
+
+Do not put a free-form `message` or `MEDIA:` attachment in the same send. Hermes validates the supported parameter shapes before posting, while Meta remains the authority for whether the named template and its variables are approved. A free-form message rejected with Graph error `131047` reports this template option explicitly.
 
 ### Group chats
 
@@ -351,7 +367,7 @@ Your access token is invalid.  Subcodes:
 The 24-hour conversation window expired (see "Known limitations").  Either:
 
 - Ask the user to DM the bot first to reopen the window.
-- Wait for template support to land in Hermes.
+- Send an approved template through `send_message` using `whatsapp_template` as shown above.
 
 ### Inbound message: `media metadata fetch failed (status=401)`
 

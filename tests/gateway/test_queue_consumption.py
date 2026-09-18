@@ -219,3 +219,96 @@ class TestBusyInputModeQueueFifo:
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
 
+
+
+class TestUserFacingQueueDepth:
+    """The ``(N queued)`` readout must count only what the USER queued.
+
+    Synthetic turns share the FIFO with real user messages: background and
+    kanban completion wakes and auto-resume continuations arrive as
+    ``MessageEvent(internal=True)``, and ``/goal`` continuations arrive as
+    ordinary user-role events carrying a synthetic prefix. Both must occupy
+    queue slots — they may not interrupt a running turn — but neither is a
+    message the user sent.
+
+    Regression: one ``/queue`` issued into a session that already had a wake
+    parked answered ``Queued for the next turn. (2 queued)``. ``_queue_depth``
+    (resource accounting; backs ``_BUSY_QUEUE_MAX_PENDING``) counts both;
+    ``_user_queue_depth`` (user-facing) counts only real user messages.
+    """
+
+    def _make_runner_and_adapter(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        return runner, adapter
+
+    def _event(self, text: str, *, internal: bool = False) -> MessageEvent:
+        # profile=None: a MagicMock auto-attribute reads as a truthy stamped
+        # profile and trips fail-closed adapter resolution (AGENTS.md #17).
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"m-{text[:12]}",
+            internal=internal,
+        )
+
+    def test_internal_wake_is_not_counted_as_a_user_queued_item(self):
+        """The reported bug: one wake + one /queue announced "(2 queued)"."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:wake"
+
+        runner._enqueue_fifo(
+            session_key, self._event("[background] task done", internal=True), adapter
+        )
+        runner._enqueue_fifo(session_key, self._event("do the thing"), adapter)
+
+        # Resource accounting still sees both — the pending cap must not be fooled.
+        assert runner._queue_depth(session_key, adapter=adapter) == 2
+        # But the user queued exactly one thing.
+        assert runner._user_queue_depth(session_key, adapter=adapter) == 1
+
+    def test_goal_continuation_is_not_counted_as_a_user_queued_item(self):
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:goal"
+
+        continuation = self._event(
+            "[Continuing toward your standing goal]\nGoal: ship it"
+        )
+        assert runner._is_goal_continuation_event(continuation)
+        runner._enqueue_fifo(session_key, continuation, adapter)
+        runner._enqueue_fifo(session_key, self._event("user follow-up"), adapter)
+
+        assert runner._queue_depth(session_key, adapter=adapter) == 2
+        assert runner._user_queue_depth(session_key, adapter=adapter) == 1
+
+    def test_internal_event_in_the_head_slot_is_excluded(self):
+        """A synthetic event may occupy the head slot OR the overflow list."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:slot"
+
+        runner._enqueue_fifo(
+            session_key, self._event("[background] wake", internal=True), adapter
+        )
+        assert adapter._pending_messages[session_key].internal is True
+        assert runner._user_queue_depth(session_key, adapter=adapter) == 0
+
+    def test_real_user_messages_are_all_counted(self):
+        """The exclusion must not swallow genuine multi-message queues."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:multi"
+
+        for text in ("one", "two", "three"):
+            runner._enqueue_fifo(session_key, self._event(text), adapter)
+
+        assert runner._queue_depth(session_key, adapter=adapter) == 3
+        assert runner._user_queue_depth(session_key, adapter=adapter) == 3
+
+    def test_empty_queue_reports_zero(self):
+        runner, adapter = self._make_runner_and_adapter()
+        assert runner._user_queue_depth("telegram:user:none", adapter=adapter) == 0

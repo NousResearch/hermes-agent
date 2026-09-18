@@ -1067,3 +1067,26 @@ class TestContainerTypeRefusal:
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
         assert saved["model"] == {"default": "bar", "aliases": "replaced"}
+
+    @pytest.mark.parametrize("key", ["model.aliases", "providers", "toolsets"])
+    def test_unseeded_or_top_level_container_key_is_refused_without_on_disk_value(
+            self, _isolated_hermes_home, key):
+        # #114471 writer atom: the shape is fixed by the readers, not by what is on disk yet.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value(key, "notacontainer")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved == {"model": {"default": "m"}}
+
+    def test_bare_name_for_string_list_slot_is_stored_as_one_item_list(self, _isolated_hermes_home):
+        # agent.disabled_toolsets readers accept a bare name (parse_config_string_list); keep it writable.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        set_config_value("agent.disabled_toolsets", "web")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["disabled_toolsets"] == ["web"]

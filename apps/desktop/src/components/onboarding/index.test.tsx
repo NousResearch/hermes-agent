@@ -1,8 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ModelSettings } from '@/app/settings/model-settings'
 import type * as ModelOptionsModule from '@/lib/model-options'
+import { closeManualOnboarding } from '@/store/onboarding'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import { $connection } from '@/store/session'
 import { $settingsOwner } from '@/store/settings-scope'
@@ -200,7 +203,14 @@ describe('onboarding model confirmation owner routing', () => {
         expect.objectContaining({ explicitOnly: false, profile: 'remote-profile', scope })
       )
     )
-    const serializedKeys = JSON.stringify(client.getQueryCache().getAll().map(query => query.queryKey))
+
+    const serializedKeys = JSON.stringify(
+      client
+        .getQueryCache()
+        .getAll()
+        .map(query => query.queryKey)
+    )
+
     expect(serializedKeys).not.toContain('private-token')
     expect(serializedKeys).not.toContain('private-client')
     expect(serializedKeys).toContain('legacy:')
@@ -208,6 +218,88 @@ describe('onboarding model confirmation owner routing', () => {
 })
 
 describe('DesktopOnboardingOverlay owner routing', () => {
+  it.each(['openai-codex', 'custom:lab', 'retired-provider'])(
+    'keeps the named Settings profile through the real %s onboarding handoff',
+    async slug => {
+      const scope = { connectionId: 'local', profile: 'research' }
+      const provider = makeOAuthProvider('openai-codex', 'Codex')
+
+      const api = vi.fn(async ({ path }: { path: string }) => {
+        if (path === '/api/model/info') {return { provider: slug, model: '' }}
+
+        if (path.startsWith('/api/model/options')) {
+          return {
+            providers:
+              slug === 'openai-codex'
+                ? [{ slug, name: 'Codex', models: [], authenticated: false, auth_type: 'oauth' }]
+                : []
+          }
+        }
+
+        if (path === '/api/model/auxiliary') {return { main: { provider: slug, model: '' }, tasks: [] }}
+
+        if (path === '/api/model/moa') {return null}
+
+        if (path === '/api/config') {return { config: {} }}
+
+        if (path === '/api/providers/oauth') {return { providers: [provider] }}
+
+        if (path === '/api/providers/oauth/openai-codex/start') {
+          return { flow: 'pkce', session_id: 'fixture', auth_url: 'https://example.com/oauth', expires_in: 600 }
+        }
+
+        return { ok: true }
+      })
+
+      const priorBridge = window.hermesDesktop
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+      const open = vi.spyOn(window, 'open').mockReturnValue(null)
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      try {
+        render(
+          <MemoryRouter>
+            <QueryClientProvider client={client}>
+              <ModelSettings scopeProfile={scope} />
+              <DesktopOnboardingOverlay enabled profile="default" requestGateway={ctx.requestGateway} />
+            </QueryClientProvider>
+          </MemoryRouter>
+        )
+        fireEvent.click(
+          await screen.findByRole('button', {
+            name: slug === 'openai-codex' ? 'Set up Codex' : 'Set up provider'
+          })
+        )
+        await waitFor(() =>
+          expect($desktopOnboarding.get()).toMatchObject({
+            manual: true,
+            targetProfile: 'research',
+            targetScope: scope,
+            localEndpoint: slug === 'custom:lab'
+          })
+        )
+
+        if (slug === 'openai-codex') {
+          await waitFor(() =>
+            expect(api).toHaveBeenCalledWith(
+              expect.objectContaining({
+                path: '/api/providers/oauth/openai-codex/start',
+                ...scope
+              })
+            )
+          )
+          expect(open).toHaveBeenCalled()
+        }
+      } finally {
+        cleanup()
+        closeManualOnboarding()
+        client.clear()
+        open.mockRestore()
+        Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: priorBridge })
+      }
+    }
+  )
+
   it('fails closed when a legacy Settings owner changes mid-flow', async () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://legacy-a.example', token: 'token-a' } as never)
     const scope = $settingsOwner.get()

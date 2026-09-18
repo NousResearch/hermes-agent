@@ -5,7 +5,7 @@
 # files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
 name: ai-usage-tracker
 repo: https://github.com/lvabarajithan/hermes-ai-usage-tracker
-sha: "98010ea3fb2ce037cc5889bc4787e0152da69745"   # tag v1.0.1
+sha: "14e844f6ced5e0d618c767d726330a78c5cadadd"   # tag v1.0.2
 description: Live subscription-quota windows for every AI provider Hermes can route to, as a
   desktop page plus a status-bar chip, with a per-profile picker — Codex, Claude, Copilot,
   OpenCode Go/Zen, Z.AI, Kimi, MiniMax, Nous, OpenRouter, DeepSeek.

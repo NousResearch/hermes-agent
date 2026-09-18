@@ -6,11 +6,11 @@ description: "在 Linux、macOS、WSL2、原生 Windows 或通过 Termux 在 And
 
 # 安装
 
-使用一行安装命令，两分钟内即可启动并运行 Hermes Agent。
+使用一键安装脚本，两分钟内即可启动并运行 Hermes Agent。
 
 ## 快速安装
 
-### 一行安装命令（Linux / macOS / WSL2）
+### 一键安装脚本（Linux / macOS / WSL2）
 
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
 
@@ -59,7 +59,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 - 优先使用较宽泛的 `.[termux-all]` extra，若首次编译失败则回退到较小的 `.[termux]` extra（最终回退到基础安装）
 - 默认跳过未经测试的浏览器 / WhatsApp 引导
 
-如需完整的显式步骤，请参阅专门的 [Termux 指南](./termux.md)。
+如需完整的详细步骤，请参阅专门的 [Termux 指南](./termux.md)。
 
 :::note Windows 功能对等性
 

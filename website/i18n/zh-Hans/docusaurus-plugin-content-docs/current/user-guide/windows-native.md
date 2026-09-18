@@ -147,7 +147,7 @@ Hermes 的 Windows stdio 垫片现在将 `EDITOR=notepad` 设为默认值。Note
 | Neovim    | `$env:EDITOR = "nvim"`                                                             |
 | Helix     | `$env:EDITOR = "hx"`                                                               |
 
-VS Code 的 `--wait` 标志至关重要——没有它，编辑器会立即返回，Hermes 收到的是空缓冲区。
+VS Code 的 `--wait` 标志很重要——没有它，编辑器会立即返回，Hermes 收到的是空缓冲区。
 
 在 PowerShell profile 中永久设置：
 

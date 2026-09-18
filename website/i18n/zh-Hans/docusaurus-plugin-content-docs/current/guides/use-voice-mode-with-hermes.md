@@ -388,7 +388,7 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 - Hermes 检测语音边界
 - 转录内容发布到关联的文本频道
 - Hermes 以文字和音频形式回复
-- 文本频道为执行 `/voice join` 的那个频道
+- 文本频道为执行 `/voice join` 的频道
 
 ### Discord 语音频道使用最佳实践
 

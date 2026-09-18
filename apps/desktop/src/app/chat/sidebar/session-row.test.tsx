@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -11,11 +11,21 @@ import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
+import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
 
+const mocks = vi.hoisted(() => ({
+  openSession: vi.fn()
+}))
+
 afterEach(cleanup)
+
+beforeEach(() => {
+  mocks.openSession.mockReset()
+  $sidebarSessionsOpenInNewTab.set(false)
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -52,6 +62,9 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
+vi.mock('@/app/open-session', () => ({
+  openSession: (...args: unknown[]) => mocks.openSession(...args)
+}))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
 // props onto the rendered span, and mocking it with a stand-in that spreads
@@ -171,6 +184,28 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       unread={false}
     />
   )
+
+function renderClickableRow(sessionOverrides: Partial<SessionInfo> & { title: string }) {
+  const onArchive = vi.fn()
+  const onPin = vi.fn()
+  const onResume = vi.fn()
+
+  render(
+    <SidebarSessionRow
+      isPinned={false}
+      isSelected={false}
+      onArchive={onArchive}
+      onDelete={noop}
+      onPin={onPin}
+      onResume={onResume}
+      onToggleUnread={noop}
+      session={makeSession(sessionOverrides)}
+      unread={false}
+    />
+  )
+
+  return { onArchive, onPin, onResume }
+}
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here
@@ -408,6 +443,85 @@ describe('SidebarSessionRow', () => {
     const avatar = handoffAvatar(container)
     expect(avatar).toBeTruthy()
     expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
+  })
+
+  it('routes plain click to onResume by default', () => {
+    const { onResume } = renderClickableRow({ title: 'Default route session' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Default route session' }))
+
+    expect(onResume).toHaveBeenCalledOnce()
+    expect(mocks.openSession).not.toHaveBeenCalled()
+  })
+
+  it('routes plain click to tab intent when the preference is enabled', () => {
+    $sidebarSessionsOpenInNewTab.set(true)
+    const { onResume } = renderClickableRow({ title: 'Preference-enabled route' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preference-enabled route' }))
+
+    expect(mocks.openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'tab')
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('applies the enabled plain-click tab route to cross-profile rows too', () => {
+    $sidebarSessionsOpenInNewTab.set(true)
+    const { onResume } = renderClickableRow({ profile: 'work', title: 'Cross profile route' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cross profile route' }))
+
+    expect(mocks.openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'tab')
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('routes keyboard activation (Enter/Space) through tab intent when enabled', () => {
+    $sidebarSessionsOpenInNewTab.set(true)
+    const { onResume } = renderClickableRow({ title: 'Keyboard route' })
+    const rowButton = screen.getByRole('button', { name: 'Keyboard route' })
+
+    fireEvent.click(rowButton, { detail: 0 })
+    fireEvent.click(rowButton, { detail: 0 })
+
+    expect(mocks.openSession).toHaveBeenCalledTimes(2)
+    expect(mocks.openSession).toHaveBeenNthCalledWith(1, 's1', expect.any(Function), 'tab')
+    expect(mocks.openSession).toHaveBeenNthCalledWith(2, 's1', expect.any(Function), 'tab')
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('keeps Shift-click pin behavior when the preference is enabled', () => {
+    $sidebarSessionsOpenInNewTab.set(true)
+    const { onPin } = renderClickableRow({ title: 'Shift pin route' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Shift pin route' }), { shiftKey: true })
+
+    expect(onPin).toHaveBeenCalledOnce()
+    expect(mocks.openSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps Cmd/Ctrl-click and Shift+Cmd/Ctrl-click intents when the preference is enabled', () => {
+    $sidebarSessionsOpenInNewTab.set(true)
+    renderClickableRow({ title: 'Modifier route' })
+
+    const rowButton = screen.getByRole('button', { name: 'Modifier route' })
+    fireEvent.click(rowButton, { metaKey: true })
+    fireEvent.click(rowButton, { ctrlKey: true })
+    fireEvent.click(rowButton, { metaKey: true, shiftKey: true })
+
+    expect(mocks.openSession).toHaveBeenNthCalledWith(1, 's1', expect.any(Function), 'tab')
+    expect(mocks.openSession).toHaveBeenNthCalledWith(2, 's1', expect.any(Function), 'tab')
+    expect(mocks.openSession).toHaveBeenNthCalledWith(3, 's1', expect.any(Function), 'window')
+  })
+
+  it('keeps middle-click opening a tab regardless of the preference', () => {
+    const { onResume } = renderClickableRow({ title: 'Middle click route' })
+    const rowButton = screen.getByRole('button', { name: 'Middle click route' })
+
+    fireEvent.mouseDown(rowButton, { button: 1 })
+    fireEvent.pointerDown(rowButton, { button: 1 })
+    fireEvent.pointerUp(rowButton, { button: 1 })
+
+    expect(mocks.openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'tab')
+    expect(onResume).not.toHaveBeenCalled()
   })
 })
 

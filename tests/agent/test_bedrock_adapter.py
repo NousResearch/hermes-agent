@@ -1105,6 +1105,19 @@ class TestInferenceProfileContextLength:
         assert len(warnings) == 1 and self.ARN in warnings[0].getMessage()
         assert "GetInferenceProfile" in warnings[0].getMessage()
 
+    def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
+        # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be
+        # resolved to the wrapped Claude (cached lookup) or the profile silently loses prompt caching.
+        from agent.bedrock_adapter import build_converse_kwargs
+        client = MagicMock()
+        client.get_inference_profile.return_value = {"models": [
+            {"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]}
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            kwargs = build_converse_kwargs(model=self.ARN, messages=messages)
+        assert kwargs["modelId"] == self.ARN  # the request still targets the profile
+        assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
+
 
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from

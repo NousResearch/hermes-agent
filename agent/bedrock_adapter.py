@@ -439,6 +439,9 @@ def _model_supports_tool_use(model_id: str) -> bool:
 
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
+    # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
+    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        model_id = _resolve_inference_profile_model_id(model_id)
     return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 

@@ -105,6 +105,54 @@ def test_resolve_ambiguous_handle_across_connections(root):
     assert "hermes" in forms  # unique handle stays bare
 
 
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("Dr. Scribe", "ssh-vps"),          # the friendly name a human (and both rosters) use
+        ("dr-scribe", "ssh-vps"),           # what the Desktop's @autocomplete inserts
+        ("drscribe", "ssh-vps"),            # the collapsed mention form
+        ("dr-scribe@ssh-vps", "ssh-vps"),   # a friendly name still takes the connection qualifier
+        ("dr-scribe@cloud-1", None),        # …and the qualifier still decides
+        ("researcher", "ssh-vps"),          # an exact handle outranks a friendly name on another row
+        ("Hermes", "cloud-1"),              # a reserved alias never leaves its canonical handle
+        ("nobody", None),
+    ],
+    ids=["friendly-name", "slug", "collapsed", "qualified", "wrong-connection", "handle-wins",
+         "reserved", "unknown"],
+)
+def test_a_remote_teammate_answers_to_its_friendly_name_too(root, target, expected):
+    """The local rule, one connection out (tools/bot_mode_probe.local_alias_map): friendly names
+    resolve, exact handles and profile ids are matched first so a name can never steal another
+    agent's id, and the reserved mention tokens stay canonical. Without this a renamed agent was
+    addressable as "Scribe" on its own machine and only by folder id from any other one, while the
+    roster both machines show carries the friendly name."""
+    # 'researcher' is the TITLE of notes@cloud-1 and the HANDLE of researcher@ssh-vps: the
+    # handle must win outright rather than read as two candidates.
+    rows = _rows() + [{"profile": "scribe", "handle": "scribe", "connection_id": "ssh-vps",
+                       "title": "Dr. Scribe"},
+                      {"profile": "notes", "handle": "notes", "connection_id": "cloud-1",
+                       "title": "Researcher"}]
+    bot_relay.write_remote_roster(root, rows)
+    roster = bot_relay.read_remote_roster(root)
+
+    match = bot_relay.resolve_remote_target(target, roster)
+
+    assert (match["connection_id"] if isinstance(match, dict) else match) == expected
+
+
+def test_a_friendly_name_two_machines_share_is_ambiguous_not_a_guess(root):
+    """Same rule as a shared handle: the sender is told to qualify instead of being routed at random."""
+    rows = _rows() + [
+        {"profile": "scribe", "handle": "scribe", "connection_id": "ssh-vps", "title": "Dr. Scribe"},
+        {"profile": "writer", "handle": "writer", "connection_id": "cloud-1", "title": "Dr. Scribe"},
+    ]
+    bot_relay.write_remote_roster(root, rows)
+    roster = bot_relay.read_remote_roster(root)
+
+    assert bot_relay.resolve_remote_target("dr-scribe", roster) == "ambiguous"
+    assert bot_relay.resolve_remote_target("dr-scribe@ssh-vps", roster)["profile"] == "scribe"
+
+
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
@@ -630,6 +678,23 @@ def test_ttl_config_read_is_lazy_and_defensive(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _boom)
     assert bot_relay._envelope_ttl_seconds() == bot_relay.DEFAULT_ENVELOPE_TTL_SECONDS
+
+
+def test_an_ambiguous_friendly_name_is_refused_with_the_forms_that_resolve_it(tmp_path, monkeypatch):
+    """The sender is told how to disambiguate. The forms came from rows whose HANDLE equalled the
+    target, so a collision on a friendly name (or a profile id) printed an empty list — a refusal
+    with no way out."""
+    home = _managed_home(tmp_path)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "scribe", "handle": "scribe", "connection_id": "ssh-vps", "title": "Dr. Scribe"},
+        {"profile": "writer", "handle": "writer", "connection_id": "cloud-1", "title": "Dr. Scribe"},
+    ])
+    monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "sent"}))
+
+    out = json.loads(message_agent_tool(target="Dr. Scribe", message="hi", agent=_FakeAgent(home)))
+
+    assert "scribe@ssh-vps" in out["error"] and "writer@cloud-1" in out["error"]
+    assert bot_relay.claim_pending_envelopes(home) == []
 
 
 def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):

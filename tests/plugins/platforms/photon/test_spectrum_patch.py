@@ -69,6 +69,8 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
         textwrap.dedent(
             """
             export async function Spectrum() {
+              console.error("sdk-private-marker");
+              console.log("sdk-private-marker");
               return {
                 messages: { [Symbol.asyncIterator]() { return { next: () => new Promise(() => {}) }; } },
                 stop: async () => undefined,
@@ -124,9 +126,12 @@ def test_sidecar_patch_failure_still_reaches_health_endpoint(tmp_path: Path) -> 
         assert proc.poll() is None
     finally:
         proc.terminate()
-        _, stderr = proc.communicate(timeout=5)
+        stdout, stderr = proc.communicate(timeout=5)
 
-    assert "forced patch failure" in stderr
+    assert "photon-sidecar: spectrum mixed attachment patch failed; continuing" in stderr
+    captured = stdout + stderr
+    assert "forced patch failure" not in captured
+    assert "sdk-private-marker" not in captured
 
 
 def _tabify(src: str) -> str:

@@ -194,12 +194,14 @@ def _flock(fh, *, lock: bool) -> None:
 
 
 class _FileLock:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, create_parent: bool = True):
         self.path = path
+        self._create_parent = create_parent
         self._fh = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._create_parent:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+b")
         try:
             _flock(self._fh, lock=True)
@@ -661,12 +663,16 @@ def active_session_registry_snapshot(
 ) -> list[dict[str, Any]]:
     """Return live leases; attachment callers require provable liveness."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
-    with _FileLock(lock_path):
-        raw_entries = _read_entries(state_path, strict=True)
-        entries = _prune_dead(raw_entries, strict=strict)
-        if entries != raw_entries:
-            _write_entries(state_path, entries)
-        return entries
+    try:
+        # Discovery must not recreate a missing or renamed profile home.
+        with _FileLock(lock_path, create_parent=False):
+            raw_entries = _read_entries(state_path, strict=True)
+            entries = _prune_dead(raw_entries, strict=strict)
+            if entries != raw_entries:
+                _write_entries(state_path, entries)
+            return entries
+    except FileNotFoundError:
+        return []
 
 
 @contextmanager

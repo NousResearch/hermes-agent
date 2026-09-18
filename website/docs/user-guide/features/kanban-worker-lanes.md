@@ -62,7 +62,9 @@ home — a test or reproduction under a scratch `HERMES_HOME` — gets a normal 
 The dispatcher explicitly grants a newly assigned worker its own scope. The managed
 Hermes-tools MCP endpoint can likewise act for its supervising worker, while the
 executor's ordinary shell children remain fenced. Workers may only perform lifecycle
-handoffs and attach files to their assigned task; `unblock` remains orchestrator-only.
+handoffs and attach files to their assigned task; `unblock` may target other tasks
+(with evidence recorded in the audit event) but never the worker's own assigned
+task — the run that blocked a card cannot be the one that releases it.
 Cross-task comments and follow-up task creation retain their existing behavior.
 
 Integration authors spawning code should use

@@ -40,6 +40,30 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     )
 
 
+def test_worker_schema_includes_unblock_but_not_list(monkeypatch, tmp_path):
+    """Dispatcher workers see kanban_unblock (model-facing wake path for
+    blocked cards with a met condition) but NOT kanban_list (pure board
+    discovery stays orchestrator-only)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_any")
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    try:
+        schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+        names = {s["function"].get("name") for s in schema if "function" in s}
+        assert "kanban_unblock" in names, "workers must see kanban_unblock"
+        assert "kanban_list" not in names, "kanban_list stays orchestrator-only"
+    finally:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        invalidate_check_fn_cache()
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------
@@ -673,12 +697,13 @@ def test_kanban_guidance_orchestrator_decision_ownership():
 # ---------------------------------------------------------------------------
 #
 # A worker process has HERMES_KANBAN_TASK set to its own task id. The
-# destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
-# kanban_unblock) must refuse to operate
-# on any OTHER task id, even if the caller supplies an explicit `task_id`
-# argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create / kanban_link on other tasks, so those
-# are unrestricted.
+# destructive tools (kanban_complete, kanban_block, kanban_heartbeat) must
+# refuse to operate on any OTHER task id, even if the caller supplies an
+# explicit `task_id` argument. Workers legitimately call kanban_show /
+# kanban_list / kanban_comment / kanban_create / kanban_link on other tasks,
+# so those are unrestricted. kanban_unblock is the deliberate exception with
+# its own rule set: workers MAY unblock other tasks (evidence required) but
+# must never unblock their own assigned task (see the worker-unblock tests).
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
@@ -748,34 +773,90 @@ def test_worker_can_comment_on_foreign_task(worker_env):
         conn.close()
 
 
-def test_worker_unblock_rejects_foreign_task_id(worker_env):
-    """A worker cannot unblock any task — kanban_unblock is orchestrator-only.
-
-    The check fires before the per-task ownership check, so the error
-    surface is the orchestrator-only refusal rather than the
-    cross-task-ownership refusal. Either is fine — the property we're
-    pinning is "worker cannot mutate foreign task via kanban_unblock".
-    """
+def test_worker_unblock_foreign_task_with_evidence(worker_env):
+    """A dispatcher worker CAN unblock another task — the spec'd model-facing
+    wake path for cards whose blocked-kind condition was machine-verifiably
+    met — but must pass evidence, and the unblocked audit event records the
+    worker profile as actor."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
         other = kb.create_task(conn, title="blocked sibling", assignee="peer")
-        kb.block_task(conn, other, reason="waiting")
+        kb.block_task(conn, other, reason="waiting", kind="needs_input")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({
+        "task_id": other,
+        "evidence": "wake condition met: plugin v9.9.9 live on 10/10 profiles",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, f"worker unblock of a foreign task must succeed: {d}"
+    assert d["status"] == "ready"
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+        events = [e for e in kb.list_events(conn, other) if e.kind == "unblocked"]
+        assert events, "unblocked audit event missing"
+        payload = events[-1].payload or {}
+        assert payload.get("actor") == "test-worker"
+        assert "v9.9.9" in payload.get("evidence", "")
+    finally:
+        conn.close()
+
+
+def test_worker_unblock_requires_evidence(worker_env):
+    """Worker unblocks without evidence are refused and mutate nothing."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        other = kb.create_task(conn, title="blocked sibling", assignee="peer")
+        kb.block_task(conn, other, reason="waiting", kind="needs_input")
     finally:
         conn.close()
 
     from tools import kanban_tools as kt
     out = kt._handle_unblock({"task_id": other})
     d = json.loads(out)
-    err = d.get("error", "")
-    assert "orchestrator-only" in err or "refusing to mutate" in err, (
-        f"expected worker-rejection error, got {err}"
-    )
+    assert "evidence" in d.get("error", ""), f"expected evidence-required error, got {d}"
 
     conn = kbc.connect()
     try:
         assert kb.get_task(conn, other).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_worker_self_unblock_refused(worker_env):
+    """Anti-self-unblock guard: the run assigned to a card may never release
+    its own block — that would defeat the human-input wait and let a worker
+    bypass the block-loop recurrence accounting."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        # Put the worker's OWN task into blocked state directly (block_task
+        # fires from running/ready; this simulates the post-block state).
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (worker_env,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({
+        "task_id": worker_env,
+        "evidence": "attempting to release my own block",
+    })
+    d = json.loads(out)
+    assert "self-unblock" in d.get("error", ""), f"expected self-unblock refusal, got {d}"
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "blocked"
     finally:
         conn.close()
 

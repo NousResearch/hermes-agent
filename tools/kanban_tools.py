@@ -98,7 +98,7 @@ def _check_kanban_mode() -> bool:
 
 @no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
+    """Board-routing tools (kanban_list): hidden from task workers."""
     return _visible(to_env_worker=False)
 
 
@@ -987,15 +987,37 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
 @_kanban_handler("kanban_unblock")
 def _handle_unblock(args: dict, **kw) -> str:
-    """Transition a blocked task to ready, or todo while parents remain open."""
+    """Transition a blocked task to ready, or todo while parents remain open.
+
+    Orchestrators (no ``HERMES_KANBAN_TASK``) may unblock any task, as before.
+    A dispatcher worker may unblock OTHER tasks — never its own assigned one:
+    the run that blocked a card cannot be the run that releases it (that would
+    defeat the human-input wait and the block-loop accounting). Worker calls
+    must carry ``evidence`` — the machine-checkable fact that satisfied the
+    card's declared wake condition — and both the evidence and the worker's
+    profile land in the ``unblocked`` audit event."""
     _reject_delegated_child_mutation("kanban_unblock")
-    _require_orchestrator_tool("kanban_unblock")
     tid = args.get("task_id")
     _check(tid, "task_id is required")
     tid = str(tid)
-    _enforce_worker_task_ownership(tid)
+    actor = None
+    evidence = None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid:
+        _check(
+            tid != env_tid,
+            f"self-unblock refused: you are the run assigned to {env_tid}. The run "
+            "that blocked a task cannot be the one that releases it — the owner, an "
+            "orchestrator, or a different worker must verify the wake condition.")
+        evidence = _redact(_require_text(
+            args, "evidence",
+            "worker unblocks require evidence: state the machine-checkable fact that "
+            "satisfied the blocked card's declared wake condition (what you verified, "
+            "where, and the result)"))
+        actor = os.environ.get("HERMES_PROFILE") or "worker"
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        _check(kb.unblock_task(conn, tid, actor=actor, evidence=evidence),
+               f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
@@ -1014,8 +1036,10 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_list is pure board discovery and stays hidden from task workers.
+# kanban_unblock is visible to workers too, but its handler rejects self-unblock
+# (the run that blocked a card cannot release it) and requires evidence.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),

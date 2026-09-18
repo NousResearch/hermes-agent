@@ -4,7 +4,7 @@ When Hermes runs your agent inside a Docker terminal sandbox, that sandbox norma
 
 The egress proxy fixes this: the sandbox holds opaque **proxy tokens**, never the real keys. All outbound traffic from the sandbox routes through a local [iron-proxy](https://github.com/ironsh/iron-proxy) daemon (Apache-2.0, Go) on the host, which terminates TLS and swaps the proxy token for the real credential before forwarding the request upstream. Compromise the sandbox and the attacker walks away with tokens that only work behind the **configured trusted proxy boundary** — the CA private key and the proxy endpoint integrity are part of that boundary. If traffic can be redirected to attacker-controlled proxy infrastructure (e.g. a stolen CA private key or a hijacked proxy endpoint), the token guarantee no longer holds.
 
-This release wires the egress proxy into the Docker backend only. Modal, Daytona, SSH, and Singularity do **not** receive proxy env vars or CA mounts yet.
+The proxy is wired into the Docker backend by default and into the SSH backend when you opt in with `proxy.ssh_tunnel: true` (see [SSH backend](#ssh-backend)). Modal, Daytona, and Singularity do **not** receive proxy env vars or CA mounts yet.
 
 ## What it is
 
@@ -79,6 +79,13 @@ proxy:
   # legacy "real credentials inside the sandbox" posture when the proxy
   # is unavailable.
   enforce_on_docker: true
+
+  # Opt-in: route SSH sandboxes through the proxy too. The remote host gets
+  # proxy tokens and reaches iron-proxy through an SSH reverse forward
+  # (-R 127.0.0.1:<port>), so real keys never leave this machine. Fails
+  # closed when the proxy is enabled but not running. Requires
+  # `AllowTcpForwarding yes` on the remote sshd (the OpenSSH default).
+  ssh_tunnel: false
 
   # When `credential_source: bitwarden` but the BWS access token /
   # project_id is missing OR the bws fetch returns no values for mapped
@@ -401,6 +408,18 @@ When `hermes egress stop` (or any other `_pid_alive` check) wants to confirm a P
 
 If the nonce check fails, the code falls back to matching `argv[0]` basename against `iron-proxy`. `stop_proxy` additionally captures `/proc/<pid>/stat` starttime before SIGTERM and re-verifies after the 5s grace window — if starttime drifted, the PID was recycled mid-wait and SIGKILL is suppressed with a warning.
 
+## SSH backend
+
+With `proxy.ssh_tunnel: true`, the SSH terminal backend (`terminal.backend: ssh`) gets the same posture as Docker:
+
+- Every `ssh` invocation carries `-R 127.0.0.1:<tunnel_port>:<bind>:<tunnel_port>` and `-R 127.0.0.1:<tunnel_port+1>:…` so the remote loopback reaches the host-side iron-proxy. The forward is re-requested through the ControlMaster on each command, so an expired master heals itself; a duplicate bind is a harmless `remote port forwarding failed` warning on stderr.
+- The CA cert is uploaded once to `~/.hermes-egress-ca.crt` and an `export`-lines env file to `~/.hermes-egress.env` (mode `0600`) — deliberately **outside** the synced `~/.hermes` tree so file sync never mirrors them back.
+- Every command sources that env file first, so `HTTPS_PROXY`, the CA bundle vars, `NODE_OPTIONS=--use-openssl-ca` (appended) and the proxy tokens under the standard provider names are present without any `AcceptEnv` on the remote sshd and without token values in the remote `bash -c` argv.
+- `terminal.env_passthrough` (or a skill's `required_environment_variables`) naming a proxied provider key is refused: SendEnv would ship the **real** value, which is exactly what the tunnel prevents.
+- A half-configured proxy (not running, CA missing, no tokens) fails closed — the SSH backend refuses to start rather than fall back to real keys. Set `ssh_tunnel: false` to opt out.
+
+Design note: Perplexity's SPACE sandbox platform keeps credentials outside the sandbox on every backend it runs on, injecting them at the network layer; `ssh_tunnel` brings hermes's SSH backend to that posture.
+
 ## Security model
 
 **What this protects against:**
@@ -553,7 +572,7 @@ When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-reque
 
 ## Limitations (v1)
 
-- Docker backend only. Modal, Daytona, and SSH wiring will follow in separate PRs.
+- Docker by default, SSH via `proxy.ssh_tunnel`. Modal, Daytona, and Singularity wiring will follow in separate PRs.
 - Providers with signature-based auth (AWS SigV4, GCP service-account OAuth) bypass the proxy entirely — see [Uncovered providers](#uncovered-providers). Header-token providers (bearer, `x-api-key`, `api-key`, `x-goog-api-key`) are all covered.
 - No native Windows binary upstream. Run on Linux / macOS / WSL.
 - The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `hermes egress rotate-ca`).

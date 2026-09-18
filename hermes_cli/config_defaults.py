@@ -2377,6 +2377,10 @@ DEFAULT_CONFIG = {
         # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
         # running. False: fall back to direct outbound with real credentials.
         "enforce_on_docker": True,
+        # True: SSH sandboxes reach iron-proxy through an SSH reverse forward and hold proxy tokens
+        # instead of real keys (the remote sshd must allow TCP forwarding). Fails closed when the
+        # proxy is not running. False (default): SSH keeps today's direct-outbound behaviour.
+        "ssh_tunnel": False,
         # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
         # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
         # fail_on_uncovered_providers key is ignored.

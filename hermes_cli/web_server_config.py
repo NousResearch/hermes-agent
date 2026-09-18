@@ -101,6 +101,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
         "category": "security",
     },
+    "proxy.ssh_tunnel": {
+        "type": "boolean",
+        "description": "Route SSH sandboxes through iron-proxy over an SSH reverse forward (proxy tokens instead of real keys)",
+        "category": "security",
+    },
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",

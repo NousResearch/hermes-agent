@@ -11,19 +11,15 @@ import hashlib
 import json
 import logging
 
+from tools.environments.egress_common import (
+    _CA_MODE_FLAGS, _NODE_OPTIONS_SENTINEL, _PROXY_CONTROL_ENV, critical_egress_env_names, egress_env_overrides,
+    ready_egress)
+
 logger = logging.getLogger("tools.environments.docker")
 
 _EGRESS_LABEL_KEY = "hermes-egress"
 _CONTAINER_CA = "/etc/ssl/certs/hermes-egress-ca.crt"
-_NODE_OPTIONS_SENTINEL = "_HERMES_EGRESS_NODE_OPTIONS_APPEND"
-_CA_MODE_FLAGS = {"--use-openssl-ca", "--use-bundled-ca"}
-
-# Env names whose override would weaken or bypass enforced egress.
-_PROXY_CONTROL_ENV = frozenset({
-    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-    "NO_PROXY", "no_proxy",
-    "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS"})
+_critical_egress_env_names = critical_egress_env_names
 
 
 def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str]]:
@@ -32,82 +28,19 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     (default) any half-configured state raises so the sandbox refuses to start unprotected;
     otherwise it warns and continues. Only ImportError is swallowed — a broken config must
     fail visibly rather than silently disable enforcement."""
-    try:
-        from hermes_cli.config import load_config
-        from agent.proxy_sources import iron_proxy as ip
-    except ImportError as exc:
-        logger.debug("Egress proxy plumbing unavailable: %s", exc)
-        return ([], {}, [])
+    enforce = _egress_enforce_on_docker()
 
-    proxy_cfg = load_config().get("proxy") or {}
-    if not proxy_cfg.get("enabled"):
-        return ([], {}, [])
-
-    status = ip.get_status()
-    enforce = bool(proxy_cfg.get("enforce_on_docker", True))
-
-    def _degraded(msg: str):
+    def _degraded(msg: str) -> None:
         if enforce:
             raise RuntimeError(msg)
         logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
+
+    ready = ready_egress(_degraded)
+    if ready is None:
         return ([], {}, [])
-
-    if not status.configured:
-        return _degraded(
-            "proxy.enabled is true but iron-proxy is not configured. "
-            "Run `hermes egress setup` to mint tokens and write proxy.yaml.")
-    if not (status.pid and status.listening):
-        return _degraded(
-            f"iron-proxy is enabled but not running on port {status.tunnel_port}. "
-            "Start it with `hermes egress start`.")
-    if status.ca_cert_path is None or not status.ca_cert_path.exists():
-        # Configured a moment ago but the trust anchor vanished: proxy env vars
-        # without the CA would make every TLS handshake fail.
-        return _degraded(
-            f"iron-proxy CA cert vanished from {status.ca_cert_path}. "
-            "Re-run `hermes egress setup` to regenerate it.")
-    # Empty/corrupt mappings look like an upstream outage from inside the
-    # sandbox (every request 403s); refuse rather than ship a broken sandbox.
-    mappings = ip.load_mappings()
-    if not mappings:
-        return _degraded(
-            "iron-proxy is configured but mappings.json is empty or "
-            "corrupt.  Re-run `hermes egress setup` to mint provider "
-            "tokens before starting a sandbox.")
-
+    status, mappings = ready
     volume_args = ["-v", f"{status.ca_cert_path}:{_CONTAINER_CA}:ro"]
-
-    # tunnel_port serves CONNECT (HTTPS); the plain-HTTP forward listener is on +1.
-    proxy_url = f"http://host.docker.internal:{status.tunnel_port}"
-    plain_http_url = f"http://host.docker.internal:{status.tunnel_port + 1}"
-    env_overrides: dict[str, str] = {
-        # Both casings: some tools only read one.
-        "HTTPS_PROXY": proxy_url,
-        "https_proxy": proxy_url,
-        "HTTP_PROXY": plain_http_url,
-        "http_proxy": plain_http_url,
-        # Loopback-only so in-sandbox dev servers/local LLMs bypass the proxy.
-        "NO_PROXY": "127.0.0.1,localhost,::1",
-        "no_proxy": "127.0.0.1,localhost,::1",
-        # CA bundles: Python/curl vars REPLACE the system store, NODE_EXTRA_CA_CERTS
-        # only ADDS to it. NODE_OPTIONS=--use-openssl-ca narrows that asymmetry
-        # but must be APPENDED to the operator's NODE_OPTIONS, not clobber it —
-        # so it travels in a sentinel key that merge_egress_env() resolves.
-        "REQUESTS_CA_BUNDLE": _CONTAINER_CA,
-        "SSL_CERT_FILE": _CONTAINER_CA,
-        "CURL_CA_BUNDLE": _CONTAINER_CA,
-        "NODE_EXTRA_CA_CERTS": _CONTAINER_CA,
-        "HERMES_EGRESS_PROXY": "1",  # lets the in-sandbox agent know it is proxy-aware
-        _NODE_OPTIONS_SENTINEL: "--use-openssl-ca"}
-
-    # Proxy tokens under the standard provider env names (and their aliases) so
-    # SDKs work unchanged; HERMES_PROXY_TOKEN_* copies are for diagnostics.
-    for m in mappings:
-        env_overrides[m.real_env_name] = m.proxy_token
-        env_overrides[f"HERMES_PROXY_TOKEN_{m.real_env_name}"] = m.proxy_token
-        for alias in getattr(m, "alias_env_names", ()) or ():
-            env_overrides[alias] = m.proxy_token
-
+    env_overrides = egress_env_overrides("host.docker.internal", status.tunnel_port, _CONTAINER_CA, mappings)
     # Linux needs an explicit host-gateway mapping; Docker Desktop already has it.
     host_args = ["--add-host", "host.docker.internal:host-gateway"]
     return (volume_args, env_overrides, host_args)
@@ -136,11 +69,6 @@ def _egress_enforce_on_docker(default: bool = True) -> bool:
         return default
 
 
-def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
-    """Env names that would weaken or bypass enforced egress if overridden."""
-    critical = set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"}
-    critical.update(k for k in env_overrides if k.endswith("_API_KEY") or k.endswith("_TOKEN"))
-    return critical
 
 
 def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str]) -> list[str]:

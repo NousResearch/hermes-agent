@@ -35,10 +35,27 @@ hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
                                        proxy_cli.cmd_setup, and document it
                                        in the user-guide page.
 
-tools/environments/docker.py
+tools/environments/egress_common.py
+  ready_egress()                       Backend-neutral readiness verdict
+                                       (enabled → configured → running → CA
+                                       present → tokens minted); the caller's
+                                       `degraded(msg)` decides raise vs. warn.
+  egress_env_overrides()               Proxy-control vars + tokens under the
+                                       real provider names, parametrised by
+                                       proxy host and in-sandbox CA path.
+
+tools/environments/docker_egress.py
   _egress_proxy_args_for_docker()     Builds the volume_args / env_overrides /
                                        host_args triple that the Docker backend
                                        injects when `proxy.enabled: true`.
+
+tools/environments/ssh_egress.py
+  ssh_egress_for_env()                 Opt-in (`proxy.ssh_tunnel`) SSH posture:
+                                       `-R` reverse-forward flags, CA + 0600
+                                       env-file upload outside `~/.hermes`, a
+                                       per-command `source` prefix, and a
+                                       passthrough-collision guard. Always
+                                       fails closed.
 
   DockerEnvironment.__init__          Docker-side merge logic: collision
                                        detection against critical egress vars,

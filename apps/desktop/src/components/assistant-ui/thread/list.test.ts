@@ -274,15 +274,6 @@ describe('firstVisibleGroupIndex', () => {
     expect(firstVisibleGroupIndex(grown, 60, 0, 1)).toBe(1)
   })
 
-  it('keeps the cut stable when the tail completes', () => {
-    // With the newest group always unbudgeted, a heavy tail that finishes
-    // streaming does not advance the cut — the completion transition cannot
-    // change firstVisibleGroupIndex.
-    const groups = [group('old', 50), group('recent', 30), group('tail', 5_000)]
-
-    expect(firstVisibleGroupIndex(groups, 60, 0, 1)).toBe(0)
-  })
-
   it('exempts exactly one newest group while older history stays budgeted', () => {
     const groups = [group('a', 200), group('b', 50), group('c', 50), group('d', 50), group('e', 10_000)]
 

@@ -1880,6 +1880,58 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         assert "referenced script" in result["error"]
         assert any("head -c" in c for c in calls)
 
+    def test_local_backend_does_not_arm_remote_script_read(self, monkeypatch, tmp_path):
+        import tools.terminal_tool as tt
+        from tools.environments.local import LocalEnvironment
+
+        # 80 nonexistent paths named inside a masked heredoc body: more than
+        # the remote-read budget, so arming the callback would fail the whole
+        # command closed (#113944). A local backend must not arm it — the host
+        # read is authoritative, and env.execute would only re-read the same
+        # unopenable path through the same shell.
+        body = "\n".join("print('/nonexistent-%d/notes.md')" % i for i in range(80))
+        command = "python3 - <<'PY'\n" + body + "\nPY"
+        calls = []
+
+        class _StubLocalEnv(LocalEnvironment):
+            def init_session(self):  # keep the unit test off a real shell
+                pass
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "", "returncode": 0}
+
+        self._patch_env(monkeypatch, _StubLocalEnv(cwd=str(tmp_path)), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] != 1
+        assert not any("head -c" in c for c in calls)
+
+    def test_local_backend_still_scans_existing_referenced_script(self, monkeypatch, tmp_path):
+        import tools.terminal_tool as tt
+        from tools.environments.local import LocalEnvironment
+
+        # The host-side read (not the remote callback) must still resolve a
+        # lifecycle script named inside a masked interpreter body.
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        command = "python3 - <<'PY'\nimport os\nos.system('" + str(script) + "')\nPY"
+
+        class _StubLocalEnv(LocalEnvironment):
+            def init_session(self):
+                pass
+
+            def execute(self, command, **kwargs):
+                return {"output": "", "returncode": 0}
+
+        self._patch_env(monkeypatch, _StubLocalEnv(cwd=str(tmp_path)), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 1
+        assert "referenced script" in result["error"]
+
 
 class TestCronCreateLifecycleBlockExtra:
     """Additional cron create lifecycle guard coverage."""

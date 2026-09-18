@@ -1275,6 +1275,9 @@ class TestInstallCli:
         import types as _types
         fake = _types.ModuleType("hermes_cli.managed_uv")
         fake.ensure_uv = lambda **kw: str(uv_path)
+        # install_cli's failure hint resolves Hermes' own uv (never a bare `uv`
+        # on PATH), so the fake must expose it like the real module does.
+        fake.resolve_uv = lambda: str(uv_path)
         fake.managed_uv_env = lambda **kw: {
             **dict(os.environ),
             "UV_TOOL_BIN_DIR": str(kw.get("tool_bin_dir") or ""),
@@ -1339,6 +1342,88 @@ class TestInstallCli:
         ok, msg, _bin = self._run_fake_uv_install(tmp_path, monkeypatch, uv)
         assert ok is False
         assert "no network" in msg
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX branch: the fake uv is a shebang script (not .cmd to CreateProcess)",
+    )
+    def test_unresolvable_install_names_managed_uv(self, tmp_path, monkeypatch):
+        """When uv reports success but links nothing, the hint must name Hermes'
+        own uv: the managed binary is deliberately off PATH, so the old bare
+        `uv tool install browser-use` advice was a `command not found`.
+        """
+        uv = tmp_path / "uv"
+        uv.write_text('#!/bin/sh\necho "linked nothing"\nexit 0\n', encoding="utf-8")
+        uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
+        ok, msg, _bin = self._run_fake_uv_install(
+            tmp_path, monkeypatch, uv, restore_find_cli=True
+        )
+        assert ok is False
+        assert "not resolvable" in msg
+        # Names the managed uv path, not a bare `uv` that isn't on PATH.
+        assert str(uv) in msg
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX branch: the fake uv is a shebang script (not .cmd to CreateProcess)",
+    )
+    def test_second_profile_gets_its_own_binary(self, tmp_path, monkeypatch):
+        """A second profile must get browser-use linked into ITS OWN bin/.
+
+        Real uv behaviour this models: the tool store is global, so a second
+        ``uv tool install`` for an already-stored tool prints "already
+        installed" and links NOTHING into the new UV_TOOL_BIN_DIR.  The fix is
+        UV_TOOL_DIR being pinned per-HERMES_HOME (managed_uv_env), so profile
+        two's store is empty and uv genuinely installs + links there.
+
+        Regression guard: with a shared store this fails — the second profile
+        reports success while its bin/ stays empty.
+        """
+        fake_uv = tmp_path / "uv"
+        fake_uv.write_text(
+            "#!/bin/sh\n"
+            'store="$UV_TOOL_DIR/uvprobe-tool"\n'
+            'if [ -e "$store" ]; then\n'
+            '  echo "`uvprobe-tool` is already installed"\n'
+            '  exit 0\n'
+            'fi\n'
+            '/bin/mkdir -p "$store"\n'
+            'target="$UV_TOOL_BIN_DIR/browser-use"\n'
+            'echo "#!/bin/sh" > "$target"\n'
+            '/bin/chmod +x "$target"\n'
+            'echo "Installed 1 executable: browser-use"\n',
+            encoding="utf-8",
+        )
+        fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IXUSR)
+
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+
+        # A real managed_uv_env: pins UV_TOOL_DIR under the ACTIVE HERMES_HOME
+        # (and UV_TOOL_BIN_DIR to the caller's bin/), which is the whole point.
+        import sys as _sys
+        import types as _types
+
+        from hermes_cli import managed_uv as real_managed_uv
+
+        fake = _types.ModuleType("hermes_cli.managed_uv")
+        fake.ensure_uv = lambda **kw: str(fake_uv)
+        fake.managed_uv_env = real_managed_uv.managed_uv_env
+        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
+
+        results = []
+        for profile in ("alpha", "beta"):
+            home = tmp_path / "profiles" / profile
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            ok, msg = bu_cli.install_cli()
+            results.append((profile, ok, msg, home / "bin" / "browser-use"))
+
+        for profile, ok, msg, binary in results:
+            assert ok is True, f"{profile}: {msg}"
+            assert binary.exists(), (
+                f"{profile} must get its own browser-use binary in its own bin/ "
+                f"(uv links nothing when a shared tool store already has it)"
+            )
 
 
 class TestDefaultDowngradeNotice:

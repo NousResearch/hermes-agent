@@ -323,7 +323,7 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     uv_bin = _quiet(_managed_uv, None, "Managed uv bootstrap unavailable")
     if not uv_bin:
         return False, ("uv is not available and could not be bootstrapped. Install uv "
-                       "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`.")
+                       "(https://docs.astral.sh/uv/), then re-run this setup.")
     try:
         from hermes_cli.managed_uv import managed_uv_env
     except Exception as e:  # pragma: no cover — defensive
@@ -351,8 +351,26 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
     found = _find_cli()
     if not found or len(found) != 1:
         return False, ("install reported success but the browser-use binary is still not resolvable — "
-                       "run `uv tool install browser-use` manually")
+                       f"re-run it with Hermes' managed uv: `{_managed_uv_install_hint()}`")
     return True, f"browser-use CLI installed ({found[0]})"
+
+
+def _managed_uv_install_hint() -> str:
+    """Copy-pasteable manual install command naming Hermes' own uv.
+
+    The managed uv lives in the private ``$HERMES_HOME/uv`` dir and is
+    deliberately never on PATH (see the uv-isolation contract), so a bare
+    ``uv tool install browser-use`` would be ``command not found`` for an
+    installer-only user. Name the managed binary instead; fall back to a bare
+    ``uv`` only when it is missing entirely.
+    """
+    try:
+        from hermes_cli.managed_uv import resolve_uv
+
+        uv = resolve_uv()
+    except Exception:  # pragma: no cover — defensive
+        uv = None
+    return f"{uv or 'uv'} tool install --force browser-use"
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:

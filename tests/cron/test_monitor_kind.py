@@ -354,6 +354,182 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     assert "state B" in prompt  # new output included verbatim
 
 
+def test_blocked_config_run_leaves_changed_monitor_output_replayable(hermes_env, monkeypatch):
+    """A pre-inference refusal must not consume a monitor change (#drift-replay).
+
+    check_monitor persists the new hash at DETECTION time, before any
+    pre-inference gate. If the run is then refused before inference
+    (preflight blocked_config, provider resolution with no fallback), the
+    change is durably consumed: after the operator heals the config, the
+    recovery tick compares equal and reports silent no_change — the change
+    is lost. A run refused before inference must leave the changed payload
+    replayable: monitor_state stays untouched until the run is admitted.
+    """
+    from cron.jobs import get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    (hermes_env / "config.yaml").write_text("", encoding="utf-8")
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    # No fallback chain; provider resolution fails until remediated (e.g. the unpinned job's
+    # snapshot provider is gone, healed by a re-pin/resnap): run_job must refuse the broken
+    # tick inside _resolve_job_runtime (RuntimeError), before inference, and run the healed
+    # tick normally. Preflight's probe swallows the same error fail-open; resolution is the
+    # call that refuses the run.
+    import hermes_cli.runtime_provider as _rtp
+
+    _healed = {"ok": False}
+
+    def _resolve_until_healed(**_kw):
+        if not _healed["ok"]:
+            raise RuntimeError("provider gone")
+        return {
+            "provider": "test", "api_key": "k", "base_url": "http://test.local",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(_rtp, "resolve_runtime_provider", _resolve_until_healed)
+
+    success, _doc, _final, error = run_job(job)
+    assert success is False
+    assert error is not None
+    assert observed["agent_runs"] == 0
+    stored = get_job(job["id"])
+    assert stored is not None
+    assert stored.get("monitor_state") is None
+
+    # Heal the resolution (the operator's remediation): the SAME output must still trigger the
+    # agent — the first observation was never admitted past the pre-inference gates.
+    _healed["ok"] = True
+    job = get_job(job["id"])
+    assert job is not None
+    success, _doc, _final, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert observed["agent_runs"] == 1
+    assert "state A" in observed["prompts"][0]
+    stored = get_job(job["id"])
+    assert stored["monitor_state"]["last_output_hash"]
+
+    # Exactly once: the committed observation suppresses the next identical tick.
+    job = get_job(job["id"])
+    assert job is not None
+    success, doc, final, _error = run_job(job)
+    assert success is True
+    assert final == SILENT_MARKER
+    assert "no_change" in doc
+    assert observed["agent_runs"] == 1
+
+
+def test_preflight_blocked_config_leaves_changed_monitor_output_replayable(hermes_env, monkeypatch):
+    """Sibling seam: a preflight blocked_config refusal (an AuthError-ing provider key probe
+    with no fallback chain) must also leave the change replayable — same lost-wake class,
+    different refusal point (setup.blocked instead of a resolution exception)."""
+    from cron.jobs import get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    from hermes_cli import runtime_provider as _rtp
+
+    _healed = {"ok": False}
+
+    def _resolve_until_healed(**_kw):
+        if not _healed["ok"]:
+            from hermes_cli.auth import AuthError
+
+            raise AuthError("No API key configured for provider 'test'")
+        return {
+            "provider": "test", "api_key": "k", "base_url": "http://test.local",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(_rtp, "resolve_runtime_provider", _resolve_until_healed)
+
+    success, doc, _final, error = run_job(job)
+    assert success is False
+    assert "[blocked_config]" in (error or "")
+    assert observed["agent_runs"] == 0
+    stored = get_job(job["id"])
+    assert stored is not None
+    assert stored.get("monitor_state") is None
+
+    # Key remediated: the same change must reach the agent exactly once.
+    _healed["ok"] = True
+    job = get_job(job["id"])
+    assert job is not None
+    success, _doc, _final, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert observed["agent_runs"] == 1
+    assert "state A" in observed["prompts"][0]
+    stored = get_job(job["id"])
+    assert stored is not None
+    monitor_state = stored.get("monitor_state")
+    assert isinstance(monitor_state, dict)
+    assert monitor_state["last_output_hash"]
+
+    # Exactly once: the committed observation suppresses the next identical tick.
+    job = get_job(job["id"])
+    assert job is not None
+    success, doc, final, _error = run_job(job)
+    assert success is True
+    assert final == SILENT_MARKER
+    assert "no_change" in doc
+    assert observed["agent_runs"] == 1
+
+
+def test_agent_run_failure_still_consumes_the_change(hermes_env, monkeypatch):
+    """Upper bound: once the run is ADMITTED (gates passed), a failing agent
+    run commits the observation — detection time is the state boundary, so a
+    broken agent run must not re-alert on the same content forever."""
+    from cron.jobs import get_job
+    from cron.scheduler import run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+
+    class _FailingAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, prompt, *_a, **_kw):
+            raise RuntimeError("inference blew up")
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+    fake_mod = type(sys)("run_agent")
+    fake_mod.AIAgent = _FailingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+
+    from hermes_cli import runtime_provider as _rtp
+    monkeypatch.setattr(
+        _rtp, "resolve_runtime_provider",
+        lambda **_kw: {
+            "provider": "test", "api_key": "k", "base_url": "http://test.local",
+            "api_mode": "chat_completions",
+        })
+    from cron import scheduler_delivery as sched_delivery
+    monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
+    monkeypatch.setattr(sys.modules["cron.scheduler"], "_resolve_delivery_target", lambda job: None)
+    monkeypatch.setattr(
+        sys.modules["cron.scheduler"], "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+    import dotenv
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
+
+    success, _doc, _final, error = run_job(job)
+    assert success is False
+    assert error is not None
+    stored = get_job(job["id"])
+    assert stored is not None
+    monitor_state = stored.get("monitor_state")
+    assert isinstance(monitor_state, dict)
+    assert monitor_state["last_output_hash"]
+
+
 def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     """Suppression state must survive a scheduler restart (module reload)."""
     import importlib

@@ -199,6 +199,16 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def find_gateway_approval_session(request_id: str) -> str | None:
+    """Return the session_key whose queue contains an entry with request_id, or None."""
+    with _lock:
+        for key, queue in _gateway_queues.items():
+            for entry in queue:
+                if str(entry.data.get("request_id") or "") == request_id:
+                    return key
+    return None
+
+
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
     False when the request is no longer pending (the surface should withdraw its prompt itself)."""

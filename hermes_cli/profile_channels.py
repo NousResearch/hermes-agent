@@ -386,7 +386,7 @@ def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir
         # messaging adapter is disabled; tools_config.py treats the configured token as opt-in.
         preserve.add("homeassistant")
     stripped: Dict[str, List[str]] = dict(
-        strip_channel_env_file(profile_dir / ".env", index, preserve_platforms=preserve)
+        strip_channel_env_file(profile_dir / ".env", index)
     )
     config_paths = strip_channel_config(profile_dir / "config.yaml", index)
     if config_paths:

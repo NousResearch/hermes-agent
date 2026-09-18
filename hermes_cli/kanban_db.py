@@ -2669,9 +2669,11 @@ def release_stale_claims(
     now = int(time.time())
     reclaimed = 0
     host_prefix = _host_prefix()
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
-        "       assignee "
+        "       assignee, consecutive_failures, max_retries "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
@@ -2699,13 +2701,36 @@ def release_stale_claims(
             continue
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, row["id"])
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (retry_status, row["id"], row["claim_lock"], now),
-            )
+            # A claim that expired with no worker pid means the claimer never spawned a
+            # worker — count it as a non-success attempt toward the circuit breaker.
+            no_spawn = row["worker_pid"] is None
+            gave_up = False
+            if no_spawn:
+                cur_failures = int(row["consecutive_failures"] or 0)
+                new_failures = cur_failures + 1
+                effective_limit = (
+                    int(row["max_retries"]) if row["max_retries"] is not None
+                    else int(failure_limit)
+                )
+                if new_failures >= effective_limit:
+                    retry_status = "blocked"
+                    gave_up = True
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "consecutive_failures = consecutive_failures + 1 "
+                    "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                    "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                    (retry_status, row["id"], row["claim_lock"], now),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                    "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                    (retry_status, row["id"], row["claim_lock"], now),
+                )
             if cur.rowcount != 1:
                 continue
             run_id = _record_reclaim(
@@ -2722,6 +2747,10 @@ def release_stale_claims(
                     "retry_status": retry_status,
                 },
             )
+            if gave_up:
+                _append_event(conn, row["id"], "gave_up",
+                              {"reason": "no_spawn_breaker", "retry_status": retry_status},
+                              run_id=run_id)
             reclaimed += 1
         # A claim released without a worker verdict is a failed attempt too;
         # otherwise claim -> reclaim loops never reach the configured breaker.
@@ -3586,62 +3615,55 @@ def request_review(
     except CompletionPolicyError as exc:
         return _ret(False, str(exc))
 
-    with write_txn(conn):
-        if not _parents_satisfied(conn, task_id):
-            return _ret(False, "parent dependencies are not satisfied")
-        trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
-            "FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if trow is None:
-            return _ret(False, "task not found")
-        if (trow["status"], trow["current_run_id"]) != initial_state:
-            return _ret(False, "task changed while review policy was running")
-        # Refuse to clear a live worker's claim without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True).
-        if (
-            expected_run_id is None
-            and not force
-            and trow["status"] == "running"
-            and trow["claim_lock"] is not None
-        ):
-            return _ret(
-                False, "task is running under a live claim; pass expected_run_id "
-                "(worker ownership) or force=True (explicit operator "
-                "override) instead of clearing the live run's claim",
-            )
-        implementer = trow["assignee"]
-        if reviewer is None:
-            reviewer = _prior_reviewer(conn, task_id)
-            if reviewer is False:
+    # Extract artifact paths for staging before we open the txn (staging is inside the txn
+    # so files are cleaned up if the txn fails, but the list is built here for clarity).
+    artifacts_to_stage = []
+    if isinstance(metadata, dict):
+        for p in (metadata.get("artifacts") or []):
+            if p:
+                artifacts_to_stage.append(str(p))
+
+    staged_artifacts: list[Path] = []
+    try:
+        with write_txn(conn):
+            if not _parents_satisfied(conn, task_id):
+                return _ret(False, "parent dependencies are not satisfied")
+            trow = conn.execute(
+                "SELECT assignee, status, claim_lock, current_run_id "
+                "FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            if trow is None:
+                return _ret(False, "task not found")
+            if (trow["status"], trow["current_run_id"]) != initial_state:
+                return _ret(False, "task changed while review policy was running")
+            # Refuse to clear a live worker's claim without proof of ownership
+            # (expected_run_id) or an explicit human override (force=True).
+            if (
+                expected_run_id is None
+                and not force
+                and trow["status"] == "running"
+                and trow["claim_lock"] is not None
+            ):
                 return _ret(
-                    False, "re-review has no durable reviewer provenance (the "
-                    "latest changes_requested event is missing or "
-                    "malformed); pass reviewer= explicitly",
+                    False, "task is running under a live claim; pass expected_run_id "
+                    "(worker ownership) or force=True (explicit operator "
+                    "override) instead of clearing the live run's claim",
                 )
-        reviewer = _canonical_assignee(reviewer)
-        assignee_sql = ", assignee = ?" if reviewer is not None else ""
-        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
-        params: tuple[Any, ...] = (
-            *(() if reviewer is None else (reviewer,)), task_id,
-            *(() if expected_run_id is None else (int(expected_run_id),)),
-        )
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'review',
-                   claim_lock    = NULL,
-                   claim_expires = NULL,
-                   worker_pid    = NULL
-            """ + assignee_sql + """
-             WHERE id = ?
-               AND status IN ('running', 'ready')
-            """ + run_guard,
-            params,
-        )
-        if cur.rowcount != 1:
-            return _ret(
-                False, "task is not in running/ready (or expected_run_id did not match the current run)",
+            implementer = trow["assignee"]
+            if reviewer is None:
+                reviewer = _prior_reviewer(conn, task_id)
+                if reviewer is False:
+                    return _ret(
+                        False, "re-review has no durable reviewer provenance (the "
+                        "latest changes_requested event is missing or "
+                        "malformed); pass reviewer= explicitly",
+                    )
+            reviewer = _canonical_assignee(reviewer)
+            assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            params: tuple[Any, ...] = (
+                *(() if reviewer is None else (reviewer,)), task_id,
+                *(() if expected_run_id is None else (int(expected_run_id),)),
             )
         staged_artifacts: list[str] = []
         if isinstance(metadata, dict):

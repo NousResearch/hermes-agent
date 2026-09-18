@@ -281,7 +281,7 @@ def named_profile_is_deleted(profile_home: str | Path) -> bool:
 # Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
 # none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
 # listed, served, ticked, or seeded with the default install's credentials.
-_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db", "federation_role.json")
 
 
 def named_profile_has_identity(profile_home: str | Path) -> bool:

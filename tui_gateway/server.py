@@ -1768,6 +1768,11 @@ def _clear_pending(sid: str | None = None) -> None:
     prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
     from tui_gateway import server_requests
     server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
+    to_clear = [rid for rid, (s, _) in list(_pending.items()) if sid is None or s == sid]
+    for rid in to_clear:
+        _, ev = _pending.pop(rid)
+        ev.set()
+        _answers[rid] = ""
 
 
 # ── Agent factory ────────────────────────────────────────────────────

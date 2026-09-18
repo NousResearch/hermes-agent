@@ -1220,10 +1220,14 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
-    from hermes_cli.profiles import normalize_profile_name, profile_exists
+    from hermes_cli.profiles import normalize_profile_name, get_profile_dir
 
     assignee = normalize_profile_name(str(assignee))
-    _check(profile_exists(assignee), f"assignee profile {assignee!r} does not exist; "
+    try:
+        _profile_dir_ok = get_profile_dir(assignee).is_dir() or assignee == "default"
+    except Exception:
+        _profile_dir_ok = False
+    _check(_profile_dir_ok, f"assignee profile {assignee!r} does not exist; "
            "select an installed profile from hermes kanban assignees before creating work")
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child

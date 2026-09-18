@@ -97,9 +97,7 @@ class MigrationPlan:
 
     @property
     def already_multiplexed(self) -> bool:
-        # The flag can be left behind by a partially applied migration. Standalone secondary
-        # gateways still have to be stopped/uninstalled before this fleet is complete.
-        if self.standalone_secondaries:
+        if self.interrupted:
             return False
         if self.interrupted:
             return False
@@ -752,6 +750,17 @@ def _preflight_apply(plan: "MigrationPlan", target: "Optional[tuple[str, bool]]"
     return None
 
 
+def _remove_secondary_gateways(plan: MigrationPlan) -> None:
+    for p in plan.standalone_secondaries:
+        for kind, system in p.services:
+            _service_op(kind, system, "stop", p.home)
+            _service_op(kind, system, "uninstall", p.home)
+            print(f"  ✓ {p.name}: stopped and removed its {_service_label((kind, system))} service")
+        if p.pid is not None:
+            _stop_gateway_process(p.home)
+            print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Flip the flag, stop/uninstall every secondary gateway, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile.
@@ -859,6 +868,12 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     )
     if default_gw.has_gateway:
         try:
+            # If the default had no service before migration, the service was temporarily transferred
+            # from the secondaries. Uninstall it before restarting so it does not survive rollback.
+            if not pre_migration_services and default_gw.services:
+                for kind, system in list(default_gw.services):
+                    _service_op(kind, system, "stop", default_home)
+                    _service_op(kind, system, "uninstall", default_home)
             print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
         except Exception as exc:
             if ok:

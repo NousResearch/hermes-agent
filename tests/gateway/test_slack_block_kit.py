@@ -25,6 +25,36 @@ class TestRenderBlocksBasics:
         assert blocks[0]["text"]["type"] == "plain_text"
         assert blocks[0]["text"]["text"] == "Title"
 
+    def test_header_preserves_literal_markup_characters(self):
+        blocks = render_blocks("# **SERVICE_US** `SA-03` _current status_")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE_US SA-03 current status"
+
+    def test_header_does_not_treat_identifier_underscores_as_emphasis(self):
+        blocks = render_blocks("# SERVICE_US_EAST")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE_US_EAST"
+
+    def test_header_does_not_treat_double_identifier_underscores_as_strong(self):
+        blocks = render_blocks("# SERVICE__US__EAST")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE__US__EAST"
+
+    def test_header_requires_matching_strong_delimiters(self):
+        blocks = render_blocks("# **SERVICE_US__")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "**SERVICE_US__"
+
+    def test_header_strips_valid_underscore_strong_markup(self):
+        blocks = render_blocks("# __current status__")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "current status"
+
 
 class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):

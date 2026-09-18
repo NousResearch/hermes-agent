@@ -27,12 +27,37 @@ sys.modules.pop("cron.{store}", None)
 import cron.{store}
 """
 
+_OCCURRENCES_SKEW_SCRIPT = """
+import cron.jobs as jobs
+
+# Model a daemon that loaded cron.jobs before this constant existed, then
+# lazy-loads the newer occurrences module from disk during a due scan.
+jobs.__dict__.pop("FIRE_CLAIM_SKEW_SECONDS", None)
+
+from cron.occurrences import completed_occurrence
+
+assert not completed_occurrence({"id": "job"}, "2026-01-01T00:00:00+00:00")
+"""
+
 
 @pytest.mark.parametrize("store", ["notepad", "incidents", "executions", "delivery_queue"])
 def test_lazy_cron_stores_import_against_pre_upgrade_sqlite_util(store):
     repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-c", _SKEW_SCRIPT.format(store=store)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_occurrences_uses_skew_constant_without_cached_jobs_export():
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _OCCURRENCES_SKEW_SCRIPT],
         cwd=repo_root,
         capture_output=True,
         text=True,

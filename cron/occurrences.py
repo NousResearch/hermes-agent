@@ -20,8 +20,8 @@ def scheduled_instant(value):
 
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
+    from cron.constants import FIRE_CLAIM_SKEW_SECONDS
     from cron.executions import _transaction
-    from cron.jobs import FIRE_CLAIM_SKEW_SECONDS
 
     instant = scheduled_instant(instant)
     if instant is None:

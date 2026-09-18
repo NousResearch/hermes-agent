@@ -1204,3 +1204,49 @@ To build your own theme, add a plugin tab, inject into shell slots, or expose pl
 - Plugin manifest, SDK, shell slots, page-scoped slots (inject widgets into built-in pages without overriding them), backend FastAPI routes
 - A full combined theme-plus-plugin walkthrough (Strike Freedom cockpit demo)
 - Discovery, reload, and troubleshooting
+
+## Plugin pages (`/p/<slug>`)
+
+A plugin that needs its **own** web UI — not a React tab inside the SPA, but a self-contained page with its own HTML, JS and WebSockets — registers one on the dashboard's existing port:
+
+```python
+# ~/.hermes/plugins/my-plugin/__init__.py
+from fastapi import APIRouter, WebSocket
+
+router = APIRouter()
+
+@router.get("/")
+async def index():
+    from hermes_cli.dashboard_pages import bootstrap_script
+    ...
+
+@router.websocket("/ws")
+async def socket(ws: WebSocket): ...
+
+def register(ctx):
+    ctx.register_dashboard_page(slug="my-plugin", title="My Plugin", router=router)
+```
+
+The page is then served at **`/p/my-plugin`**, and everything under that prefix — extra routes, static assets, any number of concurrent WebSockets — belongs to the plugin.
+
+**Why this exists.** Before it, a plugin needing a web surface had to run a second HTTP server: its own port, its own supervision, its own token check, its own proxy publication. All four already exist once in the dashboard, and the duplicated copies are where the failures live — a dead second service behind a proxy that still looks healthy, a hand-rolled credential compare that 500s instead of 401ing, a spoofable identity header on a plain TCP port. The first consumer (`hermes-i3`, a tiling terminal grid) shed all of it by moving to `/p/i3`.
+
+What the page inherits for free, and must therefore not re-implement:
+
+| Concern | Who handles it |
+|---|---|
+| Authentication | The dashboard gate. Unauthenticated requests get **401** before the plugin router is ever called; gated deployments require a verified session, loopback ones the dashboard session token. |
+| WebSocket credentials | The same gate as `/api/pty`: `?ticket=` (gated) or `?token=` (loopback), plus the DNS-rebinding Host/Origin guard, which HTTP middleware cannot cover for upgrades. |
+| Subresource auth | A navigation authenticated with `?token=` gets an `HttpOnly`, `SameSite=Strict` cookie scoped to `/p`, so `<script>`/`<link>` requests authenticate without a token in every URL. |
+| Supervision, TLS, proxy exposure | Whatever already runs the dashboard (`hermes-dashboard.service`, `tailscale serve`, a reverse proxy). |
+
+Notes and constraints:
+
+- **`PUBLIC_API_PATHS` is never consulted for `/p/`.** There is no way to make a plugin page public; if you need an unauthenticated endpoint, it does not belong here.
+- **Slugs are validated**: lowercase letters, digits and hyphens, 1–32 chars, alphanumeric at both ends. Path-escape shapes and names colliding with core routes (`api`, `auth`, `chat`, `login`, `assets`, …) are refused, with a warning rather than an exception — a bad page must not abort the plugin's `register()`.
+- **`hermes serve --headless` serves no plugin page**, by design: that process is the JSON-RPC/WS backend and mounts no browser UI.
+- **Use `dashboard_pages.bootstrap_script(request)`** in your HTML rather than deriving URLs yourself. It publishes `__HERMES_PAGE_BASE__` (the page's external base path, prefix-aware), `__HERMES_DASHBOARD_BASE__`, `__HERMES_AUTH_REQUIRED__`, and — on loopback only — `__HERMES_SESSION_TOKEN__`. Behind the auth gate the token is deliberately withheld; the page mints a per-socket ticket via `POST /api/auth/ws-ticket` instead, exactly as the SPA does.
+- **A page's lifetime is the dashboard process.** Anything it owns (child processes, PTYs) dies with a dashboard restart. This is architecture, not a bug — say so in your plugin's README so users can plan around it.
+- **Unloading the plugin removes the route immediately**; no restart, no route-table surgery. The registration is `persistent`, i.e. it survives a routine per-profile manager teardown (the same `#91701` hazard `register_dashboard_auth_provider` documents) but is disposed by a targeted unload and evicted on a forced re-discovery when the plugin stops supplying it.
+
+**Out of scope on purpose**: this does not add a menu entry or tile in the SPA, and does not let a plugin mount React components into it. A standalone page under `/p/<slug>` covers the need without growing the SPA into a second chat surface.

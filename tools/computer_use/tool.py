@@ -388,10 +388,6 @@ def _do_scroll(backend, action, args, **delivery):
 def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-    if args.get("url") and hasattr(backend, "navigate"):
-        nav = backend.navigate(str(args["url"]))
-        if not nav.ok:
-            return json.dumps({"error": nav.message or "navigate failed"})
     return _capture_response(backend.capture(mode=mode, app=args.get("app"),
                                              **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
                              session_id=session_id)
@@ -479,10 +475,13 @@ def _do_run_goal(backend, action, args, session_id=None, **_):
     goal = (args.get("goal") or args.get("goal_hint") or "").strip()
     if not goal:
         return json.dumps({"error": "run_goal requires `goal`"})
-    if args.get("url") and hasattr(backend, "navigate"):
-        nav = backend.navigate(str(args["url"]))
-        if not nav.ok:
-            return json.dumps({"error": nav.message or "navigate failed"})
+    if args.get("url"):
+        nav = execute_authorized_action(
+            backend, "navigate", {"action": "navigate", "url": str(args["url"])},
+            session_id=session_id)
+        parsed = nav if isinstance(nav, dict) else json.loads(nav) if isinstance(nav, str) else {"ok": False}
+        if not parsed.get("ok"):
+            return json.dumps({"error": parsed.get("error") or parsed.get("message") or "navigate failed"})
     from tools.computer_use.decide_loop import run_decide_loop
 
     def handle(inner: Dict[str, Any]) -> Any:
@@ -543,7 +542,7 @@ _ACTIONS: Dict[str, _ActionSpec] = {
     ),
     "decide": _ActionSpec(_do_decide, summarize=lambda a, args, fg: f"decide {args.get('goal', '')[:80]!r}{fg}"),
     "run_goal": _ActionSpec(
-        _do_run_goal, destructive=True,
+        _do_run_goal,
         summarize=lambda a, args, fg: f"run_goal {args.get('goal', '')[:80]!r}{fg}",
     ),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),

@@ -158,7 +158,7 @@ _PROPERTIES: Dict[str, Any] = {
     },
     "url": {
         "type": "string",
-        "description": "For navigate / capture / run_goal on the browser backend: page to open.",
+        "description": "For navigate / run_goal on the browser backend: page to open.",
     },
     "keys": {
         "type": "string",

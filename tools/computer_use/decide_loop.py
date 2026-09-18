@@ -138,6 +138,12 @@ def run_decide_loop(
             step.elapsed_s = round(time.perf_counter() - t0, 3)
             return LoopResult(ok=False, status="error", goal=goal, max_steps=max_steps, steps=steps,
                               elapsed_s=round(time.perf_counter() - started, 3))
+        verdict = (executed.get("verdict") or {}).get("decision")
+        if verdict == "escalate":
+            step.fail_open = True
+            step.elapsed_s = round(time.perf_counter() - t0, 3)
+            return LoopResult(ok=False, status="fail_open", goal=goal, max_steps=max_steps, steps=steps,
+                              elapsed_s=round(time.perf_counter() - started, 3))
         step.elapsed_s = round(time.perf_counter() - t0, 3)
     return LoopResult(ok=False, status="max_steps", goal=goal, max_steps=max_steps, steps=steps,
                       elapsed_s=round(time.perf_counter() - started, 3))

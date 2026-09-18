@@ -1,0 +1,17 @@
+name: jev-approval-provider
+repo: https://github.com/anpicasso/hermes-jev-approvals
+sha: 980b3d846980e0b2bca63a350bb004d13f8d0aff
+subdir: plugin
+description: Proof of concept — serves TypeSafe Jev as the smart-approval reviewer only; it cannot generate text.
+maintainer: anpicasso
+tier: community
+category: tools
+docs_url: https://github.com/anpicasso/hermes-jev-approvals#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - TYPESAFE_API_KEY

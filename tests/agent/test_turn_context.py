@@ -534,3 +534,17 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_prologue_forwards_the_submit_title_preview_to_the_titler():
+    """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the
+    titler should read, not the full pasted body."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("desktop"),
+            [{"role": "user", "content": "x" * 5000,
+              "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
+        )
+    assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"

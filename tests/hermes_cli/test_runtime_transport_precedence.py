@@ -58,8 +58,12 @@ class TestFallbackApiMode:
         real = runtime_provider.get_provider
 
         def seeded(name, *, allow_network=True):
+            # allow_network is dropped so the fixture can never reach models.dev; replace, not
+            # assign, because get_provider hands back the cached ProviderDef other tests share.
+            # Seed unconditionally: a warm disk cache must not swap in whatever models.dev
+            # publishes today.
             pdef = real(name, allow_network=False)
-            if pdef is not None and not pdef.base_url and name in defaults:
+            if pdef is not None and name in defaults:
                 pdef = dataclasses.replace(pdef, base_url=defaults[name])
             return pdef
 
@@ -104,7 +108,8 @@ class TestFallbackApiMode:
     def test_minimax_declared_anthropic_transport_honored(self):
         # Same latent bug class: minimax declares an Anthropic-compatible
         # transport but previously fell back to chat_completions when the
-        # URL carried no /anthropic hint.
+        # URL carried no /anthropic hint. The bare catalog host is still
+        # honored (#53054); non-default paths now are not (#76836).
         from hermes_cli.providers import determine_api_mode
 
         expected = determine_api_mode("minimax", "https://api.minimax.io")

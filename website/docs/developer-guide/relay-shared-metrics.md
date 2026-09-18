@@ -45,8 +45,9 @@ receive a `ToolExecutionContext` instead of separate name and argument values.
 Hermes passes the selected file to Relay as the explicit plugin configuration.
 Relay reads it in place of the ambient user `plugins.toml`, but the
 operator-managed system file (`/etc/nemo-relay/plugins.toml`, or the
-`%ProgramData%` equivalent) still layers beneath it, so a system-wide exporter
-or policy applies to Hermes too.
+`%ProgramData%` equivalent) still layers above it, so a system-wide exporter,
+policy, or dynamic plugin applies to Hermes too. For duplicate dynamic plugin
+IDs, the system declaration wins.
 
 Relay 0.9 has no query for whether another process already owns the plugin
 host. Hermes learns that only when its own initialization is refused, so a
@@ -82,12 +83,12 @@ opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
 activate configured middleware, exporters, or dynamic plugins. When the
 variable is unset, Hermes does not invoke Relay's plugin initializer, so Relay
 does not perform plugin configuration discovery or layering. When it is set
-and the selected file loads successfully, Relay discovers supported user and
-system `plugins.toml` files and layers the selected static configuration over
-them. Repository-local `.nemo-relay/plugins.toml` files are ignored. Dynamic
-`[[plugins.dynamic]]` records are loaded from the selected file only. If the
-selected file cannot be loaded, Hermes reports the error and does not invoke
-Relay initialization or fall back to ambient discovery.
+and the selected file loads successfully, Relay uses it instead of the ambient
+user `plugins.toml`, then layers the operator-managed system file above it.
+Repository-local `.nemo-relay/plugins.toml` files are ignored. Dynamic
+`[[plugins.dynamic]]` records are resolved from both the selected and system
+files. If the selected file cannot be loaded, Hermes reports the error and does
+not invoke Relay initialization or fall back to ambient discovery.
 
 ## Session-Span Segmentation for Continuous Sessions
 

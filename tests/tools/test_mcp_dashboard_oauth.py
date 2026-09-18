@@ -118,6 +118,61 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
+def test_mark_error_surfaces_real_cause_to_callback_waiter():
+    """A failure marked before any browser redirect (worker crash,
+    authorization-URL timeout, user cancel) must reach the SDK's callback
+    waiter, not the generic "did not include an authorization code" line."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-err",
+        server_name="asana",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-err",
+    )
+    flow.mark_error("403 Forbidden from the OAuth registration endpoint")
+
+    assert flow.snapshot()["error"] == "403 Forbidden from the OAuth registration endpoint"
+    with pytest.raises(RuntimeError, match="403 Forbidden from the OAuth registration endpoint"):
+        asyncio.run(flow.wait_for_callback())
+
+
+def test_mark_error_with_empty_message_stays_diagnosable():
+    """str() of a bare TimeoutError() is ""; the waiter must still report a
+    flow failure instead of falling through to the no-code message."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-empty",
+        server_name="asana",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-empty",
+    )
+    flow.mark_error("")
+
+    with pytest.raises(RuntimeError, match="empty error message"):
+        asyncio.run(flow.wait_for_callback())
+
+
+def test_late_mark_error_cannot_override_delivered_callback():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-late",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-late",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s9"))
+    flow.deliver_callback(code="code-9", state="s9", error=None)
+
+    flow.mark_error("worker crashed after the browser redirected")
+    assert asyncio.run(flow.wait_for_callback())[:2] == ("code-9", "s9")
+
+
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
     from tools.mcp_oauth import HermesTokenStorage
 

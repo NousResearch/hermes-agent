@@ -112,6 +112,16 @@ class DashboardOAuthFlow:
                 return
             self.status = "error"
             self.error = error
+            # The SDK's callback waiter reads _callback_error, not error — without
+            # this copy, a failure marked before any browser redirect (worker
+            # crash, authorization-URL timeout, user cancel) wakes the waiter
+            # with no callback and no error, surfacing as the generic
+            # "did not include an authorization code" RuntimeError while the
+            # real cause stays unread. An empty message (str() of a bare
+            # TimeoutError) must not fall through either. Guarded so a late
+            # mark_error cannot override an already delivered callback.
+            if self._callback is None and self._callback_error is None:
+                self._callback_error = error or "MCP OAuth flow failed before the callback was received (empty error message)"
             self._authorization_ready.set()
             self._callback_ready.set()
 

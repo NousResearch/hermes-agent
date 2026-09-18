@@ -8,6 +8,7 @@ through the owner's mailbox, like local and relayed DMs, and the owner's receipt
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -107,6 +108,116 @@ async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
     finally:
         if lease is not None:
             lease.release()
+        db.close()
+
+
+def _runs_app(adapter):
+    app = web.Application()
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+    app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    return app
+
+
+def _owner_settles(home, *, status, reply="", error="", reason="", after=0.05):
+    """The Desktop's live session: claim the delivery, run it, write the receipt."""
+    def _run():
+        owner = mailbox.find_canonical_live_owner(home)
+        for _ in range(200):
+            claimed = mailbox.claim_pending_delivery(home, owner)
+            if claimed is not None:
+                time.sleep(after)
+                mailbox.complete_delivery(home, claimed["delivery_id"], status=status, reply=reply,
+                                          error=error, reason=reason)
+                return
+            time.sleep(0.02)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread
+
+
+async def _poll_terminal(cli, run_id, *, until=("completed", "failed", "cancelled"), tries=100):
+    status = {}
+    for _ in range(tries):
+        status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+        if status.get("status") in until:
+            break
+        await asyncio.sleep(0.05)
+    return status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "receipt", "stop", "expected", "turn_ran_here"),
+    [
+        ("bot-chat", ("settled", "pong", "", ""), False, ("completed", "pong"), False),
+        ("bot-chat", ("failed", "", "provider said 429", "provider_rate_limit"), False, ("failed", "provider_rate_limit"), False),
+        ("bot-chat", None, True, ("cancelled", None), False),
+        ("scratch", None, False, ("completed", "ran here"), True),
+    ],
+    ids=["owner-settles", "owner-fails-with-reason", "stopped-while-queued", "other-session-runs-here"],
+)
+async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
+    tmp_path, monkeypatch, target, receipt, stop, expected, turn_ran_here
+):
+    """`peer run` keeps its run_id and `peer status` keeps working, but the turn is the open
+    chat's: the owner's receipt is the run's status — reply, classified failure, or a stop that
+    ends the run without pretending it reached a turn this process never ran."""
+    home = tmp_path.resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = SessionDB(home / "state.db")
+    db.create_session("bot-chat", "desktop")
+    db.set_session_title("bot-chat", "Bot Chat")
+    db.create_session("scratch", "api_server")
+    from hermes_cli.active_sessions import try_acquire_active_session
+    lease, refusal = try_acquire_active_session(
+        session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
+        metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
+    assert lease is not None and refusal is None
+    owner = _owner_settles(home, status=receipt[0], reply=receipt[1], error=receipt[2], reason=receipt[3]) if receipt else None
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = db
+    ran_here = []
+
+    def _create_agent(**kwargs):
+        agent = type("Agent", (), {})()
+        agent.run_conversation = lambda *a, **k: (ran_here.append(k.get("task_id")), {"final_response": "ran here"})[1]
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+        return agent
+
+    try:
+        with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+            async with TestClient(TestServer(_runs_app(adapter))) as cli:
+                resp = await cli.post("/v1/runs", json={"input": "ping", "session_id": target, "author": AUTHOR})
+                body = await resp.json()
+                assert resp.status == 202, body
+                run_id = body["run_id"]
+                if stop:
+                    status = await _poll_terminal(cli, run_id, until=("running",))
+                    assert status["status"] == "running"
+                    assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
+                status = await _poll_terminal(cli, run_id)
+        if owner is not None:
+            owner.join(5)
+        assert status["status"] == expected[0], status
+        assert bool(ran_here) is turn_ran_here
+        admitted = sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
+        if turn_ran_here:
+            assert status["output"] == expected[1] and not admitted
+            return
+        [record] = [json.loads(path.read_text()) for path in admitted]
+        assert (record["message"], record["author"], record["owner"]["live_session_id"]) == ("ping", AUTHOR, "live-1")
+        assert status["delivery_id"] == record["delivery_id"]
+        if expected[0] == "completed":
+            assert status["output"] == expected[1] and status["completed"] is True
+        elif expected[0] == "failed":
+            assert status["reason"] == expected[1] and "429" in status["error"]
+        else:
+            assert status["interrupted"] is True and status["completed"] is False
+        assert run_id not in adapter._active_run_tasks, "the run retired like an executor-backed one"
+    finally:
+        lease.release()
         db.close()
 
 

@@ -85,6 +85,37 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect($currentUsage.get()).toEqual({ calls: 3, input: 1500, output: 90, total: 1590 })
   })
 
+  it('stamps turnStats from message.complete onto the assistant message', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          text: 'done',
+          turn_stats: {
+            duration_s: 12,
+            input: 3124,
+            output: 420,
+            cache_read: 2890,
+            cache_write: 0,
+            calls: 6
+          }
+        },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect(stream.state(SID).messages.at(-1)?.turnStats).toEqual({
+      durationS: 12,
+      input: 3124,
+      output: 420,
+      cacheRead: 2890,
+      cacheWrite: 0,
+      calls: 6
+    })
+  })
+
   it('ignores message.complete usage from a background session', () => {
     mountStream()
 

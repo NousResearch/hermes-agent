@@ -43,6 +43,25 @@ class TestFallbackApiMode:
             == "codex_responses"
         )
 
+    @pytest.mark.parametrize("provider, base_url", [
+        ("minimax", "http://127.0.0.1:8787/v1"),        # OpenAI-compatible relay in front of MiniMax
+        ("minimax-cn", "https://egress.corp.test/v1"),  # corporate egress gateway
+        ("minimax", "https://api.minimax.io/v1"),       # provider's own OpenAI-compatible path
+    ])
+    def test_anthropic_transport_is_not_assumed_off_the_provider_endpoint(self, provider, base_url):
+        # #76836: the declared anthropic_messages transport is a statement about the provider's
+        # own /anthropic endpoint. Anywhere else the override speaks chat/completions; Messages-
+        # shaped requests with x-api-key there 401 on every turn (or silently reroute to a fallback).
+        assert _fallback_api_mode(provider, base_url, "MiniMax-M3") == "chat_completions"
+
+    @pytest.mark.parametrize("provider, base_url", [
+        ("minimax", "https://api.minimax.io"),             # bare host, no /anthropic hint (#53054 kept)
+        ("minimax", "https://api.minimax.io/anthropic"),   # URL-detected native path
+        ("minimax-cn", "https://api.minimaxi.com/anthropic/v1"),
+    ])
+    def test_anthropic_transport_holds_on_the_provider_endpoint(self, provider, base_url):
+        assert _fallback_api_mode(provider, base_url, "MiniMax-M3") == "anthropic_messages"
+
     def test_lookalike_host_is_not_treated_as_official(self):
         # The spoof host must not be detected AS OpenAI by the URL lane —
         # the provider-declared transport may still apply, but host-derived

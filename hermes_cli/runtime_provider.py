@@ -32,7 +32,7 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, is_actual_route, is_official_openai_host, nous_api_mode
+from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 
@@ -143,7 +143,30 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     ``chat_completions``."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
-    return _detect_api_mode_for_url(base_url) or determine_api_mode(provider, base_url, model) or "chat_completions"
+    detected = _detect_api_mode_for_url(base_url)
+    if detected:
+        return detected
+    declared = determine_api_mode(provider, base_url, model) or "chat_completions"
+    if declared == "anthropic_messages" and not _on_declared_anthropic_endpoint(provider, base_url):
+        # The declared Anthropic transport describes the provider's own endpoint. A base_url
+        # override at a foreign host (OpenAI-compatible relay, LiteLLM, egress proxy) or at the
+        # provider's OpenAI-compatible path (api.minimax.io/v1) speaks chat/completions; sending
+        # Messages-shaped requests with x-api-key there is a 401 on every turn (#76836).
+        return "chat_completions"
+    return declared
+
+
+def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
+    """True when ``base_url`` is the provider's own Anthropic-protocol endpoint: same host as the
+    catalog default and either the bare host or a path under ``/anthropic``. Unknown default ⇒ True
+    (nothing to compare against, keep the declared transport)."""
+    default = (getattr(get_provider(provider), "base_url", "") or "").strip()
+    if not default:
+        return True
+    if not base_url_host_matches(base_url, base_url_hostname(default)):
+        return False
+    path = urlparse((base_url or "").strip().lower()).path.rstrip("/")
+    return path == "" or path.startswith("/anthropic")
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:

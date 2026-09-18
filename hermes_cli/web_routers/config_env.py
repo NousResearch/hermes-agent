@@ -314,6 +314,17 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Resolve a custom endpoint id using the stored key first, then its legacy slug."""
+    stored_key, entry = find_provider_entry(providers, endpoint_id)
+    if entry is not None:
+        return stored_key, entry
+    normalized_key = _custom_endpoint_id(endpoint_id)
+    if normalized_key == endpoint_id:
+        return None, None
+    return find_provider_entry(providers, normalized_key)
+
+
 def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     models: List[str] = []
     raw_models = entry.get("models")
@@ -565,8 +576,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     ):
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
-            _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
+            provider_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
 
@@ -606,11 +616,11 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     ):
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
-            stored_key, entry = find_provider_entry(providers, provider_key)
+            provider_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
             if entry is None or not isinstance(providers, dict):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
+            stored_key, _ = _resolve_custom_endpoint_entry(providers, endpoint_id)
             providers.pop(stored_key, None)
             cfg["providers"] = providers
             _detach_main_model_from_provider(cfg, provider_key)

@@ -8,8 +8,12 @@ import { notify, notifyError } from '@/store/notifications'
 
 import type { ConversationStatus } from './use-voice-conversation'
 
-/** How long an accepted delegation may sit before the gateway shows the turn running. */
-const SUBMIT_SETTLE_GRACE_MS = 15_000
+/** How long an accepted delegation may sit before the gateway shows the turn running.
+ *  Voice turns with tools routinely exceed 15s — a short grace here aborted
+ *  speak-back before Hermes finished (live: 25s turn, Eve silent). */
+const SUBMIT_SETTLE_GRACE_MS = 180_000
+/** After busy falls, wait this long for the assistant bubble to land before giving up. */
+const POST_BUSY_SETTLE_MS = 3_000
 
 interface PendingVoiceResponse {
   id: string
@@ -83,6 +87,7 @@ export function useVoiceLiveGrokConversation({
   const startingRef = useRef(false)
   const turnObservedRef = useRef(false)
   const submittedAtRef = useRef(0)
+  const idleSinceRef = useRef(0)
   const busyRef = useRef(busy)
   const delegationRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
@@ -208,6 +213,7 @@ export function useVoiceLiveGrokConversation({
         setDelegation(delegationId)
         lastToolLabelRef.current = null
         turnObservedRef.current = false
+        idleSinceRef.current = 0
         submittedAtRef.current = Date.now()
         latest.current.consumePendingResponse()
         refreshStatus('thinking')
@@ -305,8 +311,14 @@ export function useVoiceLiveGrokConversation({
         return
       }
 
+      // A tool-using Hermes turn routinely runs longer than SUBMIT_SETTLE_GRACE_MS.
+      // Aborting speak-back on that timer is what made Eve stay silent after a
+      // successful voice turn (live: 25s turn, zero voice.grok.speak).
       if (busyRef.current) {
         turnObservedRef.current = true
+        idleSinceRef.current = 0
+
+        return
       }
 
       const tool = latest.current.activeToolLabel?.() ?? null
@@ -317,6 +329,7 @@ export function useVoiceLiveGrokConversation({
 
       if (response) {
         turnObservedRef.current = true
+        idleSinceRef.current = 0
 
         if (!response.pending) {
           const spoken = sanitizeTextForSpeech(response.text).trim()
@@ -333,10 +346,20 @@ export function useVoiceLiveGrokConversation({
         return
       }
 
-      if (
-        !busyRef.current &&
-        (turnObservedRef.current || Date.now() - submittedAtRef.current > SUBMIT_SETTLE_GRACE_MS)
-      ) {
+      if (turnObservedRef.current) {
+        if (!idleSinceRef.current) {
+          idleSinceRef.current = Date.now()
+        }
+
+        if (Date.now() - idleSinceRef.current > POST_BUSY_SETTLE_MS) {
+          setDelegation(null)
+          refreshStatus()
+        }
+
+        return
+      }
+
+      if (Date.now() - submittedAtRef.current > SUBMIT_SETTLE_GRACE_MS) {
         setDelegation(null)
         refreshStatus()
       }

@@ -249,8 +249,11 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"spoken": False, "reason": "empty"})
     bridge = _grok_get_bridge(session_id)
     if bridge is None:
+        logger.info("voice.grok.speak: not_running session=%s chars=%d", session_id, len(text))
         return _ok(rid, {"spoken": False, "reason": "not_running"})
-    return _ok(rid, {"spoken": bool(bridge.speak_reply(text))})
+    spoken = bool(bridge.speak_reply(text))
+    logger.info("voice.grok.speak: session=%s spoken=%s chars=%d", session_id, spoken, len(text))
+    return _ok(rid, {"spoken": spoken})
 
 
 @method("voice.grok.rekey")

@@ -13633,6 +13633,7 @@ function createInstanceWindow(
     win,
     buildInstanceWindowUrl({
       ...route,
+      profileWindow: options !== undefined,
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),

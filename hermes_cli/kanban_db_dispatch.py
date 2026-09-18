@@ -1432,8 +1432,14 @@ def check_respawn_guard(
     # that this task's configured model/provider is quota/auth blocked. That
     # shape must fall through to a normal retry — trapping it here self-locks
     # forever, since the guard blocks the respawn that would refresh the error.
+    # Precedence: the carve-out is substring-based, so an error carrying BOTH a
+    # real per-task auth failure and the combo phrase retries instead of trapping.
     err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err) and not _RESPAWN_COMBO_TIMEOUT_RE.search(err):
+    if (
+        err
+        and _RESPAWN_BLOCKER_RE.search(err)
+        and not _RESPAWN_COMBO_TIMEOUT_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

@@ -37,6 +37,14 @@ Reuse the current canonical Kanban TaskRun/CAS support, TaskCompiler canary and 
   TaskRun fencing, BrowserTask leases, no-progress limits and uncertain-effect
   rules remain authoritative.
 - True homogeneous mutable fan-out still requires TaskCompiler/canary admission.
+- Structural shape alone does **not** prove homogeneity. Mandatory compilation
+  requires positive semantic family evidence: stable operation + canonical
+  route/provider + owner-declared or safely derived target-family/contract
+  identity. Shape-only repetition may suggest learning/compilation but may not
+  independently block bounded adaptive work.
+- Native browser mutations without such family evidence must not become
+  `REQUIRE_COMPILE` merely because the same tool name/schema appears three
+  times against different semantic UI targets.
 - Deterministic work must be able to return a compact NEEDS_REASONING handoff and
   resume from confirmed checkpoints rather than looping on refusal.
 - Native-browser tool constraints normalize to native_browser; do not compare

@@ -104,7 +104,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
                 slug=slug, label=label, description=(prof.description if prof else "") or entry.tui_desc or label,
                 auth_type=auth_type, tab=tab_for_auth_type(auth_type), api_key_env_vars=api_key_vars,
                 base_url_env_var=base_url_var, signup_url=signup_url, order=order,
-                # Keyless providers (opencode-free) are served anonymously: no key card in the GUI,
+                # Keyless providers are served anonymously: no key card in the GUI,
                 # and contract tests exempt them.
                 keyless=bool(overlay.keyless) if overlay else False,
             )

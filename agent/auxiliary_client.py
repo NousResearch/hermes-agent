@@ -174,12 +174,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
-    # OpenCode Zen free tier: the keyless placeholder must never hit the wire (relay 401s any
-    # unrecognized bearer) — blank the Authorization header.
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -4585,12 +4579,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             inferred = ""
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
-    # Headers are rebuilt from scratch here, so re-apply the OpenCode keyless policy from
-    # _create_openai_client: the placeholder must never ship as a bearer (see #110831).
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if sync_client.api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            headers = {**(headers or {}), **opencode_zen_free_headers()}
     headers = {**(headers or {}), **configured_default_headers(sync_client)}
     if headers:
         async_kwargs["default_headers"] = headers
@@ -5116,16 +5104,8 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
-    # OpenCode Zen free tier (*-free slugs) is served anonymously on the Zen relay only;
-    # any bearer (even a Go subscription key) is rejected, so route keyless regardless of creds.
-    try:
-        from hermes_cli.models import opencode_zen_free_runtime as _oc_free_rt
-        _free_rt = _oc_free_rt(provider, req.model)
-    except Exception:
-        _free_rt = None
-    if _free_rt is not None:
-        api_key = _free_rt["api_key"]
-        raw_base_url = str(_free_rt["base_url"]).rstrip("/")
+    # Keyless OpenCode free-tier routing was removed (OpenCode 403s anonymous traffic, so -free
+    # slugs now resolve with the caller's own Zen/Go credentials).
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (

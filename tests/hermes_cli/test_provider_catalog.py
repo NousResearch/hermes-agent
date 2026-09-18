@@ -59,8 +59,8 @@ def test_api_key_providers_expose_a_credential_env_var():
 
     Exemptions: ``aws_sdk`` (bedrock — uses AWS_REGION/AWS_PROFILE), the
     ``custom`` bring-your-own-endpoint pseudo-provider (configured inline via
-    the local-endpoint flow), and keyless providers (``d.keyless`` — e.g.
-    opencode-free, served anonymously: there is no credential to write).
+    the ``local-endpoint`` flow), and keyless providers (``d.keyless`` —
+    served anonymously: there is no credential to write).
     """
     exempt = {"custom"}
     for d in provider_catalog():

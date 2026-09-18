@@ -38,7 +38,6 @@ def _agent(provider, model, base_url, api_mode=None):
         ("opencode-go", "glm-5", "https://opencode.ai/zen/go/v1", None),  # chat_completions
         ("opencode-go", "gpt-5.6-luna", "https://opencode.ai/zen/go/v1", None),  # codex_responses
         ("opencode-go", "minimax-m2.7", "https://opencode.ai/zen/go/v1", "anthropic_messages"),
-        ("opencode-free", "nemotron-3.5-lightning-free", "https://opencode.ai/zen/v1", None),
         ("custom", "glm-5", "https://opencode.ai/zen/go/v1", None),  # URL-only detection
     ],
 )

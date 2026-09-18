@@ -31,7 +31,7 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 # derived from the catalog so any future virtual provider is covered without a
 # hardcoded slug.
 _VIRTUAL = {d.slug for d in provider_catalog() if d.auth_type == "virtual"}
-# Keyless providers (opencode-free) are served anonymously: no credential
+# Keyless providers are served anonymously: no credential
 # exists, so there is nothing to configure on either Providers tab. Derived
 # from the catalog flag so any future keyless provider is covered.
 _KEYLESS = {d.slug for d in provider_catalog() if d.keyless}

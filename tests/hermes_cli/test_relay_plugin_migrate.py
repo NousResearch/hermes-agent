@@ -3,7 +3,6 @@ become a validated ``relay-plugins.toml`` per profile home, selected from ``.env
 
 from __future__ import annotations
 
-import asyncio
 import tomllib
 from pathlib import Path
 
@@ -58,9 +57,8 @@ def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
     assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
     assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
     # Relay itself accepts the file Hermes will load at runtime.
-    report = asyncio.run(nemo_relay.plugin.initialize(document))
-    asyncio.run(nemo_relay.plugin.clear_async())
-    assert report.get("diagnostics") == []
+    report = nemo_relay.plugin.validate(document)
+    assert report["config"]["diagnostics"] == []
     # .env now selects the file; the legacy lines survive as comments (not deleted), so the
     # runtime warning + doctor finding go quiet and a second run is a no-op.
     env = _parse_env(profile_env / ".env")

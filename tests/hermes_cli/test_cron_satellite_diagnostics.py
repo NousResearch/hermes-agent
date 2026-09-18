@@ -129,7 +129,8 @@ def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
     if detail:
         assert "missed scheduled fire at test-time: unreachable" in output
         line = next(line for line in output.splitlines() if "missed scheduled fire at" in line)
-        assert len(line) < 200
+        assert len(line.split(". The messaging gateway")[0]) < 200
+        assert f"hermes cron run {records[0]['id']}" in line
         assert detail not in output
         assert "secret second line" not in output
     else:

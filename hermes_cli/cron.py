@@ -92,6 +92,10 @@ def _format_lateness(seconds: float) -> str:
     return " ".join(f"{n}{unit}" for n, unit in parts if n) or "0m"
 
 
+def _dispatch_kind_label(kind) -> Optional[str]:
+    return {"catch_up": "catch-up after missed fire", "late": "late"}.get(kind)
+
+
 def _dispatch_display(dispatch: dict) -> Optional[str]:
     """One-line scheduled-vs-actual dispatch summary; None when the stamp is malformed.
 
@@ -108,7 +112,7 @@ def _dispatch_display(dispatch: dict) -> Optional[str]:
     lateness = _format_lateness(dispatch.get("lateness_seconds", 0))
     if kind == "on_time":
         return color(f"on time (scheduled {scheduled})", Colors.DIM)
-    label = "catch-up after missed fire" if kind == "catch_up" else "late"
+    label = _dispatch_kind_label(kind) or "late"
     return (color(f"⚠ {label}: ", Colors.YELLOW) + f"scheduled {scheduled}, ran {actual} "
             + color(f"({lateness} late)", Colors.YELLOW))
 
@@ -220,14 +224,10 @@ def _delivery_fix_hint(job: Dict[str, Any]) -> str:
             f"`hermes cron edit {job.get('id', '<id>')} --deliver <target>`.")
 
 
-def _missed_fire_line(job: Dict[str, Any], fire_err: Dict[str, Any]) -> str:
-    """A scheduled fire that never reached the runner: what was skipped, when, and how to run it now.
-
-    The stored ``detail`` is operator text (loopback / api_server adapter); keep it as a dim
-    second sentence and lead with the human cause (the gateway was unreachable)."""
-    return (f"{color('⚠ A scheduled run was skipped', Colors.RED)} at {fire_err.get('at', '?')}: the messaging "
-            f"gateway was unreachable. Run `hermes gateway restart`, then `hermes cron run {job.get('id', '<id>')}` "
-            f"to run it now. {color('Details: ' + _short_reason(fire_err.get('detail')), Colors.DIM)}")
+def _missed_fire_issue(job: Dict[str, Any], fire_err: Dict[str, Any]) -> str:
+    return (f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}. "
+            "The messaging gateway was unreachable. Run `hermes gateway restart`, then "
+            f"`hermes cron run {job.get('id', '<id>')}` to run it now.")
 
 
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
@@ -245,7 +245,7 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
                      f"{_unverified_targets(unverified)} without message_id/raw_response")
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
-        lines.append(_missed_fire_line(job, fire_err))
+        lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
     return lines
 
 
@@ -475,12 +475,11 @@ def _print_active_jobs_summary(jobs) -> None:
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]
     if late:
         print()
-        print(color(f"  ⚠ {len(late)} job(s) last fired late (missed-fire catch-up):",
-                    Colors.YELLOW))
+        print(color(f"  ⚠ {len(late)} job(s) last fired late:", Colors.YELLOW))
         for j in late:
             d = j["last_dispatch"]
             late_by = _format_lateness(d.get("lateness_seconds", 0))
-            print(f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: "
+            print(f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: {_dispatch_kind_label(d.get('kind'))}, "
                   f"scheduled {d.get('scheduled_at', '?')}, ran {d.get('dispatched_at', '?')} "
                   + color(f"({late_by} late)", Colors.YELLOW))
 
@@ -542,14 +541,13 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
                       + _unverified_targets(unverified))
     # Dispatch records measure lateness, not whether the scheduler process was running.
     if isinstance(dispatch := job.get("last_dispatch"), dict):
-        labels = {"catch_up": "a catch-up after a missed schedule", "late": "late"}
-        if label := labels.get(dispatch.get("kind", "")):
+        if label := _dispatch_kind_label(dispatch.get("kind")):
             issues.append(f"last fire was {label} (scheduled {dispatch.get('scheduled_at', '?')}, "
                           f"{_format_lateness(dispatch.get('lateness_seconds', 0))} late). "
                           "This warning clears at the next on-time fire.")
     if isinstance(fire_err := job.get("last_fire_error"), dict) and fire_err.get("detail"):
         # The handoff error survives next_run_at advancing beyond the failed dispatch.
-        issues.append(f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}")
+        issues.append(_missed_fire_issue(job, fire_err))
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
         issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"

@@ -4840,6 +4840,8 @@ export interface SubagentCompletePayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentProgressPayload {
@@ -4867,6 +4869,8 @@ export interface SubagentProgressPayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentSpawnRequestedPayload {
@@ -4894,6 +4898,8 @@ export interface SubagentSpawnRequestedPayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentStartPayload {
@@ -4921,6 +4927,8 @@ export interface SubagentStartPayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentThinkingPayload {
@@ -4948,6 +4956,8 @@ export interface SubagentThinkingPayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 /** ``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional because older emitters omit them and the TUI spawn tree falls back to flat rendering. */
 export interface SubagentToolPayload {
@@ -4975,6 +4985,8 @@ export interface SubagentToolPayload {
   summary: string | null
   duration_seconds: number | null
   tool_preview: string | null
+  cost_usd: number | null
+  failure_reason: string | null
 }
 export interface TerminalClosePayload {
   process_id: string

@@ -530,6 +530,11 @@ class SubagentEventPayload(Payload):
     summary: str | None = None
     duration_seconds: float | None = None
     tool_preview: str | None = None
+    # ``_ChildRun.emit_complete`` always reports the child's running cost counter and adds a
+    # classified reason on failure; declaring them (rather than letting the relay's
+    # ``extra="forbid"`` build raise) is what keeps the terminal event reachable at all.
+    cost_usd: float | None = None
+    failure_reason: str | None = None
 
 
 for _name, _doc in (

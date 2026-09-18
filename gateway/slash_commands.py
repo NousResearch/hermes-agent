@@ -35,6 +35,8 @@ from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger("gateway.run")
 
+_PLANNED_RESTART_COUNTDOWN_SECONDS = 30.0
+
 
 # /rollback result keys -> i18n line for files the safe restore left alone.
 _ROLLBACK_SKIP_LINES = (("skipped_user_edits", "gateway.rollback.kept_user_edits"),
@@ -528,7 +530,9 @@ class GatewaySlashCommandsMixin(
                         src.platform.value if src and src.platform else "?",
                         event.platform_update_id)
             return ""
-        if self._restart_requested or self._draining:
+        countdown_handle = getattr(self, "_restart_countdown_handle", None)
+        countdown_pending = countdown_handle is not None and not countdown_handle.cancelled()
+        if self._restart_requested or self._draining or countdown_pending:
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
@@ -561,19 +565,25 @@ class GatewaySlashCommandsMixin(
         # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
         await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
-        active_agents = self._running_agent_count()
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
         # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
-        self.request_restart(detached=not via_service, via_service=via_service)
-        # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
-        # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
-        # restarts while active), the next startup auto-suspends it — breaking the loop.
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+
+        def _restart_after_countdown() -> None:
+            self._restart_countdown_handle = None
+            if not self._restart_requested and not self._draining:
+                self.request_restart(detached=not via_service, via_service=via_service)
+
+        # Keep a strong reference and make repeated /restart requests idempotent during the countdown.
+        # Do not mark the gateway draining yet: existing and newly-arriving work may continue until the
+        # countdown expires, after which request_restart() applies the normal bounded drain contract.
+        self._restart_countdown_handle = asyncio.get_running_loop().call_later(
+            _PLANNED_RESTART_COUNTDOWN_SECONDS, _restart_after_countdown
+        )
+        seconds = int(_PLANNED_RESTART_COUNTDOWN_SECONDS)
+        return EphemeralReply(f"♻️ Плановый перезапуск Hermes через {seconds} секунд.")
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""

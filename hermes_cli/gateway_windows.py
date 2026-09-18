@@ -1,8 +1,9 @@
 """Windows gateway service backend (Scheduled Task + Startup-folder fallback).
 
 Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create ... /RL LIMITED`` runs at the
-CURRENT USER's next logon without elevation. Manual starts and ``install --start-now`` use the direct
-hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior is consistent.
+CURRENT USER's next logon without elevation. When the task is registered, manual starts and
+``install --start-now`` run it so the bounded supervisor remains the process owner; the direct
+hidden-console launcher is reserved for the Startup-folder fallback.
 """
 
 from __future__ import annotations
@@ -51,7 +52,10 @@ _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
-_TASK_RESTART_COUNT = 999
+# Task Scheduler's XML schema declares RestartOnFailure/Count as unsignedByte.
+# Keep the retry budget deliberately bounded and schema-valid; Windows accepts
+# larger values during registration but does not reliably apply the policy.
+_TASK_RESTART_COUNT = 10
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -290,6 +294,14 @@ def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
     return argv
 
 
+def _gateway_supervisor_argv(python_exe: str, profile_arg: str) -> list[str]:
+    """Profile-aware Python supervisor command owned by the Scheduled Task."""
+    argv = [python_exe, "-m", "hermes_cli.gateway_windows_supervisor"]
+    if profile_arg:
+        argv.extend(profile_arg.split())
+    return argv
+
+
 def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers.
     ``home`` targets another profile's HERMES_HOME (per-profile cold-start, #110959)."""
@@ -333,7 +345,7 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
 
 
 def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
-    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
+    """Build the hidden-console ``gateway.vbs`` supervisor shim (CRLF-terminated).
 
     Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
     groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
@@ -346,18 +358,23 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     single hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited by every
     console-subsystem descendant (git, gh, node, …) so none of them allocate a visible flashing conhost
     (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
+    Keep the VBS process alive until the Python supervisor exits and propagate its exit code. The
+    supervisor owns bounded application recovery because live Windows evidence showed that
+    ``RestartOnFailure`` did not relaunch a failed action even after wscript returned ``1``.
+    Task Scheduler remains the login-time owner and coarse final backstop.
+
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
+    command_line = subprocess.list2cmdline(_gateway_supervisor_argv(python_exe_path, profile_arg))
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exit_code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -371,8 +388,10 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden. Waiting is load-bearing: the task owns the supervisor lifetime.
+        f"exit_code = sh.Run({q(command_line)}, 0, True)",
+        # Preserve the supervisor's semantic result. Child 75/78 interpretation happens inside Python.
+        "WScript.Quit exit_code",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -510,7 +529,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
-    # Immediate manual starts use _spawn_detached(). See #45599.
+    # Registered installs start through /Run so the task-owned supervisor remains authoritative.
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
     last_code, last_err = 1, ""
@@ -542,6 +561,23 @@ def _install_startup_entry(script_path: Path) -> Path:
     except OSError:
         pass
     return entry
+
+
+def _remove_startup_entries() -> None:
+    """Remove obsolete login-only launchers after Scheduled Task takeover.
+
+    Leaving the fallback beside a successful Scheduled Task creates two logon
+    launchers for one profile.  The loser exits on the gateway lock and can be
+    mistaken by Task Scheduler for a failed supervised action, causing a
+    pointless restart loop.  Only Hermes' two exact, profile-scoped launcher
+    paths are touched; failures are best-effort because the Scheduled Task is
+    already the durable owner.
+    """
+    for entry in (get_startup_entry_path(), _legacy_startup_entry_path()):
+        try:
+            entry.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove obsolete gateway Startup entry: %s", entry)
 
 
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
@@ -718,11 +754,19 @@ def _report_already_running(running_pids: list[int]) -> None:
 
 
 def _start_or_report_running(running_pids: list[int] | None = None) -> None:
-    """Spawn the gateway unless one is already running for this profile."""
+    """Start the installed owner, falling back to a direct gateway only without a Task."""
     if running_pids is None:
         running_pids = _gateway_pids()
     if running_pids:
         _report_already_running(running_pids)
+    elif is_task_registered():
+        task_name = get_task_name()
+        code, out, err = _exec_schtasks(["/Run", "/TN", task_name])
+        if code != 0:
+            raise RuntimeError(
+                f"Scheduled Task start failed (code {code}): {(err or out or '').strip()}"
+            )
+        _report_gateway_start(f"Scheduled Task {task_name!r}")
     else:
         pid = _spawn_detached()
         _report_gateway_start(f"direct spawn (PID {pid})")
@@ -734,6 +778,8 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
     entry = _install_startup_entry(script_path)
     print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
+    print("⚠ Startup-folder fallback starts the gateway at login but cannot restart it after a crash.")
+    print("  Re-run `hermes gateway install` with UAC approval for Scheduled Task crash recovery.")
 
     # Re-running install must be safe: the fallback only installs login persistence; starting is
     # controlled by the pre-UAC start_now answer so every user decision precedes elevation.
@@ -810,6 +856,7 @@ def install(
 
     ok, detail = _install_scheduled_task(task_name, script_path)
     if ok:
+        _remove_startup_entries()
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
@@ -1379,17 +1426,19 @@ def _probe_running_pid() -> int | None:
         return None
 
 
-def _probe_pid_exists(candidate_pid: int | None) -> None:
+def _probe_pid_exists(candidate_pid: int | None) -> bool:
     if candidate_pid is None:
         _probe(4, False, "No candidate PID to verify")
-        return
+        return False
     try:
         from gateway.status import _pid_exists
 
         alive = bool(_pid_exists(candidate_pid))
         _probe(4, alive, f"_pid_exists({candidate_pid}) => {alive}")
+        return alive
     except Exception as exc:
         _probe(4, False, f"_pid_exists raised: {exc!r}")
+        return False
 
 
 def _probe_state_file(state_path: Path) -> None:
@@ -1407,12 +1456,17 @@ def _probe_state_file(state_path: Path) -> None:
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass
-        _probe(5, gateway_state == "running", f"gateway_state.json state={gateway_state!r}{age_str}")
+        from gateway.status import runtime_status_pid_is_live
+
+        live_claim = runtime_status_pid_is_live(state_data)
+        healthy = gateway_state == "running" and live_claim
+        detail = f"gateway_state.json state={gateway_state!r}{age_str} pid_live={live_claim}"
+        _probe(5, healthy, detail)
     except Exception as exc:
         _probe(5, False, f"gateway_state.json present but unreadable: {exc}")
 
 
-def _probe_exit_diag(diag_path: Path) -> None:
+def _probe_exit_diag(diag_path: Path, *, gateway_alive: bool) -> None:
     if _probe_missing(6, diag_path, "exit-diag log"):
         return
     try:
@@ -1428,7 +1482,10 @@ def _probe_exit_diag(diag_path: Path) -> None:
         try:
             event = json.loads(last_event)
             tag = event.get("tag", "?")
-            _probe(6, tag in ("gateway.start",), f"Last lifecycle event: tag={tag} pid={event.get('pid', '?')} ts={event.get('ts', '?')}")
+            historical_unclean = tag == "gateway.previous_unclean_exit" and gateway_alive
+            ok = tag == "gateway.start" or historical_unclean
+            label = "Historical lifecycle event" if historical_unclean else "Last lifecycle event"
+            _probe(6, ok, f"{label}: tag={tag} pid={event.get('pid', '?')} ts={event.get('ts', '?')}")
         except Exception:
             _probe(6, False, f"Last lifecycle line not JSON: {last_event[:120]}")
     except Exception as exc:
@@ -1443,9 +1500,9 @@ def _print_deep_probes() -> None:
     pid_value = _probe_pid_file(home / "gateway.pid")
     _probe_lock_file(home / "gateway.lock")
     running_pid = _probe_running_pid()
-    _probe_pid_exists(running_pid if running_pid is not None else pid_value)
+    gateway_alive = _probe_pid_exists(running_pid if running_pid is not None else pid_value)
     _probe_state_file(home / "gateway_state.json")
-    _probe_exit_diag(home / "logs" / "gateway-exit-diag.log")
+    _probe_exit_diag(home / "logs" / "gateway-exit-diag.log", gateway_alive=gateway_alive)
 
 
 def status(deep: bool = False) -> None:
@@ -1467,6 +1524,7 @@ def status(deep: bool = False) -> None:
     elif startup_installed:
         entry = get_startup_entry_path()
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")
+        print("⚠ Startup-folder fallback is not a crash supervisor; install the Scheduled Task for auto-restart.")
     else:
         print("✗ Gateway service not installed")
 
@@ -1484,7 +1542,7 @@ def status(deep: bool = False) -> None:
 
 
 def start() -> None:
-    """Start the gateway using the canonical detached Windows launch path."""
+    """Start the gateway through its installed owner when available."""
     _assert_windows()
     _print_start_attestation_warning()   # once: the LAST start's ✓ turned out to be false
     running_pids = _gateway_pids()
@@ -1507,10 +1565,7 @@ def start() -> None:
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
-    # Manual starts use the same console-less direct spawn as restart() and install --start-now;
-    # Scheduled Task / Startup entries are only login persistence.
-    pid = _spawn_detached()
-    _report_gateway_start(f"direct spawn (PID {pid})")
+    _start_or_report_running(running_pids)
 
 
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:

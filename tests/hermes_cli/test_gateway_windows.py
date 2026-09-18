@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway_windows."""
 
 import logging
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,31 @@ import hermes_cli.setup as setup
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
+
+
+def test_deep_state_probe_rejects_stale_running_claim(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "gateway_state.json"
+    state.write_text(json.dumps({"gateway_state": "running", "pid": 123}), encoding="utf-8")
+    monkeypatch.setattr("gateway.status.runtime_status_pid_is_live", lambda _record: False)
+
+    gateway_windows._probe_state_file(state)
+
+    output = capsys.readouterr().out
+    assert "[5] FAIL" in output
+    assert "pid_live=False" in output
+
+
+def test_deep_lifecycle_probe_treats_unclean_exit_as_history_after_recovery(tmp_path, capsys):
+    diag = tmp_path / "gateway-exit-diag.log"
+    diag.write_text(json.dumps({
+        "tag": "gateway.previous_unclean_exit", "pid": 456, "ts": "2026-09-17T09:56:02Z",
+    }) + "\n", encoding="utf-8")
+
+    gateway_windows._probe_exit_diag(diag, gateway_alive=True)
+
+    output = capsys.readouterr().out
+    assert "[6] PASS" in output
+    assert "Historical lifecycle event" in output
 
 
 
@@ -305,7 +331,8 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml_seen["text"]
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
     assert "<RestartOnFailure>" in xml_seen["text"]
-    assert "<Count>999</Count>" in xml_seen["text"]
+    assert "<Count>10</Count>" in xml_seen["text"]
+    assert 1 <= gateway_windows._TASK_RESTART_COUNT <= 255
     # Scheduled Task launches the console-less .vbs via wscript.exe, never cmd.exe
     # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
     assert "<Command>wscript.exe</Command>" in xml_seen["text"]
@@ -314,9 +341,61 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
-def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+def test_successful_scheduled_task_install_removes_startup_fallback(monkeypatch, tmp_path):
+    """Exactly one logon owner remains after a fallback is upgraded."""
+    removed = []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *a, **k: (False, True))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: tmp_path / "gateway.cmd")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda *a, **k: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
+    )
+    monkeypatch.setattr(gateway_windows, "_remove_startup_entries", lambda: removed.append(True))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install(start_now=False, start_on_login=True)
+
+    assert removed == [True]
+
+
+def test_start_or_report_running_uses_registered_task_instead_of_direct_spawn(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda argv: calls.append(("task", argv)) or (0, "SUCCESS", ""),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_report_gateway_start",
+        lambda via: calls.append(("report", via)),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda: (_ for _ in ()).throw(AssertionError("direct spawn bypassed supervisor")),
+    )
+
+    gateway_windows._start_or_report_running([])
+
+    assert calls == [
+        ("task", ["/Run", "/TN", "Hermes_Gateway_alice"]),
+        ("report", "Scheduled Task 'Hermes_Gateway_alice'"),
+    ]
+
+
+def test_gateway_vbs_script_is_console_less_and_runs_bounded_supervisor(monkeypatch):
+    """The task action stays hidden and owns the Python supervisor's lifetime.
+
+    Application recovery belongs to the supervisor because live Windows evidence
+    showed RestartOnFailure was not a reliable gateway crash watchdog.
+    """
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
@@ -331,9 +410,12 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "cmd.exe" not in content.lower()
     assert 'CreateObject("WScript.Shell")' in content
     assert "pythonw.exe" in content
-    assert "hermes_cli.main" in content
-    assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert "hermes_cli.gateway_windows_supervisor" in content
+    assert "gateway run" not in content
+    assert ", 0, True)" in content  # hidden window, wait for the supervisor
+    assert "If exit_code <> 0 Then exit_code = 1" not in content
+    assert "WScript.Quit exit_code" in content
+    assert ", 0, False" not in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
@@ -503,11 +585,5 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 

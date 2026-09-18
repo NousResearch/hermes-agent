@@ -61,6 +61,7 @@ async def test_restart_with_external_supervisor_marker_uses_service_path(
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "1")
 
     await runner._handle_restart_command(_make_restart_event())
+    runner._restart_countdown_handle._callback()
 
     runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
@@ -74,6 +75,7 @@ async def test_false_external_supervisor_marker_keeps_detached_path(
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, value)
 
     await runner._handle_restart_command(_make_restart_event())
+    runner._restart_countdown_handle._callback()
 
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 

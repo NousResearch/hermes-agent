@@ -1,6 +1,7 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,7 +26,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker = tmp_path / ".restart_pending.json"
 
     assert gateway_run._planned_restart_notification_pending() is False
-    marker.write_text("{}")
+    marker.write_text("{}", encoding="utf-8")
     assert gateway_run._planned_restart_notification_pending() is True
 
     gateway_run._planned_restart_notification_path().unlink()
@@ -53,16 +54,22 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     )
 
     result = await runner._handle_restart_command(event)
-    assert "Restarting" in result
+    assert "30" in result
+    assert "перезапуск" in result.lower()
+    runner.request_restart.assert_not_called()
 
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
-    data = json.loads(notify_path.read_text())
+    data = json.loads(notify_path.read_text(encoding="utf-8"))
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
     assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
+
+    # Fire the scheduled callback without waiting in real time.
+    runner._restart_countdown_handle._callback()
+    runner.request_restart.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -373,6 +380,55 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
 
 
 @pytest.mark.asyncio
+async def test_restart_notification_reports_supervisor_recovery_details(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+    (tmp_path / ".gateway_recovery.json").write_text(json.dumps({
+        "schema": "hermes.gateway-recovery.r3",
+        "incident_id": "incident",
+        "kind": "planned",
+        "state": "starting",
+        "detected_at": 100.0,
+        "old_pid": 10,
+        "new_pid": os.getpid(),
+        "attempt": 0,
+        "max_attempts": 5,
+        "notification_delivered": False,
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    assert await runner._send_restart_notification() == ("telegram", "42", None)
+    message = adapter.send.await_args.args[1]
+    assert "Hermes восстановлен" in message
+    assert f"PID 10 → {os.getpid()}" in message
+
+
+@pytest.mark.asyncio
+async def test_second_restart_during_countdown_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="42"),
+        message_id="m1",
+    )
+
+    first = await runner._handle_restart_command(event)
+    second = await runner._handle_restart_command(event)
+
+    assert "30" in first
+    assert "restart" in second.lower() or "перезапуск" in second.lower()
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_missing():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
@@ -412,4 +468,101 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
 
     adapter.send.assert_not_awaited()
 
+@pytest.mark.asyncio
+async def test_planned_restart_replay_preserves_recovery_message_for_reconnect(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="telegram-home",
+        name="Telegram Home",
+    )
+    runner.config.platforms[Platform.SLACK] = PlatformConfig(
+        enabled=True,
+        home_channel=HomeChannel(
+            platform=Platform.SLACK,
+            chat_id="slack-home",
+            name="Slack Home",
+        ),
+    )
+
+    marker = gateway_run._planned_restart_notification_path()
+    marker.write_text(
+        json.dumps({"delivered_targets": []}),
+        encoding="utf-8",
+    )
+
+    telegram_target = ("telegram", "telegram-home", None)
+    slack_target = ("slack", "slack-home", None)
+
+    runner._send_home_channel_startup_notifications = AsyncMock(
+        side_effect=[
+            {telegram_target},
+            {slack_target},
+        ]
+    )
+
+    first = await runner._replay_pending_planned_restart_notification(
+        message="RECOVERY DETAILS",
+    )
+
+    assert first == {telegram_target}
+    assert marker.exists()
+
+    pending = json.loads(marker.read_text(encoding="utf-8"))
+    assert pending["message"] == "RECOVERY DETAILS"
+    assert {
+        tuple(target)
+        for target in pending["delivered_targets"]
+    } == {telegram_target}
+
+    second = await runner._replay_pending_planned_restart_notification()
+
+    assert second == {telegram_target, slack_target}
+    assert not marker.exists()
+
+    second_call = (
+        runner._send_home_channel_startup_notifications.await_args_list[1]
+    )
+    assert second_call.kwargs["message"] == "RECOVERY DETAILS"
+    assert second_call.kwargs["skip_targets"] == {telegram_target}
+
+
+@pytest.mark.asyncio
+async def test_planned_restart_replay_counts_successful_requester_as_delivered(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="requester-home",
+        name="Requester Home",
+    )
+
+    marker = gateway_run._planned_restart_notification_path()
+    marker.write_text(
+        json.dumps({"delivered_targets": []}),
+        encoding="utf-8",
+    )
+
+    requester_target = ("telegram", "requester-home", None)
+    runner._send_home_channel_startup_notifications = AsyncMock(
+        return_value=set()
+    )
+
+    delivered = await runner._replay_pending_planned_restart_notification(
+        message="RECOVERY DETAILS",
+        skip_targets={requester_target},
+    )
+
+    assert delivered == {requester_target}
+    assert not marker.exists()
+    runner._send_home_channel_startup_notifications.assert_awaited_once_with(
+        skip_targets={requester_target},
+        message="RECOVERY DETAILS",
+    )

@@ -241,9 +241,44 @@ class GatewayStartupMixin:
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
-            await self._send_restart_notification()
-            if planned_restart_notification_pending:
-                await self._replay_pending_planned_restart_notification()
+            from gateway.run import _hermes_home
+            from hermes_cli.gateway_windows_supervisor import (
+                RECOVERY_INCIDENT_ENV,
+                claim_recovery_marker,
+                format_recovery_message,
+                mark_recovery_notification_delivered,
+                recovery_marker_for_pid,
+            )
+
+            incident_id = os.environ.get(RECOVERY_INCIDENT_ENV)
+            if incident_id:
+                with suppress(Exception):
+                    claim_recovery_marker(_hermes_home, incident_id, os.getpid())
+            restart_target = await self._send_restart_notification()
+            skip_targets = {restart_target} if restart_target is not None else set()
+            recovery = recovery_marker_for_pid(_hermes_home, os.getpid())
+            delivered = set()
+
+            if recovery is not None:
+                if planned_restart_notification_pending:
+                    delivered = await self._replay_pending_planned_restart_notification(
+                        message=format_recovery_message(recovery),
+                        skip_targets=skip_targets,
+                    )
+                else:
+                    delivered = await self._send_home_channel_startup_notifications(
+                        skip_targets=skip_targets,
+                        message=format_recovery_message(recovery),
+                    )
+
+                if restart_target is not None or delivered:
+                    with suppress(Exception):
+                        mark_recovery_notification_delivered(_hermes_home, os.getpid())
+
+            elif planned_restart_notification_pending:
+                await self._replay_pending_planned_restart_notification(
+                    skip_targets=skip_targets,
+                )
             await self._redeliver_claimed_obligations(claimed)
 
         boot_task = asyncio.create_task(_boot_sends())

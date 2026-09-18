@@ -12,6 +12,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import os
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -709,6 +710,7 @@ class GatewayNotificationsMixin:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
+        from hermes_cli.gateway_windows_supervisor import format_recovery_message, recovery_marker_for_pid
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -739,8 +741,14 @@ class GatewayNotificationsMixin:
                 for field in ("user_id", "scope_id"):
                     if data.get(field):
                         metadata[field] = str(data[field])
+            recovery = recovery_marker_for_pid(_hermes_home, os.getpid())
+            message = (
+                format_recovery_message(recovery)
+                if recovery is not None
+                else "♻ Gateway restarted successfully. Your session continues."
+            )
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform, str(chat_id), message,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
@@ -816,46 +824,85 @@ class GatewayNotificationsMixin:
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
-    async def _replay_pending_planned_restart_notification(self) -> None:
-        """Send the planned-restart online notice to every home channel still owed one; clear
-        ``.restart_pending.json`` only once all of them were reached.
+    async def _replay_pending_planned_restart_notification(
+        self,
+        *,
+        message: Optional[str] = None,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> set[tuple[str, str, Optional[str]]]:
+        """Send the planned-restart online notice to every home channel still owed one.
 
-        Runs from the boot pass and again from ``_install_reconnected_adapter``, so a home whose
-        platform was down at boot gets its notice when the platform comes back (#112109). Delivered
-        targets are recorded in the marker so neither a later replay nor the next process (if this
-        one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
-        restore gate against a concurrent reconnect replay.
+        The marker is removed only after all configured targets were reached.
+        A recovery-specific message may be supplied by the Windows supervisor path.
         """
         from gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
 
+        delivered = set(skip_targets or set())
+
         if self._planned_restart_notice_lock is None:
             self._planned_restart_notice_lock = asyncio.Lock()
+
         async with self._planned_restart_notice_lock:
             path = _planned_restart_notification_path()
+
             if not path.exists():
-                return
+                return delivered
+
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                delivered = {tuple(target) for target in data.get("delivered_targets", [])}
-                # Owed targets come from config, not live transports: a removed home or an opt-out
-                # (gateway_restart_notification=false) must not keep the marker alive forever.
-                owed = {
-                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
-                    for platform, cfg in self.config.platforms.items()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                stored_message = data.get("message")
+                if message is None and isinstance(stored_message, str) and stored_message:
+                    message = stored_message
+                elif message:
+                    data["message"] = message
+
+                delivered |= {
+                    tuple(target)
+                    for target in data.get("delivered_targets", [])
                 }
-                delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
+
+                owed = {
+                    _notice_target_key(
+                        platform.value,
+                        cfg.home_channel.chat_id,
+                        cfg.home_channel.thread_id,
+                    )
+                    for platform, cfg in self.config.platforms.items()
+                    if (
+                        cfg.home_channel
+                        and cfg.home_channel.chat_id
+                        and cfg.gateway_restart_notification
+                    )
+                }
+
+                delivered |= await self._send_home_channel_startup_notifications(
+                    skip_targets=set(delivered),
+                    message=message,
+                )
+
                 if owed <= delivered:
                     path.unlink(missing_ok=True)
-                    return
-                data["delivered_targets"] = [list(target) for target in delivered]
+                    return delivered
+
+                data["delivered_targets"] = [
+                    list(target)
+                    for target in delivered
+                    if target in owed
+                ]
                 atomic_json_write(path, data, indent=None)
+
             except Exception:
-                logger.warning("Planned-restart notification remains pending", exc_info=True)
+                logger.warning(
+                    "Planned-restart notification remains pending",
+                    exc_info=True,
+                )
+
+        return delivered
 
     async def _send_home_channel_startup_notifications(
-        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        message: Optional[str] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
@@ -864,7 +911,7 @@ class GatewayNotificationsMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = message or "♻️ Gateway online — Hermes is back and ready."
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"

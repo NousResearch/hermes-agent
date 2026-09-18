@@ -103,9 +103,17 @@ def _profile_setup_command(name: str) -> str:
 
 def _scope_profile_name(path: Path) -> Optional[str]:
     """Map a profile directory onto the query name ``_config_profile_scope`` expects: None for
-    the process home (current-profile semantics: launch secret scope, no home override), the
+    the process home (current-profile semantics: launch secret scope, no home override),
+    ``"default"`` for the default root (its basename -- ``.hermes`` or a custom root -- is not a
+    profile name; launched from ``profiles/<name>`` the root is a *different* profile), the
     directory name for ``profiles/<name>``."""
-    return None if path.resolve() == get_process_hermes_home().resolve() else path.name
+    from hermes_constants import get_default_hermes_root
+    resolved = path.resolve()
+    if resolved == get_process_hermes_home().resolve():
+        return None
+    if resolved == get_default_hermes_root().resolve():
+        return "default"
+    return path.name
 
 
 def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:

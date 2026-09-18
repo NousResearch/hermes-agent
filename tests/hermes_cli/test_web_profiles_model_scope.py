@@ -89,19 +89,26 @@ def test_model_pick_resolves_key_env_from_profile_scope(client, homes, probe):
         assert (load_config().get("model") or {}).get("default") == "acme/mini"
 
 
-def test_model_pick_for_process_home_uses_launch_scope(client, homes, probe):
-    """The dashboard's own profile maps to None (current-profile semantics) and still
-    validates through the launch scope once multiplexing is active."""
-    secret_scope.set_multiplex_active(True)
-    try:
+def test_model_pick_for_default_from_named_profile_launch(homes, probe, monkeypatch):
+    """Dashboard launched from ``profiles/demo``: targeting ``default`` must scope the ROOT
+    (name ``default``), not the root directory's basename, which is not a profile name."""
+    root, demo = homes
+    monkeypatch.setenv("HERMES_HOME", str(demo))
+    (root / ".env").write_text("ACME_RELAY_KEY=root-key\n", encoding="utf-8")
+    from hermes_cli.config import invalidate_env_cache, load_config
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+    invalidate_env_cache()
+    from hermes_cli import web_server
+
+    with TestClient(web_server.app, raise_server_exceptions=False) as client:
+        client.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
         resp = client.put(
-            "/api/profiles/default/model",
-            json={"provider": "acme", "model": "acme/mini"},
+            "/api/profiles/default/model", json={"provider": "acme", "model": "acme/mini"}
         )
-    finally:
-        secret_scope.set_multiplex_active(False)
 
     assert resp.status_code == 200, resp.text
-    # Launch scope: live process env while single-profile... frozen at activation once
-    # multiplexed — the dashboard home's value, resolved through get_secret, not a raise.
-    assert probe["api_key"] == "dashboard-home-key"
+    assert probe["api_key"] == "root-key"  # the root's .env, not the launch profile's
+    with _hermes_home_scope(root):
+        assert (load_config().get("model") or {}).get("default") == "acme/mini"
+    with _hermes_home_scope(demo):
+        assert (load_config().get("model") or {}).get("default") is None

@@ -891,6 +891,28 @@ class TestClassifyApiError:
         assert result.should_fallback is False
         assert result.should_compress is False
 
+    def test_reasoning_effort_none_unsupported_wording_is_reasoning_mandatory(self):
+        """Reversed wording rejecting a reasoning disable (#114460): the route mandates
+        reasoning, so the loop must drop the disable and retry, not abort as format_error."""
+        e = MockAPIError(
+            "Error code: 400 - reasoning_effort 'none' unsupported; "
+            "use minimal|low|medium|high|xhigh",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="halogen-qwen3.8-flash-next")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_reasoning_model_route_gating_is_not_reasoning_mandatory(self):
+        """Model-id segments (kimi-k2-thinking) stay route gating, never disable rejection."""
+        e = MockAPIError(
+            "The model kimi-k2-thinking is not supported when using this account",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="kimi-k2-thinking")
+        assert result.reason != FailoverReason.reasoning_mandatory
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

@@ -24,7 +24,11 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from agent.error_classifier import _BILLING_PATTERNS, _OVERLOADED_PATTERNS
+from agent.error_classifier import (
+    _BILLING_PATTERNS,
+    _OVERLOADED_PATTERNS,
+    is_reasoning_disable_rejected,
+)
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -3291,24 +3295,10 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
-    err_lower = str(exc).lower()
-    if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
-        # Reversed word order some providers use ("reasoning_effort 'none' unsupported"):
-        # the field token plus standalone "unsupported" nearby is the same rejection (#114460).
-        token = _REASONING_FIELD_TOKEN.search(err_lower)
-        if token is None or "unsupported" not in err_lower[token.end():token.end() + 32]:
-            return False
-    # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
-    # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
-    # provider-fallback rung) and not the adjective in "... not supported with reasoning models".
-    return _REASONING_FIELD_TOKEN.search(str(exc).lower()) is not None
-
-
-# Reasoning wire-field names (the ``_PROFILE_REASONING_KEYS`` controls minus ``verbosity``), longest first.
-_REASONING_FIELD_TOKEN = re.compile(
-    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
-    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
-)
+    # Shared wording-class matcher (agent.error_classifier): the strict
+    # standalone-token gate inside keeps model-id segments and the "reasoning
+    # models" adjective on the provider-fallback rung (#114460).
+    return is_reasoning_disable_rejected(str(exc))
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:

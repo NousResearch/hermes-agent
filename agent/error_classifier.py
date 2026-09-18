@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
@@ -433,6 +434,44 @@ _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, shoul
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+
+# Reasoning wire-field token shared with the auxiliary retry rung
+# (agent/auxiliary_client._is_reasoning_field_rejection, which cannot be imported
+# here — it imports from this module). Standalone field name only: never a model-id
+# segment ("kimi-k2-thinking") nor the adjective in "... with reasoning models" (#114460).
+_REASONING_DISABLE_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+# Generic unsupported/unknown markers mirroring the auxiliary rung's parameter check.
+_UNSUPPORTED_PARAM_MARKERS = (
+    "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+    "doesn't support", "is deprecated for this model",
+    "unknown parameter", "unrecognized request argument", "unrecognized parameter",
+    "invalid parameter", "extra inputs are not permitted",
+)
+
+
+def is_reasoning_disable_rejected(error_msg: str) -> bool:
+    """True when a provider error rejects a reasoning wire control by name (#114460).
+
+    Covers the forward markers ("Unrecognized request argument supplied:
+    reasoning_effort") and the reversed word order some providers use
+    ("reasoning_effort 'none' unsupported": field token plus standalone
+    "unsupported" within 32 chars). The main loop maps this to
+    reasoning_mandatory (drop the disable, retry); the auxiliary ladder maps it
+    to its strip-and-retry rung. Same wording class, same remedy.
+    """
+    msg = (error_msg or "").lower()
+    if "reasoning" not in msg and "think" not in msg:
+        return False
+    if not any(name in msg and any(m in msg for m in _UNSUPPORTED_PARAM_MARKERS)
+               for name in ("reasoning", "think")):
+        token = _REASONING_DISABLE_TOKEN.search(msg)
+        if token is None or "unsupported" not in msg[token.end():token.end() + 32]:
+            return False
+    return _REASONING_DISABLE_TOKEN.search(msg) is not None
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -896,7 +935,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
     # the disable and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg:
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_disable_rejected(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

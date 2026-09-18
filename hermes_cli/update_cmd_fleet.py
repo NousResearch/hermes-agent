@@ -147,15 +147,16 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
-def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
-    """``(kind, profile)`` identities ``latest.json`` owes a current successor.
+def _receipt_owed_gateways(receipt: dict | None = None) -> set[tuple[str, str]] | None:
+    """``(kind, profile)`` identities a receipt owes a current successor.
 
     Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
-    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    the gateway matrix cannot vouch for (serve/dashboard, unknown profile). When a caller
+    supplies a receipt snapshot, do not re-read ``latest.json`` while reconciling it.
     """
-    from hermes_cli.update_receipt import read_latest_receipt
-
-    receipt = read_latest_receipt() or {}
+    if receipt is None:
+        from hermes_cli.update_receipt import read_latest_receipt
+        receipt = read_latest_receipt() or {}
     plan = receipt.get("plan") or {}
     entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
     entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
@@ -211,6 +212,29 @@ def _read_fleet_marker_expected_sha() -> str:
     return ""
 
 
+def _latest_receipt_matches_marker(receipt: dict | None, expected_sha: str) -> bool | None:
+    """Whether a receipt is from the update that armed this marker.
+
+    ``plan.expected_sha`` is captured before the pull, so the receipt's
+    ``post_update.sha`` is the only update identity that can match a marker's
+    post-pull ``expected_sha``. ``None`` preserves the fail-closed behavior for
+    a present receipt without a usable identity; ``False`` means there is no
+    receipt or that its completed update is known to be different. A usable
+    receipt SHA is a full hexadecimal Git object identity.
+    """
+    if not isinstance(receipt, dict):
+        return False
+    post_update = receipt.get("post_update")
+    if not isinstance(post_update, dict):
+        return None
+    receipt_sha = post_update.get("sha")
+    if not isinstance(receipt_sha, str) or not receipt_sha:
+        return None
+    if len(receipt_sha) != 40 or any(character not in "0123456789abcdefABCDEF" for character in receipt_sha):
+        return None
+    return receipt_sha.lower() == expected_sha.lower()
+
+
 def _marker_only_restart_obsolete() -> bool:
     """True when the pending marker is a leftover: the fleet already runs the expected code.
 
@@ -232,9 +256,9 @@ def _marker_only_restart_obsolete() -> bool:
 
     A gateway the restart phase stopped and never brought back yields NO row at startup
     (no ``pre_restart_pids`` → no ``down`` classification), so rows alone cannot prove the
-    whole fleet is back. When ``latest.json`` names the gateways the update owed, every one
-    of them must also be covered by a current row; the rows-only rule applies only when the
-    receipt names none.
+    whole fleet is back. When the receipt belongs to this marker's update and names the
+    gateways it owed, every one of them must also be covered by a current row. A receipt
+    from an older update cannot add identities to this marker's obligation.
     """
     expected_sha = _read_fleet_marker_expected_sha()
     if not expected_sha:
@@ -243,9 +267,14 @@ def _marker_only_restart_obsolete() -> bool:
     if checkout_sha and checkout_sha != expected_sha:
         return False  # a newer pull moved HEAD; it owns a fresh obligation
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions
+        from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
         fleet = collect_fleet_versions()
-        owed = _receipt_owed_gateways()
+        # A marker can outlive the receipt from a newer update. Only a receipt whose
+        # post-pull identity matches this marker may constrain its direct fleet proof.
+        # An ambiguous receipt keeps the existing fail-closed coverage check.
+        receipt = read_latest_receipt()
+        receipt_matches_marker = _latest_receipt_matches_marker(receipt, expected_sha)
+        owed = _receipt_owed_gateways(receipt) if receipt_matches_marker is not False else set()
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
         return False

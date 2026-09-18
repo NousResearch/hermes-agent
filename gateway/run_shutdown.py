@@ -204,7 +204,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + self._active_async_delegation_count()
         )
+
+    @staticmethod
+    def _active_async_delegation_count() -> int:
+        """Process-local async delegations that a graceful restart must not amputate."""
+        try:
+            from tools.async_delegation import active_count
+            return active_count()
+        except Exception:
+            return 0
 
     @staticmethod
     def _running_cron_job_count() -> int:
@@ -1577,7 +1587,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
         units.extend(uncounted_runtime_work_units(self, os.getpid()))
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count()),
+                            ("async_delegation", self._active_async_delegation_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 

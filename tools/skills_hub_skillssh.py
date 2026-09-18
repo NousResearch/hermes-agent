@@ -139,7 +139,7 @@ class SkillsShSource(SkillSource):
             return self._featured_skills(limit)
 
         # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap. A shard
-        # ``_get_text`` returns None for is a hole, not an empty shard: retry it, and
+        # ``_xml`` returns None for is a hole, not an empty shard: retry it, and
         # if it stays dark return the partial slice without publishing it to the cache.
         seen, results, partial = set(), [], False
         for sitemap_url in skill_sitemap_urls:

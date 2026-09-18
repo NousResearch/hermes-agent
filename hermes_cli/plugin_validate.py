@@ -508,10 +508,60 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_loadable(report, plugin_dir)
+    _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
     _check_security_scan(report, plugin_dir)
     return report
+
+
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+
+
+def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
+    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
+    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    report.add(
+        "loadable", bool(present),
+        f"entry: {', '.join(present)}" if present else
+        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
+    )
+
+
+def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> None:
+    """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
+    well-formed PEP 508 specs the installer will accept; a plugin opting out with
+    ``python_runtime: external`` declares none."""
+    from hermes_cli.plugin_python_deps import read_declaration
+
+    try:
+        decl = read_declaration(plugin_dir)
+    except Exception as exc:
+        report.add("python dependencies", False, f"declaration invalid: {exc}")
+        return
+    if decl.external:
+        report.add("python dependencies", True, "external runtime (plugin manages its own)")
+        return
+    from hermes_cli.plugin_python_deps import applicable_specs, unsupported_specs
+
+    urls = unsupported_specs(decl.specs)
+    if urls:
+        report.warn("python dependencies: direct URL requirement(s) are never auto-installed, users must "
+                    f"install them by hand: {', '.join(urls)}")
+    installable = applicable_specs(decl.specs)
+    rejected = [s for s in installable if not _spec_is_safe(s)]
+    detail = f"{len(installable)} installable from {decl.source}" if decl.source else "none declared"
+    report.add("python dependencies", not rejected,
+               f"unsafe spec(s): {', '.join(rejected)}" if rejected else detail)
+
+
+def _spec_is_safe(spec: str) -> bool:
+    from tools.lazy_deps import _spec_is_safe as safe
+    return safe(spec)
 
 
 def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:

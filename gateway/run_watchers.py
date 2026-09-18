@@ -177,15 +177,25 @@ class GatewaySessionWatchersMixin:
                         "fresh_idle=%s", session_key, still_pending, fresh_idle)
             notified_map.pop(session_key, None)  # re-arm so a FUTURE genuine stall notifies again
             return False
+        from gateway.warning_notifications import present_notification
+        from gateway.run import _async_profile_runtime_scope
         try:
             metadata = self._thread_metadata_for_source(source)
             notice = format_session_stall_notification(idle_seconds)
-            # Bound the send: a wedged adapter transport (network hang, dead websocket) must not
-            # block the watcher pass — siblings would go unevaluated and the watcher stop.
-            result = await asyncio.wait_for(
-                adapter.send(str(source.chat_id), notice, metadata=metadata),
-                timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
-            )
+            result = None
+            async def send_notice():
+                nonlocal result
+                # Bound the send: a wedged adapter transport (network hang, dead websocket) must not
+                # block the watcher pass — siblings would go unevaluated and the watcher stop.
+                result = await asyncio.wait_for(
+                    adapter.send(str(source.chat_id), notice, metadata=metadata),
+                    timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
+                )
+            async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                presented = await present_notification(send_notice, platform=source.platform)
+            if not presented:
+                notified_map[session_key] = True  # suppressed: latch so the stall is not re-evaluated every tick
+                return False
             # Adapters often return SendResult(success=False) instead of raising.
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", "send returned success=False"))

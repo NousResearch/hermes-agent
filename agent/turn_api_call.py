@@ -243,18 +243,18 @@ def nous_rate_limit_guard(
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
-            _nous_remaining = nous_rate_limit_remaining()
+            from hermes_cli import anon_auth
+            _anonymous = anon_auth.is_anonymous_agent(agent)
+            _nous_remaining = nous_rate_limit_remaining(anonymous=_anonymous)
             if _nous_remaining is not None and _nous_remaining > 0:
-                from hermes_cli import anon_auth
                 reset = _fmt_nous_remaining(_nous_remaining)
-                _welcome = anon_auth.route_is_welcome_host(getattr(agent, "base_url", ""))
-                if _welcome:
+                if _anonymous:
                     _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
                         reset=anon_auth.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
-                agent._buffer_status(f"⏳ {_nous_msg}")
+                agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
@@ -267,7 +267,7 @@ def nous_rate_limit_guard(
                 # The free tier's sentence already says what to do (wait, or sign in); the
                 # fallback-provider advice is for an install that runs its own providers.
                 return _verdict("return", stamp_failure({
-                    "final_response": (f"⏳ {_nous_msg}" if _welcome
+                    "final_response": (f"⏳ {_nous_msg}" if _anonymous
                                        else f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}"),
                     "messages": messages,
                     "api_calls": api_call_count,
@@ -276,7 +276,7 @@ def nous_rate_limit_guard(
                     "error": _nous_msg,
                     # The free tier's card body and its sign-in door (agent/error_surface.py).
                     **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
-                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _welcome else {}),
+                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
                 }, FailoverReason.rate_limit.value, True))
         except Exception:
             pass  # Never let rate guard break the agent loop

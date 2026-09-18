@@ -39,6 +39,7 @@ import {
   gatewayActivationEpoch,
   isActivePrimary,
   liveSecondaryConnectionIds,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
@@ -1058,6 +1059,17 @@ export function useGatewayBoot({
       }
     })
 
+    // Cooperative pool retirement: main is stopping a pooled backend so a
+    // foreground open elsewhere gets its slot. Park the scopes riding it now,
+    // before the socket drops, so neither the 'closed' state nor the next
+    // focus/wake nudge redials into the slot it vacated. The tile keeps its
+    // card; the next click on it re-arms the scope.
+    const offPoolRetiring = desktop.onPoolBackendRetiring?.(payload => {
+      if (payload && typeof payload.poolKey === 'string') {
+        parkSecondariesForRetiredBackend(payload.poolKey)
+      }
+    })
+
     const onOnline = () => void forceReconnectNow()
 
     const onVisible = () => {
@@ -1390,6 +1402,7 @@ export function useGatewayBoot({
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()
+      offPoolRetiring?.()
       offGatewayReconnect()
       offActiveGatewayReauth()
       offActiveStateReauth()

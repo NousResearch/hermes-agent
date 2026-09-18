@@ -46,7 +46,7 @@ def test_pulled_update_defers_restart_and_keeps_marker_under_flag():
             _opts(no_gateway_restart=True), gateway_mode=False,
             is_fork=False, desktop_dir="/tmp", had_desktop_app_before_update=False,
             pre_update_snapshot_id=None, _pre_update_plan=None,
-            _windows_gateway_resume=None,
+            _windows_gateway_resume=None, args=SimpleNamespace(no_gateway_restart=True, yes=True),
         )
     mock_restart.assert_not_called()
     mock_verify.assert_not_called()

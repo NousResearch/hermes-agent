@@ -183,6 +183,14 @@ one Claude model cools that credential down for *that model only* — the same k
 other Claude model, and `ANTHROPIC_API_KEY` / borrowed Claude Code tokens honour the same per-model
 cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the whole credential.
 
+**A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
+(`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
+holding the same login rotated it first), the pool logs one WARNING naming the entry and the repair
+command (`hermes auth add <provider>`), and the credential leaves rotation — marked `dead`, or dropped
+when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
+and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
+shows up once in the log instead of failing quietly every hour.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).

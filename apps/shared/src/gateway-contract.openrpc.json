@@ -44327,16 +44327,6 @@
         ],
         "type": "object"
       },
-      "NotificationKind": {
-        "description": "Notice display modes emitted by the credits tracker and startup path.",
-        "enum": [
-          "sticky",
-          "ttl",
-          "agent"
-        ],
-        "title": "NotificationKind",
-        "type": "string"
-      },
       "NotificationLevel": {
         "description": "Levels emitted by ``agent.credits_tracker.AgentNotice``.",
         "enum": [
@@ -44350,7 +44340,7 @@
       },
       "NotificationShowPayload": {
         "additionalProperties": false,
-        "description": "``AgentNotice`` and the startup notice both set every display field.",
+        "description": "``AgentNotice`` and the startup notice both set every display field.\n\n``kind`` is an OPEN field, not a closed set: ``AgentNotice.kind`` is a plain ``str`` documented as\nexpressive (\"sticky | ttl\", kept open so a config can switch notice modes), and the startup notice\nsends its own. A union here would reject a real notice at the frame builder \u2014 and the agent's\ncallback wrapper swallows that, so the user just never sees it. Current values: sticky, ttl, agent.",
         "properties": {
           "text": {
             "title": "Text",
@@ -44360,7 +44350,8 @@
             "$ref": "#/components/schemas/NotificationLevel"
           },
           "kind": {
-            "$ref": "#/components/schemas/NotificationKind"
+            "title": "Kind",
+            "type": "string"
           },
           "ttl_ms": {
             "anyOf": [

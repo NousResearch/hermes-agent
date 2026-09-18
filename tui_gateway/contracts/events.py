@@ -146,14 +146,6 @@ class NotificationLevel(WireEnum):
     success = "success"
 
 
-class NotificationKind(WireEnum):
-    """Notice display modes emitted by the credits tracker and startup path."""
-
-    sticky = "sticky"
-    ttl = "ttl"
-    agent = "agent"
-
-
 class BillingBlock(Payload):
     """``agent/billing_links.py::BillingBlock.to_dict`` (+ ``unverified`` from conversation_loop)."""
 
@@ -345,11 +337,17 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 
 class NotificationShowPayload(Payload):
-    """``AgentNotice`` and the startup notice both set every display field."""
+    """``AgentNotice`` and the startup notice both set every display field.
+
+    ``kind`` is an OPEN field, not a closed set: ``AgentNotice.kind`` is a plain ``str`` documented as
+    expressive ("sticky | ttl", kept open so a config can switch notice modes), and the startup notice
+    sends its own. A union here would reject a real notice at the frame builder — and the agent's
+    callback wrapper swallows that, so the user just never sees it. Current values: sticky, ttl, agent.
+    """
 
     text: str
     level: NotificationLevel
-    kind: NotificationKind
+    kind: str
     ttl_ms: int | None
     key: str | None
     id: str | None
@@ -783,7 +781,7 @@ __all__ = [
     "ChangeSignalPayload", "ErrorPayload", "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload",
     "MoaAggregatingPayload", "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
-    "NotificationClearPayload", "NotificationKind", "NotificationLevel", "NotificationShowPayload",
+    "NotificationClearPayload", "NotificationLevel", "NotificationShowPayload",
     "PaneRevealPayload", "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload",
     "PreviewClosePayload", "PreviewOpenPayload", "PreviewRestartCompletePayload", "PreviewRestartProgressLevel",
     "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus", "ReviewSummaryPayload", "SessionControlSnapshot",

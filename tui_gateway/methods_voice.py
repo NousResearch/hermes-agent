@@ -9,7 +9,8 @@ import threading
 
 from .contracts.base import Payload
 from .contracts.events import VoiceStatusPayload, VoiceTranscriptPayload, WakeDetectedPayload
-from .contracts.liveness import GatewayCapabilitiesResult, PingParams, PingResult
+from .contracts.liveness import (ClientCapabilitiesParams, ClientCapabilitiesResult,
+                                 GatewayCapabilitiesResult, PingParams, PingResult)
 from .contracts.prompt_voice import (
     VoiceRecordParams, VoiceRecordResult, VoiceToggleParams, VoiceToggleResult, VoiceTtsParams,
     VoiceTtsResult, WakeControlParams, WakeFeedParams, WakeFeedResult, WakePauseResult,
@@ -452,14 +453,14 @@ def _(rid, params: PingParams) -> GatewayCapabilitiesResult | dict:
 
 
 @method("client.capabilities")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ClientCapabilitiesParams) -> ClientCapabilitiesResult:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
-    server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
-    return srv._ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS)})
+    server_requests.advertise(srv._caller_transport(), bool(params.server_requests))
+    return ClientCapabilitiesResult(server_requests=sorted(contracts.SERVER_REQUESTS))
 
 
 @method("ping")

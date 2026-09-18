@@ -111,7 +111,7 @@ def _(rid, params: BotRelayDeliverParams, _root=_relay_root, _run=_run_delivery)
             # The owner's poller admits the mailbox record at its next idle boundary; this
             # process only queued it, so say so (the in-process branch above really submitted).
             reply = f"Queued for @{resolved}'s open Bot Chat; it runs as that chat's next turn and the reply will appear there."
-            return srv._ok(rid, {"reply": reply})
+            return BotRelayDeliverResult(reply=reply)
 
         def _detail(p) -> str:
             from tools.bot_failure_reasons import turn_failure_text

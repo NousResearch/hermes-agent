@@ -4598,15 +4598,13 @@ export interface NoticePayload {
 export interface NotificationClearPayload {
   key: string
 }
-/** Notice display modes emitted by the credits tracker and startup path. */
-export type NotificationKind = 'sticky' | 'ttl' | 'agent'
 /** Levels emitted by ``agent.credits_tracker.AgentNotice``. */
 export type NotificationLevel = 'info' | 'warn' | 'error' | 'success'
-/** ``AgentNotice`` and the startup notice both set every display field. */
+/** ``AgentNotice`` and the startup notice both set every display field. ``kind`` is an OPEN field, not a closed set: ``AgentNotice.kind`` is a plain ``str`` documented as expressive ("sticky | ttl", kept open so a config can switch notice modes), and the startup notice sends its own. A union here would reject a real notice at the frame builder — and the agent's callback wrapper swallows that, so the user just never sees it. Current values: sticky, ttl, agent. */
 export interface NotificationShowPayload {
   text: string
   level: NotificationLevel
-  kind: NotificationKind
+  kind: string
   ttl_ms: number | null
   key: string | null
   id: string | null

@@ -14,6 +14,7 @@ import pytest
 
 from hermes_cli.web_routers import tools as tools_mod
 from tools.environments import docker as docker_mod
+from tools.environments import remote_common
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,7 @@ def test_probe_ready_when_only_podman_is_configured(tmp_path, monkeypatch):
         captured.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, stdout="podman version 5.0.0\n", stderr="")
 
-    monkeypatch.setattr(tools_mod.subprocess, "run", _run)
+    monkeypatch.setattr(remote_common, "run_capture", _run)
 
     status, detail = tools_mod._probe_docker_backend({})
     assert status == "ready"

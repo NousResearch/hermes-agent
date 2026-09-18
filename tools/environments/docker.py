@@ -228,6 +228,20 @@ def find_docker() -> Optional[str]:
     return found
 
 
+def docker_runtime_name(executable: str) -> str:
+    """User-facing runtime name (``"Podman"`` / ``"Docker"``) for the CLI at *executable*, so
+    diagnostics and pickers name the runtime actually in use."""
+    return "Podman" if "podman" in os.path.basename(executable).lower() else "Docker"
+
+
+def docker_runtime_start_hint(executable: str) -> str:
+    """How to bring the runtime at *executable* back up, for a "not reachable" message. Docker has
+    a daemon to start; Podman is daemonless (outside Linux it runs inside a VM)."""
+    if docker_runtime_name(executable) != "Podman":
+        return "start Docker and retry"
+    return "run `podman machine start` and retry"
+
+
 # Security flags applied to every container. The container is the security
 # boundary; all caps are dropped and the minimum added back:
 #   DAC_OVERRIDE  - root can write to bind-mounted dirs owned by the host user

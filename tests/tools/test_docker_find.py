@@ -46,3 +46,19 @@ class TestFindDocker:
         with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect):
             result = docker_mod.find_docker()
         assert result == "/usr/bin/docker"
+
+
+class TestRuntimeName:
+    """The Docker/Podman wording every surface shows must follow the resolved CLI."""
+
+    @pytest.mark.parametrize(
+        ("executable", "runtime", "hint"),
+        [
+            ("/usr/bin/docker", "Docker", "start Docker and retry"),
+            ("/opt/homebrew/bin/podman", "Podman", "run `podman machine start` and retry"),
+            ("/usr/bin/podman-remote", "Podman", "run `podman machine start` and retry"),
+        ],
+    )
+    def test_runtime_and_start_hint(self, executable, runtime, hint):
+        assert docker_mod.docker_runtime_name(executable) == runtime
+        assert docker_mod.docker_runtime_start_hint(executable) == hint

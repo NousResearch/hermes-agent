@@ -426,6 +426,11 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
         return real_which(cmd)
 
     monkeypatch.setattr(shutil, "which", fake_which)
+    # The docker check resolves through find_docker() (which also knows the macOS Docker
+    # Desktop paths), so pin it off the host instead of relying on PATH alone.
+    from hermes_cli import doctor_tools
+
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: None)
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
@@ -1793,10 +1798,10 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     from hermes_cli import doctor_tools
 
     calls: list = []
-    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
     monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
 
     doctor_tools._check_docker_backend("docker", False, [])
 
-    assert calls and calls[0][:2] == ["docker", "version"]
+    assert calls == [["/usr/bin/docker", "version"]]

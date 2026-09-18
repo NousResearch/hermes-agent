@@ -360,6 +360,11 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     save_provider_env_credential(env_var, api_key)
     os.environ[env_var] = api_key  # so the refreshed inventory sees it
+    # The record may still say "nothing configured" from a failed boot-time mint; a
+    # fresh key must move setup.status (and the setup.ready listeners) with it.
+    from hermes_cli import free_tier_bootstrap
+    if free_tier_bootstrap.current_record() is not None and not params.get("profile"):
+        free_tier_bootstrap.retry_bootstrap_mint(force=True)
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)

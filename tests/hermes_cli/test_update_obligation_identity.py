@@ -61,7 +61,8 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
         (home / "fleet_restart_pending").write_text("expected_sha=future\n")
     owed = {"kind": "gateway", "profile": "beta", "code_sha": "old"}
     if bad == "wrong-kind":
-        owed["kind"] = "serve"
+        # An unrecognized runtime kind is still unvouchable evidence: stay conservative.
+        owed["kind"] = "worker"
     if bad == "unknown-profile":
         owed["profile"] = "unknown"
     (directory / "latest.json").write_text(
@@ -85,3 +86,55 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: rows)
     assert update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_dashboard_runtime_does_not_veto_gateway_discharge(monkeypatch):
+    """A serve/dashboard row is outside the gateway matrix's evidence, not against it.
+
+    A host running `hermes dashboard` has a dashboard row in every receipt; the blanket
+    veto made the fleet-restart warning permanently undischargeable there (#115090).
+    """
+    home = get_hermes_home()
+    directory = home / "logs" / "update_receipts"
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(json.dumps({
+        "outcome": "failed",
+        "plan": {
+            "runtimes": [
+                {"kind": "gateway", "profile": "default", "pid": 1, "code_sha": "old"},
+                {"kind": "dashboard", "profile": "default", "pid": 9, "code_sha": None},
+            ]
+        },
+    }))
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr(
+        update_receipt,
+        "collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 2, "state": "current", "code_sha": "new"}],
+    )
+    assert not update_cmd_fleet._pending_fleet_restart_needed()
+    assert not update_cmd_fleet._update_owes_fleet_restart()
+
+
+def test_dashboard_runtime_does_not_mask_stale_gateway(monkeypatch):
+    """Skipping the dashboard row must not swallow a genuinely stale gateway (#115090)."""
+    home = get_hermes_home()
+    directory = home / "logs" / "update_receipts"
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(json.dumps({
+        "outcome": "failed",
+        "plan": {
+            "runtimes": [
+                {"kind": "gateway", "profile": "default", "pid": 1, "code_sha": "old"},
+                {"kind": "dashboard", "profile": "default", "pid": 9, "code_sha": None},
+            ]
+        },
+    }))
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr(
+        update_receipt,
+        "collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 2, "state": "stale", "code_sha": "old"}],
+    )
+    assert update_cmd_fleet._pending_fleet_restart_needed()
+    assert update_cmd_fleet._update_owes_fleet_restart()

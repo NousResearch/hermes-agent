@@ -242,6 +242,20 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
     asyncio.run(_run())
 
 
+def test_bot_command_mention_preserves_argument_separator():
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    adapter = _make_adapter(bot_username="SLG_dental_uat_bot")
+    raw_text = "/vincular@SLG_dental_uat_bot CMT5N19Z"
+    cleaned_text = adapter._clean_bot_trigger_text(raw_text)
+
+    assert cleaned_text == "/vincular CMT5N19Z"
+
+    event = MessageEvent(text=cleaned_text, message_type=MessageType.COMMAND)
+    assert event.get_command() == "vincular"
+    assert event.get_command_args() == "CMT5N19Z"
+
+
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     from gateway.platforms.base import Platform, SessionSource
     from gateway.platforms.event import MessageEvent, MessageType

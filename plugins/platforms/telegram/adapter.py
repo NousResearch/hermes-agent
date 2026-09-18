@@ -5666,7 +5666,9 @@ class TelegramAdapter(BasePlatformAdapter):
         bot_username = self._current_bot_username()
         if not text or not bot_username:
             return text
-        cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
+        # Keep a separator after the bot mention: ``/cmd@bot arg`` must remain
+        # ``/cmd arg`` so the gateway can distinguish the command from its arguments.
+        cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", " ", text).strip()
         return cleaned or text
 
     def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:

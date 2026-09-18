@@ -7,6 +7,7 @@ import contextlib
 import errno
 import importlib
 import logging
+import time
 import os
 import re
 from typing import Any, List, Optional
@@ -210,6 +211,18 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     else:
         headers[name] = value
     return headers
+
+
+def _make_unauthorized_recorder(server):
+    """httpx response hook for an anonymously connected Streamable HTTP server: the mcp >= 2.0 client
+    folds a non-2xx ``tools/call`` into a generic INTERNAL_ERROR ("Server returned an error response"),
+    losing the status — so a server that serves initialize/tools/list without auth but 401s on
+    tools/call (the MCP runtime auth challenge, kimi-code#3846) surfaced as a plain tool error. Record
+    the 401 on the server task; the auth recoverer consumes it (:func:`~tools.mcp_tool_handlers._swallowed_401`)."""
+    async def _record_401(response):
+        if response.status_code == 401:
+            server._unauthorized_at = time.monotonic()
+    return _record_401
 
 
 def _make_redirect_header_stripper(original_url, *, strict: bool = False,

@@ -320,6 +320,8 @@ mcp_servers:
 
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
+**Servers that only ask for auth at call time.** Some servers (Hyper3D, for example) serve `initialize` and `tools/list` anonymously and return `401` only on `tools/call` — a shape the MCP authorization spec allows. Such a server connects fine with a bare `url:` entry, and the first tool call comes back as a `needs_reauth` error telling the model the server requires sign-in. Run `hermes mcp login <server>`: for a `url`-only entry (no `auth`, no `headers`) it runs the OAuth flow and, once a token lands, writes `auth: oauth` to the entry for you. A server configured with static `headers` is still refused there — its `401` means the configured token is wrong, not that OAuth is missing.
+
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
 ## mTLS / client certificates

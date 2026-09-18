@@ -809,10 +809,17 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     if not url:
         _error(f"Server '{name}' has no URL — not an OAuth-capable server")
         return False
+    adopt_oauth = False
     if server_config.get("auth") != "oauth":
-        _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
-        _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
-        return False
+        if server_config.get("headers") or server_config.get("auth"):
+            _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
+            _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
+            return False
+        # Anonymous HTTP server that challenged a tool call with 401 (MCP runtime auth): adopt
+        # OAuth instead of sending the user through remove + add.
+        adopt_oauth = True
+        server_config = {**server_config, "auth": "oauth"}
+        _info(f"Server '{name}' has no auth configured — setting up OAuth for it.")
 
     oauth_cfg = server_config.get("oauth") or {}
     selected_flow = flow or oauth_cfg.get("flow", "browser")
@@ -874,6 +881,8 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             _success(f"Authenticated — {len(tools)} tool(s) available")
         else:
             _success("Authenticated (server reported no tools)")
+        if adopt_oauth and _save_mcp_server(name, server_config):
+            _success(f"Saved auth: oauth for '{name}' in {display_hermes_home()}/config.yaml")
         return True
     except Exception as exc:
         try:

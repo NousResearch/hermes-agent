@@ -317,7 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback", "_park_reason")
+        "_ever_connected", "_sse_fallback", "_park_reason", "_unauthorized_at")
 
     def __init__(self, name: str):
         self.name = name
@@ -335,6 +335,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None
         self._reconnect_retries: int = 0
+        # monotonic() of the last 401 the owned httpx client saw on an anonymous Streamable HTTP server
+        # (the SDK swallows the status); 0.0 = none. Consumed by the auth recoverer.
+        self._unauthorized_at: float = 0.0
         # Rapid-drop budget: a session is UNPROVEN until it survives a keepalive interval or a
         # successful call; only a proven session clears the budget, so a post-handshake flapper
         # still parks.

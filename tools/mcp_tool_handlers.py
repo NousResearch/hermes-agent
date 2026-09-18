@@ -27,6 +27,15 @@ _MISSING = object()
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
     "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
+# A server that served initialize/tools/list anonymously but 401s on tools/call (the MCP auth spec's
+# runtime challenge, e.g. Hyper3D): no OAuth is configured, so "re-authenticate" would mislead.
+_NEEDS_SIGNIN_MSG = (
+    "MCP server '{s}' accepted the connection anonymously but rejected this call with 401 — it requires "
+    "sign-in. Run `hermes mcp login {s}` to set up OAuth for it. Do NOT retry this tool — ask the user to sign in.")
+_BAD_TOKEN_MSG = (
+    "MCP server '{s}' rejected this call with 401: the configured static headers (bearer token / API key) "
+    "were refused. Do NOT retry this tool — ask the user to check the credential in `mcp_servers.{s}.headers`.")
+_AUTH_FAILURE_MSG_BY_SHAPE = {"anonymous": _NEEDS_SIGNIN_MSG, "headers": _BAD_TOKEN_MSG}
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
     "respawn was requested but no fresh session came back within {t:.0f}s. Wait a few seconds before retrying; if it "
@@ -172,7 +181,7 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
-    if not _is_auth_error(exc):
+    if not _is_auth_error(exc) and not _swallowed_401(server_name):
         return None
     from tools.mcp_oauth_manager import get_manager
     try:
@@ -190,7 +199,35 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         result = _retry_once(server_name, retry_call, op_description, "auth recovery")
         if result is not None:
             return result
-    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
+    msg = _AUTH_FAILURE_MSG_BY_SHAPE.get(_http_auth_shape(server_name), _NEEDS_REAUTH_MSG)
+    return _strike(server_name, msg.format(s=server_name), needs_reauth=True, server=server_name)
+
+
+def _swallowed_401(server_name: str, window_s: float = 30.0) -> bool:
+    """True (once) when the owned httpx client recorded a 401 on this server within *window_s* — the
+    mcp >= 2.0 Streamable HTTP client reports it only as a generic INTERNAL_ERROR, so the status is
+    recovered from the transport hook (:func:`~tools.mcp_tool_errors._make_unauthorized_recorder`)."""
+    srv = _lookup_reconnectable_server(server_name)
+    at = getattr(srv, "_unauthorized_at", 0.0)
+    if not isinstance(at, (int, float)) or not at or time.monotonic() - at > window_s:
+        return False
+    srv._unauthorized_at = 0.0
+    return True
+
+
+def _http_auth_shape(server_name: str) -> Optional[str]:
+    """How a registered HTTP server authenticates: ``"oauth"``, ``"headers"`` (static bearer/API key) or
+    ``"anonymous"`` (url only — a 401 is a first sign-in request, not an expired credential); None when
+    the server is unknown or not HTTP."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    with _core._lock:
+        srv = _core._servers.get(_resolve_server_key(server_name))
+    config = getattr(srv, "_config", None)
+    if not isinstance(config, dict) or not config.get("url"):
+        return None
+    if getattr(srv, "_auth_type", "") == "oauth":
+        return "oauth"
+    return "headers" if config.get("headers") else "anonymous"
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,

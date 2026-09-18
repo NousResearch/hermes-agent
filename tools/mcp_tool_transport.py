@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _make_unauthorized_recorder, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -434,7 +434,9 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               # With OAuth attached the SDK's auth flow owns 401s; anonymous servers need the recorder.
+                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]
+                                               + ([] if oauth_auth is not None else [_make_unauthorized_recorder(self)])},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}

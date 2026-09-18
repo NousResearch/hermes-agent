@@ -790,6 +790,35 @@ class TestMcpLogin:
         assert seen["connect_timeout"] >= 180
 
 
+    def test_login_adopts_oauth_for_anonymous_url_server(self, tmp_path, capsys, monkeypatch):
+        """A ``url``-only server that 401s at call time (MCP runtime auth challenge): login runs the
+        OAuth flow with ``auth: oauth`` and persists it, instead of refusing with "remove + add".
+        A header-authenticated server is still refused (its 401 means the configured token is wrong)."""
+        _seed_config(tmp_path, {
+            "hyper3d": {"url": "https://mcp.hyper3d.example/mcp"},
+            "apikey": {"url": "https://k.example.com/mcp", "headers": {"x": "y"}},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        seen = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            seen["auth"] = cfg.get("auth")
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / f"{name}.json").write_text('{"access_token": "x"}', encoding="utf-8")
+            return [("gen", "d")]
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_login, _get_mcp_servers
+
+        cmd_mcp_login(_make_args(name="hyper3d"))
+        out = capsys.readouterr().out
+        assert seen["auth"] == "oauth" and "Authenticated" in out
+        assert _get_mcp_servers()["hyper3d"]["auth"] == "oauth"
+
+        cmd_mcp_login(_make_args(name="apikey"))
+        out = capsys.readouterr().out
+        assert "not configured for OAuth" in out and "auth" not in _get_mcp_servers()["apikey"]
+
+
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)
 # ---------------------------------------------------------------------------

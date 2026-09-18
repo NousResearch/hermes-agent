@@ -459,6 +459,13 @@ class SearchMixin:
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
 
+    @staticmethod
+    def _hidden_prune_expr(q_roots: List[str]) -> str:
+        """find clause pruning hidden dirs while keeping an explicitly selected dot-named root
+        (dir or single file) — find echoes each start point as given, so ``! -path`` matches it."""
+        exemptions = "".join(f" ! -path {root}" for root in q_roots)
+        return f"\\( -type d -name '.*'{exemptions} \\) -prune"
+
     def _prune_expr(self, protected_paths: List[str]) -> str:
         """find ``\\( -path A -o -path B \\) -prune`` clause for the protected dirs."""
         terms = " -o ".join(f"-path {self._escape_shell_arg(item)}" for item in protected_paths)
@@ -691,8 +698,7 @@ class SearchMixin:
         # ``./`` so find doesn't parse them as options.
         find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
-        root_exemptions = "".join(f" ! -path {root}" for root in q_roots)
-        hidden_prune = f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"
+        hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
         protected_prune = f" {self._prune_expr(protected_paths)} -o" if protected_paths else ""
         fetch_limit = offset + limit + 1
@@ -929,20 +935,16 @@ class SearchMixin:
     def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
                                  limit: int, offset: int, output_mode: str, context: int,
                                  protected_paths: List[str]) -> SearchResult:
-        """grep fallback with PATH-scoped protected-dir pruning: ``find ... -prune``
-        enumerates files (traversal never enters protected dirs) and hands them to
-        grep via ``-exec {} +``; hidden dirs pruned to mirror ``--exclude-dir='.*'``.
-        Trade-off: find folds grep's exit code, so a hard grep error surfaces as an
-        empty result. That covers every grep-fallback search rooted under a dot-directory
-        (``~/.hermes/...`` included), not just the macOS protected-dir corner."""
+        """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
+        path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
+        grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         q_root = self._escape_shell_arg(path or ".")
         find_parts = ["find", q_root]
         if protected_paths:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
-        # ``! -path <root>`` keeps a dot-named root itself (dir or single file) out of the prune,
-        # mirroring the filename walk in ``_search_files``.
-        find_parts.extend([f"\\( -type d -name '.*' ! -path {q_root} \\) -prune", "-o", "-type f"])
+        find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])

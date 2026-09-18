@@ -411,8 +411,12 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "single response instead of one tool call per turn. Independent reads, searches, web fetches, and "
     "read-only commands should be batched into the same assistant turn — the runtime executes independent "
     "calls concurrently, and batching avoids resending the whole conversation on every extra round-trip.\n"
-    "Only serialize calls when a later call genuinely depends on an earlier call's result (e.g. you must "
-    "read a file before you can patch it). When in doubt and the calls are independent, batch them."
+    "Each serialized round is a full model round-trip (measured ~12s of thinking time in production) — one "
+    "call per turn multiplies both latency and resent-context cost. The default is batched: emit every "
+    "independent call you already know you need in the same response.\n"
+    "Only serialize when a later call genuinely depends on an earlier call's result (e.g. you must read a "
+    "file before you can patch it). While waiting on one dependency, at most one serialized round — never "
+    "drip 2-3 calls at a time when more independent work remains."
 )
 
 # Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer

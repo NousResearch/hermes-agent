@@ -7,6 +7,7 @@ config.yaml.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +84,26 @@ def test_explicit_config_key_overrides_matching_env_value(monkeypatch):
 
     assert config["env_type"] == "docker"
     assert config["docker_image"] == "config/image:1"
+
+
+@pytest.mark.parametrize("relative_cwd", [Path("."), Path("src/package")])
+def test_kanban_workspace_pin_overrides_profile_cwd(
+    monkeypatch, tmp_path, relative_cwd
+):
+    stable = tmp_path / "stable"
+    workspace = stable / ".worktrees" / "t_example"
+    workspace.mkdir(parents=True)
+    _write_config(f"terminal:\n  backend: local\n  cwd: {stable}\n")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_example")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    terminal_cwd = workspace / relative_cwd
+    terminal_cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TERMINAL_CWD", str(terminal_cwd))
+
+    config = terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_CWD"] == str(terminal_cwd)
+    assert config["cwd"] == str(terminal_cwd)
 
 
 def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):

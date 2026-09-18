@@ -502,13 +502,16 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
-        "reasoning_effort": _prop("string", (
+        "reasoning_effort": {
+            **_prop("string", (
                 "Per-task reasoning effort. Omit to inherit the profile "
                 "(stored as NULL). Allowed levels: "
                 + ", ".join(VALID_REASONING_EFFORTS) +
                 ". Use 'none' to turn thinking off. "
                 "Invalid values fail without creating a task."
-        )),
+            )),
+            "enum": ["none", *VALID_REASONING_EFFORTS],
+        },
     },
     ["title", "assignee"],
 )

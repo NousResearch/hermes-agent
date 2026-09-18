@@ -1302,7 +1302,7 @@ def test_reasoning_effort_schema_exposes_shared_levels():
     assert "reasoning_effort" not in params["required"]
     prop = params["properties"]["reasoning_effort"]
     assert prop["type"] == "string"
-    assert "enum" not in prop
+    assert prop["enum"] == ["none", *VALID_REASONING_EFFORTS]
     desc = prop["description"]
     for level in VALID_REASONING_EFFORTS:
         assert level in desc

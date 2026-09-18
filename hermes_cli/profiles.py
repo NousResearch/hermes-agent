@@ -1032,22 +1032,33 @@ def create_profile(
             _refuse_clone_channels_from_live_multiplexer(
                 source_dir, clone_from or get_active_profile_name()
             )
-    if clone_all and source_dir:
-        _clone_all_into(source_dir, profile_dir, canon)
-    else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
-    if source_dir is not None and not clone_channels:
-        from hermes_cli.profile_channels import strip_channel_settings
-        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
-        if stripped:
-            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans
+    # profiles/ on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists
+    # valid ids (no leading dot), so it can never adopt the half-copied tree and start adapters
+    # on credentials the strip below has not removed yet.
+    staging = _clone_staging_dir(profile_dir)
+    try:
+        if clone_all and source_dir:
+            _clone_all_into(source_dir, staging, canon)
+        else:
+            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+        if source_dir is not None and not clone_channels:
+            from hermes_cli.profile_channels import strip_channel_settings
+            stripped = strip_channel_settings(staging, include_state=clone_all)
+            if stripped:
+                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+        _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+        os.rename(staging, profile_dir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
     # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-    # rescans periodically, so a missed signal only delays serving).
+    # rescans periodically, so a missed signal only delegates serving).
     _notify_multiplexer(canon)
     return profile_dir
 

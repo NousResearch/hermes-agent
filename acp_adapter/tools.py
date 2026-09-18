@@ -190,6 +190,10 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 # --- tool-call titles -------------------------------------------------------
 
 
+def _clip(text: str, max_len: int) -> str:
+    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+
 def _title_web_extract(args: Args) -> str:
     urls = args.get("urls", [])
     if not urls:

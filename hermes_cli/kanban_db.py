@@ -8365,46 +8365,106 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
             _recent_worker_exits.pop(_pid, None)
 
 
-def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
-    """Classify a recently-reaped worker by pid.
+_WORKER_EXIT_TRAILER_PREFIX = "__HERMES_WORKER_EXIT__:"
+
+
+def format_worker_exit_trailer(
+    task_id: str,
+    exit_code: int,
+    run_id: Optional[int] = None,
+) -> str:
+    """Format a bounded, machine-readable exit trailer for worker log output."""
+    payload: dict[str, Any] = {"task_id": str(task_id), "exit_code": int(exit_code)}
+    if run_id is not None:
+        payload["run_id"] = int(run_id)
+    return f"{_WORKER_EXIT_TRAILER_PREFIX}{json.dumps(payload, separators=(',', ':'))}"
+
+
+def extract_worker_exit_trailer(log_text: str) -> Optional[dict[str, Any]]:
+    """Extract worker exit trailer payload from log text tail."""
+    if not log_text or _WORKER_EXIT_TRAILER_PREFIX not in log_text:
+        return None
+    for line in reversed(log_text.splitlines()):
+        line = line.strip()
+        if line.startswith(_WORKER_EXIT_TRAILER_PREFIX):
+            raw = line[len(_WORKER_EXIT_TRAILER_PREFIX):].strip()
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict) and "exit_code" in data:
+                    return data
+            except Exception:
+                pass
+    return None
+
+
+def strip_worker_exit_trailer(log_text: str) -> str:
+    """Strip worker exit trailers from user-visible worker log output."""
+    if not log_text or _WORKER_EXIT_TRAILER_PREFIX not in log_text:
+        return log_text
+    lines = [
+        line
+        for line in log_text.splitlines()
+        if not line.strip().startswith(_WORKER_EXIT_TRAILER_PREFIX)
+    ]
+    result = "\n".join(lines)
+    if log_text.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _classify_worker_exit(
+    pid: int,
+    task_id: Optional[str] = None,
+    board: Optional[str] = None,
+) -> "tuple[str, Optional[int]]":
+    """Classify a recently-reaped worker by pid, falling back to durable log trailer.
 
     Returns ``(kind, code)`` where ``kind`` is one of:
-
-    * ``"clean_exit"`` — ``WIFEXITED`` with ``WEXITSTATUS == 0``. When the
-      task is still ``running`` in the DB, this is a protocol violation
-      (worker exited without calling ``kanban_complete`` / ``kanban_block``)
-      and should be auto-blocked immediately — retrying will just loop.
-    * ``"rate_limited"`` — ``WIFEXITED`` with status
-      ``KANBAN_RATE_LIMIT_EXIT_CODE``. The worker bailed because the
-      provider rate-limited / exhausted quota, NOT because the task failed.
-      ``detect_crashed_workers`` releases the task back to ``ready`` without
-      counting a failure, so a long quota window can't trip the breaker.
-    * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
-    * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
-    * ``"unknown"`` — pid was not in the reap registry (either reaped by
-      something else, or died between reap tick and liveness check). Fall
-      back to existing crashed-counter behavior.
-
-    ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
-    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
-    for ``unknown``.
+      * ``"clean_exit"``
+      * ``"rate_limited"``
+      * ``"nonzero_exit"``
+      * ``"signaled"``
+      * ``"unknown"``
     """
     entry = _recent_worker_exits.get(int(pid))
-    if entry is None:
-        return ("unknown", None)
-    raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
+    if entry is not None:
+        raw, _ = entry
+        try:
+            if os.WIFEXITED(raw):
+                code = os.WEXITSTATUS(raw)
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
+            if os.WIFSIGNALED(raw):
+                return ("signaled", os.WTERMSIG(raw))
+        except Exception:
+            pass
+
+    # If in-memory reap evidence is absent (separate dispatcher process or
+    # non-subreaped child), read the durable worker log trailer.
+    if task_id:
+        try:
+            log_path = worker_log_path(task_id, board=board)
+            if log_path.exists():
+                size = log_path.stat().st_size
+                tail_len = min(size, 4096)
+                with open(log_path, "rb") as f:
+                    if size > tail_len:
+                        f.seek(size - tail_len)
+                    tail_data = f.read().decode("utf-8", errors="replace")
+                trailer = extract_worker_exit_trailer(tail_data)
+                if trailer is not None:
+                    code = int(trailer.get("exit_code", 1))
+                    if code == 0:
+                        return ("clean_exit", 0)
+                    if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                        return ("rate_limited", code)
+                    return ("nonzero_exit", code)
+        except Exception as exc:
+            logger.debug("Failed reading worker exit trailer for %s: %s", task_id, exc)
+
     return ("unknown", None)
 
 
@@ -9094,7 +9154,10 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -9159,7 +9222,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
-            kind, code = _classify_worker_exit(pid)
+            task_id = str(row["id"])
+            kind, code = _classify_worker_exit(pid, task_id=task_id, board=board)
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -10196,7 +10260,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -12177,7 +12241,8 @@ def read_worker_log(
         return None
     try:
         if tail_bytes is None:
-            return path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
+            return strip_worker_exit_trailer(text)
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size > tail_bytes:
@@ -12191,7 +12256,8 @@ def read_worker_log(
                 if not partial.endswith(b"\n") and f.tell() >= size:
                     f.seek(probe)
             data = f.read()
-        return data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
+        return strip_worker_exit_trailer(text)
     except OSError:
         return None
 

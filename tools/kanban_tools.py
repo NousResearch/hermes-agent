@@ -166,13 +166,42 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Validate that session_id exists in the active profile's state.db.
+
+    Returns the session_id if valid and persisted, or None if invalid or nonexistent.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB(read_only=True)
+        try:
+            session = db.get_session(sid)
+            if session:
+                return sid
+            return None
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("Failed to validate session provenance for %s: %s", sid, exc)
+        return None
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
+    from gateway.session_context import get_session_env
+
+    session_id = _persisted_session_id(get_session_env("HERMES_SESSION_ID", ""))
     if not session_id:
         return metadata
     stamped = dict(metadata or {})
@@ -299,13 +328,12 @@ _auto_heartbeat_last_attempt: float = 0.0
 
 
 def heartbeat_current_worker_from_env() -> bool:
-    """Best-effort: extend the kanban claim + bump board heartbeat for the
+    """Extend the kanban claim + bump board heartbeat for the
     current dispatcher-spawned worker, using identity from env vars.
 
-    Returns True if a write was attempted (whether or not it succeeded);
-    False if the call was skipped (not a kanban worker, rate-limited, or
-    swallowed exception). The boolean is informational — callers should
-    not branch on it.
+    Returns True only if BOTH heartbeat_claim and heartbeat_worker succeed
+    for the expected run. Returns False if skipped (not a kanban worker,
+    delegated child context, rate-limited) or if either heartbeat write fails.
 
     Identity comes from:
       * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
@@ -316,26 +344,41 @@ def heartbeat_current_worker_from_env() -> bool:
         workers that never went through the dispatcher path
 
     Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
-    timestamp (monotonic clock); not thread-safe in the strict sense, but
-    the worst case is one extra DB write per race, which is harmless.
+    timestamp (monotonic clock); updated only when a heartbeat write
+    actually succeeds.
     """
     global _auto_heartbeat_last_attempt
+
+    # Delegated child fence: delegated child context must not heartbeat parent worker or touch rate-limit timestamp
+    if (
+        _is_delegated_child_context()
+        or os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+        or not _is_dispatcher_owned_worker()
+    ):
+        return False
+
     tid = os.environ.get("HERMES_KANBAN_TASK")
     if not tid:
         return False
+
     import time as _time
+
     now = _time.monotonic()
     if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
         return False
-    _auto_heartbeat_last_attempt = now
+
+    claim_ok = False
+    worker_ok = False
     try:
         kb, conn = _connect()
         try:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+                claim_ok = bool(kb.heartbeat_claim(conn, tid, claimer=claim_lock))
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
+                claim_ok = False
+
             run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
             run_id: Optional[int]
             try:
@@ -343,15 +386,22 @@ def heartbeat_current_worker_from_env() -> bool:
             except (TypeError, ValueError):
                 run_id = None
             try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                worker_ok = bool(
+                    kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                )
             except Exception:
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+                worker_ok = False
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-        return True
+
+        if claim_ok and worker_ok:
+            _auto_heartbeat_last_attempt = now
+            return True
+        return False
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -1367,14 +1417,20 @@ def _handle_create(args: dict, **kw) -> str:
     # Prefer the request-scoped api_server origin binding: HERMES_SESSION_ID
     # is clobbered with a subagent's internal id whenever a child agent is
     # constructed in-process (agent_init calls set_current_session_id), which
-    # would stamp — and later wake — the wrong session.
+    from gateway.session_context import get_session_env
     from tools.async_delegation import _current_origin_session_id
 
-    session_id = (
+    candidate_session_id = (
         args.get("session_id")
         or _current_origin_session_id()
-        or os.environ.get("HERMES_SESSION_ID")
+        or get_session_env("HERMES_SESSION_ID", "")
     )
+    session_id = _persisted_session_id(candidate_session_id)
+    if args.get("session_id") and not session_id:
+        logger.warning(
+            "Explicit kanban session_id %r not found in state.db; dropping dangling provenance",
+            args.get("session_id"),
+        )
     priority = args.get("priority")
     # Resolve workspace. Workspace sharing is always explicit: omitted fields
     # mean a fresh scratch workspace, even when a dispatcher-spawned worker
@@ -1675,7 +1731,10 @@ def _handle_hybrid(args: dict, **kw) -> str:
 
     action = str(args.get("action") or "").strip()
     board = args.get("board")
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    from gateway.session_context import get_session_env
+
+    candidate_sid = args.get("session_id") or get_session_env("HERMES_SESSION_ID", "")
+    session_id = _persisted_session_id(candidate_sid)
     actor_id = os.environ.get("HERMES_PROFILE") or "agent"
     try:
         _, conn = _connect(board=board)

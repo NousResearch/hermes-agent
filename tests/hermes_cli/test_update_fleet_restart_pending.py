@@ -722,7 +722,11 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
 def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
     """A current multiplexer discharges every profile named in its live record (#113350)."""
     disk_sha = "e" * 40
-    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    # The marker owns its inventory (two gateways owed); a marker without one stays fail-closed.
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": p} for p in ("default", "coder")],
+    )
     _patch_marker_sha(monkeypatch, disk_sha)
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)

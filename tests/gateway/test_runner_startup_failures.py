@@ -570,7 +570,8 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
         assert runner.exit_code is None
         assert set(runner._failed_platforms) == {Platform.DISCORD}
         state = read_runtime_status()
-        assert state["gateway_state"] == "running"
+        # Alive, but Telegram is parked fatal: a serving-with-a-parked-platform boot is degraded.
+        assert state["gateway_state"] == "degraded"
         assert state["platforms"]["telegram"]["state"] == "fatal"
         assert state["platforms"]["discord"]["state"] == "retrying"
     finally:

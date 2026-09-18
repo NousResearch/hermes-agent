@@ -136,7 +136,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
-        pattern = "hermes-gateway*" if all_profiles else get_service_name()
+        pattern = "hermes-gateway*" if all_profiles else f"{get_service_name()}.service"
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 # Belt-and-suspenders for the EXCLUDE use case (#74075): a bare ``launchctl list`` prefix

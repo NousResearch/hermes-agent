@@ -6151,13 +6151,23 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._message_matches_mention_patterns(message)
 
     def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
-        """Re-apply Telegram trigger rules before active-session dispatch."""
+        """Re-apply Telegram trigger rules before session dispatch.
+
+        Fail closed for group/supergroup events that lack ``raw_message`` so a
+        synthetic ingress path cannot skip ``require_mention``. DMs stay
+        fail-open when raw is missing (no mention gate there).
+        """
         if getattr(event, "internal", False):
             return True
         raw_message = getattr(event, "raw_message", None)
         if raw_message is None:
+            chat_type = getattr(getattr(event, "source", None), "chat_type", "dm") or "dm"
+            if chat_type in ("group", "supergroup"):
+                return False
             return True
-        return self._should_process_message(raw_message, is_command=event.is_command())
+        # ``is_command`` is unused by ``_should_process_message`` today; keep the
+        # call aligned with the real gate signature without a dead kwarg.
+        return self._should_process_message(raw_message)
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;

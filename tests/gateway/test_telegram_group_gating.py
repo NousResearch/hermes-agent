@@ -1130,3 +1130,48 @@ def test_addressed_group_messages_still_queue_during_active_session():
         assert mention_key in mention_adapter._pending_messages
 
     asyncio.run(_run())
+
+def test_unmentioned_human_dropped_during_active_session():
+    """Human chatter without @mention / reply must not queue while busy."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("side chatter from a human")
+        assert adapter._should_process_message(message) is False
+        event = _message_event_from_group_message(message)
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_internal_event_still_dispatches_during_active_session():
+    """Synthetic internal events bypass the Telegram mention re-gate."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("internal wake")
+        event = _message_event_from_group_message(message)
+        event.internal = True
+        # Even without mention semantics, internal must queue.
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        assert session_key in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_group_event_without_raw_message_fail_closed_during_active_session():
+    """Group events missing raw_message must not skip require_mention."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("synthetic")
+        event = _message_event_from_group_message(message)
+        event.raw_message = None
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+

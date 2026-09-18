@@ -3913,7 +3913,7 @@ class BasePlatformAdapter(ABC):
                            expected_session_key, session_key)
             return
         if not self._should_dispatch_message_event(event):
-            logger.debug("[%s] Dropping message before session dispatch: platform gate rejected event", self.name)
+            logger.info("[%s] Dropping message before session dispatch: platform gate rejected event", self.name)
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:

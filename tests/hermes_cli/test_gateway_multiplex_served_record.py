@@ -166,7 +166,7 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     assert calls, f"--force must let `gateway {verb}` reach the service manager"
 
 
-def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch):
+def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monkeypatch):
     import hermes_cli.gateway as gw
     import hermes_cli.status as st
     import hermes_cli.cron as cr

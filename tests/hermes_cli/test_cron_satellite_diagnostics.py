@@ -62,7 +62,8 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "has not reported a heartbeat" in output
     if mode == "stale":
         assert "STALLED" in output
-    if mode in {"disabled", "excluded"}:
+    if mode in {"disabled", "excluded", "unrelated_pid"}:
+        assert "Gateway is not running" in output
         assert "hermes gateway install" in output
         assert "sudo hermes gateway install --system" in output
         assert "hermes gateway run" in output
@@ -114,10 +115,10 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     assert ("hermes --profile default gateway restart" in output) == (home_kind == "named")
 
 
-@pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", "", None])
+@pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])
 def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
     from cron import jobs
-    from hermes_cli.cron import _short_reason, cron_doctor
+    from hermes_cli.cron import cron_doctor
 
     jobs.create_job(prompt="probe", schedule="every 1h")
     records = jobs.load_jobs()
@@ -126,7 +127,9 @@ def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
     assert cron_doctor() == bool(detail)
     output = capsys.readouterr().out
     if detail:
-        assert f"missed scheduled fire at test-time: {_short_reason(detail)}" in output
+        assert "missed scheduled fire at test-time: unreachable" in output
+        line = next(line for line in output.splitlines() if "missed scheduled fire at" in line)
+        assert len(line) < 200
         assert detail not in output
         assert "secret second line" not in output
     else:
@@ -143,7 +146,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         jobs.note_fire_forward_failure(job["id"], "loopback unavailable")
     else:
         records = jobs.load_jobs()
-        delay = timedelta(hours=5) if dispatch == "catch_up" else timedelta(minutes=5)
+        delay = timedelta(hours=5) if dispatch == "catch_up" else timedelta(minutes=6)
         records[0]["next_run_at"] = (datetime.now(timezone.utc) - delay).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1

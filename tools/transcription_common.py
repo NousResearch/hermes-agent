@@ -26,6 +26,7 @@ DEFAULT_STT_TIMEOUT = 60.0
 # Pin 2.0 so Hermes doesn't stay on 1.0 until xAI flips the server default, then
 # break when 1.0 is removed. Override with STT_XAI_MODEL or stt.xai.model.
 DEFAULT_XAI_STT_MODEL = os.getenv("STT_XAI_MODEL", "grok-voice-transcribe-2.0")
+LEGACY_XAI_STT_MODEL = "grok-stt"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -67,6 +68,14 @@ class STTResponseError(ValueError):
     ``error`` (or neither ``text`` nor ``error``) instead of a usable transcript. The
     message is the provider's own, so the STT failure paths surface it verbatim rather
     than stringifying the response object into its repr (#78098)."""
+
+
+def normalize_xai_stt_model(model: Any) -> str:
+    """Return a valid xAI STT model, including compatibility for Hermes' old alias."""
+    value = str(model or "").strip()
+    if not value or value == LEGACY_XAI_STT_MODEL:
+        return DEFAULT_XAI_STT_MODEL
+    return value
 
 
 def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:

@@ -26,7 +26,7 @@ from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
     DEFAULT_STT_MODEL, DEFAULT_XAI_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
-    _error_result, _get_stt_section, _ok_result)
+    normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
@@ -484,7 +484,8 @@ def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Option
         return model
     section, key, default, empty_is_missing = _BUILTIN_MODEL_KEYS[provider]
     cfg = _get_stt_section(stt_config, section)
-    return (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
+    resolved = (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
+    return normalize_xai_stt_model(resolved) if provider == "xai" else resolved
 
 
 def _dispatch_stt_provider(

@@ -146,7 +146,7 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
         return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key,
-                      section.get("model") or tc.DEFAULT_XAI_STT_MODEL)
+                      tc.normalize_xai_stt_model(section.get("model")))
     if provider == "elevenlabs":
         api_key = tt._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:

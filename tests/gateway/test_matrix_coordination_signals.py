@@ -39,6 +39,15 @@ class Transport:
         self.handlers[kind] = handler
 
     async def send_message_event(self, room_id, kind, content):
+        def validate(value):
+            assert not isinstance(value, float), "Matrix canonical JSON forbids floats"
+            if isinstance(value, dict):
+                for child in value.values():
+                    validate(child)
+            if isinstance(value, list):
+                for child in value:
+                    validate(child)
+        validate(content)
         if self.fail:
             raise OSError("transport unavailable")
         self.sent.append((room_id, kind, content))
@@ -91,11 +100,13 @@ async def test_custom_event_roundtrip_uses_authenticated_sender_and_never_chat(m
     await adapter._sync_task
     transport = adapter._client
     payload = {"kind": "claim", "message_id": "$source", "sender": "@forged:example.test",
+               "started": time.time(),
                "nested": {"items": [{"value": 1}]}}
     assert await adapter.conversation_send_signal(ROOM, payload) is True
     room, kind, content = transport.sent[0]
     assert room == ROOM and kind == EventType.find(KIND)
-    assert kind != EventType.ROOM_MESSAGE and content == payload
+    assert kind != EventType.ROOM_MESSAGE
+    assert content == {**payload, "started": str(payload["started"])}
     # Real mautrix deserialization yields nested Obj/List, not plain dicts.
     await transport.handlers[kind](event(content=content))
     received.assert_awaited_once_with(ROOM, PEER, payload)

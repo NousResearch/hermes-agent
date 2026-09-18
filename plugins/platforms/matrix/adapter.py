@@ -941,6 +941,10 @@ class MatrixAdapter(BasePlatformAdapter):
             if not isinstance(payload, dict):
                 return False
             content = json.loads(json.dumps(payload, allow_nan=False))
+            # Matrix canonical JSON forbids floats. Preserve subsecond ordering
+            # without rounding or changing the transport-neutral domain schema.
+            if type(content.get("started")) is float:
+                content["started"] = str(content["started"])
             event_id = await asyncio.wait_for(self._client.send_message_event(
                 RoomID(chat_id), EventType.find(_COORDINATION_EVENT_TYPE), content), timeout=45)
             return bool(event_id)
@@ -2030,6 +2034,8 @@ class MatrixAdapter(BasePlatformAdapter):
             if not isinstance(content, dict):
                 return
             payload = json.loads(json.dumps(content, allow_nan=False))
+            if isinstance(payload.get("started"), str):
+                payload["started"] = float(payload["started"])
             await self.conversation_middleware().signal(room_id, sender, payload)
         except Exception:
             logger.warning("Matrix: coordination signal receive failed", exc_info=True)

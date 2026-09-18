@@ -85,7 +85,7 @@ class TestEndToEnd:
 
         with patch("tools.web_tools._ensure_web_plugins_loaded"), \
              patch("tools.web_tools._get_extract_backend", return_value="fake"), \
-             patch("tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
+             patch("tools.web_tools.async_url_block_reason", new=_AsyncNoBlockReason()), \
              patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
             result = json.loads(asyncio.new_event_loop().run_until_complete(
                 wt.web_extract_tool(["https://example.com/big"], char_limit=5000)
@@ -106,7 +106,7 @@ def _make_awaitable(value):
     return _coro()
 
 
-class _AsyncTrue:
-    """Async callable that always returns True (re-awaitable per call)."""
+class _AsyncNoBlockReason:
+    """Async callable that always reports "no block reason" (re-awaitable per call)."""
     async def __call__(self, *a, **k):
-        return True
+        return None

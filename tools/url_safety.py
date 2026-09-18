@@ -318,24 +318,38 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
     return None
 
 
-def is_safe_url(url: str) -> bool:
-    """True if the URL target is not a private/internal address. Resolves the hostname and checks
-    every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
-    skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
+#: Returned by :func:`url_block_reason` when the hostname could not be resolved at all.
+DNS_FAILURE_REASON = "DNS resolution failed — host does not resolve"
+#: Returned when the URL resolves, but to an address the SSRF policy refuses to dial.
+PRIVATE_ADDRESS_REASON = "URL targets a private or internal network address"
+#: Returned when the URL itself is malformed or uses an unsupported scheme.
+INVALID_URL_REASON = "URL is malformed or uses an unsupported scheme"
+
+
+def url_block_reason(url: str) -> Optional[str]:
+    """Why *url* may not be fetched, or None when it is safe.
+
+    Same policy as :func:`is_safe_url` (which delegates here), but the verdict keeps the reason so
+    callers can report an unresolvable host as such instead of mislabelling it a private address —
+    distinct causes that need distinct user action. Fails closed: every rejection path returns a
+    non-empty reason.
+
+    Reasons are a closed set of constants, never interpolated exception text or resolved addresses:
+    the string reaches end users through tool output, so resolver detail stays in the logs."""
     try:
         parsed = urlparse(url)
         hostname = _normalize_hostname(parsed.hostname)
         scheme = (parsed.scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
-            return False
+            return INVALID_URL_REASON
         if not hostname:
-            return False
+            return INVALID_URL_REASON
 
         # Metadata hostnames are blocked BEFORE consulting the toggle.
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
-            return False
+            return PRIVATE_ADDRESS_REASON
         allow_all_private = _global_allow_private_urls()
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
         allow_private = allow_all_private or allow_private_ip
@@ -350,31 +364,44 @@ def is_safe_url(url: str) -> bool:
                 logger.debug(
                     "DNS resolution failed for %s — proxy configured, allowing through for proxy-side resolution",
                     hostname)
-                return True
+                return None
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
-            return False
+            return DNS_FAILURE_REASON
         for raw, ip_str, ip in _iter_resolved_ips(addr_info):
             if ip is None:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", raw, hostname)
-                return False
+                return DNS_FAILURE_REASON
             reason = _resolved_ip_block_reason(ip, allow_private)
             if reason is not None:
                 logger.warning("Blocked request to %s: %s -> %s", reason, hostname, ip_str)
-                return False
+                return PRIVATE_ADDRESS_REASON
         if allow_all_private:
             logger.debug("Allowing private/internal resolution (security.allow_private_urls=true): %s", hostname)
         elif allow_private_ip:
             logger.debug("Allowing trusted hostname despite private/internal resolution: %s", hostname)
-        return True
+        return None
     except Exception as exc:
-        # Fail closed: parsing edge cases must not become SSRF bypass vectors.
+        # Fail closed: parsing edge cases must not become SSRF bypass vectors. The exception text
+        # stays in the log — it can carry resolver internals that do not belong in tool output.
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
-        return False
+        return INVALID_URL_REASON
+
+
+def is_safe_url(url: str) -> bool:
+    """True if the URL target is not a private/internal address. Resolves the hostname and checks
+    every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
+    skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
+    return url_block_reason(url) is None
 
 
 async def async_is_safe_url(url: str) -> bool:
     """:func:`is_safe_url` with the blocking DNS work off the event loop."""
     return await asyncio.to_thread(is_safe_url, url)
+
+
+async def async_url_block_reason(url: str) -> Optional[str]:
+    """:func:`url_block_reason` with the blocking DNS work off the event loop."""
+    return await asyncio.to_thread(url_block_reason, url)
 
 
 class SSRFConnectionBlocked(ValueError):

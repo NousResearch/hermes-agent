@@ -346,13 +346,13 @@ class TestWebExtractTavily:
             "results": [{"url": "https://example.com", "raw_content": "Extracted content", "title": "Page"}]
         })
 
-        async def _allow_ssrf(_url: str) -> bool:
-            return True
+        async def _allow_ssrf(_url: str):
+            return None  # no block reason == safe
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
-             patch("tools.web_tools.async_is_safe_url", _allow_ssrf):
+             patch("tools.web_tools.async_url_block_reason", _allow_ssrf):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
                 web_extract_tool(["https://example.com"])

@@ -51,9 +51,9 @@ def extract_provider(monkeypatch):
     )
 
     async def _safe(_url):
-        return True
+        return None  # no block reason == safe
 
-    monkeypatch.setattr(web_tools, "async_is_safe_url", _safe)
+    monkeypatch.setattr(web_tools, "async_url_block_reason", _safe)
     yield provider
 
     with web_search_registry._lock:

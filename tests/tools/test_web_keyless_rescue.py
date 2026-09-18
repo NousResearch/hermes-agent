@@ -219,9 +219,9 @@ class TestExtractRescue:
         )
 
         async def _allow_all(url, **kwargs):
-            return True
+            return None  # no block reason == safe
 
-        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_all)
+        monkeypatch.setattr(web_tools, "async_url_block_reason", _allow_all)
         raw = await web_tools.web_extract_tool(list(urls))
         data = json.loads(raw)
         return data["results"] if isinstance(data, dict) and "results" in data else data

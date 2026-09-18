@@ -19,7 +19,7 @@ _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_paralle
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
-from tools.url_safety import async_is_safe_url
+from tools.url_safety import async_url_block_reason
 from tools.web_tools_rescue import _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
@@ -362,16 +362,17 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
 
     try:
         logger.info("Extracting content from %d URL(s)", len(normalized_urls))
-        # SSRF protection — filter private/internal URLs before any backend.
+        # SSRF protection — filter private/internal URLs before any backend. One resolution per
+        # URL decides both the verdict and the message, so a blocked host cannot be reported with
+        # a reason from a second, possibly different DNS answer.
         safe_urls, safe_indices, ssrf_blocked = [], [], {}
         for index, url in zip(normalized_indices, normalized_urls):
-            if await async_is_safe_url(url):
+            block_reason = await async_url_block_reason(url)
+            if block_reason is None:
                 safe_urls.append(url)
                 safe_indices.append(index)
             else:
-                ssrf_blocked[index] = _result_entry(
-                    url, "Blocked: URL targets a private or internal network address"
-                )
+                ssrf_blocked[index] = _result_entry(url, f"Blocked: {block_reason}")
 
         results = []
         if safe_urls:

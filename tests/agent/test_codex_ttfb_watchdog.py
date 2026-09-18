@@ -41,6 +41,11 @@ def _make_codex_agent(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    # Every test here reasons about the built-in TTFB defaults; a developer shell override
+    # must not leak in (tests that need an override setenv it after this).
+    for name in ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS",
+                 "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "HERMES_CODEX_TTFB_STRICT"):
+        monkeypatch.delenv(name, raising=False)
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -595,16 +600,6 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         stop["flag"] = True
 
 
-def _clear_ttfb_env(monkeypatch):
-    for name in (
-        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
-        "HERMES_CODEX_TTFB_MAX_SECONDS",
-        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS",
-        "HERMES_CODEX_TTFB_STRICT",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
 def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypatch):
     """#91621 regression: with no TTFB env overrides, a >100k-token openai-codex
     request scales the no-byte cutoff up to the 180s idle default — the cap must
@@ -612,7 +607,6 @@ def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypa
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    _clear_ttfb_env(monkeypatch)
     agent.reasoning_config = {"enabled": False}  # no effort floor: isolate the cap interaction
 
     huge_input = "x" * 440_000  # ~110k estimated tokens → largest idle bucket
@@ -629,7 +623,7 @@ def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    _clear_ttfb_env(monkeypatch)
+    agent.reasoning_config = {"enabled": False}
     monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
 
     huge_input = "x" * 440_000

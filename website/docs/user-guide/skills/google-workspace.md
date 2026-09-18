@@ -175,7 +175,7 @@ All commands return JSON. Key fields per service:
 | `gmail get` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `labels`, `body` |
 | `gmail send/reply` | `status`, `id`, `threadId` |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
-| `calendar create` | `status`, `id`, `summary`, `htmlLink` |
+| `calendar create` | `status`, `id`, `summary`, `htmlLink`, `verified` |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |
 | `contacts list` | `name`, `emails`, `phones` |
 | `sheets get` | 2D array of cell values |

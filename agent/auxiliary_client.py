@@ -7061,10 +7061,24 @@ def _resolve_call_client(
                     task, _explicit)
                 if fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
+                    if nous_detail is None:
+                        # Suggest the registry's real env var(s); a naive `_explicit.upper()_API_KEY`
+                        # mangles hyphenated provider ids into impossible names like
+                        # `MINIMAX-OAUTH_API_KEY` (#114405). Providers without registered key env
+                        # vars (pure OAuth) get no env-var hint at all.
+                        try:
+                            from hermes_cli.auth import PROVIDER_REGISTRY
+                            env_vars = PROVIDER_REGISTRY.get(_explicit).api_key_env_vars
+                        except (ImportError, AttributeError, KeyError):
+                            env_vars = ()
+                        if env_vars:
+                            raise AuxiliaryClientUnavailable(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
+                                f"Set the {env_vars[0]} environment variable, or switch to "
+                                f"a different provider with `hermes model`.")
                     raise AuxiliaryClientUnavailable(nous_detail or (
                         f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `hermes model`."))
+                        f"Switch to a different provider with `hermes model`."))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(

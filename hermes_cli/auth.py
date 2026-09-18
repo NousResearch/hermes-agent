@@ -205,7 +205,11 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE, inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
         client_id=MINIMAX_OAUTH_CLIENT_ID, scope=MINIMAX_OAUTH_SCOPE,
         extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
-               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE}),
+               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE},
+        # Same key as the api-key `minimax` provider: keeps credential discovery scanning
+        # MINIMAX_API_KEY and makes the "no credentials" hint suggest a valid env var name
+        # instead of the impossible `MINIMAX-OAUTH_API_KEY` (#114404, #114405).
+        api_key_env_vars=("MINIMAX_API_KEY",)),
     # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key despite auth_type="api_key": `claude setup-token`
     # yields an `sk-ant-oat01…` OAuth token (401s as x-api-key, 429s as bare Bearer). It stays in
     # this tuple because the tuple doubles as the credential-DISCOVERY list

@@ -42,8 +42,6 @@ export interface GatewayClientOptions {
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 
-const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
-
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the
 // guard open; generous enough for a 512-frame ring to drain.
 const REPLAY_REQUEST_TIMEOUT_MS = 10_000
@@ -421,7 +419,7 @@ export class JsonRpcGatewayClient {
   }
 
   private handleEvent(event: GatewayEvent): void {
-    if (isGatewayReady(event)) {
+    if (event.type === 'gateway.ready') {
       if (event.payload?.heartbeat === true) {
         this.channel.startHeartbeat()
       }

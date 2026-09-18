@@ -477,26 +477,27 @@ def build_alerts(snapshot: HonchoSnapshot, previous_state: dict[str, Any] | None
         alerts.append("Recent representation save / 401 errors")
 
     spark = snapshot.spark_goat
-    if not spark.get("ok"):
-        alerts.append("spark-goat chat failed")
-    elif spark.get("thinking"):
-        alerts.append("spark-goat thinking still enabled")
-    elif float(spark.get("latency_s", 0.0) or 0.0) > SPARK_CHAT_DEGRADED_SECONDS:
-        deriver = snapshot.deriver or {}
-        active_dream_count = int(deriver.get("active_dream_count") or 0)
-        active_dream_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
-        if active_dream_count > 0 and active_dream_age_s < DREAM_STALE_ACTIVE_SECONDS:
-            previous_streak = int((previous_state or {}).get("dream_contention_streak", 0))
-            if (
-                float(spark.get("latency_s") or 0.0) >= SPARK_CHAT_CRITICAL_SECONDS
-                or previous_streak >= 1
-            ):
-                alerts.append(
-                    "spark-goat dream contention "
-                    f"(chat latency {float(spark.get('latency_s') or 0.0):.1f}s)"
-                )
-        else:
-            alerts.append("spark-goat chat latency degraded")
+    if not spark.get("skipped"):
+        if not spark.get("ok"):
+            alerts.append("spark-goat chat failed")
+        elif spark.get("thinking"):
+            alerts.append("spark-goat thinking still enabled")
+        elif float(spark.get("latency_s", 0.0) or 0.0) > SPARK_CHAT_DEGRADED_SECONDS:
+            deriver = snapshot.deriver or {}
+            active_dream_count = int(deriver.get("active_dream_count") or 0)
+            active_dream_age_s = int(float(deriver.get("active_dream_oldest_age_s") or 0))
+            if active_dream_count > 0 and active_dream_age_s < DREAM_STALE_ACTIVE_SECONDS:
+                previous_streak = int((previous_state or {}).get("dream_contention_streak", 0))
+                if (
+                    float(spark.get("latency_s") or 0.0) >= SPARK_CHAT_CRITICAL_SECONDS
+                    or previous_streak >= 1
+                ):
+                    alerts.append(
+                        "spark-goat dream contention "
+                        f"(chat latency {float(spark.get('latency_s') or 0.0):.1f}s)"
+                    )
+            else:
+                alerts.append("spark-goat chat latency degraded")
 
     ingestion = snapshot.ingestion or {}
     if ingestion.get("source_fresh") and not ingestion.get("downstream_fresh"):
@@ -746,13 +747,16 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     spark_tag = " ⚠️thinking" if spark.get("thinking") else ""
     spark_detail = f" (model={spark.get('model', '?')})" if spark.get("model") else ""
     spark_latency = float(spark.get("latency_s", 0.0) or 0.0)
-    if not spark.get("ok"):
-        spark_icon = "🔴"
-    elif spark.get("thinking") or spark_latency > SPARK_CHAT_DEGRADED_SECONDS:
-        spark_icon = "🟠"
+    if spark.get("skipped"):
+        lines.append("⚪ spark-goat chat: not routed (skipped)")
     else:
-        spark_icon = "🟢"
-    lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
+        if not spark.get("ok"):
+            spark_icon = "🔴"
+        elif spark.get("thinking") or spark_latency > SPARK_CHAT_DEGRADED_SECONDS:
+            spark_icon = "🟠"
+        else:
+            spark_icon = "🟢"
+        lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
 
     deriver = snapshot.deriver
     if deriver:
@@ -1132,25 +1136,34 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     # aeon-ultimate model known to be hosted on spark-goat.
     spark_model = select_spark_model(pipeline)
 
-    spark_ok, spark_data, spark_dt = curl_post_json(
-        f"{SPARK_CHAT_BASE}/v1/chat/completions",
-        {
-            "model": spark_model,
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
-        timeout=30,
-    )
+    # Only probe spark-goat when the live pipeline actually routes a stage to
+    # its chat endpoint. After the cloud cutover no stage routes there, and
+    # probing a decommissioned host produced a permanent false "chat failed"
+    # alert even while every pipeline stage was healthy elsewhere.
+    spark_routed = any(is_spark_goat_chat_url(stage.get("base_url")) for stage in pipeline.values())
+    if spark_routed:
+        spark_ok, spark_data, spark_dt = curl_post_json(
+            f"{SPARK_CHAT_BASE}/v1/chat/completions",
+            {
+                "model": spark_model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 20,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=30,
+        )
+    else:
+        spark_ok, spark_data, spark_dt = True, {"_skipped": True}, 0.0
     thinking = False
     spark_http_ok = spark_ok
     spark_model_ok = False
-    if spark_data:
+    spark_skipped = bool((spark_data or {}).get("_skipped"))
+    if spark_data and not spark_skipped:
         msg = (spark_data.get("choices") or [{}])[0].get("message", {})
         thinking = bool(msg.get("reasoning_content"))
         spark_model_ok = bool(msg.get("content"))
         spark_ok = spark_ok and spark_model_ok
-    elif spark_ok:
+    elif spark_ok and not spark_skipped:
         # HTTP succeeded but body wasn't JSON / no choices -> treat as failure
         spark_ok = False
 
@@ -1212,6 +1225,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
             "model": spark_model,
             "http_ok": spark_http_ok,
             "model_ok": spark_model_ok,
+            "skipped": spark_skipped,
         },
         deriver={
             "runs_15m": runs_15m,

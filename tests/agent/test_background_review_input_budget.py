@@ -224,16 +224,66 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
 @pytest.mark.parametrize(
     ("config_value", "expected"),
     [
-        ({}, 600_000),
         ({"max_input_tokens": 1_000_000}, 1_000_000),
         ({"max_input_tokens": 0}, None),
         ({"max_input_tokens": -5}, None),
-        ({"max_input_tokens": "not-a-number"}, 600_000),
         ({"max_input_tokens": "300000"}, 300_000),
     ],
 )
 def test_review_input_token_budget_resolution(config_value, expected):
-    """Config parsing: default, override, explicit disable, garbage fallback."""
+    """Explicit settings keep their established override / unlimited semantics."""
     from agent.background_review import _review_input_token_budget
 
     assert _review_input_token_budget(config_value) == expected
+
+
+_LOCAL_RUNTIME = {
+    "provider": "lmstudio",
+    "model": "local-model",
+    "base_url": "http://localhost:1234",
+}
+
+
+@pytest.mark.parametrize(
+    ("context_window", "expected"),
+    [
+        (65_536, 49_152),  # 0.75 * 65_536: the ~9x-overshoot case from #114645
+        (4_096, 3_072),  # tiny context still gets 25% headroom
+        (1_000_000, 600_000),  # cloud-scale contexts stay at the historical ceiling
+    ],
+)
+def test_unset_budget_tracks_review_model_context(context_window, expected):
+    """An unset budget derives from the active review model's context window."""
+    from agent.background_review import _review_input_token_budget
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=context_window):
+        assert _review_input_token_budget({}, dict(_LOCAL_RUNTIME)) == expected
+
+
+def test_malformed_budget_falls_back_to_context_derived_default():
+    """A malformed value must not silently restore the fixed 600k default."""
+    from agent.background_review import _review_input_token_budget
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=65_536):
+        budget = _review_input_token_budget({"max_input_tokens": "not-a-number"}, dict(_LOCAL_RUNTIME))
+    assert budget == 49_152
+
+
+def test_unresolvable_context_uses_conservative_fallback():
+    """Failed or missing context discovery still bounds unattended review work."""
+    from agent.background_review import _review_input_token_budget
+
+    with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("unavailable")):
+        assert _review_input_token_budget({}, dict(_LOCAL_RUNTIME)) == 120_000
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=0):
+        assert _review_input_token_budget({}, {"model": "unknown-model"}) == 120_000
+
+    assert _review_input_token_budget({}, {}) == 120_000  # no model known at all
+
+
+def test_config_default_does_not_freeze_an_input_budget():
+    """Unset values must reach the runtime-derived resolver: the frozen default is gone."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert "max_input_tokens" not in DEFAULT_CONFIG["auxiliary"]["background_review"]

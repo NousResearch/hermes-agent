@@ -32,20 +32,27 @@ export interface GatewayEventMap extends BackendGatewayEventMap, ClientLocalGate
 
 export type GatewayEventName = keyof GatewayEventMap
 
-/** One `event` notification's `params`. */
-export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
+/** The envelope every `event` notification carries besides `type`/`payload`. */
+interface GatewayEventEnvelope {
   /** Registry connection whose socket delivered the event (renderer-side tag;
    * absent for the local/legacy primary path). */
   connectionId?: string
-  payload?: GatewayEventMap[K]
   /** Renderer-side source tag added by the Desktop gateway registry. */
   profile?: string
   /** Per-session monotonic counter stamped by `tui_gateway/event_replay.py::_stamp_event`;
    *  absent on session-less broadcasts. */
   seq?: number
   session_id?: string
-  type: K
 }
+
+/**
+ * One `event` notification's `params`. A union discriminated by `type`, so a `type` check
+ * narrows `payload` to that event's generated shape and handlers never cast;
+ * `GatewayEvent<'x'>` is the single member (the same shape `AnyServerRequest` has).
+ */
+export type GatewayEvent<K extends GatewayEventName = GatewayEventName> = {
+  [P in K]: GatewayEventEnvelope & { payload?: GatewayEventMap[P]; type: P }
+}[K]
 
 /** Backend-emitted notification names (generated `GATEWAY_EVENT_TYPES`), re-exported under the
  *  name the consumers already use. */

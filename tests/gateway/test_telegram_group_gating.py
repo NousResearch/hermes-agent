@@ -1077,6 +1077,14 @@ def test_unmentioned_bot_reply_dropped_during_active_session():
     A group message from another bot that replies to the user (not us) and does
     not @mention us fails ``_should_process_message``. It must not enter
     ``_pending_messages`` just because a same-session owner task is busy.
+
+    Why this is not closed twin #54709: that sweeper close argued cold *ingress*
+    already calls ``_should_process_message`` before building a ``MessageEvent``.
+    This test targets the *session* sink: ``handle_message`` while a session is
+    active. Production still reaches that sink without re-running
+    ``_gate_or_observe`` via text-batch flush, held-inbound redispatch, and
+    media/location ``handle_message`` calls. Current ``main`` has no
+    ``_should_dispatch_message_event`` hook (verified 2026-09-18).
     """
 
     async def _run():

@@ -6153,9 +6153,12 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
         """Re-apply Telegram trigger rules before session dispatch.
 
-        Fail closed for group/supergroup events that lack ``raw_message`` so a
-        synthetic ingress path cannot skip ``require_mention``. DMs stay
-        fail-open when raw is missing (no mention gate there).
+        Cold ingress already runs ``_gate_or_observe`` / ``_should_process_message``
+        (#54709). This hook is the last line of defense for callers that reach
+        ``handle_message`` without that gate again (text-batch flush, held-inbound
+        redispatch, media/location). Fail closed for group/supergroup events that
+        lack ``raw_message`` so a synthetic path cannot skip ``require_mention``.
+        DMs stay fail-open when raw is missing (no mention gate there).
         """
         if getattr(event, "internal", False):
             return True

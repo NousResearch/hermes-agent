@@ -60,12 +60,16 @@ def _deliver_bot_chat(job: dict, content: str) -> str:
 
     captured = {}
 
-    def _fake_run(argv, **kwargs):
+    def _fake_run(argv, *args, **kwargs):
         with open(argv[argv.index("--query-file") + 1], encoding="utf-8") as fh:
             captured["message"] = fh.read()
         return MagicMock(returncode=0, stdout="", stderr="")
 
-    with patch("cron.scheduler_delivery.subprocess.run", side_effect=_fake_run):
+    # The CLI lane is seamed at whichever spawn helper the tree has: ``subprocess.run`` or the
+    # report-driven ``_run_bot_chat_turn(argv, env, report_path, timeout)`` (#113608); ``create``
+    # keeps the second patch a no-op where the helper does not exist, so no real child is spawned.
+    with patch("cron.scheduler_delivery.subprocess.run", side_effect=_fake_run), \
+            patch("cron.scheduler_delivery._run_bot_chat_turn", create=True, side_effect=_fake_run):
         err = _deliver_to_bot_chat(job, content, "")
     assert err is None, err
     return captured["message"]

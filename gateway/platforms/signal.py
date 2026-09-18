@@ -856,7 +856,7 @@ class SignalAdapter(BasePlatformAdapter):
     async def _notify_batch_pacing(self, chat_id: str, next_batch_idx: int, total_batches: int, wait_s: float) -> None:
         """Tell the user about an inter-batch pacing wait over the notice threshold (best-effort)."""
         try:
-            await self.send(chat_id, f"(More images coming — pausing ~{_format_wait(wait_s)} for Signal rate limit, "
+            await self.emit_warning(chat_id, f"(More images coming — pausing ~{_format_wait(wait_s)} for Signal rate limit, "
                                      f"batch {next_batch_idx}/{total_batches}.)")
         except Exception as e:
             logger.warning("Signal: failed to send pacing notice: %s", e)

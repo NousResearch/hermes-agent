@@ -48,6 +48,8 @@ import {
   knownSessionOwner,
   lineageAliases,
   markSessionRead,
+  migrateRememberedNavigationForProfile,
+  migrateSessionOwnerHintsForProfile,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
@@ -66,6 +68,7 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -2017,6 +2020,64 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
+}
+
+/**
+ * Rename counterpart of dropTilesForProfile: the profile's sessions still exist
+ * under the new name, so its persisted tabs, Bot tiles routed at it, cached
+ * transcript tails, remembered session/route and owner hints move to the new
+ * name instead of being left under `local::<old>` where every open resolves
+ * to a backend that no longer exists ("Couldn't open this session", #111868).
+ * Local-connection state only; a remote gateway rename executes there.
+ */
+export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+  const from = normalizeProfileKey(oldProfile)
+  const to = normalizeProfileKey(newProfile)
+
+  if (!from || !to || from === to) {
+    return
+  }
+
+  const isLocal = (owner: SessionProfileRoute | undefined) =>
+    Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
+
+  const renamedOwner = (owner: SessionProfileRoute | undefined): SessionProfileRoute | undefined => {
+    if (!owner || !isLocal(owner)) {
+      return owner
+    }
+
+    const profile = normalizeProfileKey(owner.profile) === from ? to : owner.profile
+    const targetProfile = normalizeProfileKey(owner.targetProfile) === from ? to : owner.targetProfile
+
+    return profile === owner.profile && targetProfile === owner.targetProfile
+      ? owner
+      : { ...owner, profile, ...(targetProfile === undefined ? {} : { targetProfile }) }
+  }
+
+  const moved = tilesByProfile[from]
+
+  if (moved) {
+    delete tilesByProfile[from]
+    tilesByProfile[to] = [...(tilesByProfile[to] ?? []), ...moved.map(tile => ({ ...tile, ownerRoute: renamedOwner(tile.ownerRoute) }))]
+  }
+
+  const botTiles = tilesByProfile[BOTS_TILE_BUCKET]
+
+  if (botTiles) {
+    tilesByProfile[BOTS_TILE_BUCKET] = botTiles.map(tile => ({ ...tile, ownerRoute: renamedOwner(tile.ownerRoute) }))
+  }
+
+  const live = $sessionTiles.get()
+  const next = live.map(tile => (tile.ownerRoute ? { ...tile, ownerRoute: renamedOwner(tile.ownerRoute) } : tile))
+
+  if (next.some((tile, index) => tile !== live[index] && tile.ownerRoute !== live[index].ownerRoute)) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
+  migrateTranscriptTailsForProfile(from, to)
+  migrateRememberedNavigationForProfile(from, to)
+  migrateSessionOwnerHintsForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

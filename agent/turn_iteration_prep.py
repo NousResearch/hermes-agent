@@ -344,7 +344,7 @@ def begin_iteration(
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
                 f"({int(agent.session_input_tokens):,} tokens) — stopping "
-                f"the review tool loop before the next provider call."
+                f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
 
@@ -361,7 +361,7 @@ def begin_iteration(
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
-            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)", diagnostic=True)
         return _verdict("break")
     return _verdict("fallthrough")
 
@@ -512,7 +512,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        agent._emit_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
+        agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     return _verdict("fallthrough")

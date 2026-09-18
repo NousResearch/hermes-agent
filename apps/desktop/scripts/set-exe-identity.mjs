@@ -44,11 +44,19 @@ import { isMain } from './utils.mjs'
 
 // A real-time file scanner (AV/EDR) holds a short exclusive handle on a freshly
 // written exe; rcedit's resource commit then fails with "Unable to commit
-// changes" and succeeds seconds later on identical input. Retrying on ANY
-// rcedit failure keeps the shape simple — a permanent failure costs 3.5 s more
-// before after-pack.mjs swallows it. Delays sized to the field report: the
-// lock was still held 5 s after a first attempt in some runs.
+// changes" and succeeds seconds later on identical input. Delays sized to the
+// field report: the lock was still held 5 s after a first attempt in some runs.
 const RCEDIT_COMMIT_RETRY_DELAYS_MS = [500, 1000, 2000]
+
+// A failure to spawn the rcedit binary itself (missing or not executable) is
+// permanent; waiting 3.5 s on it only delays after-pack.mjs's warning. The npm
+// rcedit wrapper surfaces the spawn error as `originalError` on its rejection,
+// while a non-zero rcedit exit carries a numeric `code`.
+const RCEDIT_PERMANENT_SPAWN_CODES = new Set(['ENOENT', 'EACCES'])
+
+function isPermanentRceditFailure(err) {
+  return RCEDIT_PERMANENT_SPAWN_CODES.has(err?.originalError?.code ?? err?.code)
+}
 
 function wait(delay) {
   return new Promise(resolve => setTimeout(resolve, delay))
@@ -91,7 +99,7 @@ async function stampExeIdentity(
       break
     } catch (err) {
       const delay = RCEDIT_COMMIT_RETRY_DELAYS_MS[attempt]
-      if (delay === undefined) {
+      if (delay === undefined || isPermanentRceditFailure(err)) {
         throw err
       }
       console.warn(`[set-exe-identity] rcedit failed; retrying in ${delay}ms (${err.message})`)

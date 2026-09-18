@@ -1,5 +1,66 @@
 # Inteligência Centralizada — Hermes Workstation (Hermes Work)
 
+## Compilação Operacional Progressiva — Capability como unidade reutilizável — 2026-09-18
+
+A análise posterior ao AEPC-E002 identificou que o problema não é apenas ajustar
+quando o compiler deve bloquear. A abstração reutilizável atual ainda está muito
+próxima de “batch compilado” e muito distante de uma biblioteca viva de capacidades
+determinísticas pequenas, compostas e reaproveitáveis.
+
+Regra canônica nova:
+
+> **o Hermes pode gastar raciocínio para descobrir como fazer algo; depois de
+> validado, esse raciocínio operacional deve ser compilado e amortizado.**
+
+A unidade intermediária passa a ser **Capability**:
+
+- Tool/primitiva = operação básica fornecida pelo runtime;
+- Capability = operação determinística versionada e reutilizável;
+- Routine = composição/promoted workflow maior;
+- Skill = conhecimento/estratégia para o LLM, acima da execução determinística.
+
+Direções permitidas:
+
+~~~text
+Skill -> Capability
+Skill -> work_execute
+Capability -> Capability
+Capability -> Operational Kernel
+~~~
+
+Uma Capability promovida não deve chamar silenciosamente uma Skill/LLM. Em drift,
+ela retorna `NEEDS_REASONING` com o menor estado não resolvido; Hermes adapta esse
+trecho e o aprendizado pode gerar nova versão.
+
+`work_execute` muda de papel: deixa de ser principalmente a obrigação produzida
+por um guard de repetição e passa a ser o runtime determinístico para
+Capability/Recipe/Routine/WorkPlan já resolvidos. O harness deve procurar reuse
+exato antes de pedir outro planejamento ao modelo. A ausência de um caminho
+compilado nunca é, sozinha, motivo para bloquear exploração adaptativa segura.
+
+A arquitetura recebe um **Operational Kernel** comum. Browser é apenas um backend;
+filesystem, process/shell, HTTP/API e posteriormente desktop/UI usam o mesmo
+contrato de capability, efeitos, evidência, versão, pre/postconditions e drift.
+
+No Browser nativo, `@eN` continua transitório. Click/type/press precisam produzir
+ou permitir derivar identidade semântica recuperável — operação, role/name/testid,
+page/target family, fingerprint e refs before/after — para que o compiler consiga
+distinguir ações diferentes da mesma forma estrutural de verdadeiro fan-out
+homogêneo. `ProcedureStep.resolve_anchor()` e os anchors das promoted routines são
+fundação a generalizar.
+
+Persistência deve reutilizar `ExecutionJournal`, `ArtifactStore`, `RecipeStore`,
+`ProceduralMemory` e o lifecycle existente de promoção. Não criar segundo
+SessionDB/Kanban/TaskRun/BrowserTask/Memory.
+
+Especificação canônica:
+`workstation/context/PROGRESSIVE_OPERATIONAL_COMPILATION.md`.
+
+O objetivo de eficiência passa de “reduzir chamadas em um batch” para **amortizar
+raciocínio entre tarefas, sessões e workflows**. Métricas devem separar custo de
+discovery do custo de replay e nunca inferir economia paga quando token usage do
+provider não estiver disponível.
+
 ## AEPC-E002 — forma estrutural não é homogeneidade semântica — 2026-09-18
 
 A auditoria da implementação publicada confirmou que a correção principal foi

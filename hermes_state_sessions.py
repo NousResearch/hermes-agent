@@ -435,12 +435,14 @@ class SessionSessionsMixin:
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
-    # Children that are NOT compression continuations (branches, delegates, tool sessions). Markers
-    # are bound to the queried parent id: continuations inherit model_config verbatim, so
-    # presence-matching misclassified them as delegates.
+    # Children that are NOT compression continuations (branches, delegates, reset forks, tool
+    # sessions). Markers are bound to the queried parent id: continuations inherit model_config
+    # verbatim, so presence-matching misclassified them as delegates. Callers bind the parent id
+    # three times for this filter.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
         f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
         f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._reset_from')}, '') != ?\n"
         "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 

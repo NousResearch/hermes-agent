@@ -102,7 +102,7 @@ class SessionCompressionMixin:
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
                 + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="") + " LIMIT 1",
-                (session_id, session_id, session_id)).fetchone()
+                (session_id,) * 4).fetchone()
             if superseded is not None:
                 return None
             conn.execute(
@@ -141,7 +141,7 @@ class SessionCompressionMixin:
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id,) * 4,
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -154,7 +154,7 @@ class SessionCompressionMixin:
         def _do(conn):
             if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 return False
-            # Any non-branch/non-delegate/non-tool child is a continuation, ended or not.
+            # Any non-branch/non-delegate/non-reset/non-tool child is a continuation, ended or not.
             child = conn.execute(
                 """
                 SELECT 1
@@ -165,7 +165,7 @@ class SessionCompressionMixin:
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id,) * 4,
             ).fetchone()
             if child is not None:
                 return False

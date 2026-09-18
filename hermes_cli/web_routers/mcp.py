@@ -236,6 +236,21 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         raise HTTPException(status_code=400, detail="This server uses header/API-key auth, not OAuth")
     cfg["auth"] = "oauth"
 
+    oauth_cfg = cfg.get("oauth") or {}
+    if oauth_cfg.get("client_id") and not oauth_cfg.get("redirect_uri"):
+        # A pre-registered client (provider has no DCR) is bound to the redirect URIs registered
+        # against it, and this route would present the dashboard callback below — which the
+        # provider rejects unless that exact URL was registered. Send the user to the CLI flow,
+        # which uses the pinned oauth.redirect_port; setting oauth.redirect_uri opts back in.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{name}' uses a pre-registered OAuth client. Authorize it with "
+                f"`hermes mcp login {name}`, or set mcp_servers.{name}.oauth.redirect_uri to the "
+                "callback URL registered with the provider to use this flow."
+            ),
+        )
+
     flow_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
         flow_id=flow_id,

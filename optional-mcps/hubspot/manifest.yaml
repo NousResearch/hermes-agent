@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: hubspot
+description: >-
+  Contacts, companies, deals, and tickets via HubSpot's official remote MCP.
+source: https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server
+
+# HubSpot's official remote MCP (URL-only — Hermes never spawns a local
+# process for this entry).
+transport:
+  type: http
+  url: https://mcp.hubspot.com
+
+auth:
+  type: oauth
+  # HubSpot publishes NO registration_endpoint (Dynamic Client Registration
+  # is unsupported) and advertises token_endpoint_auth_methods_supported:
+  # ["client_secret_post"] — so the browser flow cannot self-register a
+  # client. You must create a confidential OAuth client in your HubSpot
+  # developer account and supply its credentials below.
+  preregistered: true
+  # The OAuth client is bound to one exact redirect URI, so the loopback
+  # callback port must be fixed (and registered in the HubSpot app with it)
+  # rather than picked ephemerally at connect time.
+  redirect_port: 8123
+  env:
+    - name: MCP_HUBSPOT_CLIENT_ID
+      prompt: HubSpot MCP app Client ID
+      secret: false
+    - name: MCP_HUBSPOT_CLIENT_SECRET
+      prompt: HubSpot MCP app Client secret
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - hubspot
+    - crm
+  hosts:
+    - hubspot.com
+
+post_install: |
+  Create the OAuth client first:
+    1. In HubSpot, create an MCP Auth App (Development -> MCP Auth Apps).
+    2. Register the redirect URL EXACTLY as http://127.0.0.1:8123/callback
+       (any mismatch — port, path, or 127.0.0.1 vs localhost — is rejected).
+    3. Select the CRM scopes you want Hermes to have, save, and copy the
+       Client ID / Client secret into ~/.hermes/.env
+       (MCP_HUBSPOT_CLIENT_ID / MCP_HUBSPOT_CLIENT_SECRET).
+  Then authorize (use this CLI login: the client is bound to the loopback
+  redirect above, so the dashboard's Connect button — which uses its own
+  callback URL — will not satisfy HubSpot unless you register that URL in
+  the app too):
+    hermes mcp login hubspot
+  Headless machines: Hermes prints the authorize URL — open it in a browser
+  elsewhere, then paste the failed redirect URL back at the prompt, or
+  SSH-forward port 8123 (ssh -L 8123:127.0.0.1:8123 ...) before signing in.

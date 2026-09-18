@@ -93,6 +93,21 @@ def _basic_manifest(name: str = "demo", **overrides) -> dict:
     return body
 
 
+def _preregistered_oauth_auth(name: str = "demo", **overrides) -> dict:
+    """auth block for a provider without DCR: user-supplied client, fixed callback port."""
+    auth = {
+        "type": "oauth",
+        "preregistered": True,
+        "redirect_port": 8123,
+        "env": [
+            {"name": f"MCP_{name.upper()}_CLIENT_ID", "prompt": "Client ID", "secret": False},
+            {"name": f"MCP_{name.upper()}_CLIENT_SECRET", "prompt": "Client secret"},
+        ],
+    }
+    auth.update(overrides)
+    return auth
+
+
 def _entry(name: str):
     """Wrapper that asserts entry exists (satisfies type-checker + nicer failure msg)."""
     from hermes_cli.mcp_catalog import get_entry
@@ -272,11 +287,87 @@ class TestManifestParsing:
         with pytest.raises(CatalogError, match="MCP_DEMO_API_KEY"):
             _parse_manifest(path)
 
+    def test_preregistered_oauth_requires_conventional_env_declarations(self, catalog_dir):
+        """Pre-registered oauth must declare the env keys the oauth block references.
+
+        Same naming contract as http+api_key: install only persists auth.env-declared
+        vars, so a manifest naming them differently would send a literal ${...}
+        placeholder to the token endpoint (auth dies on timeout, not a clean 401).
+        """
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth(env=[
+                {"name": "DEMO_CLIENT_ID", "prompt": "Client ID", "secret": False},
+            ]),
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="MCP_DEMO_CLIENT_SECRET"):
+            _parse_manifest(path)
+
+    def test_preregistered_oauth_requires_redirect_port(self, catalog_dir):
+        """A pre-registered client is bound to its provider-registered redirect URIs, so
+        the manifest must pin the callback port — an ephemeral port dies at the authorize
+        step, and the flow hangs until the 300s timeout."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth(redirect_port=None),
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="redirect_port"):
+            _parse_manifest(path)
 
 
 
 
 
+
+
+    @pytest.mark.parametrize("bad_port", [0, 70000, True, "8123"])
+    def test_preregistered_oauth_rejects_invalid_redirect_port(self, catalog_dir, bad_port):
+        """bool is an int subclass and manifests are hand-written: `redirect_port: true`
+        must not slip past validation as port 1, and a quoted string must not coerce."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth(redirect_port=bad_port),
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="redirect_port"):
+            _parse_manifest(path)
+
+    def test_preregistered_must_be_a_real_boolean(self, catalog_dir):
+        """A quoted "false" is truthy in Python, so a manifest must not be able to opt into
+        the pre-registered flow through a string — require a boolean rather than coercing."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth(preregistered="false"),
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="preregistered must be a boolean"):
+            _parse_manifest(path)
+
+    def test_preregistered_requires_oauth_auth_type(self, catalog_dir):
+        """preregistered is oauth-only: an api_key entry declaring it is a manifest error."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "preregistered": True,
+                "env": [{"name": "MCP_DEMO_API_KEY", "prompt": "API key"}],
+            },
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="only valid with auth.type 'oauth'"):
+            _parse_manifest(path)
 
     def test_tools_default_excluded_parsed(self, catalog_dir):
         body = _basic_manifest(
@@ -587,6 +678,62 @@ class TestInstall:
         raw = get_config_path().read_text(encoding="utf-8")
         assert "${MCP_DEMO_API_KEY}" in raw
         assert "secret-val" not in raw
+
+    def test_install_preregistered_oauth_writes_reference_templates(self, catalog_dir, monkeypatch):
+        """config.yaml carries ${...} references + the manifest's fixed redirect_port; the
+        real secret goes to .env only (same house pattern as the Bearer header template)."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth(),
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "super-secret")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path, load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["auth"] == "oauth"
+        # load_config() resolves the ${...} refs from .env; config.yaml itself must keep
+        # the templates and stay secret-free.
+        assert server["oauth"]["client_id"] == "super-secret"
+        assert server["oauth"]["client_secret"] == "super-secret"
+        assert server["oauth"]["redirect_port"] == 8123
+        raw = get_config_path().read_text(encoding="utf-8")
+        assert "${MCP_DEMO_CLIENT_ID}" in raw
+        assert "${MCP_DEMO_CLIENT_SECRET}" in raw
+        assert "super-secret" not in raw
+
+    def test_install_preregistered_oauth_prompts_and_persists_to_env(self, catalog_dir, monkeypatch):
+        """The install prompt captures both client credentials into ~/.hermes/.env."""
+        # Distinct server name: save_env_value publishes to os.environ, which persists for the
+        # whole pytest process, so a shared key would short-circuit this test's prompt.
+        body = _basic_manifest(
+            name="clientdemo",
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth=_preregistered_oauth_auth("clientdemo"),
+        )
+        _write_manifest(catalog_dir, "clientdemo", body)
+
+        from hermes_cli import mcp_catalog
+
+        answers = {"Client ID": "cid-abc", "Client secret": "sec-xyz"}
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input",
+            lambda prompt, *a, **kw: next(v for k, v in answers.items() if k in prompt))
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value
+
+        install_entry(_entry("clientdemo"), enable=True)
+
+        assert get_env_value("MCP_CLIENTDEMO_CLIENT_ID") == "cid-abc"
+        assert get_env_value("MCP_CLIENTDEMO_CLIENT_SECRET") == "sec-xyz"
 
 
 

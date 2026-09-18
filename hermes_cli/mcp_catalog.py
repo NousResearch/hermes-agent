@@ -43,6 +43,8 @@ class AuthSpec:
     provider: Optional[str] = None  # OAuth-specific (third-party provider like Google)
     scopes: List[str] = field(default_factory=list)
     env_var: Optional[str] = None
+    preregistered: bool = False     # oauth only: provider has no DCR; client_id/secret are user-supplied
+    redirect_port: Optional[int] = None  # oauth only: fixed loopback port the provider's redirect URI is bound to
 
 
 @dataclass
@@ -175,6 +177,43 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
     if a_type not in ("api_key", "oauth", "none"):
         raise CatalogError(f"{path}: auth.type must be 'api_key'|'oauth'|'none'")
     env_list = [_parse_env_spec(e) for e in _require_list(path, "auth.env", auth_raw.get("env") or [])]
+    prereg_raw = auth_raw.get("preregistered", False)
+    if not isinstance(prereg_raw, bool):
+        # A quoted "false" is truthy in Python; require a real boolean rather than coercing,
+        # so a hand-written manifest cannot silently opt into the pre-registered flow.
+        raise CatalogError(f"{path}: auth.preregistered must be a boolean")
+    preregistered = prereg_raw
+    redirect_port = auth_raw.get("redirect_port")
+    if preregistered and a_type != "oauth":
+        raise CatalogError(f"{path}: auth.preregistered is only valid with auth.type 'oauth'")
+    if preregistered:
+        # Same naming contract as http+api_key below: install_entry only persists the env vars
+        # DECLARED in auth.env, but the emitted oauth block references ${MCP_<NAME>_CLIENT_ID}/
+        # ${MCP_<NAME>_CLIENT_SECRET}. A manifest declaring other keys would send a literal
+        # placeholder to the token endpoint and the flow would die silently.
+        from hermes_cli.mcp_config import _oauth_env_keys
+
+        _required_keys = _oauth_env_keys(name)
+        _missing = [k for k in _required_keys if all(spec.name != k for spec in env_list)]
+        if _missing:
+            raise CatalogError(
+                f"{path}: preregistered oauth requires auth.env to declare "
+                f"{' and '.join(repr(k) for k in _missing)} "
+                f"(the keys the oauth block references)"
+            )
+        # A pre-registered client is bound to the redirect URIs registered with the provider, so
+        # an unpredictable ephemeral port is rejected at the authorize step and the flow dies on
+        # the 300s browser-callback timeout — the manifest must pin the port. bool is an int
+        # subclass, so `redirect_port: true` is rejected explicitly rather than read as port 1.
+        if (
+            isinstance(redirect_port, bool)
+            or not isinstance(redirect_port, int)
+            or not 1 <= redirect_port <= 65535
+        ):
+            raise CatalogError(
+                f"{path}: preregistered oauth requires auth.redirect_port (int in 1..65535) "
+                f"— the provider's redirect URI is bound to it"
+            )
     if http and a_type == "api_key":
         # _build_server_config emits an Authorization header referencing ${MCP_<NAME>_API_KEY}, but
         # install_entry only persists the env vars DECLARED in auth.env. Enforce the naming contract
@@ -189,7 +228,11 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
             )
     return AuthSpec(
         type=a_type, env=env_list, provider=auth_raw.get("provider"),
-        scopes=list(auth_raw.get("scopes") or []), env_var=auth_raw.get("env_var"))
+        scopes=list(auth_raw.get("scopes") or []), env_var=auth_raw.get("env_var"),
+        # redirect_port without preregistered is meaningless; ignored silently, like other
+        # unrecognised manifest keys.
+        preregistered=preregistered,
+        redirect_port=redirect_port if preregistered else None)
 
 
 def _parse_tools(path: Path, raw: Any) -> ToolsSpec:
@@ -458,6 +501,13 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+            if entry.auth.preregistered:
+                # Provider has no DCR: ship the client_id/secret reference templates + the
+                # pinned callback port so the flow uses the user's pre-registered client.
+                assert entry.auth.redirect_port is not None  # _parse_auth enforces it
+                from hermes_cli.mcp_config import _preregistered_oauth_block
+
+                cfg["oauth"] = _preregistered_oauth_block(entry.name, entry.auth.redirect_port)
         elif entry.auth.type == "api_key":
             from hermes_cli.mcp_config import _bearer_auth_headers
 
@@ -643,10 +693,19 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     install_dir = _do_git_install(entry) if entry.install is not None else None
 
-    if entry.auth.type == "api_key":
+    if entry.auth.type == "api_key" or (
+        entry.auth.type == "oauth" and entry.auth.preregistered
+    ):
         print()
         _say("  Configure credentials:", Colors.CYAN)
         _prompt_env_vars(entry.auth.env)
+        if entry.auth.type == "oauth":
+            # No DCR at the provider: the client was entered above, but the tokens still come
+            # from the browser flow — just not until first connect rather than during install.
+            _say(
+                f"  The browser sign-in happens on first connection "
+                f"(or now via `hermes mcp login {entry.name}`).",
+                Colors.DIM)
     elif entry.auth.type == "oauth" and entry.auth.provider:
         # Provider-mediated OAuth relies on the existing `hermes auth <provider>` flow; surface
         # guidance rather than auto-running it to keep install decoupled from provider-auth lifecycle.

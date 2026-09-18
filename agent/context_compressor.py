@@ -32,6 +32,10 @@ from agent.model_metadata import (
     strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_result_classification import (
+    DUPLICATE_OUTPUT_MARKER,
+    DUPLICATE_OUTPUT_MARKER_PREFIX,
+)
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -2778,7 +2782,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
-                result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
+                result[i] = {**msg, "content": DUPLICATE_OUTPUT_MARKER}
                 pruned += 1
             content_hashes.add(h)
         return pruned
@@ -2818,7 +2822,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return new_msg is not None
         if (
             not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
-            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
+            or content.startswith((DUPLICATE_OUTPUT_MARKER_PREFIX, "[screenshot removed"))
             or _is_summary_stub(content) or len(content) <= min_prune_chars
         ):
             return False

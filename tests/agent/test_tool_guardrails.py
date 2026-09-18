@@ -8,6 +8,8 @@ from agent.tool_guardrails import (
     ToolCallSignature,
     canonical_tool_args,
     classify_tool_failure,
+    is_no_progress_marker_result,
+    normalize_tool_args_for_guardrail,
 )
 
 
@@ -201,6 +203,51 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_explicit_dedup_results_continue_no_progress_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"path": "README.md"}
+
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.after_call(
+        "read_file",
+        args,
+        '{"path":"README.md","content":"same"}',
+        failed=False,
+    ).action == "allow"
+
+    assert controller.before_call("read_file", args).action == "allow"
+    second = controller.after_call(
+        "read_file",
+        args,
+        "[Duplicate tool output — same content as a more recent call]",
+        failed=False,
+    )
+    assert second.action == "warn"
+    assert second.code == "idempotent_no_progress_warning"
+    assert second.count == 2
+
+    assert controller.before_call("read_file", args).action == "allow"
+    third = controller.after_call(
+        "read_file",
+        args,
+        '{"status":"unchanged","dedup":true,"content_returned":false}',
+        failed=False,
+    )
+    assert third.action == "warn"
+    assert third.count == 3
+
+    blocked = controller.before_call("read_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+    assert blocked.count == 3
+
+
 def test_identical_call_streak_halts_any_tool_when_hard_stop_enabled():
     # #89069 / #100849 bundle: a model replaying the same SUCCESSFUL
     # terminal/skill_view call with a byte-identical result is not covered by
@@ -292,6 +339,324 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
+def test_new_user_turn_clears_no_progress_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"todos": [{"id": "a", "content": "same", "status": "in_progress"}]}
+
+    for _ in range(3):
+        assert controller.before_call("todo", args).action == "allow"
+        controller.after_call("todo", args, "same-list", failed=False)
+
+    blocked = controller.before_call("todo", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+    controller.reset_for_turn()
+    assert controller.before_call("todo", args).action == "allow"
+
+
+def test_changed_read_result_restarts_no_progress_streak():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"query": "latest state"}
+
+    for result in ("one", "two", "three", "four"):
+        assert controller.before_call("web_search", args).action == "allow"
+        decision = controller.after_call("web_search", args, result, failed=False)
+        assert decision.action == "allow"
+        assert decision.count == 1
+
+
+def test_guardrail_signature_normalizes_housekeeping_arg_jitter():
+    todo_a = ToolCallSignature.from_call(
+        "todo",
+        {
+            "merge": True,
+            "todos": [
+                {"id": "b", "content": "same", "status": "pending"},
+                {"id": "a", "content": "same", "status": "in_progress"},
+            ],
+        },
+    )
+    todo_b = ToolCallSignature.from_call(
+        "todo",
+        {
+            "merge": False,
+            "todos": [
+                {"id": "a", "content": "same", "status": "in_progress"},
+                {"id": "b", "content": "same", "status": "pending"},
+            ],
+        },
+    )
+    # Todo list order is priority and merge changes write semantics, so this
+    # jitter must remain visible to the guardrail.
+    assert todo_a != todo_b
+
+    assert ToolCallSignature.from_call("skill_view", {"name": "hermes-agent"}) == ToolCallSignature.from_call(
+        "skill_view",
+        {"name": "hermes-agent", "file_path": None},
+    )
+    assert ToolCallSignature.from_call("read_file", {"path": "x"}) == ToolCallSignature.from_call(
+        "read_file",
+        {"path": "x", "offset": 1, "limit": 2000},
+    )
+
+    # Non-housekeeping tools keep raw args; shell-string differences may be semantic.
+    assert ToolCallSignature.from_call("terminal", {"command": "pwd"}) != ToolCallSignature.from_call(
+        "terminal",
+        {"command": "pwd "},
+    )
+
+
+def test_no_progress_blocks_repeated_identical_todo_state():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"todos": [{"id": "a", "content": "same", "status": "in_progress"}]}
+
+    for _ in range(3):
+        assert controller.before_call("todo", args).action == "allow"
+        controller.after_call("todo", args, "same-list", failed=False)
+
+    blocked = controller.before_call("todo", args)
+    assert blocked.action == "block"
+    assert blocked.count == 3
+
+
+def test_arbitrary_mutating_tool_is_not_blocked_from_identical_stdout():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"command": "make step"}
+
+    for _ in range(5):
+        assert controller.before_call("terminal", args).action == "allow"
+        decision = controller.after_call("terminal", args, "ok", failed=False)
+        assert decision.action == "allow"
+
+
+def test_skill_pruned_reload_loop_is_blocked_across_turn_boundaries():
+    """Regression: the 2026-08-19 twenty-turn loop.
+
+    A post-compression banner listed 18 pruned skills. Each ``skill_view``
+    returned a ``[SKILL_PRUNED: ...]`` marker whose text instructs the agent to
+    reissue the very same call. Every lap was a SEPARATE turn, so any counter
+    cleared by ``reset_for_turn`` would never reach its threshold.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"name": "kibana-evals"}
+    pruned = "[skill_view] name=kibana-evals (7,719 chars) [SKILL_PRUNED: content lost in compression]"
+
+    for _ in range(3):
+        # Each lap is a compaction-triggered turn restart, NOT new user input.
+        controller.reset_for_turn(new_user_input=False)
+        assert controller.before_call("skill_view", args).action == "allow"
+        controller.after_call("skill_view", args, pruned, failed=False)
+
+    controller.reset_for_turn(new_user_input=False)
+    blocked = controller.before_call("skill_view", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+    # A genuine new user request is allowed to re-read the same skill.
+    controller.reset_for_turn(new_user_input=True)
+    assert controller.before_call("skill_view", args).action == "allow"
+
+
+def test_dedup_stub_counts_as_no_progress_despite_different_hash():
+    """The compressor replaces a repeat with a stub that hashes differently.
+
+    Without explicit handling the streak resets to 1 forever, which is exactly
+    how the observed todo loop stayed invisible to the hash comparison.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"todos": [{"id": "a", "content": "same", "status": "in_progress"}]}
+
+    controller.after_call("todo", args, "the real list", failed=False)
+    for _ in range(2):
+        stub = "[Duplicate tool output — same content as a more recent call]"
+        controller.after_call("todo", args, stub, failed=False)
+
+    blocked = controller.before_call("todo", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_real_file_write_clears_streak_so_reread_is_allowed():
+    """A read repeated AFTER a landed write is progress, not a loop."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    read_args = {"path": "/tmp/x.py"}
+
+    for _ in range(3):
+        controller.after_call("read_file", read_args, "same content", failed=False)
+    assert controller.before_call("read_file", read_args).action == "block"
+
+    controller.after_call(
+        "write_file",
+        {"path": "/tmp/x.py", "content": "new"},
+        json.dumps({"success": True, "verified": True, "path": "/tmp/x.py"}),
+        failed=False,
+    )
+
+    assert controller.before_call("read_file", read_args).action == "allow"
+
+
+def test_cross_turn_carry_never_blocks_edit_then_reread_iteration():
+    """The mitigation the cross-turn carry needs to be safe.
+
+    Carrying a no-progress streak across turn boundaries is what makes a
+    compaction-spanning loop reachable at all. The same carry would be a
+    regression if it also survived REAL work, so a landed mutation must clear
+    it even when the streak was inherited from an earlier turn.
+
+    Without ``note_progress()`` on a landed write, the fourth read below is
+    blocked and a normal edit -> re-read cycle dies at the guardrail.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    read_args = {"path": "/tmp/x.py"}
+
+    # Three unchanged reads spread across compaction-driven turn restarts:
+    # the streak is carried, exactly as the cross-turn half intends.
+    for _ in range(3):
+        controller.reset_for_turn(new_user_input=False)
+        controller.after_call("read_file", read_args, "same content", failed=False)
+
+    controller.reset_for_turn(new_user_input=False)
+    assert controller.before_call("read_file", read_args).action == "block"
+
+    # A real edit lands. The world moved, so the carried streak is stale even
+    # though no new user message arrived.
+    controller.after_call(
+        "write_file",
+        {"path": "/tmp/x.py", "content": "new"},
+        json.dumps({"success": True, "verified": True, "path": "/tmp/x.py"}),
+        failed=False,
+    )
+
+    controller.reset_for_turn(new_user_input=False)
+    assert controller.before_call("read_file", read_args).action == "allow"
+
+
+def test_bookkeeping_success_does_not_clear_a_carried_streak():
+    """The other half of the mitigation: it must not defeat the guardrail.
+
+    ``todo`` is in ``PROGRESS_RESET_TOOL_NAMES`` but changes nothing
+    observable, so if a successful todo call cleared no-progress streaks, the
+    2026-08-19 loop — skill_view reload interleaved with todo bookkeeping —
+    would restart its streak on every lap and never reach the threshold, which
+    is the exact bug the cross-turn carry exists to fix.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    view_args = {"name": "kibana-evals"}
+    pruned = "[skill_view] name=kibana-evals [SKILL_PRUNED: content lost in compression]"
+
+    for _ in range(3):
+        controller.reset_for_turn(new_user_input=False)
+        controller.after_call("skill_view", view_args, pruned, failed=False)
+        # Interleaved bookkeeping that succeeds but changes nothing.
+        controller.after_call(
+            "todo", {"todos": [{"id": "a", "status": "in_progress"}]}, "ok", failed=False
+        )
+
+    controller.reset_for_turn(new_user_input=False)
+    blocked = controller.before_call("skill_view", view_args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_marker_normalization_never_blocks_a_changed_read():
+    """The marker half must not swallow real change.
+
+    A dedup marker continues the streak, but the moment the tool returns a
+    genuinely different payload the streak restarts — otherwise a file that is
+    actually being edited would stay blocked.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    args = {"path": "README.md"}
+
+    controller.after_call("read_file", args, '{"content":"v1"}', failed=False)
+    controller.after_call(
+        "read_file",
+        args,
+        '{"status":"unchanged","dedup":true,"content_returned":false}',
+        failed=False,
+    )
+    # Real new content arrives: this is progress and must restart the streak.
+    controller.after_call("read_file", args, '{"content":"v2"}', failed=False)
+    assert controller.before_call("read_file", args).action == "allow"
+
+
+def test_partial_dedup_envelope_is_not_treated_as_unchanged():
+    """Only the full envelope both real emitters write counts as a marker.
+
+    A tool that happens to return ``dedup: true`` without the ``unchanged``
+    status is not making the identity claim this predicate relies on, so it
+    must not silently extend a streak toward a hard stop.
+    """
+    assert is_no_progress_marker_result(
+        '{"status":"unchanged","dedup":true,"content_returned":false}'
+    )
+    assert not is_no_progress_marker_result('{"dedup":true,"content_returned":false}')
+    assert not is_no_progress_marker_result('{"status":"unchanged","dedup":true}')
+    assert not is_no_progress_marker_result('{"content":"a real payload"}')
+    assert not is_no_progress_marker_result(None)
+
+
 # ── Legitimate flows must survive hard stops (Teknium, Sep 2026) ────────────
 # Hard stops default ON for unattended platforms. These pin the flows that
 # must NEVER be cut off there: edit -> re-run loops, diagnostic sweeps of
@@ -376,3 +741,52 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+# ── The carry must be reachable from production, not just from tests ────────
+
+
+def _SKILL_VIEW_DEDUP(name: str = "hermes-development") -> str:
+    """The exact envelope tools/skills_tool.py emits for a repeat view."""
+    return json.dumps(
+        {
+            "success": True,
+            "status": "unchanged",
+            "name": name,
+            "file": "SKILL.md",
+            "dedup": True,
+            "content_returned": False,
+            "message": "already served this turn",
+        }
+    )
+
+
+def test_internal_continuation_carries_the_streak_into_the_next_turn():
+    """An agent-authored continuation must not launder a no-progress streak.
+
+    build_turn_context() calls reset_for_turn(new_user_input=not
+    internal_continuation). Before that argument was threaded through, every
+    turn passed the default and the streak restarted at 1 forever -- the
+    mechanism existed but no production path could reach it.
+    """
+    c = _HARD()
+    args = {"name": "hermes-development"}
+    blocked_at = None
+    for turn in range(1, 8):
+        c.reset_for_turn(new_user_input=False)  # what an internal retry does
+        if not c.before_call("skill_view", args).allows_execution:
+            blocked_at = turn
+            break
+        c.after_call("skill_view", args, _SKILL_VIEW_DEDUP())
+    assert blocked_at is not None, "carried streak never reached the block"
+
+
+def test_a_genuine_new_user_request_still_clears_the_streak():
+    """The other half of the same argument: real user turns must never block."""
+    c = _HARD()
+    args = {"name": "hermes-development"}
+    for _ in range(8):
+        c.reset_for_turn(new_user_input=True)
+        assert c.before_call("skill_view", args).allows_execution
+        c.after_call("skill_view", args, _SKILL_VIEW_DEDUP())
+    assert c.halt_decision is None

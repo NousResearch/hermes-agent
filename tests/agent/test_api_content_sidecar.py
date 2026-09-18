@@ -151,7 +151,7 @@ class _FakeTodoStore:
 
 
 class _FakeGuardrails:
-    def reset_for_turn(self):
+    def reset_for_turn(self, *, new_user_input: bool = True):
         pass
 
 

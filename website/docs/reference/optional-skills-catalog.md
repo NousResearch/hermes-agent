@@ -71,6 +71,7 @@ hermes skills uninstall <skill-name>
 | [**dream-loop**](/docs/user-guide/skills/optional/creative/creative-dream-loop) | Build stunning 3D scenes via a concept-art fidelity loop. |
 | [**excalidraw**](/docs/user-guide/skills/optional/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). |
 | [**heartmula**](/docs/user-guide/skills/optional/creative/creative-heartmula) | HeartMuLa: Suno-like song generation from lyrics + tags. |
+| [**human-writing**](/docs/user-guide/skills/optional/creative/creative-human-writing) | Natural-sounding Chinese prose (活人感写作): write or revise Chinese long-form content — Zhihu answers, forum posts, WeChat articles, blogs, stories, scripts — so it reads like a real person, not a model. Enforces material-first drafting and... |
 | [**hyperframes**](/docs/user-guide/skills/optional/creative/creative-hyperframes) | Render MP4/WebM videos from HTML compositions. |
 | [**impeccable**](/docs/user-guide/skills/optional/creative/creative-impeccable) | Frontend design guidance, upstream-maintained (impeccable). |
 | [**ip-as-logo**](/docs/user-guide/skills/optional/creative/creative-ip-as-logo) | Design minimal cute IP mascot marks readable at 32px. |

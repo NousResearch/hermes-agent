@@ -31,6 +31,13 @@ DEFAULT_CONFIG = {
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
+        # The rest of apply_database_pragmas' inputs (hermes_state_wal.py). None = leave SQLite's
+        # own default: every reader skips the PRAGMA when the key is None, so declaring them here
+        # only makes them addressable by `hermes config set`. synchronous: OFF/NORMAL/FULL/EXTRA.
+        "cache_size": None,
+        "mmap_size": None,
+        "temp_store": None,
+        "synchronous": None,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
@@ -1842,6 +1849,10 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
+        # Resource limits per execute_code call (tools/code_execution_tool.py DEFAULT_TIMEOUT /
+        # DEFAULT_MAX_TOOL_CALLS, and shipped uncommented in cli-config.yaml.example).
+        "timeout": 300,
+        "max_tool_calls": 50,
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state

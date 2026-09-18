@@ -52,8 +52,9 @@ def _matrix(extra=None):
 def _whatsapp():
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
-    return SimpleNamespace(_dm_allowlist_source="WHATSAPP_ALLOWED_USERS", _allow_from=set(),
-                           _coerce_allow_list=WhatsAppBehaviorMixin._coerce_allow_list)
+    host = WhatsAppBehaviorMixin()
+    host._dm_allowlist_source, host._allow_from = "WHATSAPP_ALLOWED_USERS", set()
+    return host
 
 
 def _slack():
@@ -87,7 +88,7 @@ _GATES = [
      lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allowlist_in_effect(),
      False, True),
     ("qqbot.open_dm", {"QQ_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(SimpleNamespace()),
+     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
      False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),

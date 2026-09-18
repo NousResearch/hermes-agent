@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
@@ -283,9 +284,9 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
             skill_manage_available="skill_manage" in names,
         )
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # fallback paths must also limit task protocol guidance to dispatcher workers.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
+    if _kanban_guidance is None and "kanban_show" in names and owned_kanban_task():
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
@@ -310,6 +311,33 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+
+
+def _auto_load_parts(agent: Any) -> List[str]:
+    """``skills.auto_load`` blocks, resolved once per agent lifecycle (config, skill files and
+    HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
+    across model switches, compression and static-prefix restoration.
+
+    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
+    context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
+    operator guidance for the user's session, not payload for every internal fork."""
+    if getattr(agent, "skip_context_files", False) or not any(
+            name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
+        return []
+    if not getattr(agent, "_auto_load_skills_resolved", False):
+        result: Tuple[str, List[str], List[str]] = ("", [], [])
+        try:
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                from agent.skill_commands import build_auto_load_prompt
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+            if result[2]:
+                logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
+        except Exception:
+            logger.debug("skills.auto_load: injection skipped", exc_info=True)  # config errors never block session start
+        agent._auto_load_skills_result = result
+        agent._auto_load_skills_resolved = True
+    prompt = agent._auto_load_skills_result[0]
+    return [prompt] if prompt else []
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
@@ -381,23 +409,49 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def platform_hint(agent: Any) -> str:
-    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
-    override + desktop TUI clarifier."""
-    platform_key = (agent.platform or "").lower().strip()
-    _default_hint = PLATFORM_HINTS.get(platform_key, "")
-    if not _default_hint and platform_key:
+def _default_platform_hint(platform_key: str) -> str:
+    """Built-in hint, else the plugin adapter's ``platform_hint``, else ``""``."""
+    hint = PLATFORM_HINTS.get(platform_key, "")
+    if not hint and platform_key:
         try:
             from gateway.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
-            _default_hint = (_entry and _entry.platform_hint) or ""
+            hint = (_entry and _entry.platform_hint) or ""
         except Exception:
             pass
-    if platform_key == "telegram" and _default_hint and _telegram_rich_messages_enabled():
-        _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
-    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
+    if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
+        hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+    return hint
+
+
+def _cron_delivery_hint(agent: Any) -> str:
+    """The destination channel's hint (default + its ``platform_hints`` override) for a cron agent.
+
+    A cron agent runs as platform ``cron`` but its final response lands on the job's ``deliver``
+    channel, so without this the model never learns that MEDIA: tags become Slack/Telegram
+    attachments or that tables do not render there — and a user's ``platform_hints.slack.append``
+    never reached scheduled jobs at all. The scheduler publishes the primary auto-deliver target
+    into the session ContextVar before the agent runs (same seam ``send_message`` routes by).
+    """
+    from gateway.session_context import get_session_env
+    deliver_key = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").lower().strip()
+    if not deliver_key or deliver_key == "cron":
+        return ""
+    hint = _resolve_platform_hint(agent, deliver_key, _default_platform_hint(deliver_key))
+    return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
+
+
+def platform_hint(agent: Any) -> str:
+    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
+    override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
+    platform_key = (agent.platform or "").lower().strip()
+    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
+    if platform_key == "cron":
+        _delivery = _cron_delivery_hint(agent)
+        if _delivery:
+            _effective_hint = f"{_effective_hint}\n\n{_delivery}".strip()
     return _effective_hint
 
 
@@ -519,7 +573,7 @@ def _guidance_parts(agent: Any) -> List[str]:
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
-        parts.append(execution_guidance_text(agent.valid_tool_names))
+        parts.append(execution_guidance_text())
     return parts
 
 
@@ -627,6 +681,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
+    # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
+    stable_parts.extend(_auto_load_parts(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
@@ -671,7 +727,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     agent._cached_system_prompt_static = parts["stable"]
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
-        agent._emit_status(warning)
+        agent._emit_diagnostic_status(warning)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
 

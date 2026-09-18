@@ -38,14 +38,26 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
-    ``browser.chrome_path`` is a non-secret operator override. Export it under
-    agent-browser's documented environment contract so local automation does
-    not silently fall back to the user's signed Google Chrome application.
+    Browser credentials and ``browser.chrome_path`` resolve from the active
+    profile. The configured executable is exported under agent-browser's
+    documented environment contract so local automation cannot silently fall
+    back to the user's signed Google Chrome application.
     """
-    from tools.environments.local import hermes_subprocess_env
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    from agent.proxy_bypass import add_loopback_no_proxy
+
+    env = served_profile_child_env(inherit_credentials=False)
+    # A routed profile (multiplex, or a Desktop/dashboard backend serving ``?profile=B`` with the
+    # flag off) resolves from its bound scope only — a miss is "no key", never the launch profile's
+    # ``os.environ`` value that ``get_secret`` falls through to while multiplexing is inactive.
+    routed = serves_routed_profile()
+    scope = (current_secret_scope() or {}) if routed else None
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        value = scope.get(key) if routed else get_secret(key)
+        if value is not None:
+            env[key] = value
 
     configured_path = str(
         _browser_cfg("chrome_path", "", lambda value: value or "", "browser.chrome_path")
@@ -68,7 +80,10 @@ def _build_browser_env() -> dict:
                     "Configured browser.chrome_path does not exist; ignoring it: %s",
                     executable,
                 )
-    return env
+
+    # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
+    # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
+    return add_loopback_no_proxy(env)
 
 
 try:
@@ -78,11 +93,13 @@ except Exception:
 
 try:
     from tools.url_safety import (
+        _is_declared_fake_ip,
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
     )
 except Exception:
+    _is_declared_fake_ip = lambda ip: False  # noqa: E731 — no declaration known: keep the private verdict
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
@@ -274,7 +291,9 @@ _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
 def _url_is_private(url: str) -> bool:
     """True when the URL's host is (or resolves to) a private/LAN/loopback/CGNAT address.
     Routing oracle only: DNS failures are NOT private (the configured backend surfaces the
-    error); obvious names short-circuit the DNS hop."""
+    error); obvious names short-circuit the DNS hop. A local proxy's declared fake-ip sentinel
+    (``security.fake_ip_ranges``) is not private: the name is public, the cloud browser resolves
+    it itself, so routing it to the local sidecar would send every URL local on such a host."""
     import ipaddress
     import socket
     from urllib.parse import urlparse
@@ -284,6 +303,8 @@ def _url_is_private(url: str) -> bool:
             ip = ipaddress.ip_address(host)
         except ValueError:
             return None
+        if _is_declared_fake_ip(ip):
+            return False
         return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
 
     try:
@@ -463,7 +484,7 @@ atexit.register(_lifecycle._stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer an available text-extraction or terminal-fetch tool; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {

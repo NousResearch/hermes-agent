@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from contextlib import nullcontext, suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
@@ -16,6 +17,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import cfg_get
+from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -160,12 +162,14 @@ class GatewayAgentCacheMixin:
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # falls back to env resolution and layers model/provider.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
-                if not override.get("base_url"):
+                if not override.get("base_url") or provider.strip().lower() in LLAMACPP_ALIASES:
+                    # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
+                    # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
             except Exception:
                 logger.debug(
@@ -423,10 +427,14 @@ class GatewayAgentCacheMixin:
             if interrupt_event is not None:
                 interrupt_event._hermes_run_generation = int(generation)
 
-    def _interrupt_running_turn(self, session_key: str, *, interrupt_reason: str, invalidation_reason: str) -> int:
+    def _interrupt_running_turn(
+        self, session_key: str, *, interrupt_reason: str, invalidation_reason: str, tool_reason: str | None = None,
+    ) -> int:
         """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
         agent, invalidate its run generation, and reap the tool processes that turn spawned.
+        ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
         Returns the post-bump generation."""
+        from contextvars import copy_context
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
@@ -436,7 +444,7 @@ class GatewayAgentCacheMixin:
             # bump and release below are the cleanup that matters.
             with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
                                  session_key, exc_info=True):
-                request_hard_interrupt(running_agent, interrupt_reason)
+                request_hard_interrupt(running_agent, interrupt_reason, tool_reason=tool_reason)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:
@@ -446,8 +454,8 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
+                target=copy_context().run,
+                args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
                     "source": "gateway_turn_interrupt",
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),
@@ -691,24 +699,32 @@ class GatewayAgentCacheMixin:
                 ctx.run(self._run_release_in_profile_scope, target, args, session_key)
 
     def _run_release_in_profile_scope(self, target, args: tuple, session_key: Optional[str]) -> None:
-        """Call ``target(*args)`` under the profile that owns ``session_key``. Threads start with an
-        EMPTY context, so a bare thread would commit end-of-session memory (provider ``on_session_end``
-        reads credentials/home at call time) under the LAUNCH profile — lost memories or a secondary's
-        transcript extracted into the default profile's provider namespace. In-turn callers already
-        carry the scope (``copy_context`` preserves it); the unscoped housekeeping sweep resolves the
-        owner from the session key (``agent:<profile>:...``) and enters that profile's scope."""
+        """Call ``target(*args)`` under the profile that OWNS ``session_key``.
+
+        Threads start with an EMPTY context, so a bare thread would commit end-of-session memory
+        (provider ``on_session_end`` reads credentials/home at call time) under the launch profile.
+        And the LRU-cap eviction runs inside the REQUESTING turn, whose agent may belong to another
+        profile — so "some scope is present" is not enough either. The owner comes from the session
+        key: a named profile's home, else the DEFAULT profile (``agent:main:`` keys), which is the
+        root Hermes dir even when the gateway was launched under a named profile. Its scope is
+        entered unless the current one already is the owner's."""
         from agent.secret_scope import current_secret_scope, is_multiplex_active
-        if current_secret_scope() is not None or not is_multiplex_active():
-            target(*args)
-            return
-        from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_hermes_home
-        home = None
-        store = getattr(self, "session_store", None)
-        if session_key and store is not None:
-            with suppress(Exception):
-                home = store._profile_home_for_key(session_key)
-        with _profile_runtime_scope(home or get_hermes_home()):
+        scope = nullcontext()
+        if is_multiplex_active():
+            from gateway.run import _profile_runtime_scope
+            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            owner = None
+            store = getattr(self, "session_store", None)
+            if session_key and store is not None:
+                try:
+                    owner = store._profile_home_for_key(session_key)
+                except Exception:
+                    logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
+                                   session_key, exc_info=True)
+            owner_home = Path(owner) if owner else get_default_hermes_root()
+            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+                scope = _profile_runtime_scope(owner_home)
+        with scope:
             target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:

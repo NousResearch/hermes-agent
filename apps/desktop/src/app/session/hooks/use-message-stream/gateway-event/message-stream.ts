@@ -362,6 +362,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       surfaceBillingBlock(sessionId, payload.billing)
     }
 
+    // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
+    if (typeof payload?.warning === 'string' && payload.warning.trim()) {
+      notify({ kind: 'warning', message: payload.warning })
+    }
+
     if (isActiveEvent) {
       setTurnStartedAt(null)
 

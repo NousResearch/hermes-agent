@@ -73,84 +73,8 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
     return entry
 
 
-# ── runtime checks ────────────────────────────────────────────────────────────────────────────
-#
-# Params are validated on every call: an unknown or mistyped key is the CLIENT's bug and answers
-# JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
-# they drift, so they never break a user's turn: outside the test suite a mismatch is logged once per
-# name; under ``HERMES_TEST_ISOLATION`` (set by ``scripts/run_tests.sh`` / ``tests/conftest.py``) it
-# raises, which is what makes the suite the gate.
-
-STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
-_reported: set[str] = set()
-
-
-class ContractViolation(AssertionError):
-    """A result/payload the gateway produced does not match its declared contract."""
-
-
-def _report(kind: str, name: str, exc: ValidationError) -> None:
-    if STRICT:
-        raise ContractViolation(f"{kind} {name!r} violates its contract: {exc}") from exc
-    if name not in _reported:
-        _reported.add(name)
-        logger.warning("%s %r violates its wire contract: %s", kind, name, exc)
-
-
-def validate_params(contract: MethodContract | ServerRequestContract, params: dict) -> tuple[dict | None, str | None]:
-    """Reject UNKNOWN keys (``4000`` with the key path) — the one check no handler performs, and the
-    one that catches a renamed or misspelled field on either side. Required / type errors are left to
-    the handler, which owns its documented domain codes (``4006`` missing session_id, ``4015`` bad
-    url, …) and which clients already branch on; ``check_params_accepted`` closes the loop by
-    flagging a handler that SUCCEEDS on params the contract calls invalid."""
-    try:
-        contract.params.model_validate(params)
-    except ValidationError as exc:
-        for err in exc.errors():
-            if err.get("type") == "extra_forbidden":
-                loc = ".".join(str(p) for p in err.get("loc", ())) or "params"
-                return None, (f"invalid params for {contract.name}: {loc}: {err.get('msg')} — the client and "
-                              "the Hermes backend are out of sync (different versions); run `hermes update` "
-                              "and restart both")
-    return params, None
-
-
-def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:
-    """The handler answered with a result: the params it accepted must be valid under the
-    contract, else the contract is narrower than the wire (a required field that is optional in
-    practice, a type the handler coerces). Same strict/log policy as results."""
-    try:
-        contract.params.model_validate(params)
-    except ValidationError as exc:
-        _report("params accepted by", contract.name, exc)
-
-
-def check_result(contract: MethodContract | ServerRequestContract, result: dict) -> None:
-    try:
-        contract.result.model_validate(result)
-    except ValidationError as exc:
-        _report("result of", contract.name, exc)
-
-
-def check_payload(name: str, payload: dict | None) -> None:
-    contract = EVENTS.get(name)
-    if contract is None:
-        # Completeness (every emitted name has a contract) is the generator's / the contract
-        # test's job; at emit time only a DECLARED contract can be violated.
-        return
-    if contract.payload is None:
-        if payload:
-            _report("payload of", name, _no_payload_error(payload))
-        return
-    try:
-        contract.payload.model_validate(payload or {})
-    except ValidationError as exc:
-        _report("payload of", name, exc)
-
-
-def assert_complete(methods: dict[str, object], emitted_events: set[str], server_requests: set[str]) -> None:
-    """Every registered method / emitted event name / sent server request has a contract, and no
-    contract is orphaned. Raises with the full lists."""
+def assert_complete(methods: dict[str, object], server_requests: set[str]) -> None:
+    """Every registered method and sent server request has exactly one contract."""
     problems = []
     if missing := sorted(set(methods) - set(METHODS)):
         problems.append(f"methods without a contract: {missing}")

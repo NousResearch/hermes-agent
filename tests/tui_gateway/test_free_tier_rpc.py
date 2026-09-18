@@ -64,7 +64,9 @@ def _set_guest_off(monkeypatch):
 def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest, monkeypatch):
     status = _call("free_tier.status")
     assert status == {"has_guest": True, "enabled": True, "available": True, "notice_pending": True,
-                      "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL}
+                      "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL,
+                      # the mint-failure block is declared on the wire and empty when nothing failed
+                      "error": None, "error_code": None, "retryable": None, "retry_after": None}
 
     assert _call("free_tier.ack_notice") == {"acked": True}
     assert _call("free_tier.status")["notice_pending"] is False
@@ -120,7 +122,6 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
         return store["providers"]["nous"]
 
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
-
     ok = {"has_guest": True, "enabled": True, "error": None, "error_code": None, "retryable": None, "retry_after": None}
     assert _call("free_tier.provision") == ok
     assert calls == [{"explicit": True, "force": True}]
@@ -142,4 +143,5 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
-    assert _call("free_tier.provision") == {"has_guest": False, "enabled": False, "error": None}
+    assert _call("free_tier.provision") == {"has_guest": False, "enabled": False, "error": None,
+                                            "error_code": None, "retryable": None, "retry_after": None}

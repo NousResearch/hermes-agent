@@ -79,6 +79,7 @@ export function resumeSnapshot(overrides: Partial<SessionResumeResult> = {}): Se
     session_id: '',
     message_count: 0,
     messages: [],
+    pending_connection: null,
     info: scriptedSessionInfo(),
     stored_session_id: null,
     resumed: null,
@@ -184,7 +185,6 @@ export interface GatewayOptions {
   /** Per profile: report inflight/running on its first N `session.resume`s. */
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
-
   approvalUntil?: Record<string, { payload: PendingApproval; until: number }>
   /** Per profile: carry the clarify open-request frame on its first `until`
    *  resumes. */

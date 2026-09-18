@@ -1102,7 +1102,6 @@ def _(rid, params: MessageReactParams, session: dict) -> MessageReactResult | di
 
 
 @method("llm.oneshot")
-
 @_profile_scoped
 def _(rid, params: LlmOneshotParams) -> LlmOneshotResult | dict:
     """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend.
@@ -1115,7 +1114,6 @@ def _(rid, params: LlmOneshotParams) -> LlmOneshotResult | dict:
     session = _sessions.get(params.session_id or "")
     try:
         from agent.oneshot import run_oneshot
-
         with (_session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
             return LlmOneshotResult(text=run_oneshot(
                 instructions=instructions, user_input=user_input, template=template, variables=params.variables or {},
@@ -1198,7 +1196,6 @@ def _(rid, params: SessionContextBreakdownParams, session: dict) -> SessionConte
             model=_metadata_mirror(session).get("model", ""))
     with session["history_lock"]:
         history = list(session.get("history", []))
-
     # Bind the session context (on the RPC thread the session cwd is unset, so the prompt build inside
     # would key its workspace pin on the backend's cwd and overwrite the session's pin) and the session's
     # profile runtime scope: the build reaches the external memory provider's system_prompt_block(),
@@ -1586,7 +1583,6 @@ def _(rid, params: SessionHistoryParams, session: dict) -> SessionHistoryResult 
 
 
 @_session_method("session.undo", live=True)
-
 def _(rid, params: SessionUndoParams, session: dict) -> SessionUndoResult | dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.
     busy = _err(rid, 4009, busy_message("undo"))
@@ -1706,11 +1702,8 @@ def _(rid, params: SessionCompressParams) -> SessionCompressResult | dict:
     if err:
         return err
     if session.get("running"):
-
-        return _err(rid, 4009, "session busy")
-    raw = params.cwd.strip()
-    if not raw:
-        return _err(rid, 4016, "cwd required")
+        return _err(rid, 4009, busy_message("compress"))
+    sid = params.session_id
     try:
         return _compress_live(rid, sid, session, (params.focus_topic or "").strip())
     except CompressionLockHeld as e:

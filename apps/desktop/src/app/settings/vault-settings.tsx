@@ -151,8 +151,6 @@ export function VaultSettings() {
   const connectionId = useStore($activeConnectionId)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
-
-
   const requestGateway = useCallback<GatewayRequest>(
     (method, params) =>
       requestGatewayForAgent(connectionId, scopeProfile, method, params, undefined, undefined, {

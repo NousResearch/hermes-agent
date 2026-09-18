@@ -134,12 +134,6 @@ export async function completeMcpDesktopOAuth({
             throw new Error(callback.error || 'OAuth callback did not include state')
           }
 
-
-
-          if (!callback.state) {
-            throw new Error(callback.error || 'OAuth callback did not include state')
-          }
-
           // Omit a null iss: a backend that predates the RFC 9207 relay rejects unknown params (4000).
           const { iss, ...rest } = callback
           await request('mcp.servers.oauth.callback', { session_id: flowId, ...rest, ...(iss ? { iss } : {}) })

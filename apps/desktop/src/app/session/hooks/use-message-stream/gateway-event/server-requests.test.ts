@@ -2,6 +2,7 @@ import type { PreviewActParams, TourParams } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
@@ -64,26 +65,6 @@ function deliver<M extends 'preview.act' | 'tour'>(
 
   return { fail, respond }
 }
-
-describe('connection request routing', () => {
-  it('does not route connection operations through the server-request rail', () => {
-    const { handled, respond } = deliver(
-      'connection',
-      {
-        deadline_at: 1_800_000_000,
-        op_id: 'op-1',
-        session_id: 'session-a',
-        targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
-        timeout_seconds: 60,
-        tool_call_id: 'call-1'
-      },
-      'session-a'
-    )
-
-    expect(handled).toBe(false)
-    expect(respond).not.toHaveBeenCalled()
-  })
-})
 
 describe('preview action request routing', () => {
   it('leaves a scoped action request unanswered in a window showing another session', () => {

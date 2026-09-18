@@ -13,6 +13,13 @@ from .contracts.config_free_tier_control import (
     ConnectorsListParams,
     ConnectorsListResult,
 )
+from .contracts.connectors_operation import (
+    ConnectionOperationParams,
+    ConnectionOperationStatus,
+    ConnectionRespondParams,
+    ConnectionRespondResult,
+    ConnectionUpdatePayload,
+)
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -38,9 +45,6 @@ def _connector_owner_matches(sid, owner, profile_home):
             and owner.get("profile_home") == profile_home)
 
 
-
-
-
 def _owned_session(rid, params):
     """(owner, None) for a session this transport owns; (None, error reply) otherwise."""
     sid = params.session_id
@@ -52,7 +56,6 @@ def _owned_session(rid, params):
             or origin is not None and (origin[0] is not owner or origin[1] != owner.get("profile_home"))):
         return None, _connector_rpc_error(rid, 4001, "NOT_OWNER", "session not found or not owned by this transport")
     if _session_uses_compute_host(owner):
-
         return None, _connector_rpc_error(rid, 5033, "UNSUPPORTED_RUNTIME", "Connectors must be managed on the session's compute host.")
     return owner, None
 
@@ -70,8 +73,7 @@ def _connector_rpc(rid, params, action):
             re.fullmatch(r"[a-z0-9][a-z0-9_-]*", connector) is None
             for connector in params.connectors
         ):
-            return _connector_rpc_error(
-                rid, 4000, "INVALID_PARAMS", "connectors must be nonempty slugs")
+            return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "connectors must be nonempty slugs")
         args.update(action="reconnect" if params.reconnect else "connect", connectors=params.connectors)
     profile_home = owner.get("profile_home")
     runtime_token = _current_runtime_session_record.set(owner)
@@ -122,14 +124,15 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
     data = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(data, dict) or "error" in data:
         return _connector_rpc_error(rid, 5034, "CONNECTOR_REQUEST_FAILED", "Connector request failed or was refused by policy.")
-
     if args["action"] == "status":
         if not isinstance(data.get("connectors"), list) or any(not isinstance(row, dict) for row in data["connectors"]):
             return _connector_rpc_error(rid, 5034, "INVALID_CONNECTOR_RESPONSE", "Connector service returned an invalid response.")
         return ConnectorsListResult(available=True, connectors=connector_ui_payload(data["connectors"]))
     if not isinstance(data.get("targets"), list):
         return _connector_rpc_error(rid, 5034, "INVALID_CONNECTOR_RESPONSE", "Connector service returned no authorization results.")
-    return ConnectorsConnectResult(**connector_ui_payload(data))
+    # ``ConnectionOperation.result()`` carries ``settled_at``; the wire snapshot names ``settled`` too.
+    data.setdefault("settled", data.get("settled_at") is not None)
+    return ConnectorsConnectResult.model_validate(connector_ui_payload(data))
 
 
 def _reissue(rid, operation, args):
@@ -149,37 +152,34 @@ def _reissue(rid, operation, args):
         return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
                                     "only a failed or expired target can be re-minted; reopen the stored link")
     mint(ConnectorClient(), operation, stale, reinitiate=True, actor=Actor.user)
-    return _ok(rid, connector_ui_payload(_operation_view(operation)))
+    return ConnectorsConnectResult.model_validate(connector_ui_payload(_operation_view(operation)))
 
 
 def _live_operation(rid, params, owner):
     from tools.connectors import live
 
-    op_id = params.get("op_id")
-    if not isinstance(op_id, str) or not op_id:
+    if not params.op_id:
         return None, _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "op_id required")
-    operation = live.get(owner["session_key"], op_id)
+    operation = live.get(owner["session_key"], params.op_id)
     if operation is None:
         return None, _connector_rpc_error(rid, 4004, "UNKNOWN_OPERATION", "no open operation with that op_id in this session")
     return operation, None
 
 
 @method("connectors.list")
-
 def _(rid, params: ConnectorsListParams) -> ConnectorsListResult | dict:
     """Return connector catalog + connection state for one owned session."""
     return _connector_rpc(rid, params, "status")
 
 
 @method("connectors.connect")
-
 def _(rid, params: ConnectorsConnectParams) -> ConnectorsConnectResult | dict:
     """Start or re-initiate authorization for named connectors."""
     return _connector_rpc(rid, params, "connect")
 
 
 @method("connectors.operation.status")
-def _(rid, params):
+def _(rid, params: ConnectionOperationParams) -> ConnectionOperationStatus | dict:
     from tui_gateway.connector_payload import connector_ui_payload
 
     owner, error = _owned_session(rid, params)
@@ -188,11 +188,11 @@ def _(rid, params):
     operation, error = _live_operation(rid, params, owner)
     if error:
         return error
-    return _ok(rid, connector_ui_payload(_operation_view(operation)))
+    return ConnectionOperationStatus.model_validate(connector_ui_payload(_operation_view(operation)))
 
 
 @method("connection.respond")
-def _(rid, params):
+def _(rid, params: ConnectionRespondParams) -> ConnectionRespondResult | dict:
     """The card's answer for the operation named by ``op_id``: per-target user / renderer-flow
     transitions and an optional Continue. The contract decides what the card may claim."""
     from tools.connectors import live
@@ -207,14 +207,14 @@ def _(rid, params):
     if error:
         return error
     try:
-        apply_answer(operation, json.dumps(params["result"]))
+        apply_answer(operation, params.result.model_dump_json(exclude_none=True))
     except IllegalTransition as exc:
         return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
     if not operation.settled and operation.all_resolved:
         operation.settle(SettleReason.all_resolved)
     if operation.settled:
         live.close(operation)
-    return _ok(rid, {"status": "ok", "settled": operation.settled})
+    return ConnectionRespondResult(status="ok", settled=operation.settled)
 
 
 def _operation_view(operation):
@@ -230,10 +230,7 @@ def _connection_update(operation, change=None):
         sid = next((s for s, c in server._sessions.items() if c.get("session_key") == operation.session_key), None)
     if sid is None:
         return
-    payload = _operation_view(operation)
-    if change:
-        payload.update(change)
-    server._emit("connection.update", sid, payload)
+    server._emit("connection.update", sid, ConnectionUpdatePayload.model_validate({**_operation_view(operation), **(change or {})}))
 
 
 def _install_update_hook():

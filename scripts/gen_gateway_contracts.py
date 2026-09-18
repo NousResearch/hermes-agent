@@ -366,7 +366,9 @@ class ContractSchemas:
             name = _pascal(slot)
             schema.pop("title", None)
             existing = self.defs.get(name)
-            if existing is not None and existing != schema:
+            # A payload class that another model also nests arrived first via that model's ``$defs``,
+            # ``title`` included; the same class is one definition, not a collision.
+            if existing is not None and {k: v for k, v in existing.items() if k != "title"} != schema:
                 raise RenderError(f"{slot}: duplicate anonymous schema name {name!r}")
             if existing is None:
                 self.defs[name] = schema

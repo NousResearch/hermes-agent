@@ -1,32 +1,5 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
-import type { ConnectorRow } from '@hermes/shared'
-
-import type { ChatMessage } from '@/lib/chat-messages'
-
-export function latestConnectorPart(messages: ChatMessage[]) {
-  return messages
-    .flatMap(message => message.parts)
-    .filter(part => {
-      if (part.type !== 'tool-call') {
-        return false
-      }
-
-      if (part.toolName === 'manage_connections') {
-        const input = recordOf(part.args)
-
-        return (
-          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
-        )
-      }
-
-      return connectorCalls(part.toolName, part.args).length > 0
-    })
-    .at(-1)
-}
-
- from '@assistant-ui/core/internal'
-import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type { ConnectorRow as WireConnectorRow } from '@hermes/shared'
 
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -118,7 +91,6 @@ export function connectorRowFromWire(row: WireConnectorRow): ConnectorRow {
   }
 }
 
-
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
@@ -208,7 +180,7 @@ export function connectionRows(
 
     if (slug !== undefined) {
       if (/^[a-z0-9_-]+$/i.test(slug)) {
-        rows.set(slug, rows.get(slug) ?? blankConnectorRow(slug))
+        rows.set(slug, rows.get(slug) ?? { connector: slug })
       }
 
       return
@@ -221,7 +193,7 @@ export function connectionRows(
       return
     }
 
-    const merged: ConnectorRow = { ...blankConnectorRow(connector), ...rows.get(connector) }
+    const merged: ConnectorRow = { ...rows.get(connector), connector }
 
     if (row.connected === true || row.connected === false) {
       merged.connected = row.connected

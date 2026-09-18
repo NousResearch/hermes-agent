@@ -875,7 +875,6 @@ def _(rid, params) -> CommandDispatchResult | dict:
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
-
     with _session_home_scope(session):
         for stage in filter(None, stages):
             res = stage(rid, params, session, name, arg)
@@ -1028,9 +1027,6 @@ def _(rid, params) -> BrowserManageResult | dict:
     if action == "connect":
         return _browser_connect(rid, params)
     return _err(rid, 4015, f"unknown action: {action}")
-
-
-
 
 
 @_scoped_rpc("config.show", 5030)
@@ -1411,15 +1407,12 @@ def _(rid, params) -> McpOauthCancelResult:
 
 
 @_mcp_rpc("oauth.callback", _NAME_SESSION)
-
 def _(rid, params) -> McpOauthCallbackResult:
     """Relay a client-captured redirect (``code``/``state``/``error``/``iss``) into a ``client_redirect_uri`` flow."""
     code, state, error, iss = (getattr(params, key) or None for key in ("code", "state", "error", "iss"))
     deliver = _tools_mod("tui_gateway.mcp_oauth_sessions").deliver_callback_flow
     return McpOauthCallbackResult.model_validate(deliver(
         _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error, iss=iss))
-
-
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────

@@ -14,7 +14,6 @@ from typing import Literal
 from pydantic import Field, StrictInt
 
 from .base import JsonValue, Params, Result, WireEnum
-
 from .connectors_operation import ConnectionOperationStatus
 from .tools_commands import DispatchType
 from .registry import method
@@ -127,6 +126,11 @@ class SetupStatusResult(Result):
     other_providers: bool | None = None
     inference_provider: str | None = None
     profile: str | None = None
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
     ok: bool | None = None
     error: str | None = None
 
@@ -200,6 +204,12 @@ class FreeTierStatusResult(Result):
     notice_pending: bool
     model: FreeTierModel
     label: FreeTierLabel
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.status", params=Params, result=FreeTierStatusResult,
@@ -209,7 +219,12 @@ method("free_tier.status", params=Params, result=FreeTierStatusResult,
 class FreeTierProvisionResult(Result):
     has_guest: bool
     enabled: bool
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.provision", params=Params, result=FreeTierProvisionResult,
@@ -314,31 +329,6 @@ class ConnectorRow(Result):
     description: str | None = None
 
 
-class ConnectorConnectStatus(WireEnum):
-    active = "active"
-    initiated = "initiated"
-    failed = "failed"
-
-
-class ConnectorConnectEntry(Result):
-    """``tools/connections_tool.py:395-427`` authorization result."""
-
-    connector: str
-    status: ConnectorConnectStatus | None = None
-    connect_url: str | None = None
-    note: str | None = None
-    instruction: str | None = None
-
-
-class ConnectorConnectSummary(Result):
-    """``tools/tool_gateway/wire.py:166-170`` summary passed through unchanged."""
-
-    total: int = 0
-    active: int = 0
-    initiated: int = 0
-    failed: int = 0
-
-
 class ConnectorsListResult(Result):
     available: bool
     connectors: list[ConnectorRow]
@@ -361,7 +351,6 @@ class ConnectorsConnectResult(ConnectionOperationStatus):
 
     status: str | None = None
     note: str | None = None
-
 
 
 method("connectors.connect", params=ConnectorsConnectParams, result=ConnectorsConnectResult,

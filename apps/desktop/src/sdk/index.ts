@@ -238,8 +238,6 @@ const $busyBySession = computed($sessionStates, states => {
 
 const $viewport = atom<ViewportRect>(readViewport())
 
-
-
 /** Options a plugin may attach to one `host.requestProfile` call. */
 export interface PluginProfileRequestOptions {
   /** Tag the dial that may cold-spawn this route's backend. Default
@@ -322,7 +320,7 @@ async function requestPluginProfile(
     }
 
     if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
+      return requestGatewayForAgentUntyped(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
         spawnPriority
       })
     }
@@ -335,7 +333,6 @@ async function requestPluginProfile(
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
-
     return dialProfile(route)
   }
 
@@ -348,7 +345,6 @@ async function requestPluginProfile(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
-
     return dialProfile(profile)
   }
 
@@ -1464,7 +1460,6 @@ export const host = {
    *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
    *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
    *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
-
    *  to keep the default.
    *
    *  `options.spawnPriority: 'foreground'` marks the call as an explicit user
@@ -1474,7 +1469,6 @@ export const host = {
    *  the fourth positional argument so existing callers keep their shape; pass
    *  `undefined` there to set options alone. Default is 'background'. */
   requestProfile: requestPluginProfile,
-
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

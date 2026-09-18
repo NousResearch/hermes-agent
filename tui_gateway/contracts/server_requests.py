@@ -177,22 +177,6 @@ server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
                doc="A one-time / 2FA code the user reads from their device.")
 
 
-class McpSetupAction(WireEnum):
-    install = "install"
-    enable = "enable"
-    authorize = "authorize"
-
-
-class McpSetupRequestParams(ServerRequestParams):
-    server: str
-    action: McpSetupAction
-    reason: str
-
-
-server_request("mcp.setup", params=McpSetupRequestParams, result=ValueResult,
-               doc="Consent card for installing, enabling, or authorising an MCP server.")
-
-
 # ── desktop GUI bridges ───────────────────────────────────────────────────────────────────────
 
 

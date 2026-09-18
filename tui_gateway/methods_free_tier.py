@@ -37,7 +37,6 @@ def _(rid, params: Params) -> FreeTierStatusResult | dict:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
-
         payload = {
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
@@ -65,7 +64,6 @@ def _(rid, params: Params) -> FreeTierProvisionResult | dict:
         from hermes_cli import free_tier_bootstrap
         enabled = anon_auth.guest_enabled()
         if enabled and not anon_auth.has_guest():
-
             if free_tier_bootstrap.current_record() is not None and not params.profile:
                 # The launch profile: refresh the boot record too, so ``setup.status`` and the
                 # ``setup.ready`` listeners move with the outcome.

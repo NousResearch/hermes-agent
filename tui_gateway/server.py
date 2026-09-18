@@ -45,7 +45,7 @@ from tui_gateway.contracts.events import (
 from tui_gateway.contracts.sessions import LiveSessionSnapshot
 from tui_gateway.contracts.server_requests import (
     ApprovalRequestParams, ClarifyAnswer, ClarifyAnswers, ClarifyBatch, ClarifyQuestion,
-    ClarifySingle, EmptyRequestParams, McpSetupRequestParams, PreviewActRequestParams,
+    ClarifySingle, EmptyRequestParams, PreviewActRequestParams,
     ReadRangeRequestParams, SecretRequestParams, TourRequestParams, VaultCodeRequestParams,
     VaultSaveLoginRequestParams, VaultUnlockRequestParams)
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
@@ -562,7 +562,6 @@ def _profile_scoped(handler):
     launch process's ``os.environ``: ``config.get full`` for a secondary shipped the default profile's
     expanded secrets and ``config.set`` published a secondary's ``.env`` edit into the shared process env.
 
-
     Launch profile: unscoped while this is a single-profile process (legacy ``os.environ`` precedence,
     systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
     frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
@@ -667,8 +666,6 @@ from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid))
-
-
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -888,7 +885,6 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     if params is not None and not isinstance(params, dict):
         return _err(rid, -32602, "invalid params: expected an object")
     return rid, method, params if params is not None else {}
-
 
 
 

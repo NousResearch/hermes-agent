@@ -1359,15 +1359,6 @@ describe('createGatewayEventHandler', () => {
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
     expect(serverRequest('window.read', { profile: null, session_id: 'sid' }).handled).toBe(false)
-    expect(
-      serverRequest('mcp.setup', {
-        action: 'install',
-        profile: null,
-        reason: 'needed',
-        server: 'files',
-        session_id: 'sid'
-      }).handled
-    ).toBe(false)
     expect(serverRequest('vault.code', { hint: null, profile: null, session_id: 'sid', site: null }).handled).toBe(
       false
     )

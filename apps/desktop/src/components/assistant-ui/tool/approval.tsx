@@ -1,7 +1,5 @@
 'use client'
 
-
-
 import { useAuiState } from '@assistant-ui/react'
 import type { ApprovalChoice } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
@@ -43,8 +41,6 @@ import { setToolDisclosureOpen } from '@/store/tool-view'
 import { isApprovalActivity } from './approval-activity'
 import { toolEntryDisclosureId } from './fallback-model/targets'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
-
-
 
 export const ApprovalPlacementContext = createContext<'inline' | 'floating'>('inline')
 

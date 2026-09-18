@@ -125,8 +125,6 @@ def _unanswerable(method: str, sid: str) -> bool:
     return True
 
 
-
-
 def _emit_cancel(req: ServerRequest, reason: str) -> None:
     from tui_gateway.contracts.server_requests import RequestCancelPayload
 
@@ -187,8 +185,6 @@ def send(method: str, sid: str, params: Params, *, timeout: float | None,
 
             return ClarifyAnswers(answers=locked, timed_out=True)
     return None
-
-
 
 
 def send_async(method: str, sid: str, params: Params,

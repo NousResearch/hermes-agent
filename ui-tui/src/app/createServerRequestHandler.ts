@@ -18,7 +18,7 @@ type ServerRequestHandlers = { [M in keyof ServerRequestMap]?: (request: ServerR
  * (`tui_gateway/server_requests.py`). Each entry opens its overlay card;
  * the card's answer path resolves the request through `serverRequestStore`.
  * Methods the terminal cannot answer (desktop GUI bridges: `preview.*`,
- * `window.read`, `tour`, `mcp.setup`, `terminal.read`, the other vault
+ * `window.read`, `tour`, `terminal.read`, the other vault
  * prompts) have no entry, so the caller answers `-32601` and the tool fails
  * fast instead of waiting out its deadline.
  */

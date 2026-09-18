@@ -45,9 +45,6 @@ def _generator(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-
-
-
 def test_registered_methods_match_contract_catalog():
     from tui_gateway import server
     from tui_gateway.contracts.registry import METHODS

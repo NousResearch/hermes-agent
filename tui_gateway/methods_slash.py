@@ -152,7 +152,6 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
             f"Context usage: {mark}{context_used:,} / {context_max:,} tokens ({mark}{(context_used / context_max) * 100:.1f}%)")
     elif context_used:
         lines.append(f"Context usage: {mark}{context_used:,} tokens")
-
     if usage.compressions:
         lines.append(f"Compressions: {int(usage.compressions or 0):,}")
     if (agent := session.get("agent")) is not None:

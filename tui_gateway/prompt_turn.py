@@ -121,6 +121,7 @@ def _admit_prompt_turn(
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
             session["running"] = False
+            session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
         _emit("error", sid, ErrorPayload(message=str(ownership_refusal)))
         return None
     with session["history_lock"]:
@@ -880,9 +881,9 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+    from tui_gateway.contracts.events import MessageCompletePayload
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
-    from tui_gateway.contracts.events import MessageCompletePayload
     if admitted is None:
         return False
     images, agent = admitted

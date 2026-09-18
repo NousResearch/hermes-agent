@@ -260,8 +260,6 @@ def _(rid, params: ConfigGetParams) -> ConfigGetResult | dict:
 
 # ── setup readiness
 
-
-
 def _readiness_check(rid, params, probe, result_type):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
     optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
@@ -276,15 +274,12 @@ def _readiness_check(rid, params, probe, result_type):
             return result_type(ok=False, profile=params.profile,
                                error=f"Profile '{profile}' does not exist on this backend.")
         home = _profile_home(profile)
-
     # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
     # a single-profile process), or the first profile-scoped read inside the resolver
     # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
     with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
         return result_type(**probe(profile, {"profile": profile} if profile else {}))
-
-
 
 
 @method("setup.status")
@@ -309,7 +304,6 @@ def _(rid, params: Params) -> SetupStatusResult | dict:
             # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
-
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
         return _readiness_check(rid, params, probe, SetupStatusResult)
     except Exception as e:
@@ -317,7 +311,6 @@ def _(rid, params: Params) -> SetupStatusResult | dict:
 
 
 @method("setup.runtime_check")
-
 def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
     """Readiness probe for the session a client is about to open (setup.status is True if ANY
     provider auth state is discoverable): ok=False + the auth error when the model can't be served,

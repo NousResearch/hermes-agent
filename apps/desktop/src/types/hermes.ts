@@ -2,7 +2,6 @@ import type { JsonValue, MessageReaction, ProjectInfo } from '@hermes/shared'
 
 export type { ProjectFolder, ProjectInfo, SessionCreateResult, SessionResumeResult } from '@hermes/shared'
 export type { MessageReaction }
-import type { ConnectionRequestPayload } from '@hermes/shared'
 
 export interface ConfigFieldSchema {
   category?: string
@@ -631,7 +630,6 @@ export interface SessionMessagesResponse {
   }
   session_id: string
 }
-
 
 /** The runtime block both the gateway `SessionLiveInfo` and the REST session payload satisfy.
  *  It keeps the REST-only warnings the generated contract does not carry. */

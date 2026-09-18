@@ -8,7 +8,6 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-
 from .common import (PendingApproval, SessionLiveInfo, SessionParams, TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method

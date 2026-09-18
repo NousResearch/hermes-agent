@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -603,6 +604,29 @@ _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
 def fast_safe_load(stream: Any) -> Any:
     """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
     return yaml.load(stream, Loader=_fast_yaml_loader)
+
+
+_YAML_FILE_CACHE: dict = {}
+_YAML_FILE_CACHE_LOCK = threading.Lock()
+
+
+def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
+
+    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
+    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
+    path = Path(path)
+    sig = file_signature(path.stat())
+    key = str(path)
+    with _YAML_FILE_CACHE_LOCK:
+        cached = _YAML_FILE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    with _YAML_FILE_CACHE_LOCK:
+        _YAML_FILE_CACHE[key] = (sig, data)
+    return data
 
 
 def _env_number(key: str, default, cast):

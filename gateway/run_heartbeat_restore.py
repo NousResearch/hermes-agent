@@ -19,6 +19,13 @@ def _watched_homes(runner, default_home) -> list:
     return list(dict.fromkeys(Path(home) for home in homes))
 
 
+def _scope_key(runner, origin) -> str:
+    """Profile home ``_profile_scope_for_source`` would bind for ``origin`` (one key when not multiplexed)."""
+    if getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+        return str(runner._resolve_profile_home_for_source(origin))
+    return ""
+
+
 async def restore_heartbeat_watches(runner) -> None:
     """Retryable startup/poll scan; failed reads never prune existing watches.
 
@@ -43,18 +50,30 @@ async def restore_heartbeat_watches(runner) -> None:
         if not any(profile_has_active_heartbeat(h) for h in _watched_homes(runner, home)):
             return restored
         with _profile_runtime_scope(home):
-            entries = store.list_sessions()
-            for entry in entries:
+            # Enter each profile's scope once per scan, not once per routed session: a scope entry
+            # hydrates the secret scope and terminal policy, so N sessions cost N parses otherwise.
+            # Sources are read through _restored_source so the persisted receiving bot is re-pinned
+            # before the scope key is derived; the same source object is what gets registered.
+            by_scope: dict = {}
+            for entry in store.list_sessions():
                 if entry.origin is None or not entry.session_id or entry.suspended:
                     continue
                 try:
                     source = runner._restored_source(entry)
-                    with runner._profile_scope_for_source(source):
-                        manager = HeartbeatManager(entry.session_id)
-                        if manager.is_active():
-                            restored.append((entry.session_key, source, entry.session_id))
+                    by_scope.setdefault(_scope_key(runner, source), []).append((entry, source))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
+            for group in by_scope.values():
+                try:
+                    with runner._profile_scope_for_source(group[0][1]):
+                        for entry, source in group:
+                            try:
+                                if HeartbeatManager(entry.session_id).is_active():
+                                    restored.append((entry.session_key, source, entry.session_id))
+                            except Exception:
+                                logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
+                except Exception:
+                    logger.debug("heartbeat restore scope for %s failed", group[0][0].session_key, exc_info=True)
         return restored
 
     try:

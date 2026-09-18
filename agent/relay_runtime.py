@@ -270,7 +270,7 @@ class _ProcessRelayPluginConfiguration:
         config_path = _configured_plugin_inputs()
         if config_path is None:
             return False
-        # Relay reads the explicit file in place of the user file; the system file still layers beneath it.
+        # Relay replaces the user file with the explicit file, then applies the system file above it.
         activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
         if activation is None:
             raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
@@ -1239,15 +1239,19 @@ def _configured_plugin_inputs() -> Path | None:
         ) from exc
 
 
-# Relay 0.9 exposes no active-host query; only initialize's Conflict message signals one.
-_RELAY_HOST_CONFLICT_MARKERS = (
-    "plugin configuration is already active",
-    "owned by an active dynamic plugin host",
+# Relay 0.9 exposes no active-host query; only initialize's two Conflict messages signal one.
+_RELAY_HOST_CONFLICT_MESSAGES = frozenset(
+    {
+        "conflict: a static plugin configuration is already active; to combine static and dynamic plugins, "
+        "provide the static components as the base configuration to dynamic plugin activation before calling "
+        "plugin initialization",
+        "conflict: plugin configuration is owned by an active dynamic plugin host",
+    }
 )
 
 
 def _is_relay_host_conflict(exc: BaseException) -> bool:
-    return isinstance(exc, RuntimeError) and any(marker in str(exc) for marker in _RELAY_HOST_CONFLICT_MARKERS)
+    return isinstance(exc, RuntimeError) and str(exc) in _RELAY_HOST_CONFLICT_MESSAGES
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:

@@ -50,35 +50,72 @@ class MCPServerRunMixin:
         self._mark_stdio_recycled(recycle_reason)
         return True
 
+    async def _wait_for_rpc_idle(self) -> None:
+        """Wake the lifecycle loop when the active RPC releases its lock."""
+        async with self._rpc_lock:
+            pass
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Serve until a lifecycle event: ``"shutdown"`` (exits run), ``"reconnect"`` (session torn
         down, transport re-entered; event cleared first) or ``"recycle"`` (stdio idle/lifetime
-        limit; restarts lazily on next call). Shutdown wins a tie. A keepalive (``ping``,
-        list_tools fallback) runs every ``keepalive_interval`` (must stay below the server's
-        session TTL); a failure triggers a reconnect.
-
-        Periodically sends a lightweight keepalive (``ping``, with a ``list_tools`` fallback for servers
-        that don't implement the optional ping utility — see :meth:`_keepalive_probe`) to prevent
-        TCP/session state from going stale during idle periods (#17003).
+        limit; restarts lazily on next call). Shutdown wins a tie. Remote transports run a
+        keepalive (``ping``, with a ``list_tools`` fallback for servers lacking the optional ping
+        utility — see :meth:`_keepalive_probe`) every ``keepalive_interval`` (which must stay
+        below the server's session TTL) so idle TCP/session state never goes stale (#17003);
+        stdio does so only when explicitly configured. A keepalive failure triggers a reconnect.
         """
-        keepalive_interval = max(
-            _core._MIN_KEEPALIVE_INTERVAL,
-            float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))
+        is_http = self._is_http()
+        configured = self._config.get("keepalive_interval")
+        keepalive_interval = None
+        if is_http or configured is not None:
+            keepalive_interval = max(
+                _core._MIN_KEEPALIVE_INTERVAL,
+                float(_core._DEFAULT_KEEPALIVE_INTERVAL if configured is None else configured))
+        # No keepalive, but an unproven stdio session must still get its chance to prove
+        # itself: it counts as proven only once a FULL default interval has elapsed — not on
+        # the first timeout wake, which a shorter recycle deadline may cause (see below).
+        proof_at = None
+        if keepalive_interval is None and not self._session_proven:
+            proof_at = time.monotonic() + _core._DEFAULT_KEEPALIVE_INTERVAL
         shutdown_task, reconnect_task = self._event_waiters()
+        rpc_idle_task = None
+        waiters = [shutdown_task, reconnect_task]
         try:
             while True:
                 if self._recycle_if_due():
                     return "recycle"
                 timeout = keepalive_interval
+                if timeout is None and not self._session_proven and proof_at is not None:
+                    timeout = max(0.0, proof_at - time.monotonic())
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
-                    timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
+                    recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
+                    timeout = recycle_timeout if timeout is None else min(timeout, recycle_timeout)
+                elif not is_http and self._rpc_lock.locked():
+                    # Recycle deadlines are intentionally hidden while an RPC is active. Without
+                    # a default stdio keepalive timeout, lock release must wake this loop so the
+                    # now-visible deadline is evaluated instead of waiting forever. (For a stdio
+                    # server with no limits the wake is a harmless extra iteration.)
+                    rpc_idle_task = rpc_idle_task or asyncio.ensure_future(self._wait_for_rpc_idle())
+                waiters = [t for t in (shutdown_task, reconnect_task, rpc_idle_task) if t is not None]
                 done, _pending = await asyncio.wait(
-                    {shutdown_task, reconnect_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-                if done:
+                    waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if shutdown_task in done or reconnect_task in done:
                     break
+                if rpc_idle_task in done:
+                    rpc_idle_task = None
+                    continue
                 if self._recycle_if_due():
                     return "recycle"
+                if keepalive_interval is None:
+                    # Stdio without a keepalive: idling a full default interval with the child
+                    # still alive is the proof of health a successful ping gives remote
+                    # transports — clear the rapid-drop budget without pinging (#62212). An
+                    # earlier wake (a hidden-then-missed recycle deadline) is not that proof.
+                    if (not self._session_proven and proof_at is not None
+                            and time.monotonic() >= proof_at and not self._stdio_children_dead()):
+                        self._mark_session_proven()
+                    continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
                 # Timeout — no lifecycle event fired. See #48069.
@@ -99,7 +136,7 @@ class MCPServerRunMixin:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
-            await self._cancel_waiters(shutdown_task, reconnect_task)
+            await self._cancel_waiters(*waiters)
         if self._shutdown_event.is_set():
             self._fail_inflight_calls("shutdown")
             return "shutdown"
@@ -138,6 +175,7 @@ class MCPServerRunMixin:
         # (#57129). An explicit _reconnect_event.set() (OAuth recovery, manual /mcp refresh) still wakes us
         # immediately.
         self._was_parked = True
+        self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
         outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)

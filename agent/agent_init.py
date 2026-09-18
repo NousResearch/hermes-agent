@@ -952,7 +952,9 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             print(f"🤖 AI Agent initialized with model: {agent.model}")
             if base_url:
                 print(f"🔗 Using custom base URL: {base_url}")
-            _print_key_banner(client_kwargs.get("api_key", "none"), "API key", warn_missing=True)
+            from gateway.warning_notifications import warning_notifications_enabled
+            _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
+                              warn_missing=warning_notifications_enabled(agent.platform))
     except Exception as e:
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
@@ -1097,7 +1099,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         requirements = model_tools.check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+            agent._safe_print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}", diagnostic=True)
     else:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
     if agent.save_trajectories:
@@ -1295,6 +1297,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
+                if _mp is None:
+                    # The provider left core for the catalog (or was never installed): fetch it once.
+                    from hermes_cli.memory_provider_migration import recover_at_startup
+                    if recover_at_startup(_mem_provider_name):
+                        _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
@@ -1522,12 +1529,23 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
 
 def _warn_invalid_config_int(
     what: str, value: Any, requirement: str, fallback: str, print_fallback: str = "",
+    agent: Any = None,
 ) -> None:
     """Log + stderr-print an invalid integer config value (``print_fallback``: user-facing
-    wording where it differs from the log line)."""
+    wording where it differs from the log line). The print is an automatic diagnostic and
+    honors the warning-notification policy; the log line never does."""
     _ra().logger.warning(
         "Invalid %s: %r — %s. Falling back to %s.", what, value, requirement, fallback,
     )
+    from gateway.warning_notifications import warning_notifications_enabled
+    try:
+        if not warning_notifications_enabled(
+            getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+            getattr(agent, "_notification_config", None),
+        ):
+            return
+    except Exception:
+        pass
     print(
         f"\n⚠ Invalid {what}: {value!r}\n"
         f"  {requirement[0].upper() + requirement[1:]}.\n"
@@ -1681,6 +1699,7 @@ def _warn_invalid_custom_provider_context_length(agent, _custom_providers) -> No
             _warn_invalid_config_int(
                 f"context_length for model {agent.model!r} in custom_providers",
                 _cp_ctx, _CTX_LEN_REQUIREMENT, "auto-detection", "auto-detected context window",
+                agent=agent,
             )
         return
 
@@ -1708,7 +1727,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
             _warn_invalid_config_int(
                 "model.context_length in config.yaml", _config_context_length,
                 "must be a plain integer (e.g. 256000, not '256K')",
-                "auto-detection", "auto-detected context window",
+                "auto-detection", "auto-detected context window", agent=agent,
             )
             _config_context_length = None
 
@@ -2083,7 +2102,7 @@ def _emit_compression_summary(agent, cs):
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.
         if _autoraise_notice:
-            print(_autoraise_notice)
+            agent._safe_print(_autoraise_notice, diagnostic=True)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.

@@ -338,7 +338,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "Scheduler is not ready" not in out
+        assert "Gateway is not running" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 

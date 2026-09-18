@@ -54,14 +54,36 @@ def _meminfo() -> dict[str, int]:
     return out
 
 
+def _stat_value(path: Path, key: str) -> Optional[int]:
+    """One ``<key> <bytes>`` line out of a cgroup ``memory.stat``."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            name, _, rest = line.partition(" ")
+            if name == key:
+                return int(rest.strip())
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _cgroup_limit_and_usage() -> tuple[Optional[int], Optional[int]]:
+    """The cgroup's limit and its *working set* — usage minus reclaimable page cache.
+
+    ``memory.current`` counts page cache, so a container reads several hundred MB above idle right after a
+    desktop stops with every process gone. Charging that would make the gate tighten over uptime, so we
+    subtract ``inactive_file``, the working-set convention kubelet uses.
+    """
     limit = _read_int(_CGROUP_V2 / "memory.max")
     usage = _read_int(_CGROUP_V2 / "memory.current")
+    cache = _stat_value(_CGROUP_V2 / "memory.stat", "inactive_file")
     if limit is None and usage is None:
         limit = _read_int(_CGROUP_V1 / "memory.limit_in_bytes")
         usage = _read_int(_CGROUP_V1 / "memory.usage_in_bytes")
+        cache = _stat_value(_CGROUP_V1 / "memory.stat", "total_inactive_file")
         if limit is not None and limit >= 1 << 60:  # v1 "unlimited" is a huge sentinel
             limit = None
+    if usage is not None and cache:
+        usage = max(usage - cache, 0)
     return limit, usage
 
 
@@ -79,6 +101,8 @@ def memory_info() -> MemoryInfo:
 
 
 def min_free_mb() -> int:
+    """``bot_desktop.min_free_memory_mb``; 0 disables the gate. A hosted deployment sets it in the
+    instance's config.yaml (or the managed overlay), not an env var."""
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     try:
@@ -87,10 +111,18 @@ def min_free_mb() -> int:
         return DEFAULT_MIN_FREE_MB
 
 
-def memory_blocker(info: Optional[MemoryInfo] = None) -> Optional[str]:
+def tight_headroom_mb(floor: Optional[int] = None) -> int:
+    """Above the floor but below this, a start is allowed and logged: the desktop fits, a few browser tabs
+    would not. Derived from the floor so raising the floor cannot silently retire the warning."""
+    floor = min_free_mb() if floor is None else floor
+    return floor + floor // 3
+
+
+def memory_blocker(info: Optional[MemoryInfo] = None, need: Optional[int] = None) -> Optional[str]:
     """Why the screen must not start now, or None. Unknown memory is not a blocker: a host we cannot
-    read is not a host we know to be small."""
-    need = min_free_mb()
+    read is not a host we know to be small. ``need`` lets a caller that also wants
+    :func:`tight_headroom_mb` read the floor once instead of loading the config twice."""
+    need = min_free_mb() if need is None else need
     if need == 0:
         return None
     info = info or memory_info()

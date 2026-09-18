@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 import threading
 import time
 import sys
@@ -21,6 +22,21 @@ def test_every_required_binary_maps_to_an_installed_package(pm):
     assert set(mapping) == set(runtime.REQUIRED_BINARIES)
     assert set(mapping.values()) <= set(runtime.PACKAGES[pm])
     assert not {"xorg-x11-server-utils", "xorg-x11-utils"} & set(runtime.PACKAGES["dnf"]), "retired on Fedora"
+
+
+def test_the_image_bakes_the_same_apt_packages_the_runtime_would_install() -> None:
+    """The image layer is the only delivery path on a hosted instance, so a package added here but not
+    there stalls the screen with no error until someone presses Start."""
+    dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile"
+    text = dockerfile.read_text()
+    assert "ARG HERMES_BOT_DESKTOP" in text, "the Bot Screen apt layer is gone from the Dockerfile"
+    body = text.split("ARG HERMES_BOT_DESKTOP", 1)[1].split("--no-install-recommends", 1)[1].split("rm -rf", 1)[0]
+    baked = {tok for tok in re.split(r"[\s\\&]+", body) if tok and not tok.startswith("-")}
+    required = set(runtime.PACKAGES["apt"])
+    assert required <= baked, f"the image would not install: {sorted(required - baked)}"
+    # apt `chromium` on top of the operator's list: a headed browser for the dock's Browser icon that
+    # does not depend on Playwright's copy being unpacked yet.
+    assert baked - required <= {"chromium"}, f"unexpected extra packages: {sorted(baked - required)}"
 
 
 def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
@@ -294,3 +310,63 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
     t.join()
     assert st.running
     assert seen.get("free") is True, "allocation lock still held after Xvnc wrote its X lock"
+
+
+def _startable_host(monkeypatch, tmp_path, *, running=False):
+    """A Linux host with the packages present, so only the check under test can block a start."""
+    from tools.bot_desktop import resources
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242 if running else None)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":7"} if running else {})
+    monkeypatch.setattr(runtime, "_reap_orphaned_server", lambda sd: None)
+    monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)
+    monkeypatch.setattr(resources, "memory_info",
+                        lambda: resources.MemoryInfo(available_mb=400, limit_mb=4096))
+    spawned: list = []
+    monkeypatch.setattr(runtime, "_spawn_and_wait", lambda *a, **k: spawned.append(a))
+    return spawned
+
+
+def test_a_running_desktop_is_never_refused_for_the_memory_it_is_using(tmp_path, monkeypatch):
+    """The gate guards the allocation, not the session: a running desktop is itself what consumes the
+    memory, so checking before the running-check made Start fail on a healthy screen."""
+    _startable_host(monkeypatch, tmp_path, running=True)
+    runtime.start()  # returns status(); must not raise about headroom
+
+
+def test_a_root_host_without_a_package_manager_is_told_the_truth(tmp_path, monkeypatch):
+    """Root with no package manager: installable() is False for a reason unrelated to privilege."""
+    _startable_host(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: ["Xvnc"])
+    monkeypatch.setattr(runtime, "package_manager", lambda: None)
+    monkeypatch.setattr(runtime, "is_root", lambda: True)
+    assert runtime.installable() is False
+    with pytest.raises(RuntimeError) as excinfo:
+        runtime.start()
+    message = str(excinfo.value)
+    assert "package manager" in message
+    assert "unprivileged" not in message and "sudo" not in message, f"wrong diagnosis: {message}"
+
+
+def test_an_unprivileged_host_is_pointed_at_the_image(tmp_path, monkeypatch):
+    """The published image: a package manager exists but there is no way to reach root."""
+    _startable_host(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: ["Xvnc"])
+    monkeypatch.setattr(runtime, "package_manager", lambda: "apt")
+    monkeypatch.setattr(runtime, "is_root", lambda: False)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None if name == "sudo" else "/usr/bin/" + name)
+    assert runtime.installable() is False
+    with pytest.raises(RuntimeError, match="baked in"):
+        runtime.start()
+
+
+def test_a_host_that_can_install_gets_the_command(tmp_path, monkeypatch):
+    """The branch that used to be unreachable behind an `or` fallback."""
+    _startable_host(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: ["Xvnc"])
+    monkeypatch.setattr(runtime, "package_manager", lambda: "apt")
+    monkeypatch.setattr(runtime, "is_root", lambda: True)
+    with pytest.raises(RuntimeError, match="tigervnc-standalone-server"):
+        runtime.start()

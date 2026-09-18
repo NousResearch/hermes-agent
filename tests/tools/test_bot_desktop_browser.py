@@ -215,3 +215,37 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
     _, sys_exe = _install_browsers(tmp_path / "with-sys", monkeypatch, playwright=False, system=True)
     monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(shell))
     assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
+
+
+def test_a_headless_shell_pin_is_replaced_while_a_screen_is_up(tmp_path, monkeypatch):
+    """The boot hook exports a chrome-headless-shell path; leaving it would put the agent and the dock on
+    two binaries over one --user-data-dir, where the singleton swallows the dock's launch."""
+    shell = tmp_path / "chrome-headless-shell"
+    shell.write_text("#!/bin/sh\n", encoding="utf-8")
+    shell.chmod(0o755)
+    headed = tmp_path / "chrome"
+    headed.write_text("#!/bin/sh\n", encoding="utf-8")
+    headed.chmod(0o755)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
+    monkeypatch.setattr(browser, "_playwright_executable", lambda: str(headed))
+    monkeypatch.delenv("AGENT_BROWSER_PROFILE", raising=False)
+
+    agent_env = browser.env_for_agent({"AGENT_BROWSER_EXECUTABLE_PATH": str(shell)})
+    dock_exe, _ = browser.dock_launch()
+    assert agent_env["AGENT_BROWSER_EXECUTABLE_PATH"] == dock_exe == str(headed), \
+        "the agent and the dock must share one binary once a screen is up"
+
+
+def test_a_real_user_pin_is_still_honoured(tmp_path, monkeypatch):
+    """Only a headless-shell pin is overridden; a human's own headed browser stays put."""
+    mine = tmp_path / "my-chrome"
+    mine.write_text("#!/bin/sh\n", encoding="utf-8")
+    mine.chmod(0o755)
+    other = tmp_path / "chrome"
+    other.write_text("#!/bin/sh\n", encoding="utf-8")
+    other.chmod(0o755)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
+    monkeypatch.setattr(browser, "_playwright_executable", lambda: str(other))
+
+    env = browser.env_for_agent({"AGENT_BROWSER_EXECUTABLE_PATH": str(mine)})
+    assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == str(mine)

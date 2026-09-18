@@ -41,6 +41,31 @@ class TestRepairToolCallArguments:
         # Truncated in the middle of a string key — bracket closing won't help
         assert _repair_tool_call_arguments('{"truncated": "val', "t") == "{}"
 
+    def test_unrepairable_garbage_returns_empty_object(self):
+        # No JSON structure to reconstruct: brackets/closing quotes cannot help.
+        assert _repair_tool_call_arguments("garbage no json", "t") == "{}"
+
+    def test_braces_inside_string_values_do_not_skew_the_balance(self):
+        # A "}" inside a value must not be counted as closing the object: naive counting
+        # sees 2 "}"-worth of closes for 1 "{" and drops a repairable call to "{}".
+        result = _repair_tool_call_arguments('{"code": "}", "x": 1', "t")
+        assert json.loads(result) == {"code": "}", "x": 1}
+
+    def test_braces_inside_values_offset_the_count_the_other_way(self):
+        # An unclosed "{" inside a value makes naive counting append one "}" too many.
+        result = _repair_tool_call_arguments('{"code": "if (x) {", "y": 2', "t")
+        assert json.loads(result) == {"code": "if (x) {", "y": 2}
+
+    def test_truncated_nested_array_closes_in_stack_order(self):
+        # {"items": [{"n": 1}, {"n": 2 needs "}]} appended (stack order), not "}}" —
+        # count-based appending grouped all braces before all brackets and never parsed.
+        result = _repair_tool_call_arguments('{"items": [{"n": 1}, {"n": 2', "t")
+        assert json.loads(result) == {"items": [{"n": 1}, {"n": 2}]}
+
+    def test_truncated_flat_array_closes_correctly(self):
+        result = _repair_tool_call_arguments('{"a": [1, 2', "t")
+        assert json.loads(result) == {"a": [1, 2]}
+
     # -- Valid JSON passthrough (this path is via except, but still works) --
 
 

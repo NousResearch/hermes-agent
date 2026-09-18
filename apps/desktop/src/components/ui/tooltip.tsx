@@ -162,7 +162,24 @@ function TooltipContent({
   const [pane, setPane] = React.useState<Element | null>(null)
 
   React.useLayoutEffect(() => {
-    setPane(boundary === 'pane' ? (anchor?.current?.closest('[data-tree-group]') ?? null) : null)
+    if (boundary !== 'pane') {
+      setPane(null)
+
+      return
+    }
+
+    // A boundary without geometry (a `display: contents` host, e.g. the
+    // floating-composer tree-group) zeroes every clipping rect, so `hide()`
+    // detaches a fully visible trigger and the tip mounts straight into
+    // `visibility: hidden`. Only a pane that has layout of its own may clip;
+    // when nothing does (a DOM without geometry), the pane stands as before.
+    const candidate = anchor?.current?.closest('[data-tree-group]') ?? null
+    const paneRect = candidate?.getBoundingClientRect()
+    const anchorRect = anchor?.current?.getBoundingClientRect()
+    const measurable = !!anchorRect && (anchorRect.width > 0 || anchorRect.height > 0)
+    const paneHasLayout = !!paneRect && (paneRect.width > 0 || paneRect.height > 0)
+
+    setPane(!measurable || paneHasLayout ? candidate : null)
   }, [anchor, boundary])
 
   return (

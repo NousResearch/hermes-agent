@@ -251,4 +251,59 @@ test.describe("Persian RTL visual snapshots", () => {
     expect(box!.x + box!.width).toBeGreaterThan(620 - 4);
     await rtlSnapshot(page, "mobile-drawer");
   });
+
+  test("docs page opens the Persian guide walkthrough with all five figures", async ({ page }) => {
+    // The in-dashboard Persian guide mirrors guide.html's five-step first-run
+    // walkthrough (kept in sync by scripts/check_guide_walkthrough_sync.py).
+    // This test pins the RUNTIME side: the Docs page must actually open the
+    // guide, decode all five guide-images screenshots, and render their
+    // captions in the canonical ۱..۵ order — plus a dedicated element
+    // baseline of the walkthrough block, so any future guide change (new
+    // figure, reworded caption, layout tweak) shows up as a reviewable
+    // snapshot diff instead of hiding inside the tall full-page docs shot.
+    await stubBackend(page);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.goto("/docs", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // The walkthrough section opened, with exactly five figures.
+    await expect(page.getByText("🚀 شروع سریع در ۵ گام")).toBeVisible();
+    const figures = page.locator("figure");
+    await expect(figures).toHaveCount(5);
+
+    // Captions must be present and numbered ۱..۵ in order (the mirrored
+    // guide.html numbering).
+    const captions = await figures.locator("figcaption").allInnerTexts();
+    expect(captions).toHaveLength(5);
+    expect(captions[0]).toContain("۱ —");
+    expect(captions[4]).toContain("۵ —");
+
+    // Every screenshot must actually decode from public/guide-images/ —
+    // a broken/renamed asset renders as an empty box that only this
+    // assertion (not a pixel diff) catches deterministically.
+    await expect
+      .poll(
+        () =>
+          figures.locator("img").evaluateAll((imgs) =>
+            imgs.map((img) => (img as HTMLImageElement).naturalWidth > 0),
+          ),
+        { timeout: 5_000 },
+      )
+      .toEqual([true, true, true, true, true]);
+
+    // Tight element baseline of the walkthrough block itself.
+    const block = page.getByText("🚀 شروع سریع در ۵ گام").locator("..");
+    await block.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(250); // lazy images settle after scroll
+    const shot = await block.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("docs-guide-open.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("docs-guide-open-actual.png"), shot);
+    }
+  });
 });

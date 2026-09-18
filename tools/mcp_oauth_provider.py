@@ -78,7 +78,9 @@ class HermesProviderMixin:
       ``token_endpoint_auth_method``; the SDK then treats the client as public and the token
       endpoint rejects the exchange (looping the browser page) — coerce ``client_secret_post``.
     - ``token_user_agent`` (``oauth.user_agent``) is stamped onto token-endpoint requests only
-      (some authorization servers/WAFs reject httpx's default).
+      (some authorization servers/WAFs reject httpx's default); unset falls back to the shared
+      ``Hermes-Agent/<version>`` default, since a header-less token POST is 403'd by WAF-fronted
+      authorization servers (#115329).
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
@@ -123,11 +125,16 @@ class HermesProviderMixin:
         self.context.callback_handler = _fill_iss
 
     def _prepare_token_request(self, request):
-        """Stamp the configured User-Agent onto a token/refresh request."""
+        """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
+        else the shared ``Hermes-Agent/<version>`` default. These requests are built by hand — the
+        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
+        — and travel through ``client.send()``, which never merges the client's default headers, so
+        without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
+        server answers 403 (#115329)."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
         if ua:
             request.headers["User-Agent"] = ua
-        return request
+        return stamp_default_user_agent(request)
 
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the

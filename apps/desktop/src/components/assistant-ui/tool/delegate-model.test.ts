@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SubagentProgress } from '@/store/subagents'
 
-import { delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
+import { delegateCostLabel, delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
 
 const subagent = (overrides: Partial<SubagentProgress>): SubagentProgress => ({
   filesRead: [],
@@ -51,6 +51,15 @@ describe('delegateRowsFromCall', () => {
 
     expect(rows.map(r => r.status)).toEqual(['completed', 'failed'])
     expect(rows[0]).toMatchObject({ activity: ['found it'], durationSeconds: 12, model: 'anthropic/claude-opus-5' })
+  })
+
+  it.each([
+    ['actual', '$0.2500'],
+    ['estimated', 'estimated $0.2500'],
+    ['unknown', 'cost unavailable'],
+    [undefined, '$0.2500']
+  ] as const)('labels %s cost without treating unknown as zero', (status, expected) => {
+    expect(delegateCostLabel(0.25, status)).toBe(expected)
   })
 
   it('preserves optional structured observability fields from terminal results', () => {

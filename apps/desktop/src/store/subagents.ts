@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
 
+export type SubagentCostStatus = 'actual' | 'estimated' | 'included' | 'unknown'
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -29,6 +30,7 @@ export interface SubagentProgress {
   updatedAt: number
   durationSeconds?: number
   costUsd?: number
+  costStatus?: SubagentCostStatus
   inputTokens?: number
   outputTokens?: number
   schemaRetries?: number
@@ -80,6 +82,8 @@ function setSessionSubagents(sid: string, previous: SubagentProgress[], next: Su
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+const costStatus = (v: unknown): SubagentCostStatus | undefined =>
+  v === 'actual' || v === 'estimated' || v === 'included' || v === 'unknown' ? v : undefined
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
 const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
@@ -225,6 +229,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     updatedAt: at,
     durationSeconds: num(payload.duration_seconds) ?? prev?.durationSeconds,
     costUsd: num(payload.cost_usd) ?? prev?.costUsd,
+    costStatus: costStatus(payload.cost_status) ?? prev?.costStatus,
     inputTokens: num(payload.input_tokens) ?? prev?.inputTokens,
     outputTokens: num(payload.output_tokens) ?? prev?.outputTokens,
     schemaRetries: num(payload.schema_retries) ?? prev?.schemaRetries,

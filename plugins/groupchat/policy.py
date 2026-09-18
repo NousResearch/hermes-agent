@@ -85,6 +85,7 @@ class GroupchatAddon:
         self._profile_home = get_hermes_home()
         self.filter_model = settings["filter_model"]
         active = settings["enabled"] and self.platform in settings["platforms"]
+        self._active = active
         relevance = dict(settings["relevance"])
         relevance["_legacy_env"] = False
         relevance["filter_model"] = self.filter_model
@@ -187,6 +188,10 @@ class GroupchatAddon:
             await policy.close()
         if self.relevance is not None:
             await self.relevance.close()
+
+    def allows_intentional_silence(self, source):
+        return bool(self._active and not self._closed and source is not None
+                    and source.chat_type in {"group", "forum", "channel"})
 
     async def receive(self, event, *, is_mentioned=None):
         from gateway.platforms.base import MessageType

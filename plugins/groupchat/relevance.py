@@ -96,6 +96,7 @@ DEFAULT_SYSTEM_PATTERNS = [
     # for peer agents. Let humans see them in Matrix, but never route them back
     # into another Hermes run.
     r"^\s*⚠(?:\uFE0F)?\s+Model fallback:\s+",
+    r"^\s*⚠(?:\uFE0F)?\s+The model returned only a silence marker for a message that needed a reply\. Try again or rephrase\.\s*$",
     # Dangerous-command approval prompts and their invalid-reaction feedback
     # are gateway lifecycle notices, never conversational turns.
     # The gateway may append the command preview, reason, and reaction help on

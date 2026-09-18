@@ -151,6 +151,7 @@ async def test_inbound_audit_records_matching_rule_without_message(tmp_path):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("text", [
+    "⚠️ The model returned only a silence marker for a message that needed a reply. Try again or rephrase.",
     (
         "⚠️ **Dangerous command requires approval** ``` <write to AGENTS.md> ``` "
         "Reason: Write to protected agent-instruction file(s): AGENTS.md. "
@@ -638,6 +639,16 @@ async def test_plain_own_name_is_an_immediate_direct_address(tmp_path):
     assert adapter.delivered[0].text.startswith("Charlotte?")
     assert gate._pending == {}
     await adapter.disconnect()
+
+
+@pytest.mark.parametrize("enabled,kind,expected", [
+    (True, "group", True), (True, "private", False), (False, "group", False),
+])
+def test_silence_permission_requires_enabled_groupchat(enabled, kind, expected):
+    adapter = Adapter(Platform.MATRIX, {"enabled": enabled})
+    source = event(Platform.MATRIX).source
+    source.chat_type = kind
+    assert adapter.conversation_policy().allows_intentional_silence(source) is expected
 
 
 def test_agent_name_matching_uses_word_boundaries():

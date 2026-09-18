@@ -56,6 +56,17 @@ class ConversationMiddleware:
     def buffers_output(self):
         return any(handler.buffers_output for handler in self.handlers)
 
+    def allows_intentional_silence(self, source):
+        """Let an opted-in conversation policy permit successful silent turns."""
+        for handler in self.handlers:
+            callback = getattr(handler, "allows_intentional_silence", None)
+            try:
+                if callable(callback) and callback(source) is True:
+                    return True
+            except Exception:
+                logger.warning("Conversation silence policy failed", exc_info=True)
+        return False
+
     async def receive(self, event):
         key = ConversationKey.from_source(event.source) if event.source else None
         token = _active_conversation.set(key)

@@ -54,8 +54,8 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
-                "blind_patches"):
+    for key in ("dedup", "dedup_hits", "dedup_overlap_hits", "read_timestamps", "read_coverage",
+                "full_write_baselines", "blind_patches"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -89,6 +89,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_history", _READ_HISTORY_CAP),
         ("dedup", _DEDUP_CAP),
         ("dedup_hits", _DEDUP_CAP),
+        ("dedup_overlap_hits", _DEDUP_CAP),
         ("dedup_generation_reads", _DEDUP_CAP),
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
         ("read_coverage", _READ_TIMESTAMPS_CAP),
@@ -177,6 +178,8 @@ def reset_file_dedup(task_id: str | None = None):
         for task_data in targets:
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
+            if "dedup_overlap_hits" in task_data:
+                task_data["dedup_overlap_hits"].clear()
             task_data.setdefault("dedup_generation_reads", set()).clear()
         candidates = [(task_data, dict(task_data.get("full_write_baselines", {})))
                       for task_data in targets]
@@ -195,6 +198,13 @@ def notify_other_tool_call(task_id: str = "default"):
     Called by the dispatcher for every tool OTHER than read_file/search_files.
     Also clears stub-hit counters and the not-found cache: any other tool may
     have created a previously-missing path (or flipped its permissions).
+
+    ``dedup_overlap_hits`` is deliberately NOT cleared here: it tracks
+    escalation across offset/limit-perturbed re-reads of an already-flagged
+    region (see ``_find_overlapping_flagged_key``), and a model working
+    around that block will almost always interleave an unrelated tool call
+    before retrying — resetting on every other tool call would make the
+    overlap guard a no-op.
     """
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
@@ -220,6 +230,10 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         if dedup:
             for k in [k for k in dedup if k[0] == resolved]:
                 del dedup[k]
+        overlap_hits = task_data.get("dedup_overlap_hits")
+        if overlap_hits:
+            for k in [k for k in overlap_hits if k[0] == resolved]:
+                del overlap_hits[k]
         _pop_not_found("read", resolved, task_id)
         _pop_not_found("search", resolved, task_id)
 

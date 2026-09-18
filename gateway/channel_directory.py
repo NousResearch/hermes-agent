@@ -335,10 +335,13 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> List[D
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entry = {
                 "id": entry_id, "name": _session_entry_name(origin),
                 "type": chat_type, "thread_id": origin.get("thread_id"),
-            })
+            }
+            if origin.get("message_id"):
+                entry["message_id"] = origin["message_id"]
+            entries.append(entry)
     except Exception as e:
         logger.debug("Channel directory: %s for %s: %s", source, platform_name, e)
     return entries
@@ -402,6 +405,20 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     """Channel ``type`` string (e.g. ``"channel"``, ``"forum"``) for *chat_id*, or None if unknown."""
     channels = load_directory().get("platforms", {}).get(platform_name, [])
     return next((ch.get("type") for ch in channels if ch.get("id") == chat_id), None)
+
+
+def lookup_channel_metadata(platform_name: str, target_id: str) -> Dict[str, str]:
+    """Routing metadata for a directory target; Feishu topics need a reply anchor."""
+    for channel in load_directory().get("platforms", {}).get(platform_name, []):
+        if channel.get("id") != target_id:
+            continue
+        metadata: Dict[str, str] = {}
+        if thread_id := channel.get("thread_id"):
+            metadata["thread_id"] = str(thread_id)
+        if reply_to := channel.get("reply_to_message_id") or channel.get("message_id"):
+            metadata["reply_to_message_id"] = str(reply_to)
+        return metadata
+    return {}
 
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:

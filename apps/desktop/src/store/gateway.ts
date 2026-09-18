@@ -1799,28 +1799,21 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
 // A scope parked on a rejected session stays parked for automatic request
 // retries; only a user gesture (`explicit`: the Reconnect action) may redial it.
-export async function ensureActiveGatewayOpen({ explicit = false } = {}): Promise<HermesGateway | null> {
+export async function ensureActiveGatewayOpen({ explicit = false }: { explicit?: boolean } = {}): Promise<HermesGateway | null> {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
 
   const entry = g.secondaries.get(g.activeKey)
 
-  if (!entry) {
+  if (!entry || (!explicit && g.reauthFailures.has(entry.scope))) {
     return null
   }
 
-  if (g.reauthFailures.has(entry.scope)) {
-    if (!explicit) {
-      return null
-    }
-
-    g.reauthFailures.delete(entry.scope)
-  }
-
   if (!isOpen(entry.gateway)) {
-    // The viewed scope is an explicit recovery target (Reconnect action,
-    // request retry): a parked entry must dial again here, not stay parked.
+    // The viewed scope is a recovery target: a stall-parked entry must dial
+    // again here, not stay parked. A reauth-parked one only reaches this line
+    // via `explicit`; the foreground rearm clears its rejection.
     rearmSecondary(entry)
     await reconnectSecondary(entry)
   }

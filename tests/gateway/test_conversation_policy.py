@@ -853,7 +853,14 @@ async def test_room_typing_cancels_voice_claims_in_every_thread_lane(
             "event": voice_event,
         }
 
-    root.typing("same-room")
+    from mautrix.types import EphemeralEvent
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    matrix = MatrixAdapter(PlatformConfig(extra={"user_id": "@owner:example.test"}))
+    matrix._conversation_middleware = adapter.conversation_middleware()
+    await matrix._on_typing(EphemeralEvent.deserialize({
+        "type": "m.typing", "room_id": "same-room",
+        "content": {"user_ids": ["@peer:example.test"]},
+    }))
     await asyncio.sleep(0)
 
     assert all(task.cancelled() for task in tasks)
@@ -1052,3 +1059,26 @@ async def test_explicit_groupchat_off_wins_over_legacy_matrix_flag(monkeypatch):
     assert policy.relevance is None and not policy.guard_enabled
     await adapter.handle_message(event(Platform.MATRIX))
     assert "Relevance assessment" not in adapter.delivered[0].text
+
+
+@pytest.mark.anyio
+async def test_slow_voice_transcript_keeps_attribution_and_turn_cleanup(monkeypatch):
+    adapter = Adapter(Platform.MATRIX, {"relevance": {"enabled": True}})
+    gate = adapter.conversation_policy().relevance
+    monkeypatch.setattr("plugins.groupchat.relevance._now", lambda: 1000.0)
+    gate._pending_voice_transcriptions["same-room"] = ("event-1", "Human", 100.0)
+    assert gate.outbound_filter('🎙️ "slow transcript"', "same-room") == (
+        '[Transcription by Human]: 🎙️ "slow transcript"'
+    )
+    assert "same-room" not in gate._pending_voice_transcriptions
+    gate._pending_voice_transcriptions["same-room"] = ("event-1", "Human", 100.0)
+    assert gate.outbound_filter('🎙️ "slow transcript"', "same-room") is True
+    gate._pending_voice_transcriptions["same-room"] = ("new-voice", "Another", 900.0)
+    original = event(Platform.MATRIX)
+    gate.agent_turn_completed(original, "session", "success")
+    assert gate._pending_voice_transcriptions["same-room"][0] == "new-voice"
+    original.message_id = "new-voice"
+    gate.agent_turn_completed(original, "session", "cancelled")
+    assert "same-room" not in gate._pending_voice_transcriptions
+    assert gate.outbound_filter('🎙️ "unrelated later text"', "same-room") is False
+    await adapter.disconnect()

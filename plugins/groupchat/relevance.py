@@ -547,6 +547,13 @@ class IntelligentReactionGate:
     def agent_turn_completed(
         self, msg_event: MessageEvent, session_id: str, outcome: str
     ) -> None:
+        # Attribution belongs to the voice turn, not a wall-clock deadline.
+        # Clear unused ownership on completion/cancellation so a later message
+        # cannot inherit the original speaker, even if transcription failed.
+        room = msg_event.source.chat_id if msg_event.source else None
+        pending = self._pending_voice_transcriptions.get(room)
+        if pending and pending[0] == msg_event.message_id:
+            self._pending_voice_transcriptions.pop(room, None)
         self._audit(
             msg_event,
             phase="agent_turn_complete",
@@ -2387,13 +2394,12 @@ class IntelligentReactionGate:
             pending and re.match(r"^\s*🎙", content)
         )
         if is_voice_transcription:
-            _, sender, ts = pending
-            if now - ts < 30:
-                prefix = f"[Transcription by {sender}]: "
-                if not content.startswith(prefix):
-                    logger.info("Conversation IR: prepending voice attribution prefix to outbound in %s", chat_id)
-                    content = f"{prefix}{content}"
-                    content_modified = True
+            _, sender, _ = pending
+            prefix = f"[Transcription by {sender}]: "
+            if not content.startswith(prefix):
+                logger.info("Conversation IR: prepending voice attribution prefix to outbound in %s", chat_id)
+                content = f"{prefix}{content}"
+                content_modified = True
             self._pending_voice_transcriptions.pop(chat_id, None)
 
         # Suppress re-transcriptions: if this outbound message is a voice

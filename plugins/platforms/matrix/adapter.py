@@ -2441,7 +2441,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         room_id = str(getattr(event, "room_id", ""))
         content = getattr(event, "content", None) or {}
-        users = content.get("user_ids", []) if isinstance(content, dict) else []
+        users = (content.get("user_ids", []) if isinstance(content, dict)
+                 else getattr(content, "user_ids", []))
         if not room_id or not users:
             return
         own_user_id = self.conversation_user_id()

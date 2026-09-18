@@ -1391,13 +1391,25 @@ def _record_task_failure(
         if infrastructure or not (force_trip or failures >= effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error, task_id),
                 )
+                if cur.rowcount != 1:
+                    # The task left ``running`` before this write: it reached a
+                    # terminal success (the iteration-budget path races
+                    # ``kanban_complete``, which the caller cannot see), was
+                    # blocked, or was reclaimed. The counter/claim UPDATE above is
+                    # already a no-op, so make the whole record one — a
+                    # ``timed_out``/``crashed`` event appended here is what the
+                    # notifier renders as "timed out; dispatcher will retry",
+                    # stamping a false retry onto a card that finished and will
+                    # never be retried. ``enforce_max_runtime`` guards its twin
+                    # path the same way (``cur.rowcount == 1``).
+                    return False
             else:
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "

@@ -233,7 +233,7 @@ What happens:
 1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
-   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).

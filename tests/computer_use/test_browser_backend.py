@@ -1,4 +1,4 @@
-"""Browser backend click/type without launching Chromium."""
+"""Browser backend click/type/scroll/tabs."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from tools.computer_use.browser_backend import BrowserBackend
 
 
 class _FakePage:
-    def __init__(self):
+    def __init__(self, title="fixture", url="https://example.com"):
         self.calls = []
-        self.title_value = "fixture"
+        self.title_value = title
+        self.url = url
+        self.mouse = self
 
     def evaluate(self, script, arg=None):
         self.calls.append((script, arg))
@@ -27,10 +29,21 @@ class _FakePage:
     def wait_for_timeout(self, _ms):
         return None
 
+    def wait_for_load_state(self, *_a, **_k):
+        return None
+
+    def wheel(self, dx, dy):
+        self.calls.append(("wheel", (dx, dy)))
+
+    def goto(self, url, wait_until=None):
+        self.url = url
+        self.calls.append(("goto", url))
+
 
 def test_type_text_fills_last_clicked_element():
     backend = BrowserBackend("https://example.com")
     backend._page = _FakePage()
+    backend._pages = [backend._page]
     backend._elements = [
         UIElement(index=1, role="textbox", label="From"),
         UIElement(index=2, role="button", label="Search"),
@@ -40,7 +53,7 @@ def test_type_text_fills_last_clicked_element():
     typed = backend.type_text("Zurich")
     assert typed.ok
     assert "typed 6 chars" in typed.message
-    script, arg = backend._page.calls[-2]  # type evaluate before refresh
+    script, arg = backend._page.calls[-2]
     assert arg == [1, "Zurich"]
     assert "el.value = extra" in script
 
@@ -53,17 +66,32 @@ def test_type_text_without_target_fails():
     assert "focused element" in result.message
 
 
-def test_new_backend_requires_browser_url(monkeypatch):
+def test_new_backend_defaults_to_about_blank(monkeypatch):
     from tools.computer_use import tool as cu_tool
 
     monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "browser")
     monkeypatch.delenv("HERMES_CU_BROWSER_URL", raising=False)
     monkeypatch.delenv("HERMES_CU_BROWSER_HTML", raising=False)
-    try:
-        cu_tool._new_backend("standard")
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError as exc:
-        assert "HERMES_CU_BROWSER_URL" in str(exc)
+    backend = cu_tool._new_backend("standard")
+    assert backend._target == "about:blank"
+
+
+def test_scroll_and_tabs():
+    backend = BrowserBackend("https://example.com")
+    p1 = _FakePage(title="one", url="https://a.example")
+    p2 = _FakePage(title="two", url="https://b.example")
+    backend._page = p1
+    backend._pages = [p1, p2]
+    scrolled = backend.scroll(direction="down", amount=2)
+    assert scrolled.ok
+    assert ("wheel", (0, 240)) in p1.calls
+    wins = backend.list_windows()
+    assert [w["window_id"] for w in wins] == [1, 2]
+    backend.capture(window_id=2)
+    assert backend._page is p2
+    focused = backend.focus_app("tab:1")
+    assert focused.ok
+    assert backend._page is p1
 
 
 def test_playwright_type_into_input(tmp_path):

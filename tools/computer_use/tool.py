@@ -164,9 +164,7 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
     if backend_name in {"browser", "playwright"}:
         from tools.computer_use.browser_backend import BrowserBackend
         target = (os.environ.get("HERMES_CU_BROWSER_URL") or os.environ.get("HERMES_CU_BROWSER_HTML") or "").strip()
-        if not target:
-            raise RuntimeError("HERMES_CU_BROWSER_URL or HERMES_CU_BROWSER_HTML is required for the browser backend")
-        return BrowserBackend(target)
+        return BrowserBackend(target or "about:blank")
     if backend_name != "noop":
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
@@ -381,10 +379,22 @@ def _do_scroll(backend, action, args, **delivery):
 def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-    # pid/window_id forwarded only when given so older backends keep their defaults.
+    if args.get("url") and hasattr(backend, "navigate"):
+        nav = backend.navigate(str(args["url"]))
+        if not nav.ok:
+            return json.dumps({"error": nav.message or "navigate failed"})
     return _capture_response(backend.capture(mode=mode, app=args.get("app"),
                                              **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
                              session_id=session_id)
+
+def _do_navigate(backend, action, args, **_):
+    url = (args.get("url") or "").strip()
+    if not url:
+        return json.dumps({"error": "navigate requires `url`"})
+    if not hasattr(backend, "navigate"):
+        return json.dumps({"error": "navigate is only available on the browser backend"})
+    return _text_response(backend.navigate(url, new_tab=bool(args.get("raise_window"))))
+
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -469,11 +479,16 @@ def _do_decide(backend, action, args, session_id=None, **_):
     return json.dumps(payload)
 
 
+
 def _do_run_goal(backend, action, args, session_id=None, **_):
     """Decide→act loop. Fail-open to the planner; no frontier model in the loop."""
     goal = (args.get("goal") or args.get("goal_hint") or "").strip()
     if not goal:
         return json.dumps({"error": "run_goal requires `goal`"})
+    if args.get("url") and hasattr(backend, "navigate"):
+        nav = backend.navigate(str(args["url"]))
+        if not nav.ok:
+            return json.dumps({"error": nav.message or "navigate failed"})
     from tools.computer_use.decide_loop import run_decide_loop
 
     def handle(inner: Dict[str, Any]) -> Any:
@@ -550,6 +565,10 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "capture": _ActionSpec(_do_capture),
+    "navigate": _ActionSpec(
+        _do_navigate, destructive=True,
+        summarize=lambda a, args, fg: f"navigate {args.get('url', '')[:80]!r}{fg}",
+    ),
     "decide": _ActionSpec(_do_decide, summarize=lambda a, args, fg: f"decide {args.get('goal', '')[:80]!r}{fg}"),
     "run_goal": _ActionSpec(
         _do_run_goal, destructive=True,

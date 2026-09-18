@@ -1117,8 +1117,11 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     # skips the dispatch connect because the corrupt board fingerprint is
     # disabled, but the ready/review probes still each connect. PR f55d94a1e
     # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # probe, bumping this from 3 → 5. Each tick also runs the unresolved-assignee
+    # health probe (one connect per board slug) — the thing that names *which*
+    # cards can never be spawned for instead of pointing the operator at profile
+    # health — adding one more per tick: 5 → 7.
+    assert calls["connect"] == 7
 
 
 # ---------------------------------------------------------------------------

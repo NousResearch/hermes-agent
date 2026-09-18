@@ -334,4 +334,40 @@ describe('JsonRpcRequestChannel', () => {
     expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
     expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
   })
+
+  // Desktop (store/gateway.ts) and the TUI (gatewayClient.ts) dispatch through onAnyServerRequest,
+  // so a renderer exception there is the production crash path, not the per-method one.
+  it('answers -32603 when a catch-all handler throws and keeps later requests working', () => {
+    const crashed: string[] = []
+    const channel = new JsonRpcRequestChannel({ onRequestHandlerError: (_error, req) => void crashed.push(req.id) })
+    const { sent, transport } = spyTransport()
+
+    channel.attach(transport)
+
+    let calls = 0
+
+    channel.onAnyServerRequest(req => {
+      calls += 1
+
+      if (calls === 1) {
+        throw new Error('dispatcher exploded')
+      }
+
+      if (req.method === 'clarify') {
+        req.respond({ answer: 'yes' })
+      }
+    })
+
+    expect(() =>
+      channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
+    ).not.toThrow()
+    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
+
+    const frames = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number }; result?: { answer?: string } })
+
+    expect(frames.map(f => f.id)).toEqual(['srq-1', 'srq-2'])
+    expect(frames[0].error?.code).toBe(-32603)
+    expect(frames[1].result?.answer).toBe('yes')
+    expect(crashed).toEqual(['srq-1'])
+  })
 })

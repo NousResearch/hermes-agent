@@ -529,15 +529,15 @@ export class JsonRpcRequestChannel {
       fail: error => send({ error })
     }
 
-    const handlers = handlersFor(this.serverRequestHandlers, decoded.method)
-
-    for (const handler of handlers) {
+    // A crashing handler must not leave the backend waiting out its full
+    // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
+    // guard makes this a no-op if the handler already responded.
+    const invoke = (handler: () => void): boolean => {
       try {
-        handler(request)
+        handler()
+
+        return true
       } catch (error) {
-        // A crashing handler must not leave the backend waiting out its full
-        // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
-        // guard makes this a no-op if the handler already responded.
         request.fail({ code: JSON_RPC_INTERNAL_ERROR, message: `server request handler crashed: ${decoded.method}` })
         this.options.onRequestHandlerError?.(error instanceof Error ? error : new Error(String(error)), {
           id: decoded.id,
@@ -549,8 +549,18 @@ export class JsonRpcRequestChannel {
       }
     }
 
+    const handlers = handlersFor(this.serverRequestHandlers, decoded.method)
+
+    for (const handler of handlers) {
+      if (!invoke(() => handler(request))) {
+        return false
+      }
+    }
+
     for (const handler of this.anyServerRequestHandlers) {
-      handler(anyServerRequest(request))
+      if (!invoke(() => handler(anyServerRequest(request)))) {
+        return false
+      }
     }
 
     if (handlers.size || this.anyServerRequestHandlers.size) {

@@ -257,9 +257,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        resolved = Path(atomic_replace(tmp_path, path))  # symlink-preserving; the resolved target actually received the rename
+        _restore_file_metadata(resolved, original_owner, mode)
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(resolved.parent)  # the new directory entry lives beside the resolved target, not beside a symlink to it
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

@@ -51,10 +51,43 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # Respawn guard constants
 # ---------------------------------------------------------------------------
 
-# Patterns in last_failure_error that indicate a quota / auth blocker.
-# These errors won't resolve by retrying immediately — auto-block instead.
+# Patterns in last_failure_error that indicate a TRANSIENT provider-capacity
+# wall: quota exhaustion, rate limiting, 429s, and the dispatcher's OWN
+# bookkeeping text for a rate-limited requeue ("pid N exited rate-limited
+# (quota wall) — requeued without counting a failure", stamped by
+# _classify_dead_worker_exit / _reclaim_dead_workers). Checked FIRST in
+# check_respawn_guard, independent of what the latest run row's ``outcome``
+# says — the classification must not depend on a worker having died via the
+# clean ``rate_limited`` exit path. It commonly dies via a plain ``crashed``
+# exit instead (the provider kills the process outright on a 429), and even
+# a genuine ``rate_limited`` run's stamp can outlive it: a later event on the
+# same row (a stale-claim reclaim, an unrelated retry) can become "latest"
+# while this quota text is still the most recent evidence stored, so gating
+# on ``outcome`` at all is how a transient wall reaches the permanent
+# ``blocker_auth`` park below (#t_ca4db688 — 13 cards stranded, including the
+# dispatcher's own healthy-requeue note poisoning itself: consecutive_failures
+# stayed 0, no breaker ever tripped, no status sweep ever showed a problem).
+_QUOTA_WALL_RE = re.compile(
+    r"(\b429\b|\brate[\s_\-]?limit(?:ed|ing)?\b|\bquota\b|"
+    r"are cooling down|rate_limit_error|temporarily unavailable|"
+    r"exceed(?:s|ed)? (?:your|the) (?:account'?s )?rate limit|"
+    r"usage limit)",
+    re.IGNORECASE,
+)
+
+# Patterns in last_failure_error that indicate a PERMANENT auth / credential
+# blocker — retrying will not resolve these, so the card parks with no
+# self-heal. Checked only AFTER _QUOTA_WALL_RE (see check_respawn_guard):
+# quota/429/rate-limit tokens are deliberately absent here and owned
+# exclusively by _QUOTA_WALL_RE above, because a transient quota message can
+# legitimately contain a vendor's own product name that looks like a billing
+# noun — e.g. "ChatGPT or Codex Subscription rate-limited every one of 3
+# attempts" bare-word-matches "subscription" despite being 100% transient.
+# Since branch 1 claims anything quota-flavored first, a match here means the
+# stamped text carries genuine auth/permission language with NO quota signal
+# at all.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"\b(403|auth\w*|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",
@@ -1368,18 +1401,23 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    ``"rate_limit_cooldown"`` (a transient provider-capacity wall — either the
+    latest run's structured ``outcome == "rate_limited"``, or its
+    ``last_failure_error`` names one via ``_QUOTA_WALL_RE``; see the
+    implementation below for why BOTH signals are checked rather than one
+    alone. This path never increments ``consecutive_failures`` and — by
+    design — retries forever spaced by the cooldown; a quota wall is assumed
+    to eventually clear), ``"blocker_auth"`` (genuine auth/permission pattern
+    with NO quota signal — see ``_RESPAWN_BLOCKER_RE``; no expiry, because
+    retrying a dead credential does not help and the breaker still trips on
+    the very next spawn attempt), then for the ready lane only
+    ``"recent_success"`` (completed run within the window, unless a re-queue
+    event arrived after it — a deliberate re-run) and ``"active_pr"`` (PR URL
+    in a recent comment; re-spawning risks a duplicate PR — unless a handoff
+    event followed the comment: the named profile must work on that PR). The
+    review lane skips the last two: they are the *inputs* to a review handoff.
+    Stale / dead claim locks are NOT a guard reason — the reclaim passes own
+    those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1389,31 +1427,50 @@ def check_respawn_guard(
         return None
 
     now = int(time.time())
+    err = row["last_failure_error"]
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
-    #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
-    rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    # LATEST ended run only: a newer crash/completion supersedes an older
+    # rate-limited run's outcome (see the ordering test in
+    # test_kanban_db.py::test_respawn_guard_ordering_latest_crashed_older_rate_limited_quota_text).
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
+
+    # 1. Transient provider-capacity wall. TWO independent signals, either one
+    #    is sufficient — see docstring for why neither alone covers every
+    #    real exit shape:
+    #      (a) the latest run's structured ``outcome == "rate_limited"``: the
+    #          clean exit path, and the ONLY signal available when a review
+    #          handoff's run row is inserted straight into ``rate_limited``
+    #          with no accompanying ``last_failure_error`` text at all;
+    #      (b) ``last_failure_error`` matches ``_QUOTA_WALL_RE``: covers a
+    #          provider that kills the worker outright (lands as a plain
+    #          ``crashed`` exit, never touching ``outcome``), and covers the
+    #          dispatcher's own "requeued without counting a failure"
+    #          bookkeeping note re-appearing on a later tick.
+    is_quota_wall = (latest_run is not None and latest_run["outcome"] == "rate_limited") or (
+        err and _QUOTA_WALL_RE.search(err)
+    )
+    if is_quota_wall:
+        rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
             return None
-        ended_at = latest_run["ended_at"]
+        ended_at = latest_run["ended_at"] if latest_run is not None else None
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # No ended run yet, or cooldown elapsed — return early so blocker_auth
+        # doesn't catch the stamped quota text; this path intentionally
+        # retries forever (spaced by the cooldown) until quota returns or a
+        # real non-quota run supersedes the stamped error.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
+    # 2. Auth / credential blocker: retrying immediately will not help, and
+    #    (per branch 1 above) this text carries no quota signal at all.
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

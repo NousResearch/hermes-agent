@@ -26,7 +26,8 @@ const RESERVED_DEEP_LINK_KINDS = new Set([
   'plugin',
   'plugin-agent',
   'plugin-desktop',
-  'settings'
+  'settings',
+  'skill'
 ])
 
 function appendSearch(path: string, params: URLSearchParams | Record<string, string> | undefined): string {

@@ -116,6 +116,24 @@ describe('routing', () => {
     expect(parsed.mentioned.size).toBe(1)
   })
 
+  it('Reply-to tags route a same-named local + Connections twin each to itself', async () => {
+    const { rounds } = await loadRoom()
+
+    const local: GroupMember = { name: 'reviewer' }
+    const remote: GroupMember = { connectionId: 'mini', handle: 'reviewer-mini', name: 'reviewer', remoteSource: true, sourceScoped: true }
+    const members = [local, remote]
+
+    for (const member of members) {
+      const tag = rounds.groupReplyMentionTag(member, members)
+      const parsed = rounds.parseGroupChatMentions(`@${tag} `, members)
+
+      expect([tag, [...parsed.mentioned]]).toEqual([member.remoteSource ? 'reviewer-mini' : 'reviewer-local', [member.remoteSource ? 'mini::reviewer' : 'reviewer']])
+    }
+
+    // Unambiguous members keep the friendly tag the autocomplete inserts.
+    expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 
@@ -230,6 +248,70 @@ describe('round lifecycle', () => {
     expect(posted.length).toBeLessThanOrEqual(room.chat.GROUP_CHAT_MAX_MESSAGES)
   })
 
+  it('does not retry ambiguous member admission in later rounds or continuations', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => {
+      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+
+      return '@builder please investigate'
+    } })
+
+    room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Failure')
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+  })
+
+  it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
+    let reject!: (error: Error) => void
+    const held = new Promise<string>((_resolve, fail) => { reject = fail })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
+    await drain(() => room.gateway.calls.length < 1)
+    room.rounds.sendToGroupChat('Failure', members, 'queued same-thread', thread)
+    room.rounds.sendToGroupChat('Failure', members, 'queued other-thread')
+    reject(new Error('Ambiguous admission failure'))
+    await settle(room, 'Failure')
+    await drain(() => false)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get().Failure.watermarks).toEqual({})
+
+    room.rounds.sendToGroupChat('Failure', members, '@research explicitly retry', thread)
+    await settle(room, 'Failure')
+    expect(room.gateway.calls).toHaveLength(2)
+    expect(room.gateway.calls[1].prompt).toMatch(/first[\s\S]*queued same-thread[\s\S]*explicitly retry/)
+  })
+
+  it('attributes a queued drive failure to the thread whose harvest failed', async () => {
+    let finish!: (reply: string) => void
+    const held = new Promise<string>(resolve => { finish = resolve })
+    const room = await loadRoom({ turn: () => held })
+    const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
+    await drain(() => room.gateway.calls.length < 1)
+    const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@builder queued')!
+    const request = host.request as (...args: unknown[]) => Promise<unknown>
+
+    host.request = (...args: unknown[]) => {
+      const [method, params] = args as [string, { profile?: string }]
+
+      // JSON-shaped malformed reply text throws while harvesting, after RPC acceptance.
+      return method === 'session.resume' && params.profile === 'builder'
+        ? Promise.resolve({ messages: [{ role: 'assistant', text: { toString: 1 } }] })
+        : request(...args)
+    }
+
+    room.chat.updateGroupChat('Failure', state => ({
+      ...state, stranded: { builder: { before: 0, thread: first } }
+    }))
+    finish('(pass)')
+    await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
+    expect(first).not.toBe(queued)
+    expect(room.activity.currentGroupActivity('Failure').filter(event => event.kind === 'failed')).toEqual([
+      expect.objectContaining({ member: null, thread: queued })
+    ])
+    expect(room.chat.$groupChats.get().Failure.running).toBe(false)
+  })
+
   it('treats a failed member turn as a pass, not a room error', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {
@@ -292,6 +374,25 @@ describe('round lifecycle', () => {
 })
 
 describe('per-member delta', () => {
+  it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
+    let release!: (reply: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
+    await drain(() => room.gateway.calls.length < 1)
+
+    for (let i = 0; i < 100; i++) {
+      room.chat.appendGroupChatEntry('Trim', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    release('(pass)')
+    await settle(room, 'Trim')
+    expect(room.chat.$groupChats.get().Trim.watermarks[`${thread}::research`]).toBe(0)
+    await room.rounds.runGroupChatRounds('Trim', members, thread)
+    expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
+  })
+
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
     const member: GroupMember[] = [{ name: 'research', title: '' }]
@@ -313,13 +414,15 @@ describe('per-member delta', () => {
     const shared: GroupMember[] = [{ name: 'research', title: '' }]
     const quiet = () => !room.chat.$groupChats.get().Alpha?.running && !room.chat.$groupChats.get().Beta?.running
 
-    // Start both rooms without waiting for either drive to finish.
-    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_1')
-    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_1')
+    // Start both rooms without waiting for either drive to finish. Each send
+    // stays in ONE thread per room, so the isolation under test is
+    // cross-ROOM: two rooms sharing a member must not share its session.
+    const alphaThread = room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_1')
+    const betaThread = room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_1')
     await drain(() => !quiet())
 
-    const alphaFirst = room.gateway.calls.find(call => call.title === 'Group: Alpha')
-    const betaFirst = room.gateway.calls.find(call => call.title === 'Group: Beta')
+    const alphaFirst = room.gateway.calls.find(call => call.title?.startsWith('Group: Alpha'))
+    const betaFirst = room.gateway.calls.find(call => call.title?.startsWith('Group: Beta'))
 
     expect(alphaFirst && betaFirst).toBeTruthy()
     expect(alphaFirst?.stored).not.toBe(betaFirst?.stored)
@@ -328,19 +431,20 @@ describe('per-member delta', () => {
     expect(alphaFirst?.prompt).not.toContain('BETA_ONLY_1')
     expect(betaFirst?.prompt).toContain('BETA_ONLY_1')
     expect(betaFirst?.prompt).not.toContain('ALPHA_ONLY_1')
-    expect(room.chat.$groupChats.get().Alpha.sessions?.research).toBe(alphaFirst?.stored)
-    expect(room.chat.$groupChats.get().Beta.sessions?.research).toBe(betaFirst?.stored)
+    // Sessions are keyed per thread; each room minted exactly one.
+    expect(Object.values(room.chat.$groupChats.get().Alpha.sessions || {})).toEqual([alphaFirst?.stored])
+    expect(Object.values(room.chat.$groupChats.get().Beta.sessions || {})).toEqual([betaFirst?.stored])
 
     // Interleave a second pair. Each room resumes its own session and receives
     // only its unseen room delta, never the sibling room's messages.
     const firstCallCount = room.gateway.calls.length
-    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_2')
-    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_2')
+    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_2', alphaThread)
+    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_2', betaThread)
     await drain(() => !quiet())
 
     const second = room.gateway.calls.slice(firstCallCount)
-    const alphaSecond = second.find(call => call.title === 'Group: Alpha')
-    const betaSecond = second.find(call => call.title === 'Group: Beta')
+    const alphaSecond = second.find(call => call.title?.startsWith('Group: Alpha'))
+    const betaSecond = second.find(call => call.title?.startsWith('Group: Beta'))
 
     expect(alphaSecond?.stored).toBe(alphaFirst?.stored)
     expect(betaSecond?.stored).toBe(betaFirst?.stored)
@@ -399,6 +503,48 @@ describe('threads', () => {
     expect(replies.length).toBeGreaterThanOrEqual(1)
     expect(replies.every(entry => entry.thread === billing)).toBe(true)
   })
+
+  it('never lets one thread answer out of another thread’s session (#90420, #106460)', async () => {
+    // The user-visible defect: two visible threads shared ONE hidden member
+    // session, so the model answering thread B had thread A's transcript in
+    // its context and replied with A's topic.
+    const room = await loadRoom()
+    const member: GroupMember[] = [{ name: 'research', title: '' }]
+
+    const alpha = room.rounds.sendToGroupChat('Bleed', member, 'ALPHA_TOPIC secret')
+    await settle(room, 'Bleed')
+    const beta = room.rounds.sendToGroupChat('Bleed', member, 'BETA_TOPIC unrelated')
+    await settle(room, 'Bleed')
+
+    const alphaCall = room.gateway.calls.find(call => call.prompt.includes('ALPHA_TOPIC'))
+    const betaCall = room.gateway.calls.find(call => call.prompt.includes('BETA_TOPIC'))
+
+    expect(alpha).not.toBe(beta)
+    // Two threads, two distinct hidden sessions — the room stores one per thread.
+    expect(alphaCall?.stored).toBeTruthy()
+    expect(alphaCall?.stored).not.toBe(betaCall?.stored)
+    expect(Object.keys(room.chat.$groupChats.get().Bleed.sessions || {})).toHaveLength(2)
+
+    // And neither backend transcript ever saw the other thread's prompt.
+    const alphaMessages = room.gateway.sessions.get(String(alphaCall?.stored))?.messages || []
+    const betaMessages = room.gateway.sessions.get(String(betaCall?.stored))?.messages || []
+
+    expect(alphaMessages.some(message => message.content.includes('BETA_TOPIC'))).toBe(false)
+    expect(betaMessages.some(message => message.content.includes('ALPHA_TOPIC'))).toBe(false)
+  })
+
+  it('surfaces an empty member seat instead of swallowing the send; empty text stays silent', async () => {
+    const room = await loadRoom()
+    const notify = room.gateway.host.notify as ReturnType<typeof vi.fn>
+
+    expect(room.rounds.sendToGroupChat('Seating', [], 'anyone there?')).toBeNull()
+    expect(log(room, 'Seating')).toHaveLength(0)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'error', message: expect.stringContaining('Seating') })
+
+    expect(room.rounds.sendToGroupChat('Seating', MEMBERS, '   ')).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('turn prompt', () => {
@@ -429,6 +575,37 @@ describe('turn prompt', () => {
     })
 
     expect(peer).toMatch(/group chat with @hermes/)
+  })
+
+  // #89720: a renamed primary is @bobby to the roster, autocomplete and the
+  // mention resolver; introducing it to itself as @hermes made it treat
+  // `@bobby …` as someone else's message and pass.
+  it('introduces a renamed primary by the same @tag the room resolves', async () => {
+    const { rounds } = await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
+
+    const members: GroupMember[] = [
+      { name: 'default', title: 'Bobby' },
+      { name: 'builder', title: '' }
+    ]
+
+    const own = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[0]
+    })
+
+    expect(own).toMatch(/You are @bobby,/)
+
+    const peer = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[1]
+    })
+
+    expect(peer).toMatch(/group chat with Bobby \(@bobby\)/)
   })
 
   it('asks for full-quality results and short chatter, not short results', async () => {
@@ -707,6 +884,51 @@ describe('member holds (#93129)', () => {
     expect([...action.hold]).toEqual([])
     // A plain non-stop mention releases instead (direct address overrides hold).
     expect([...action.release]).toEqual(['impl'])
+  })
+
+  // #103893: a German room said "@impl go, das ist halt ein Test" and the
+  // filler "halt" four words away from the mention held the bot every time
+  // the text was resent. Only a stop word next to a mention is a directive.
+  it('treats a stop word far from every mention as prose, not a directive', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl go, das ist halt ein Test', '@impl mach mal Pause', 'stop the presses, @impl what do you think?']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['conn::impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // Ambiguous, so neutral: the prose reading must not wake a held member either.
+      expect([...action.release]).toEqual([])
+    }
+
+    // Keys are roster keys, not handles: proximity must still hold on the raw @token.
+    expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
+  })
+
+  // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
+  // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
+  it('never releases the addressed member on a distant genuine stop', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl please just stop now', 'hey @impl could you stop', '@impl, I need you to stop', '@impl you can stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['c1::impl'], false)
+
+      expect([...action.release]).toEqual([])
+    }
+
+    expect(rounds.classifyGroupHoldDirective('@all please just stop now', [], true).releaseAll).toBe(false)
+  })
+
+  // #97740: a room stopped by the user went permanently silent because only
+  // the literal "@all resume" released the holds; "@all <task>" addresses
+  // every member and must re-engage them like a direct mention does.
+  it('releases every hold when the whole room is addressed without a stop word', async () => {
+    const { rounds } = await loadRoom()
+    const held = { docs: { at: 2 }, impl: { at: 1 } }
+
+    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all tell me a joke each', {})).toEqual({})
+    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all stop', { at: 5 }, ['impl', 'docs'])).not.toEqual({})
+    // An unaddressed message still leaves the holds alone.
+    expect(rounds.applyGroupHoldDirective(held, { everyone: false, mentioned: [] }, 'anyone there?', {})).toBe(held)
   })
 
   it('sets a hold on stop and clears it on resume for the same member', async () => {

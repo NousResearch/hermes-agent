@@ -25,10 +25,11 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,
 )
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
+from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -492,11 +493,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poll_task
-            self._poll_task = None
+        await cancel_task(self._poll_task)
+        self._poll_task = None
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
@@ -780,7 +778,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
@@ -795,7 +793,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
-            return {"error": f"Email send failed: {e}"}
+            return send_error(f"Email send failed: {e}")
 
 
 def _is_connected(config) -> bool:
@@ -806,15 +804,11 @@ def _is_connected(config) -> bool:
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
-    return EmailAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="email", label="Email", adapter_factory=_build_adapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,

@@ -34,7 +34,7 @@ def _run(current: int, latest: int):
         migrate_calls.append((interactive, quiet))
         return {"env_added": [], "config_added": [], "warnings": []}
 
-    with patch.object(update_cmd, "_reload_config_modules"), patch(
+    with patch(
         "hermes_cli.config.get_missing_env_vars", return_value=[]
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
@@ -83,7 +83,7 @@ def test_surfaces_migration_warnings():
             "warnings": ["personality reset: kawaii → default"],
         }
 
-    with patch.object(update_cmd, "_reload_config_modules"), patch(
+    with patch(
         "hermes_cli.config.get_missing_env_vars", return_value=[]
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]
@@ -104,7 +104,7 @@ def test_surfaces_migration_warnings():
 
 def test_check_failure_does_not_break_repair_path():
     """A config-check failure must not break the repair path."""
-    with patch.object(update_cmd, "_reload_config_modules"), patch(
+    with patch(
         "hermes_cli.config.get_missing_env_vars", return_value=[]
     ), patch(
         "hermes_cli.config.get_missing_config_fields", return_value=[]

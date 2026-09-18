@@ -1540,6 +1540,23 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
 
 
+def test_load_config_corrupt_profile_file_falls_through_to_env(tmp_path, monkeypatch):
+    """A corrupt $HERMES_HOME/hindsight/config.json is not the config: the loader falls through
+    (legacy file, then env) instead of returning an empty, silently-unconfigured mapping."""
+    home = tmp_path / "home"
+    (home / "hindsight").mkdir(parents=True)
+    (home / "hindsight" / "config.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("HINDSIGHT_MODE", "local")
+    monkeypatch.setenv("HINDSIGHT_BANK_ID", "from-env")
+
+    cfg = _load_config()
+
+    assert cfg["mode"] == "local"
+    assert cfg["banks"]["hermes"]["bankId"] == "from-env"
+
+
 class TestLoadSimpleEnv:
     def test_bom_first_key_is_recognized(self, tmp_path):
         """A Notepad-edited .env carries a BOM; the first key must still parse

@@ -1,5 +1,73 @@
 # Workstation roadmap
 
+## Progressive Operational Compilation / Capability Runtime (2026-09-18) — TARGET ARCHITECTURE / P0-P5 PLANNED
+
+Canonical specification:
+[context/PROGRESSIVE_OPERATIONAL_COMPILATION.md](context/PROGRESSIVE_OPERATIONAL_COMPILATION.md).
+
+The latest abstraction review generalizes AEPC-E002. The immediate bug remains
+that structural similarity can masquerade as semantic homogeneity, but the larger
+problem is that `work_execute` is still treated too much like a batch-compilation
+guardrail. The target is an incremental operational compiler in which Hermes
+learns reusable deterministic **Capabilities**, validates/promotes them, composes
+atomic capabilities into larger flows, and reuses them automatically without
+re-paying LLM reasoning.
+
+Target stack:
+
+~~~text
+LLM / Skill
+  -> bounded ADAPTIVE discovery on novelty/drift
+  -> Experience capture
+  -> Capability Candidate
+  -> validated/promoted Capability
+  -> Capability composition / Routine
+  -> work_execute deterministic runtime
+  -> Operational Kernel
+       browser | filesystem | process | HTTP/API | later desktop
+~~~
+
+`work_execute` therefore becomes execution infrastructure, not a command the
+model must manually satisfy after a repetition guard blocks progress. Exact
+compatible promoted Capability/Recipe/Routine reuse should be selected by the
+harness before another planning call. If no reusable path exists, safe authorized
+adaptive work proceeds and may teach the compiler.
+
+Implementation sequence:
+
+1. **P0 — close AEPC-E002 without weakening safety**
+   - structural shape is discovery-only;
+   - semantic operation/target family is required for `REQUIRE_COMPILE`;
+   - `executed_unverified` is not verified success;
+   - preserve heterogeneous-browser vs true homogeneous-fan-out paired regressions.
+2. **P1 — first-class Capability contract/registry/resolver**
+   - versioned inputs/effects/scope/preconditions/postconditions/verifiers/dependencies;
+   - extend existing RecipeStore/ProceduralMemory owners instead of creating a new
+     memory/task database;
+   - `work_execute(capability_id, inputs)` plus backward-compatible graph/recipe/routine execution.
+3. **P2 — Operational Kernel + native Browser semantic contract**
+   - trusted primitives for browser/filesystem/process;
+   - semantic target/action observations, reacquirable anchors and semantic operation
+     fingerprints; transient `@eN` refs never become durable identity.
+4. **P3 — Experience -> Candidate -> Validate -> Promote**
+   - accepted adaptive segments become versioned Capability candidates;
+   - replay validation precedes promotion; drift creates a revision and compact
+     `NEEDS_REASONING`, never historical in-place mutation.
+5. **P4 — composition and automatic reuse**
+   - Capability -> Capability without LLM;
+   - prefer the smallest exact validated reusable unit;
+   - larger routines reference atomic dependencies instead of duplicating them.
+6. **P5 — cross-backend proof**
+   - filesystem/process and mixed browser+local flows use the same lifecycle,
+     resolver, evidence and policy model.
+
+**Core invariant:** do not force determinism before Hermes knows the procedure;
+once a procedure is validated, do not pay the LLM to rediscover it.
+
+This milestone remains subordinate to the Canonical Execution Reliability Gate:
+TaskRun lineage, BrowserTask/lease ownership, uncertainty/reconciliation,
+canary-before-fan-out, effect/approval policy, acceptance and canonical commit
+must remain unchanged.
 
 ## Upstream Reliability Hardening Intake (2026-09-18) — P0 IMPLEMENTED & VALIDATED; P1 PLANNED
 

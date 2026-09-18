@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.1.0
+version: 1.2.0
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -41,7 +41,7 @@ This skill is loaded automatically by the review dispatcher. Start with `kanban_
 
 1. Read the task specification and the latest `review_requested` handoff.
 2. Inspect the actual deliverable and run relevant verification.
-3. Choose exactly one verdict: approve, request changes, or escalate.
+3. Choose exactly one verdict: approve, request changes, or escalate — unless the review execution itself was interrupted, in which case record no verdict instead.
 4. Record concrete evidence in the terminal Kanban transition.
 
 ## Quick Reference
@@ -151,6 +151,21 @@ kanban_block(
 ```
 
 Explain the blocked decision and the smallest information needed to continue.
+
+#### No verdict — interrupted review execution
+
+Use this only when the review execution itself was invalidated or interrupted and you cannot honestly issue any verdict above: the run was superseded, the handoff it was dispatched for was retired, or contradictory instructions left the reviewed candidate ambiguous.
+
+```text
+kanban_block(
+    reason="no verdict: <why this review execution could not produce a verdict>",
+    review_disposition="none",
+)
+```
+
+This is a terminal execution disposition, not a fourth candidate verdict. It records that no verdict was issued; the task lands in `blocked`, can be unblocked back to `review` and re-dispatched, and never consumes block-loop recurrence or escalates. The disposition is valid only for a run claimed from the review lane.
+
+It does not replace escalation: uncertainty, a genuine external prerequisite, or a required human decision is still an ordinary `kanban_block` Escalate.
 
 ### 4. Preserve role separation
 

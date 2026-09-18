@@ -80,6 +80,18 @@ def test_verdicts_route_through_distinct_terminal_actions(skill_text: str) -> No
     assert "`kanban_request_changes`" in quick_reference
     assert "Escalate" in quick_reference and "`kanban_block`" in quick_reference
 
+    # A review execution that produced no candidate verdict has its own
+    # disposition, is documented as an interruption, and is not a fourth
+    # candidate verdict or a substitute for a genuine Escalate.
+    verdicts = skill_text.split("### 3. Choose one verdict", 1)[1].split("### 4.", 1)[0]
+    assert "#### Approve" in verdicts
+    assert "#### Request changes" in verdicts
+    assert "#### Escalate" in verdicts
+    assert "#### No verdict" in verdicts
+    assert 'review_disposition="none"' in verdicts
+    assert "not a fourth candidate verdict" in verdicts
+    assert "ordinary `kanban_block` Escalate" in verdicts
+
 
 def test_review_lenses_vary_per_round(skill_text: str) -> None:
     lenses = skill_text.split("## Review Lenses", 1)[1].split("## Procedure", 1)[0]
@@ -93,3 +105,4 @@ def test_review_lenses_vary_per_round(skill_text: str) -> None:
     assert "`terminal`" in lenses
     # Fan-out note: parallel reviewers get different briefs.
     assert "`delegate_task`" in lenses
+

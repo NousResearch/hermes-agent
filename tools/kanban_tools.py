@@ -630,9 +630,15 @@ def _handle_block(args: dict, **kw) -> str:
     reason = _redact(
         _require_text(args, "reason", "reason is required — explain what input you need"))
     kind = args.get("kind")
+    review_disposition = args.get("review_disposition")
+    no_verdict = review_disposition == "none"
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
+        # An unsupported disposition is a caller error, never silently an
+        # ordinary block.
+        _check(review_disposition in (None, "none"),
+               "review_disposition must be 'none' (or omitted)")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
         # would be an escape hatch around the completion judge: goal_mode tasks
         # may only block on genuine external blockers.
@@ -642,16 +648,34 @@ def _handle_block(args: dict, **kw) -> str:
         # that learns kanban_complete is gated can just call kanban_block(reason="anything") to escape the
         # loop instead. Restrict goal_mode tasks to the kinds that represent a genuine external blocker the
         # worker cannot resolve itself; `capability` and `transient` (or an unset kind) route back through
-        # kanban_complete, which the judge now gates.
+        # kanban_complete, which the judge now gates. A no-verdict review interruption is not that escape
+        # hatch — it is review-lane terminal evidence, and the DB boundary enforces the review origin.
         task = kb.get_task(conn, tid)
-        _check(not (task and task.goal_mode and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS),
+        _check(not (task and task.goal_mode and not no_verdict
+                    and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS),
                f"goal_mode tasks can only block with kind in "
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
-        return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind,
+                           expected_run_id=_worker_run_id(tid),
+                           review_disposition=review_disposition)
+        _check(ok, "could not block "
+                   f"{tid} (unknown id or not in running/ready)" if not no_verdict else
+                   f"review_disposition='none' rejected for {tid}: only a claimed run that "
+                   f"originated from the review lane can record a no-verdict interruption")
+        landed = {"block_kind": kind}
+        if review_disposition is not None:
+            # This path deliberately does not write block_kind, so `_ok_landed`
+            # must not be told the caller's kind was persisted: report the
+            # stored value and keep the supplied kind as audit context.
+            persisted = kb.get_task(conn, tid)
+            landed = {
+                "block_kind": persisted.block_kind if persisted else None,
+                "supplied_kind": kind,
+                "review_disposition": review_disposition,
+            }
+        return _ok_landed(kb, conn, tid, "blocked", **landed)
 
 
 @_kanban_handler("kanban_request_review")

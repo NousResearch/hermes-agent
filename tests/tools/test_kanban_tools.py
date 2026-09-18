@@ -1233,3 +1233,154 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# kanban_block: the review-lane no-verdict disposition
+# ---------------------------------------------------------------------------
+
+
+def _review_worker_env(monkeypatch, tmp_path, *, goal_mode: bool = False):
+    """Isolated HERMES_HOME with one task claimed out of the ``review`` lane,
+    and the worker env pointing at that claimed review run."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-reviewer")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="review-no-verdict", assignee="test-worker", goal_mode=goal_mode,
+        )
+        implementation = kb.claim_task(conn, tid, claimer="test-worker")
+        assert kb.request_review(
+            conn, tid, summary="ready for independent review",
+            reviewer="test-reviewer", expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid, claimer="test-reviewer")
+        assert review is not None
+        run_id = review.current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    return tid
+
+
+def _implementation_worker_env(monkeypatch, tmp_path):
+    """Isolated HERMES_HOME with one task claimed out of the implementation lane."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-builder")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="implementation-block", assignee="test-worker")
+        run = kb.claim_task(conn, tid, claimer="test-worker")
+        assert run is not None
+        run_id = run.current_run_id
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    return tid
+
+
+def _dispatch_block(args: dict) -> dict:
+    """Call ``kanban_block`` the way the model does: through the tool registry."""
+    import tools.kanban_tools  # noqa: F401  (ensures the tool is registered)
+    from tools.registry import registry
+
+    result = registry.dispatch("kanban_block", args)
+    return json.loads(result) if isinstance(result, str) else result
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["ordinary-review", "goal-mode-review", "implementation-lane", "unsupported-value"],
+)
+def test_block_review_disposition_public_surface(monkeypatch, tmp_path, scenario) -> None:
+    """The ``kanban_block`` public surface for the no-verdict disposition, driven
+    through real registry dispatch rather than the bare handler.
+
+    Schema: the accepted set is exactly ``none``, the field stays optional, and
+    the description separates an interruption from an Escalate verdict.
+    Review origin: a valid no-verdict call takes precedence over ordinary kind
+    routing, including on a goal-mode review run, and the response reports the
+    persisted state instead of the caller's supplied kind.
+    Refusals: an implementation-lane run or an unsupported value is refused with
+    no task, run, event, or counter change.
+    """
+    import tools.kanban_tools  # noqa: F401  (ensures the tool is registered)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools.registry import registry
+
+    schema = registry.get_schema("kanban_block")
+    assert schema is not None
+    params = schema["parameters"]
+    assert params["properties"]["review_disposition"]["enum"] == ["none"]
+    assert "review_disposition" not in params["required"]
+    assert "no verdict" in schema["description"].lower()
+    assert "Escalate" in schema["description"]
+
+    if scenario == "implementation-lane":
+        tid = _implementation_worker_env(monkeypatch, tmp_path)
+    else:
+        tid = _review_worker_env(
+            monkeypatch, tmp_path, goal_mode=(scenario == "goal-mode-review"),
+        )
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, tid)
+        before_events = kb.list_events(conn, tid)
+        before_runs = kb.list_runs(conn, tid)
+
+    out = _dispatch_block({
+        "reason": "no verdict: the review execution was invalidated",
+        "kind": "dependency",
+        "review_disposition": "escalate" if scenario == "unsupported-value" else "none",
+    })
+
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, tid)
+        if scenario in ("ordinary-review", "goal-mode-review"):
+            assert out.get("ok") is True, out
+            assert out["status"] == "blocked"
+            assert (after.status, after.block_kind, after.block_recurrences) == (
+                "blocked", None, 0,
+            )
+            # The response reports the persisted state, not the supplied kind:
+            # this path deliberately never writes block_kind.
+            assert out["block_kind"] == after.block_kind
+            assert out["supplied_kind"] == "dependency"
+            events = kb.list_events(conn, tid)
+            blocked = [e for e in events if e.kind == "blocked"][-1]
+            assert blocked.payload["verdict"] == "none"
+            assert blocked.payload["recurrence_exempt"] is True
+            assert blocked.payload["source_status"] == "review"
+            assert blocked.payload["kind"] == "dependency"
+            assert not [e for e in events if e.kind == "block_loop_detected"]
+        else:
+            assert "error" in out, out
+            if scenario == "implementation-lane":
+                assert "review" in out["error"], out
+            else:
+                assert "review_disposition" in out["error"], out
+            assert (after.status, after.current_run_id) == (
+                before.status, before.current_run_id,
+            )
+            assert (after.block_kind, after.block_recurrences) == (None, 0)
+            assert kb.list_events(conn, tid) == before_events
+            assert kb.list_runs(conn, tid) == before_runs

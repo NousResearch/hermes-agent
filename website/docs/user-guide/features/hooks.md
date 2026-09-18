@@ -382,7 +382,7 @@ def register(ctx):
 **General rules for all hooks:**
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
-- Callback exceptions are logged and skipped; later callbacks continue.
+- Callback exceptions are logged and skipped; later callbacks continue. A callback that fails the same way on every call (typically a signature naming a field the hook does not send, e.g. `tool_data` instead of `tool_name`/`args`) is reported **once** at WARNING — the message lists the fields the hook provides — and identical repeats go to DEBUG, so a mis-declared plugin cannot flood the log.
 - If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
@@ -1064,9 +1064,9 @@ def my_callback(session_key: str, platform: str, reason: str, invalidation_reaso
 | `session_key` | `str` | The session whose run was interrupted. |
 | `platform` | `str` | The messaging platform name (`"telegram"`, `"discord"`, etc.); empty string if unknown. |
 | `reason` | `str` | Why the agent was interrupted (e.g. `"user_stop"`, the reset/new reason). |
-| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"reset_command"`). |
+| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"stop_command_chat_scope"`, `"reset_command"`). |
 
-**Fires:** In `gateway/run.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
+**Fires:** In `gateway/run_agent_cache.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
 
 **Return value:** Ignored.
 
@@ -1351,7 +1351,7 @@ def register(ctx):
 
 ### `post_approval_response`
 
-Fires after a prompted or smart approval decision, after a prompt times out, or when the gateway cannot deliver the approval notification. Notification failure emits `choice="notify_failed"` before any approval decision exists.
+Fires after a prompted or smart approval decision, after a prompt times out or is withdrawn (turn interrupted or ended before an answer), or when the gateway cannot deliver the approval notification. Notification failure emits `choice="notify_failed"` before any approval decision exists.
 
 **Callback signature:**
 
@@ -1372,7 +1372,7 @@ Same kwargs as `pre_approval_request`, plus:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
+| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, `"cancelled"` (nobody answered — the prompt was withdrawn because the turn was interrupted or ended, or on the CLI it never reached the user because the approval callback failed, no callback was registered under prompt_toolkit, or the read was interrupted; the command did not run), or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
 | `decided_by` | `str` | `"aux_llm"` for smart decisions; absent on prompted surfaces |
 
 **Return value:** ignored.

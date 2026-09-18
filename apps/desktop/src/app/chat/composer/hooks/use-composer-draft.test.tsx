@@ -3,7 +3,14 @@ import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import {
+  announceNewSessionDraftKey,
+  clearSessionDraft,
+  type ComposerAttachment,
+  mainComposerScope,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -92,6 +99,43 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     // By the layout phase the scope must already be B's (empty) — a submit
     // fired the instant B renders must never ship session A's attachment.
     expect(snapshots[0]).toEqual([])
+  })
+
+  it('carries a pre-session draft onto the session the fresh chat is re-homed to, before its runtime id is known', () => {
+    const preSessionAttachment: ComposerAttachment = { id: 'file:new', kind: 'file', label: 'new.txt' }
+    stashSessionDraft(null, 'do not lose this draft', [preSessionAttachment])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    // Cold-start resume-last-session / first-send create: the route flips the
+    // composer scope while `session.resume` has not published a runtime id yet.
+    announceNewSessionDraftKey('session-created')
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey="session-created" onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect(mainComposerScope.$attachments.get()).toEqual([preSessionAttachment])
+    expect(takeSessionDraft('session-created')).toEqual({ attachments: [preSessionAttachment], text: 'do not lose this draft' })
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
+    clearSessionDraft('session-created')
+  })
+
+  it('leaves the pre-session draft in its bucket when the user opens another session from a fresh chat', () => {
+    stashSessionDraft(null, 'still composing a new chat', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />)
+    })
+
+    expect(takeSessionDraft('session-A')).toEqual({ attachments: [], text: '' })
+    expect(takeSessionDraft(null).text).toBe('still composing a new chat')
+    clearSessionDraft(null)
   })
 
   it('applies a delayed image preview when it resolves while its attachment draft is inactive', async () => {
@@ -438,6 +482,48 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     act(() => getHiddenDraft().insertInlineRefs(['@file:`src/background.ts`']))
 
     expect(composerPlainText(getHiddenDraft().editorRef.current!)).toContain('@file:`src/background.ts`')
+    expectForegroundSelectionPreserved(foreground)
+    foreground.editor.remove()
+  })
+
+  it.each([false, true])('a late callback preserves another editor’s selection (hidden=%s)', hidden => {
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function Draft() {
+      draft = useComposerDraft({
+        activeQueueSessionKey: 'late-reject',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'late-reject'
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    const { rerender } = render(
+      <PaneVisibleContext value={true}>
+        <Draft />
+      </PaneVisibleContext>
+    )
+
+    const lateRestore = draft.loadIntoComposer
+    const lateFocus = draft.focusInput
+    rerender(
+      <PaneVisibleContext value={!hidden}>
+        <Draft />
+      </PaneVisibleContext>
+    )
+    const foreground = createForegroundSelection()
+    markActiveComposer('tile:foreground')
+
+    act(() => {
+      lateRestore('rejected draft', [])
+
+      if (hidden) {lateFocus()}
+    })
+
+    expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
   })

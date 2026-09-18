@@ -1,6 +1,7 @@
 """Regression test for the thinking-only prefill reaching the wire.
 
-A thinking-only response (reasoning tokens, no visible text) makes the loop
+A thinking-only response (reasoning tokens, no visible text) that is NOT a clean
+``stop`` (a clean-stop reasoning-only reply is promoted to the answer up front) makes the loop
 append an empty assistant turn and re-send so the model continues its own
 reasoning. On providers that don't echo reasoning back, the API copy has its
 reasoning fields stripped before ``_drop_thinking_only_and_merge_users`` runs,
@@ -52,11 +53,11 @@ def loop_agent():
 
 
 def _thinking_only_response():
-    """Reasoning tokens, no visible text — what triggers the prefill retry."""
+    """Reasoning tokens, no visible text, no clean stop — what triggers the prefill retry."""
     from tests.agent.test_run_agent import _mock_response
     return _mock_response(
         content="",
-        finish_reason="stop",
+        finish_reason="tool_calls",
         reasoning="Let me work through the request step by step.",
     )
 
@@ -124,6 +125,40 @@ class TestThinkingPrefillTrailingTurn:
         ]
         assert not empty_assistants, (
             f"Empty assistant stub(s) reached the wire: {empty_assistants}"
+        )
+
+    def test_prefill_row_keeps_reasoning_out_of_content(self, loop_agent):
+        """The prefill stub carries the model's reasoning in its reasoning fields only: its
+        ``content`` stays empty when appended, and no transcript row ever stores the
+        chain-of-thought as an ordinary reply (#111761)."""
+        import agent.turn_empty_response as ter
+
+        reasoning = "Let me work through the request step by step."
+        loop_agent.client.chat.completions.create.side_effect = [
+            _thinking_only_response(),
+            _final_response(),
+        ]
+        appended = []
+        real_append = ter.append_message
+
+        def spy(messages, msg, *args, **kwargs):
+            appended.append(dict(msg))
+            return real_append(messages, msg, *args, **kwargs)
+
+        with (
+            patch.object(ter, "append_message", spy),
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("do the thing")
+
+        stubs = [m for m in appended if m.get("_thinking_prefill")]
+        assert len(stubs) == 1
+        assert not (stubs[0].get("content") or "").strip()
+        assert stubs[0]["reasoning"] == reasoning
+        assert not any(
+            m.get("role") == "assistant" and m.get("content") == reasoning for m in result["messages"]
         )
 
     def test_internal_marker_never_reaches_the_wire(self, loop_agent):

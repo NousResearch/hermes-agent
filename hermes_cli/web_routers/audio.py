@@ -397,8 +397,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     # Profile via query param, like /api/pty and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
-    # the dashboard's own. The streamer captures its config at resolve time,
-    # so scoping resolution scopes the whole session.
+    # the dashboard's own — at resolve time AND in the synthesis thread.
     profile = (ws.query_params.get("profile") or "").strip() or None
 
     loop = asyncio.get_running_loop()
@@ -432,6 +431,13 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
     def _produce():
+        # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
+        # resolve_provider_secret), so the whole synthesis body runs under the requesting
+        # profile's scope, not only the resolve step above (else the launch profile's key).
+        with _config_profile_scope(profile):
+            _synthesize()
+
+    def _synthesize():
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 

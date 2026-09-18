@@ -1660,6 +1660,7 @@ _A2A_ENV_VARS = (
     "A2A_AGENT_NAME",
     "A2A_ADVERTISED_TOOLSETS",
     "A2A_AGENT_DESCRIPTION",
+    "A2A_PUBLIC_URL",
 )
 
 
@@ -1699,6 +1700,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
     monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
     monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://default-profile.example.com/")
 
 
 class TestMultiplexConstructionScope:
@@ -1721,6 +1723,10 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == (
             "Hermes Agent — a general-purpose agent reachable over A2A."
         )
+        # _public_url was captured at construction time via a bare os.getenv, missed by the
+        # scoped retrofit the sibling fields above already got.
+        assert adapter._public_url != "https://default-profile.example.com/"
+        assert adapter._public_url == ""
 
     def test_default_profile_unscoped_keeps_env_precedence(
         self, monkeypatch, default_profile_env
@@ -1739,3 +1745,16 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+        assert adapter._public_url == "https://default-profile.example.com/"
+
+
+def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
+    """A scalar line in a conversation file must not break replay or pollute
+    the list[dict] contract."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    protocol.persist_message("ctx-mixed", "user", "hello", "t1")
+    path = protocol._conv_path("ctx-mixed")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("42\n")
+    convo = protocol.load_conversation("ctx-mixed")
+    assert len(convo) == 1 and convo[0]["text"] == "hello"

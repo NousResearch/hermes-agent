@@ -68,9 +68,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_export = sessions_subparsers.add_parser(
         "export", help="Export sessions to JSONL, Markdown, or QMD")
-    sessions_export.add_argument("output", nargs="?",
-        help="Output path. JSONL: file path (use - for stdout, required). "
-            "md/qmd: output directory (default: <hermes home>/session-exports)")
+    sessions_export.add_argument("output", nargs="?", metavar="OUTPUT",
+        help="Where to write. jsonl/html/trace: a file path, or a directory (existing, or ending in /) "
+            "to write a default-named file into; - for stdout (jsonl/trace only; jsonl requires OUTPUT). "
+            "md/qmd: a directory, one file per session (default: <hermes home>/session-exports)")
     sessions_export.add_argument(
         "--format", choices=["jsonl", "md", "qmd", "html", "trace"], default="jsonl",
         help="Export format (default: jsonl). 'trace' emits Claude Code JSONL "

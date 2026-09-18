@@ -5,9 +5,13 @@ description: "Design of the one-gateway-for-all-profiles mode: scope composition
 
 # Multiplexing Gateway
 
-One gateway process can serve every profile in the install. The mode is opt-in
-(`gateway.multiplex_profiles`, default `false`), and everything it changes
-reverts the moment the flag is off. This document is the design rationale
+One gateway process can serve every profile in the install. The mode is on by
+default (`gateway.multiplex_profiles`, default `true`), and everything it
+changes reverts the moment the flag is off. An *unset* flag is settled at boot
+by `hermes_cli/gateway_multiplex_mode.py::resolve_multiplex_mode`, which runs
+the `hermes gateway migrate` preflight and keeps the gateway standalone when a
+secondary still runs its own gateway, a blocker exists, or the host cannot be
+migrated (see "The mode flag"). This document is the design rationale
 referenced from `agent/secret_scope.py` ("Workstream A"): what is isolated per
 profile, the mechanism that isolates it, and what deliberately stays
 process-global.
@@ -28,8 +32,20 @@ is documented as a known limitation at the end of this document.
 
 ## The mode flag
 
-- Config: `gateway.multiplex_profiles: true` (also accepted at top level).
-  Parsed in `gateway/config.py` with precedence env > config > default.
+- Config: `gateway.multiplex_profiles` (also accepted at top level). Parsed in
+  `gateway/config.py` with precedence env > config > unset. `GatewayConfig`
+  keeps an unset flag as `None` (readers test truthiness, so it reads as off);
+  `load_gateway_config_for_runner` then calls `resolve_multiplex_mode`, which
+  writes the boot verdict — `True` on a quiet multi-profile default install,
+  `False` with a logged reason otherwise. Explicit values pass through
+  verbatim; a config injected into `GatewayRunner(config=...)` is not resolved.
+- Other processes read the LIVE gateway's `served_profiles` record first and
+  the explicit flag second (`gateway_multiplex_mode.default_gateway_multiplexes`
+  / `explicit_multiplex_flag`), never the merged default: `named_profile_served_
+  by_running_multiplexer`, the enroll warning, the dashboard's listener guard,
+  the cron-fire port resolver, container boot, and the migration plan
+  (`_read_multiplex_flag`, so an unset default reads as "not yet multiplexed"
+  and the fold proceeds).
 - Env override: `GATEWAY_MULTIPLEX_PROFILES` accepts explicit truthy/falsy
   tokens only; a blank or unrecognized value returns "no override" so an empty
   deployment secret cannot shadow a config opt-in.

@@ -280,15 +280,17 @@ describe('session drafts', () => {
     clearSessionDraft(tipAfter)
   })
 
-  it('does not overwrite a non-empty destination draft during migration', () => {
-    stashSessionDraft('from', 'old tip draft', [])
-    stashSessionDraft('to', 'already typed on new tip', [])
+  it('does not overwrite a destination draft or its attachments during migration', () => {
+    const destinationAttachment = attachment({ id: 'file:destination' })
+    stashSessionDraft(null, 'new chat draft', [attachment({ id: 'file:source' })])
+    stashSessionDraft('to', 'already typed on new tip', [destinationAttachment])
 
-    expect(migrateSessionDraft('from', 'to')).toBe(false)
+    expect(migrateSessionDraft(null, 'to')).toBe(false)
     expect(takeSessionDraft('to').text).toBe('already typed on new tip')
-    expect(takeSessionDraft('from').text).toBe('old tip draft')
+    expect(takeSessionDraft('to').attachments).toEqual([destinationAttachment])
+    expect(takeSessionDraft(null).text).toBe('new chat draft')
 
-    clearSessionDraft('from')
+    clearSessionDraft(null)
     clearSessionDraft('to')
   })
 })

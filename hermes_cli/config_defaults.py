@@ -183,13 +183,13 @@ DEFAULT_CONFIG = {
         "verify_on_stop": False,
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
-        # Max seconds the gateway blocks an agent awaiting a clarify-tool reply; then it unblocks
-        # with "[user did not respond within Xm]". CLI clarify blocks indefinitely and ignores this.
+        # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a
+        # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
+        # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
+        # top-level ``clarify.timeout`` still wins when explicitly set).
         # 1h because users step away and a shorter value evicted the entry mid-think so a later
-        # button tap hit a dead entry. Lower it to free the running-agent guard sooner.
-        # Maximum time (seconds) the gateway will block an agent waiting for a clarify-tool response from
-        # the user. Tradeoff: a higher value holds the gateway's running-agent guard longer for a genuinely
-        # abandoned prompt — lower it if a single session must free up the guard sooner. See #32762.
+        # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
+        # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
         "clarify_timeout": 3600,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
         # 180 catches spinning weak-model runs before users /restart.
@@ -288,6 +288,9 @@ DEFAULT_CONFIG = {
         # Env vars passed into sandboxed terminal/execute_code (skill-declared
         # required_environment_variables pass through automatically).
         "env_passthrough": [],
+        # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
+        # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
+        "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,
         # HOME for host tool subprocesses: "auto" = host keeps the real OS-user HOME, containers use
         # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
         # exists (strict per-profile isolation).
@@ -411,8 +414,9 @@ DEFAULT_CONFIG = {
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
         # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux
-        # (copy-while-running works).
+        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
+        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
+        # their deadline; quit the browser by hand there.
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
@@ -459,9 +463,11 @@ DEFAULT_CONFIG = {
         "max_total_size_mb": 500,
         # Skip files larger than this (MB) when staging (datasets, model weights). 0 = no filter.
         "max_file_size_mb": 10,
-        # Startup sweep (at most once per min_interval_hours): deletes projects whose last_touch is
-        # older than retention_days, GCs the shared store, enforces max_total_size_mb, deletes
-        # legacy-* archives older than retention_days. It NEVER deletes orphans (workdir missing on
+        # Background sweep (CLI helper thread / gateway housekeeping tick, at most once per
+        # min_interval_hours; never on the startup path — its git gc can block for tens of seconds):
+        # deletes projects whose last_touch is older than retention_days, GCs the shared store when
+        # refs moved, enforces max_total_size_mb, deletes legacy-* archives older than retention_days.
+        # It NEVER deletes orphans (workdir missing on
         # disk) — a missing workdir may just be an unmounted volume/VPN, and an unattended sweep
         # must not guess. Orphans: `hermes checkpoints prune` (`--keep-orphans` to skip).
         "auto_prune": True,
@@ -589,7 +595,9 @@ DEFAULT_CONFIG = {
         "hygiene_max_turn_hold_seconds": 10,
         # Inactivity budget for in-agent compress_context (loop, /compress, preflight); same
         # progress-aware semantics as hygiene_timeout_seconds. 0 = disable the owned wrapper
-        # (callers passing commit_fence, e.g. gateway hygiene, never use it).
+        # (callers passing commit_fence, e.g. gateway hygiene, never use it). Floored at the auxiliary
+        # compression request timeout (auxiliary.compression.timeout, min 300s): the host never judges
+        # silence before the summary request itself would time out.
         "context_timeout_seconds": 120,
         # Absolute cap on the *pre-commit* compress_context wait (summary/stream phase) even while
         # tokens move. Clamped >= context_timeout_seconds when that is > 0. A started SessionDB
@@ -711,6 +719,7 @@ DEFAULT_CONFIG = {
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
             "enabled": True,
+            "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
             # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
             # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
             # values in user config.yaml files are harmless leftovers and ignored.
@@ -741,6 +750,10 @@ DEFAULT_CONFIG = {
         # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
         # replayed input tokens over the review loop (iterations capped at 16); the loop stops
         # before crossing it. <= 0 = unlimited.
+        # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
+        # conversation's reasoning config verbatim so its request bytes keep the parent's warm
+        # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
+        # if you want a different effort level; a one-time warning says so when the key is set.
         "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
@@ -847,6 +860,9 @@ DEFAULT_CONFIG = {
         # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
         # between tool calls instead of collapsing to the final message.
         "interim_assistant_messages": True,
+        # Engine warning/failure notifications stay visible unless an operator opts in.
+        # Does not suppress task results, manual commands, or existing logs.
+        "suppress_warning_notifications": False,
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
@@ -1154,6 +1170,17 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
+    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
+    # conversation history and are re-sent on every later API call.
+    "vision": {
+        # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
+        # screenshots of tables the model calls "unreadable" at 256 KB.
+        "embed_target_bytes": 256 * 1024,
+        # How often vision_analyze may embed the SAME image (region crops included) per session.
+        # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
+        # an explicit number applies everywhere; 0 = unlimited.
+        "max_calls_per_image": None,
+    },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
     "wake_word": {
@@ -1351,6 +1378,10 @@ DEFAULT_CONFIG = {
         "project_discovery": True,
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
+        # Skill names pinned as fully loaded in every new session (CLI, TUI, gateway, cron, API).
+        # Resolved once when the agent's prompt is first built; missing/disabled names warn and
+        # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
+        "auto_load": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
@@ -1428,9 +1459,9 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
-        # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
-        # reply — stops two bots replying to each other forever. Humans unaffected.
-        "bots_require_inline_mention": False,
+        # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
+        # Set False only for trusted legacy relays. Humans are unaffected.
+        "bots_require_inline_mention": True,
         # Prepend recent channel scrollback when triggered (recovers messages gated out by
         # require_mention); limit = max messages scanned.
         "history_backfill": True,
@@ -1442,6 +1473,7 @@ DEFAULT_CONFIG = {
             "window_seconds": 21600,  # only inspect messages from the last 6 hours
             "limit": 100,  # global cap on messages scanned per reconnect
             "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
+            "max_attempts": 3,  # lifetime re-dispatch cap for one message, whatever its outcome
         },
         "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
         # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
@@ -1450,6 +1482,9 @@ DEFAULT_CONFIG = {
         "websocket_liveness_failure_threshold": 2,
         "websocket_heartbeat_ack_max_age_seconds": 60,
         "websocket_max_latency_seconds": 30,
+        # Dispatch-side dimension: a socket that ACKs heartbeats but delivers no events for this
+        # long is treated as deaf. 4 h absorbs a quiet server overnight; 0 disables it.
+        "websocket_event_max_silence_seconds": 14400,
         # per-channel ephemeral system prompts (forum parents apply to child threads)
         "channel_prompts": {},
         # Opt-in DM role auth: DISCORD_ALLOWED_ROLES normally authorizes guild messages only (DMs
@@ -1512,6 +1547,9 @@ DEFAULT_CONFIG = {
             # Experimental rich draft previews while streaming DMs; off because Telegram
             # Desktop/macOS can overlay draft frames until the chat redraws.
             "rich_drafts": False,
+            # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
+            # set True on an unaffected client to get native rich tables for CJK.
+            "allow_cjk_rich_messages": False,
         },
     },
 
@@ -1607,6 +1645,10 @@ DEFAULT_CONFIG = {
     "personalities": {},
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
+        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
+        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        "fake_ip_ranges": [],
         "redact_secrets": True,
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
@@ -1713,6 +1755,12 @@ DEFAULT_CONFIG = {
         # cron jobs as a direct external subprocess (warns once; no cgroup isolation), true
         # fails closed with the enable-linger remedy. Kanban always requires a scope.
         "require_restart_safe_scope": False,
+        # A job failing with the SAME error alerts once, then stays silent for this many hours
+        # before one reminder ping (the run is still recorded; `hermes cron incidents` shows it).
+        # A green run or a different error alerts again immediately; `hermes cron incidents ack`
+        # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
+        # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
+        "failure_repeat_alert_hours": 6,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
@@ -1722,6 +1770,9 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
+        # not own notification subscriptions to avoid an idle five-second board probe.
+        "notify_in_gateway": True,
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,
@@ -1761,6 +1812,12 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
+        # this home's dispatcher may claim (list or comma-separated string). None = any existing
+        # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a
+        # root profile named "default", so on a shared kanban.db every home can otherwise claim
+        # default-assigned cards.
+        "dispatch_profiles": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,
@@ -1866,7 +1923,9 @@ DEFAULT_CONFIG = {
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
     # the catalog does not know, so they never clamp known models. Unknown ids start from safe
-    # defaults (200K context, tools on, vision/reasoning off) and get patched. Provider keys: Hermes
+    # defaults (200K context, tools on) and get patched; supports_vision / supports_reasoning stay
+    # UNKNOWN (fail-open) unless the override sets them — a context_window-only entry must not turn
+    # into "text-only" and hide vision_analyze / reasoning controls (#112649). Provider keys: Hermes
     # or models.dev id; model ids match case-insensitively. Example: {"custom:my-local-vllm":
     # {"my-llava-model": {"context_window": 8192}}}
     # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
@@ -1938,6 +1997,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Allow all users without allowlists (security opt-in).
+        "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
         "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
@@ -1952,13 +2013,23 @@ DEFAULT_CONFIG = {
         "write_sessions_json": True,
         # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
         # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
-        # stamps the profile into session keys. Flip with `hermes gateway migrate --multiplex`
-        # (records a rollback manifest; `--standalone` undoes it) or `hermes config set
-        # gateway.multiplex_profiles true` + `hermes gateway restart`. GATEWAY_MULTIPLEX_PROFILES
-        # in the environment overrides. Two profiles configuring the same bot token cannot be
-        # served together — the duplicate adapter is parked; `hermes profile create --clone`
-        # therefore leaves messaging channels behind unless --clone-channels is passed.
-        "multiplex_profiles": False,
+        # stamps the profile into session keys. On by default. An UNSET key is a request, not a
+        # verdict: at boot the default gateway runs the migration preflight and stays standalone
+        # (logging why) when a secondary still runs its own gateway or a blocker exists — an
+        # explicit `true` (config or GATEWAY_MULTIPLEX_PROFILES) is honoured as before, an explicit
+        # `false` keeps per-profile gateways for good. `hermes gateway migrate --multiplex` folds a
+        # per-profile fleet (records a rollback manifest; `--standalone` undoes it and pins false).
+        # Two profiles configuring the same bot token cannot be served together — the duplicate
+        # adapter is parked; `hermes profile create --clone` therefore leaves messaging channels
+        # behind unless --clone-channels is passed.
+        "multiplex_profiles": True,
+        # May `hermes update` fold this install onto a multiplexed default gateway by itself?
+        # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
+        # their own gateways is migrated automatically after an update when nothing blocks it.
+        # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
+        # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
+        # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
+        "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
@@ -2041,15 +2112,15 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # Prune ENDED sessions inactive for retention_days (activity = latest message, else
-        # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
+        # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
+        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a
         # full retention window before removal.
         "auto_prune": True,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the latest message timestamp, falling back to creation
-        # time for empty sessions. Sessions that are still open, pinned, or mid-turn are never deleted — the
+        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
+        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
         # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
         # whose process died without closing them; those are *closed*, not deleted, and get a further full
         # retention window before removal. Default true since #54189: without it state.db grows without
@@ -2199,14 +2270,15 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
+            "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },
         "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
     },
@@ -2317,6 +2389,10 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
+        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
+        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
+        # theme's face. The terminal pane is terminal.font_family.
+        "font_family": "",
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
@@ -2392,7 +2468,7 @@ DEFAULT_CONFIG = {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
         # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10679",
+        "tag": "b10964",
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
@@ -2401,7 +2477,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 44,  # Config schema version - bump this when adding new required fields
+    "_config_version": 45,  # Config schema version - bump this when adding new required fields
 }
 
 

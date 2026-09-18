@@ -19,6 +19,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
+import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { skipGuide } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
@@ -119,8 +120,6 @@ export function useOnboardingKickoff({
       takeGuideShape()
       await loadMachineProfile()
 
-      const seedMessages = buildChatOnboardingSeedMessages(pickOnboardingGreeting(), record.free_tier !== true)
-
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(SETUP_PROFILE, method, params, timeout)
 
@@ -139,6 +138,15 @@ export function useOnboardingKickoff({
         // runGuideKickoff records the guided phase only after adoption.
         return true
       }
+
+      const capabilities = await readOnboardingCapabilities({
+        connectionId: previousConnectionId,
+        profile: SETUP_PROFILE
+      })
+
+      const seedMessages = buildChatOnboardingSeedMessages(
+        pickOnboardingGreeting(), record.free_tier !== true, capabilities
+      )
 
       const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
 

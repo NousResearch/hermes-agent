@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -218,22 +219,31 @@ def _cli_recover_attempts(source: Path, lf_path: Path, sqlite3_bin: str, *, time
     for command in (".recover --ignore-freelist", ".recover"):
         if lf_path.exists():
             lf_path.unlink()
-        dump = subprocess.Popen(
-            [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        load = subprocess.Popen(
-            [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        assert dump.stdout is not None
-        dump.stdout.close()  # let dump receive SIGPIPE if load dies
-        try:
-            _, load_err = load.communicate(timeout=timeout)
-            dump_err = dump.stderr.read() if dump.stderr is not None else b""
-            dump.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            dump.kill()
-            load.kill()
-            raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
+        # .recover reports per-page diagnostics on stderr; a heavily damaged source can emit
+        # far more than a pipe buffer holds, so stderr drains to a temp file — an undrained
+        # PIPE would block the dump child, stall load's stdin, and burn the whole timeout.
+        with tempfile.TemporaryFile(prefix="hermes-recover-dump-stderr-") as dump_stderr:
+            dump = subprocess.Popen(
+                [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=dump_stderr
+            )
+            load = subprocess.Popen(
+                [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            assert dump.stdout is not None
+            dump.stdout.close()  # let dump receive SIGPIPE if load dies
+            try:
+                _, load_err = load.communicate(timeout=timeout)
+                dump.wait(timeout=60)
+                dump_stderr.seek(0, os.SEEK_END)
+                tail_size = min(dump_stderr.tell(), 65536)
+                dump_stderr.seek(-tail_size, os.SEEK_END)
+                dump_err = dump_stderr.read()
+            except subprocess.TimeoutExpired:
+                dump.kill()
+                load.kill()
+                dump.wait()  # reap: kill() alone leaves returncode None and a zombie until GC
+                load.wait()
+                raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
         attempts.append({
             "command": command, "dump_returncode": dump.returncode, "load_returncode": load.returncode,
             "dump_stderr_tail": dump_err.decode("utf-8", "replace")[-2000:],

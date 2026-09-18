@@ -64,6 +64,39 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultSkillTools:
+    """`skill_manage` names live at ``operations[i].name`` and `skills_list` has no ``name`` arg at
+    all, so the shared ``name=`` stub rendered ``name=?`` for both and dropped the outcome — a failed
+    batch compressed into the same line as a success (#112710)."""
+
+    @pytest.mark.parametrize("args", [
+        {"operations": [{"action": "create", "name": "orca-ade"}, {"action": "patch", "name": "llama-server"}]},
+        {"action": "create", "name": "orca-ade"},  # legacy flat shape, still accepted by the tool
+    ])
+    def test_skill_manage_names_ops_and_keeps_failure_visible(self, args):
+        error = "operations[0] (create on 'orca-ade') failed: content is required for 'create'\n— batch rolled back."
+        failed = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": False, "error": error}))
+        ok = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": True, "operations_applied": 1}))
+
+        for summary in (failed, ok):
+            assert summary.startswith("[skill_manage] create orca-ade")
+            assert "name=?" not in summary and "\n" not in summary
+        assert "FAILED: operations[0] (create on 'orca-ade') failed: content is required" in failed
+        assert "FAILED" not in ok
+        assert failed != ok
+
+    def test_skills_list_uses_category_and_count_and_marks_failure(self):
+        args = json.dumps({"category": "devops"})
+        ok_content = json.dumps({"success": True, "skills": [{}, {}], "count": 2})
+        ok = _summarize_tool_result("skills_list", args, ok_content)
+        failed = _summarize_tool_result("skills_list", "{}", json.dumps({"success": False, "error": "skills dir unreadable"}))
+
+        assert ok == f"[skills_list] category=devops 2 skills ({len(ok_content)} chars)"
+        assert failed.startswith("[skills_list] FAILED: skills dir unreadable")
+        # Control: skill_view really has a top-level ``name`` and keeps its stub.
+        assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({
@@ -839,6 +872,14 @@ class TestAuthFailureAborts:
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
         )
         assert _is_summary_access_or_quota_error(err) is True
+        # OAuth aux provider with no login: the hint names the sign-in command instead of an
+        # env var (#114405 / #78996) and must classify as permanent, not be retried.
+        oauth_err = RuntimeError(
+            "Provider 'minimax-oauth' is set in config.yaml but no credentials were found. "
+            "Run `hermes auth add minimax-oauth` to sign in, or switch to a different provider "
+            "with `hermes model`."
+        )
+        assert _is_summary_access_or_quota_error(oauth_err) is True
 
     def test_unscoped_secret_read_is_terminal_access_failure(self):
         # Multiplexed gateway: a credential read reached get_secret() from a

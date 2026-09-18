@@ -72,7 +72,10 @@ def _resolve_profile(rid, params):
     if not name:
         return name, None, _err(rid, 4063, "name required")
     from hermes_cli.profiles import get_profile_dir
-    profile_dir = Path(get_profile_dir(name))
+    try:
+        profile_dir = Path(get_profile_dir(name))
+    except ValueError:
+        return name, None, _err(rid, 4064, f"profile '{name}' not found")
     if not profile_dir.is_dir():
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
@@ -86,6 +89,12 @@ def _read_profile_yaml(profile_dir) -> dict:
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _yaml_scalar_to_json(value):
+    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
 
 
 def _clean_revisions(raw: dict) -> dict:
@@ -229,7 +238,9 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
     row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
     if isinstance(ui_meta, dict) and ui_meta:
-        row["ui_meta"] = ui_meta
+        # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+        # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+        row["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -241,7 +252,8 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
-    for p in list_profiles():
+    # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
+    for p in list_profiles(lazy_skill_count=True):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
@@ -303,20 +315,31 @@ def _inherit_launch_model(path) -> bool:
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
+    launch_cfg = load_config_readonly() or {}
+    model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
+    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
+    # rejects a provider it has not been told about ("Unknown provider").
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    if custom:
+        from hermes_cli.config import load_config, save_config
+        with _hermes_home_scope(path):
+            cfg = load_config()
+            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
+            save_config(cfg)
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``share_auth`` reports ``auth: "shared"`` and skips the auth copy; ``mirror_credentials``
-    false skips everything. ``model_inherited`` is filled in by the caller."""
-    share_auth = is_truthy_value(params.get("share_auth", False))
-    mirrored = {"env": False, "auth": "shared" if share_auth else False, "model_inherited": False,
-                "voice": False}
+    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
+
+    ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
+    profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
@@ -327,13 +350,12 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
         # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
         # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
         _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
-    if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
-        mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
-                                                       lambda src, dst: not dst.exists()), False)
-        if mirrored["auth"]:
-            # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
-            # root grant via the pool fallback. API keys stay.
-            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
+                                                   lambda src, dst: not dst.exists()), False)
+    if mirrored["auth"]:
+        # Drop single-use OAuth grants (a copy forks token state: the first refresh in either store
+        # strands the other); the new profile signs into those providers itself. API keys stay.
+        _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 
@@ -343,8 +365,9 @@ def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
-    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
+    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
+    ``share_auth`` is accepted from older clients and ignored."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
@@ -412,6 +435,7 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
+        from agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
@@ -419,7 +443,7 @@ def _(rid, params: dict) -> dict:
         skills_root = profile_dir / "skills"
         installed = [
             {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (sorted(skills_root.rglob("SKILL.md")) if skills_root.is_dir() else ())]
+            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
         toolsets_out, pinned_set = _describe_toolsets(cfg)
         soul_path = profile_dir / "SOUL.md"
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")

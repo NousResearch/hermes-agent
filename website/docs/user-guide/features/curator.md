@@ -38,7 +38,7 @@ A run has two phases:
 1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (14) become `stale`; skills unused for `archive_after_days` (30) are moved to `~/.hermes/skills/.archive/`. This is the always-on pruning behavior — it runs whenever the curator is enabled, with no aux-model cost.
    - **Pinned skills** and **skills referenced by any cron job** (including paused/disabled jobs) are skipped entirely — treated like pin for auto-transitions so a slow or paused schedule cannot archive a skill out from under a job. Consolidation also rewrites cron skill references when it merges umbrellas.
    - **Never-used skills** (`use_count == 0`) get a grace floor: they are not archived until they are at least `stale_after_days` old. Zero uses is absence of evidence, not proof the skill is disposable.
-2. **LLM consolidation** (single aux-model pass with a high iteration ceiling — a full curation sweep typically takes 50–100 API calls) — **OFF by default**. When `curator.consolidate: true`, the forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones into class-level umbrellas, or archive via the terminal tool. Consolidation treats a skill as a full package: if a skill has `references/`, `templates/`, `scripts/`, `assets/`, or relative links to those paths, the curator must either keep it standalone, re-home the needed support files and rewrite paths, or archive the entire package unchanged — not flatten only `SKILL.md` into another skill's `references/` file.
+2. **LLM consolidation** (single aux-model pass with a high iteration ceiling — a full curation sweep typically takes 50–100 API calls) — **OFF by default**. When `curator.consolidate: true`, the forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones into class-level umbrellas, or archive (via `skill_manage action=delete` with an `absorbed_into` target — the pass has no terminal). The candidate list it is given contains only skills it can actually read and write: bundled built-ins (even with `prune_builtins: true`, which only affects the deterministic archival pass) and skills in `skills.disabled` (which `skill_view` refuses) are never offered to it, so the pass cannot burn its tool budget on refused reads or writes. Consolidation treats a skill as a full package: if a skill has `references/`, `templates/`, `scripts/`, `assets/`, or relative links to those paths, the curator must either keep it standalone, re-home the needed support files and rewrite paths, or archive the entire package unchanged — not flatten only `SKILL.md` into another skill's `references/` file.
 
 :::info Consolidation is opt-in
 By default the curator only **prunes** — the deterministic inactivity pass marks skills stale and archives long-unused ones. The opinionated LLM **consolidation** pass (umbrella-building, merging overlapping skills) is off by default because it costs aux-model tokens on every run and makes broad structural changes to your library. Turn it on with `curator.consolidate: true`, or run it once on demand with `hermes curator run --consolidate`.
@@ -207,14 +207,17 @@ agent turns). The background fork runs with a write origin of `"background_revie
 `mark_agent_created()` call in `skill_manage`.
 
 Skills the foreground agent creates via `skill_manage(action="create")` during a
-conversation are **not** marked as agent-created — they are considered
-user-directed and the curator intentionally leaves them alone.
+conversation (including `/learn`) are **not** marked as agent-created — they are
+recorded as `created_by: learn`, which makes them show up in the
+[learning journey](./memory.md#learning-journey-journey) right away but is not a
+curator opt-in. They are considered user-directed and the curator intentionally
+leaves them alone.
 
 :::warning Your hand-written skills are NOT curated
 If you manually created a `SKILL.md` or pointed Hermes at an external skill
 directory, that skill will have a `.usage.json` entry with `created_by: null`
 (or the field absent). The curator will not touch it. The same applies to
-skills the foreground agent created at your request.
+skills the foreground agent created at your request (`created_by: learn`).
 
 **To see which skills the curator actually manages**, run `hermes curator status`.
 If the agent-created count is 0, no skills are currently in the curator's
@@ -245,8 +248,9 @@ for one of two reasons:
 - **pre-dates marker** — the record was written before `created_by` existed, so
   it carries no provenance signal at all. Authorship is genuinely unknowable
   from the record.
-- **foreground-created** — a foreground `skill_manage(create)` left the marker
-  unset by design, since skills you ask for belong to you.
+- **foreground-created** — a foreground `skill_manage(create)` recorded
+  `created_by: learn` (older records: unset) by design, since skills you ask for
+  belong to you.
 
 A large library can therefore look fully curated while most of it is
 untouchable. `adopt` closes that gap by **declaration**:

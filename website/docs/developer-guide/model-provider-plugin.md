@@ -104,6 +104,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
+| `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
 
 ## Overridable hooks

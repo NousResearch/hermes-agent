@@ -32,9 +32,12 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "decide",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
+            "Which action to perform. `capture` is free (no side effects). `decide` asks the "
+            "System-One lane (rules → reranker → aux → Jev) for the next typed action without a "
+            "frontier-model round trip; fail-open to the planner when uncertain. All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
             "focus steal)."
@@ -141,6 +144,13 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "text": {"type": "string", "description": "Text to type (respects the current layout)."},
+    "goal": {
+        "type": "string",
+        "description": (
+            "For action='decide': the task the System-One lane should advance. Semantic AX "
+            "state is captured automatically; no screenshot is sent."
+        ),
+    },
     "keys": {
         "type": "string",
         "description": (

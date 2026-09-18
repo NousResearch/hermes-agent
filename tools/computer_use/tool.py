@@ -161,6 +161,12 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
     if backend_name in {"cua", "cua-driver", ""}:
         from tools.computer_use.cua_backend import CuaDriverBackend
         return CuaDriverBackend(permission_mode=permission_mode)
+    if backend_name in {"browser", "playwright"}:
+        from tools.computer_use.browser_backend import BrowserBackend
+        target = (os.environ.get("HERMES_CU_BROWSER_URL") or os.environ.get("HERMES_CU_BROWSER_HTML") or "").strip()
+        if not target:
+            raise RuntimeError("HERMES_CU_BROWSER_URL or HERMES_CU_BROWSER_HTML is required for the browser backend")
+        return BrowserBackend(target)
     if backend_name != "noop":
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
@@ -383,6 +389,86 @@ def _do_capture(backend, action, args, session_id=None, **_):
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
+def _elements_to_candidates(elements):
+    from tools.computer_use.decision_lane import ElementCandidate
+    return tuple(
+        ElementCandidate(ref=str(el.index), label=el.label or "", role=el.role or "", enabled=True)
+        for el in (elements or [])
+    )
+
+def _persist_decision_packet(packet) -> Optional[str]:
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if not home:
+        return None
+    folder = os.path.join(home, "cache", "computer_use")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"decision_{uuid.uuid4().hex}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(packet.to_dict(), fh, ensure_ascii=False, indent=1)
+        return path
+    except OSError:
+        return None
+
+def _decide_hint(decision) -> str:
+    if decision.done:
+        return "Goal appears complete on the current screen."
+    if decision.action == "escalate":
+        return "Hand back to main planner for a broader strategy."
+    if decision.needs_vision:
+        return "Use capture(mode='som') for pixel evidence before acting."
+    if decision.needs_generation:
+        return "Compose text yourself, then type via computer_use."
+    elem = f" element #{decision.target_ref}" if decision.target_ref else ""
+    return (f"Suggested next step: {decision.action}{elem} "
+            f"(backend={decision.backend}, conf={decision.confidence:.2f}).")
+
+def _do_decide(backend, action, args, session_id=None, **_):
+    """System-One lane: rules → reranker → aux → Jev. Fail-open to the planner."""
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "decide requires `goal`"})
+    from tools.computer_use.decision_lane import jev_available, run_decision_lane, SemanticState
+    from tools.computer_use.decision_stages import aux_stage, jev_stage, reranker_stage
+    cap = backend.capture(mode="ax", app=args.get("app"),
+                          **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    candidates = _elements_to_candidates(cap.elements)
+    state = SemanticState(elements=candidates, busy=bool(args.get("busy")), goal_hint=goal)
+    decision, packet = run_decision_lane(
+        state, candidates, reranker=reranker_stage, aux=aux_stage, jev=jev_stage,
+    )
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "action": "decide",
+        "fail_open": decision is None,
+        "jev_available": jev_available(),
+        "decision_packet": packet.to_dict(),
+        "decision_packet_path": _persist_decision_packet(packet),
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "element_count": len(candidates),
+    }
+    if decision is not None:
+        target_element = int(decision.target_ref) if decision.target_ref and str(decision.target_ref).isdigit() else None
+        payload["decision"] = {
+            "action": decision.action,
+            "target_ref": decision.target_ref,
+            "target_element": target_element,
+            "needs_vision": decision.needs_vision,
+            "needs_generation": decision.needs_generation,
+            "done": decision.done,
+            "confidence": decision.confidence,
+            "backend": decision.backend,
+        }
+        payload["verdict"] = {"decision": "done" if decision.done else "suggest_action", "hint": _decide_hint(decision)}
+    else:
+        payload["verdict"] = {
+            "decision": "escalate",
+            "hint": "Decision lane abstained — plan the next step with capture + your usual reasoning.",
+        }
+    return json.dumps(payload)
+
+
 def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
@@ -415,6 +501,7 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "capture": _ActionSpec(_do_capture),
+    "decide": _ActionSpec(_do_decide, summarize=lambda a, args, fg: f"decide {args.get('goal', '')[:80]!r}{fg}"),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),

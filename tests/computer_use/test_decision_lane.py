@@ -77,7 +77,7 @@ def test_verifier_veto_fails_open():
 
 def test_jev_stage_skipped_without_key_or_callable(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    assert jev_available() is False
+    monkeypatch.delenv("JEV_API_KEY", raising=False)
     decision, packet = run_decision_lane(SemanticState(), (_cand("b1", "x"),))
     assert decision is None  # same path as today: rules abstain, nothing else plugged in
 

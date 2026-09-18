@@ -100,35 +100,24 @@ class SessionTelegramTopicsMixin:
     tables (nobody ran ``/topic``) by returning their empty value and never create them;
     pre-v3 tables left by an upgrade are self-healed on read."""
 
-    def _topic_read_one(self, sql: str, params):
-        """``fetchone`` that treats an unmigrated table as None. A pre-v3 table left by an
-        upgrade (issue #103363) is healed to v3 once and the read retried, so topic mode
-        keeps working on existing installs instead of silently reading as empty."""
+    def _topic_read(self, read, sql: str, params, empty):
+        """Run ``read(sql, params)``; an absent table reads as ``empty``. A pre-v3 table left by an
+        upgrade (#103363) raises ``no such column: profile_name`` — heal it and retry, otherwise the
+        write-only migration is never reached and topic mode silently reads as off forever."""
         try:
-            return self._read_one(sql, params)
+            return read(sql, params)
         except sqlite3.OperationalError as exc:
             if "no such column: profile_name" not in str(exc):
-                return None
-            self._heal_pre_v3_topic_tables()
-            try:
-                return self._read_one(sql, params)
-            except sqlite3.OperationalError:
-                return None
-
-    def _heal_pre_v3_topic_tables(self) -> None:
-        """Heal pre-v3 topic tables left by an upgrade. A failed heal (lock timeout,
-        cross-process race) warns once instead of surfacing through the readers as the
-        silent-return shape they exist to avoid; the next read retries the heal."""
+                return empty
         try:
             self.apply_telegram_topic_migration()
+            return read(sql, params)
         except sqlite3.Error:
-            if not getattr(self, "_topic_heal_warned", False):
-                self._topic_heal_warned = True
-                logger.warning(
-                    "telegram topic self-heal to v3 failed; reads keep hitting the "
-                    "pre-v3 schema and read as empty until the heal succeeds",
-                    exc_info=True,
-                )
+            logger.warning("telegram topic tables are pre-v3 and the heal failed; reading as empty", exc_info=True)
+            return empty
+
+    def _topic_read_one(self, sql: str, params):
+        return self._topic_read(self._read_one, sql, params, None)
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in and self-heal
@@ -257,23 +246,11 @@ class SessionTelegramTopicsMixin:
     ) -> List[Dict[str, Any]]:
         """All bindings for one chat, newest first ([] when the table is absent)."""
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        try:
-            rows = self._read_all(
-                "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
-                (profile_name, str(chat_id)),
-            )
-        except sqlite3.OperationalError as exc:
-            if "no such column: profile_name" not in str(exc):
-                return []
-            # Same pre-v3 self-heal as _topic_read_one (issue #103363).
-            self._heal_pre_v3_topic_tables()
-            try:
-                rows = self._read_all(
-                    "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
-                    (profile_name, str(chat_id)),
-                )
-            except sqlite3.OperationalError:
-                return []
+        rows = self._topic_read(
+            self._read_all,
+            "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
+            (profile_name, str(chat_id)), [],
+        )
         return [dict(row) for row in rows]
 
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:

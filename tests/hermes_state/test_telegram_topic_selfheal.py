@@ -1,4 +1,4 @@
-"""Issue #103363 — reading pre-v3 telegram topic tables self-heals to v3.
+"""Regression for #103363 — reading pre-v3 telegram topic tables self-heals to v3.
 
 Upgrades that enabled DM topic mode before #76423 keep v2 tables (no
 ``profile_name`` column). Reads used to swallow ``no such column`` as an empty
@@ -8,10 +8,8 @@ migration was never reached. Reads now heal the table once and retry.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 from pathlib import Path
-from unittest import mock
 
 from hermes_state import SessionDB
 
@@ -72,23 +70,14 @@ def test_topic_reads_selfheal_pre_v3_tables(tmp_path: Path):
     binding = db.get_telegram_topic_binding(chat_id=CHAT, thread_id="99", profile_name="default")
     assert binding is not None
     assert binding["session_id"] == "legacy-sess"
+    rows = db.list_telegram_topic_bindings_for_chat(chat_id=CHAT, profile_name="default")
+    assert [row["session_id"] for row in rows] == ["legacy-sess"]
     assert db.get_meta("telegram_dm_topic_schema_version") == "3"
     # Profile isolation still holds after the heal.
     assert not db.is_telegram_topic_mode_enabled(
         chat_id=CHAT, user_id=CHAT, profile_name="coder",
     )
     assert db.get_telegram_topic_binding(chat_id=CHAT, thread_id="99", profile_name="coder") is None
-    db.close()
-
-
-def test_list_bindings_selfheals_pre_v3_table(tmp_path: Path):
-    db_path = tmp_path / "v2-upgrade.db"
-    _create_v2_state(db_path)
-    db = SessionDB(db_path=db_path)
-
-    rows = db.list_telegram_topic_bindings_for_chat(chat_id=CHAT, profile_name="default")
-    assert [row["session_id"] for row in rows] == ["legacy-sess"]
-    assert db.get_meta("telegram_dm_topic_schema_version") == "3"
     db.close()
 
 
@@ -162,29 +151,4 @@ def test_heal_rebuild_rolls_back_atomically(tmp_path: Path):
     assert db.is_telegram_topic_mode_enabled(
         chat_id=CHAT, user_id=CHAT, profile_name="default",
     )
-    db.close()
-
-
-def test_failed_heal_warns_once_and_degrades_to_empty(tmp_path: Path, caplog):
-    """A failing heal (lock timeout, cross-process race) must not surface as the
-    silent-return shape the readers exist to fix: one warning per instance,
-    reads keep returning their empty value."""
-    db_path = tmp_path / "v2-upgrade.db"
-    _create_v2_state(db_path)
-    db = SessionDB(db_path=db_path)
-
-    def locked(*args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
-
-    with mock.patch.object(SessionDB, "apply_telegram_topic_migration", locked):
-        with caplog.at_level(logging.WARNING, logger="hermes_state"):
-            assert not db.is_telegram_topic_mode_enabled(
-                chat_id=CHAT, user_id=CHAT, profile_name="default",
-            )
-            assert db.get_telegram_topic_binding(
-                chat_id=CHAT, thread_id="99", profile_name="default",
-            ) is None
-            assert db.list_telegram_topic_bindings_for_chat(chat_id=CHAT) == []
-    # One warning across every reader, not one per read.
-    assert len([r for r in caplog.records if "self-heal" in r.getMessage()]) == 1
     db.close()

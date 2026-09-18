@@ -3235,6 +3235,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
         "doesn't support", "is deprecated for this model",
         "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
+        "unsupported;", "unsupported:", " 'none' unsupported",
         # Strict pydantic-validated gateways (Fireworks) name the unknown field this way (#109774).
         "extra inputs are not permitted",
     ))

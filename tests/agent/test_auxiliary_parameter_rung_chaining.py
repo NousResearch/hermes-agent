@@ -66,6 +66,7 @@ def test_primary_rungs_chain_in_provider_order_and_strip_each_field_once():
     # One retry per rejected field: reasoning_effort → temperature → max_tokens, nothing re-sent unchanged.
     assert client.chat.completions.create.call_count == 3
     assert _is_reasoning_field_rejection(_Bad400("Extra inputs are not permitted, field: 'reasoning'"))
+    assert _is_reasoning_field_rejection(_Bad400("reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh"))
 
 
 def test_fallback_candidate_recovers_from_rejected_temperature():

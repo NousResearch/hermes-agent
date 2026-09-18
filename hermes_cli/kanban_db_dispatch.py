@@ -672,6 +672,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
+                reclaimed_run_id=run_id,
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
             )
     return timed_out
@@ -1027,9 +1028,11 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
-    # after the txn via ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    # ``(task_id, pid, claimer, protocol_violation, error_text, run_id)``:
+    # accounted after the txn via ``_record_task_failure`` (needs its own
+    # write_txn). ``run_id`` is the now-closed run being accounted for, used
+    # to CAS accounting against a later reclaim/re-claim of the same task.
+    crash_details: list[tuple[str, int, str, bool, str, int]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1102,7 +1105,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
-                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
+                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text, run_id)
                 )
     return sweep
 
@@ -1117,10 +1120,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
-    for _, _, _, _, err_text in crash_details:
+    for _, _, _, _, err_text, _ in crash_details:
         fp = _error_fingerprint(err_text)
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
+    for tid, pid, claimer, protocol_violation, error_text, run_id in crash_details:
         if protocol_violation:
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
@@ -1144,6 +1147,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 force_trip=True,
                 release_claim=False,
                 end_run=False,
+                reclaimed_run_id=run_id,
                 event_payload_extra={
                     "pid": pid,
                     "claimer": claimer,
@@ -1160,6 +1164,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
+                reclaimed_run_id=run_id,
                 event_payload_extra={"pid": pid, "claimer": claimer},
             )
         if tripped:
@@ -1226,6 +1231,7 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    reclaimed_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
@@ -1239,6 +1245,18 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``reclaimed_run_id`` (crash/timeout path only) is the now-closed run this
+    call is accounting for. It CASes against ``MAX(task_runs.id)`` for the
+    task rather than ``tasks.current_run_id`` nullity: a higher id means a
+    later run has since been claimed, whether that run is still active or has
+    itself already finished (the plain nullity check is an ABA hazard in that
+    second case). When stale and that later run has NOT itself completed
+    successfully, the failure still counts toward the unified
+    ``consecutive_failures`` budget — it happened — but must not stamp
+    status, claim state, or ``last_failure_error`` onto the unrelated later
+    run. If the later run already succeeded, ``complete_task`` has already
+    reset the streak to zero; the old failure must not resurrect it.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1249,6 +1267,29 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        stale = False
+        superseded_by_success = False
+        if not release_claim and reclaimed_run_id is not None:
+            latest = conn.execute(
+                "SELECT MAX(id) AS max_id FROM task_runs WHERE task_id = ?", (task_id,),
+            ).fetchone()
+            latest_id = _kb._row_get(latest, "max_id")
+            stale = latest_id is not None and int(latest_id) != int(reclaimed_run_id)
+            if stale:
+                latest_run = conn.execute(
+                    "SELECT outcome FROM task_runs WHERE id = ?", (latest_id,),
+                ).fetchone()
+                superseded_by_success = (
+                    latest_run is not None and latest_run["outcome"] == "completed"
+                )
+        if stale:
+            if not superseded_by_success:
+                conn.execute(
+                    "UPDATE tasks SET consecutive_failures = consecutive_failures + 1 "
+                    "WHERE id = ?",
+                    (task_id,),
+                )
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])

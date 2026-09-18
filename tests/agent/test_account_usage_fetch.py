@@ -188,6 +188,90 @@ def test_fetch_account_usage_xai_oauth_reports_missing_config(monkeypatch):
     assert snapshot.unavailable_reason is not None
 
 
+def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypatch):
+    """NanoGPT: percentUsed is a 0–1 fraction; balance comes from POST check-balance."""
+    class _RoutingClient:
+        def __init__(self, sub, balance):
+            self._sub, self._balance = sub, balance
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert "subscription/usage" in url
+            return _Response(self._sub)
+
+        def post(self, url, headers=None, json=None):
+            assert "check-balance" in url
+            return _Response(self._balance)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _RoutingClient(
+            {
+                "active": True,
+                "allowOverage": True,
+                "weeklyInputTokens": {"used": 56_058_595, "remaining": 3_941_405,
+                                      "percentUsed": 0.9343099166666666, "resetAt": 1_789_948_800_000},
+                "dailyImages": {"used": 0, "remaining": 100, "percentUsed": 0, "resetAt": 1_789_776_000_000},
+            },
+            {"usd_balance": "27.29969381"},
+        ),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.provider == "nano-gpt"
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Weekly token limit"
+    assert snapshot.windows[0].used_percent > 90  # fraction scaled, NOT 0.93%
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=timezone.utc)
+    assert "Balance: $27.30" in snapshot.details
+
+
+def test_fetch_account_usage_ollama_cloud_scales_fractions(monkeypatch):
+    """Ollama Cloud: limits.*.usage is a 0–1 fraction; spend + top model from activity."""
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert url == "https://ollama.com/api/usage"
+            return _Response({
+                "activity": {"cost": "2.01533", "models": [
+                    {"name": "glm-5.3", "request_count": 52, "cost": "1.74216"},
+                    {"name": "glm-5.3-flash", "request_count": 15, "cost": "0.27317"},
+                ]},
+                "limits": {
+                    "session": {"usage": 0.208, "models": []},
+                    "weekly": {"usage": 0.631, "models": []},
+                },
+            })
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+    snapshot = fetch_account_usage("ollama-cloud", api_key="key")
+
+    assert snapshot is not None
+    assert snapshot.provider == "ollama-cloud"
+    assert [w.label for w in snapshot.windows] == ["Session usage", "Weekly usage"]
+    assert snapshot.windows[0].used_percent == 20.8
+    assert snapshot.windows[1].used_percent == 63.1
+    assert "Spend, last 4 weeks: $2.02" in snapshot.details
+    assert "Top model: glm-5.3 at $1.74" in snapshot.details
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

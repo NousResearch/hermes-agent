@@ -51,6 +51,36 @@ const GUIDE_SECTIONS: GuideSection[] = [
   },
 ];
 
+/**
+ * راهنمای شروع سریع — the guide.html first-run walkthrough as data:
+ * five figures, Persian captions identical to guide.html's <figcaption>s
+ * (numbered ۱–۵). Images are the freshly recaptured guide screenshots,
+ * served from public/guide-images/ (present in dev and the prod build).
+ * Keep caption text in sync with guide.html — same section, same order.
+ */
+const WALKTHROUGH: Array<{ src: string; caption: string }> = [
+  {
+    src: "guide-images/01-first-launch.png",
+    caption: "۱ — برنامه باز شد؛ در اولین اجرا زبان پیش‌فرض انگلیسی است.",
+  },
+  {
+    src: "guide-images/02-language-menu.png",
+    caption: "۲ — در پایین نوار کناری روی «Switch language» کلیک کنید و فارسی را انتخاب کنید.",
+  },
+  {
+    src: "guide-images/03-persian-rtl.png",
+    caption: "۳ — کل رابط بلافاصله فارسی و راست‌به‌چپ می‌شود؛ نوار کناری به سمت راست می‌رود.",
+  },
+  {
+    src: "guide-images/04-models-persian.png",
+    caption: "۴ — از بخش «مدل‌ها» ارائه‌دهنده (Nous Portal، OpenRouter، OpenAI و…) و مدل دلخواه را تنظیم کنید.",
+  },
+  {
+    src: "guide-images/05-guide-persian.png",
+    caption: "۵ — همین راهنما همیشه در دسترس است: بخش «مستندات» در خود برنامه.",
+  },
+];
+
 const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
   { cmd: "hermes", desc: "شروع گفتگوی تعاملی در ترمینال" },
   { cmd: "hermes gateway", desc: "اجرای دروازه (کانال‌ها و API سرور)" },
@@ -198,6 +228,30 @@ export function PersianGuide() {
               </li>
             ))}
           </ol>
+
+          <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
+            <div className="mb-1.5 text-xs font-bold text-foreground">
+              🚀 شروع سریع در ۵ گام
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {WALKTHROUGH.map((fig) => (
+                <figure
+                  key={fig.src}
+                  className="overflow-hidden rounded-sm border border-current/10 bg-background/60"
+                >
+                  <img
+                    src={fig.src}
+                    alt={fig.caption}
+                    loading="lazy"
+                    className="block w-full"
+                  />
+                  <figcaption className="border-t border-current/10 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    {fig.caption}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </div>
 
           <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
             <div className="mb-1.5 text-xs font-bold text-foreground">

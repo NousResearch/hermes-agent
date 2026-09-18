@@ -1,4 +1,6 @@
+import asyncio
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -162,6 +164,33 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     assert state.cancel_event.is_set()
     assert state.interrupted_prompt_text == "original request"
 
+
+@pytest.mark.asyncio
+async def test_acp_cancel_returns_cancelled_when_core_final_response_is_none():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    started = threading.Event()
+    interrupted = threading.Event()
+
+    def run_conversation(**_kwargs):
+        started.set()
+        assert interrupted.wait(timeout=5)
+        return {"final_response": None, "messages": [], "interrupted": True}
+
+    fake.run_conversation = run_conversation
+    fake.interrupt = interrupted.set
+
+    prompt_task = asyncio.create_task(
+        acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="run until cancelled")],
+        )
+    )
+    assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=6)
+
+    await acp_agent.cancel(state.session_id)
+    response = await asyncio.wait_for(prompt_task, timeout=6)
+
+    assert response.stop_reason == "cancelled"
 
 
 

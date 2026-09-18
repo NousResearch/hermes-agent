@@ -1,20 +1,22 @@
 import { Box, Text } from '@hermes/ink'
 
-import { HOTKEYS } from '../content/hotkeys.js'
+import { getHotkeys } from '../content/hotkeys.js'
+import { useTranslations } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 
-const COMMON_COMMANDS: [string, string][] = [
-  ['/help', 'full list of commands + hotkeys'],
-  ['/clear', 'start a new session'],
-  ['/resume', 'switch live or resume past sessions'],
-  ['/details', 'control transcript detail level'],
-  ['/copy', 'copy selection or last assistant message'],
-  ['/quit', 'exit hermes']
-]
-
-const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
-
 export function HelpHint({ t }: { t: Theme }) {
+  const copy = useTranslations()
+
+  const COMMON_COMMANDS: [string, string][] = [
+    ['/help', copy.help.full],
+    ['/clear', copy.help.clear],
+    ['/resume', copy.help.resume],
+    ['/details', copy.help.details],
+    ['/copy', copy.help.copy],
+    ['/quit', copy.help.quit]
+  ]
+
+  const HOTKEY_PREVIEW = getHotkeys().slice(0, 8)
   const labelW = Math.max(...COMMON_COMMANDS.map(([k]) => k.length), ...HOTKEY_PREVIEW.map(([k]) => k.length))
 
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
@@ -32,14 +34,14 @@ export function HelpHint({ t }: { t: Theme }) {
       >
         <Text>
           <Text bold color={t.color.primary}>
-            ? quick help
+            {copy.help.title}
           </Text>
-          <Text color={t.color.muted}>{'  ·  type /help for the full panel  ·  backspace to dismiss'}</Text>
+          <Text color={t.color.muted}>{copy.help.hint}</Text>
         </Text>
 
         <Box marginTop={1}>
           <Text bold color={t.color.accent}>
-            Common commands
+            {copy.help.commands}
           </Text>
         </Box>
 
@@ -52,7 +54,7 @@ export function HelpHint({ t }: { t: Theme }) {
 
         <Box marginTop={1}>
           <Text bold color={t.color.accent}>
-            Hotkeys
+            {copy.help.hotkeys}
           </Text>
         </Box>
 

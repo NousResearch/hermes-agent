@@ -405,12 +405,13 @@ class CLIModalMixin:
         command string — never a fuzzy resolution."""
         from cli import _ensure_skill_commands
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_cli.commands_i18n import cli_command_description
 
         entries: list[tuple[str, str, str]] = []
         for category, commands in COMMANDS_BY_CATEGORY.items():
             for cmd, desc in commands.items():
                 if self._command_available(cmd):
-                    entries.append((cmd, category, desc))
+                    entries.append((cmd, category, cli_command_description(cmd, desc)))
         try:
             for cmd, info in sorted(_ensure_skill_commands().items()):
                 entries.append((cmd, "Skill", info.get("description", "")))

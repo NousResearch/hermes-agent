@@ -111,3 +111,26 @@ def test_config_set_without_profile_still_writes_launch_home(tmp_path, monkeypat
     assert resp["result"]["value"] == "interrupt"
     assert _read_yaml(launch)["display"]["busy_input_mode"] == "interrupt"
     assert _read_yaml(worker)["display"]["busy_input_mode"] == "queue"
+
+
+def test_config_get_full_resolves_ui_language_in_requested_profile(tmp_path, monkeypatch):
+    from agent import i18n
+
+    launch, worker = _homes(tmp_path)
+    for home, language in [(launch, "en"), (worker, "sv_FI")]:
+        cfg = _read_yaml(home)
+        cfg["display"]["language"] = language
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    _bind_homes(monkeypatch, launch, worker)
+    i18n.reset_language_cache()
+    try:
+        assert _get({"key": "full"})["result"]["ui_language"] == "en"
+        assert _get({"key": "full", "profile": "code"})["result"]["ui_language"] == "sv"
+        assert _get({"key": "full"})["result"]["ui_language"] == "en"
+        monkeypatch.setenv("HERMES_LANGUAGE", "sv-SE")
+        assert _get({"key": "full"})["result"]["ui_language"] == "sv"
+    finally:
+        i18n.reset_language_cache()
+        _reset_cfg_cache()

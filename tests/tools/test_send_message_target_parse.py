@@ -628,13 +628,20 @@ def test_send_message_routes_google_chat_thread_without_home_fallback() -> None:
     resource name) instead of erroring on directory lookup or falling to home."""
     from gateway.platform_registry import PlatformEntry, platform_registry
 
-    entry = PlatformEntry(
-        name="google_chat",
-        label="Google Chat",
-        adapter_factory=lambda cfg: None,
-        check_fn=lambda: True,
-    )
-    platform_registry.register(entry)
+    # Only register a stub when the real google_chat entry is absent (bare test
+    # process). register() writes this caller into the process-global map while a
+    # discovered bundled entry lives in a scope map, so an unconditional
+    # unregister would drop the real entry and leave the stub behind.
+    stub_needed = platform_registry.get("google_chat") is None
+    if stub_needed:
+        platform_registry.register(
+            PlatformEntry(
+                name="google_chat",
+                label="Google Chat",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+            )
+        )
     platform = Platform("google_chat")
     pconfig = SimpleNamespace(enabled=True, token=None, extra={})
     config = SimpleNamespace(
@@ -658,7 +665,8 @@ def test_send_message_routes_google_chat_thread_without_home_fallback() -> None:
                 )
             )
     finally:
-        platform_registry.unregister("google_chat")
+        if stub_needed:
+            platform_registry.unregister("google_chat")
 
     assert result["success"] is True
     send_mock.assert_awaited_once_with(

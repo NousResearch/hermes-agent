@@ -852,6 +852,56 @@ interface GroupTurnPollContext {
    *  still matches it is an older turn's tombstone, not this turn's death. */
   leftover: null | string
   binding: { isLive(): boolean }
+  /** The in-flight marker this poll owns (see markGroupTurnInFlight). */
+  turn: string
+}
+
+// Polls alive in THIS process, by marker token. A marker whose token is here belongs to a turn
+// still being awaited, so a harvest that runs meanwhile (the settle loop's tick racing a new
+// drive) must leave it alone: posting the reply the poll is about to return would double-deliver
+// it. Drives are sequential per room, so no round's responders filter ever meets a live marker.
+const liveGroupTurns = new Set<string>()
+
+export function strandedMarkerIsLive(marker: unknown): boolean {
+  const turn = marker && typeof marker === 'object' ? (marker as { turn?: unknown }).turn : undefined
+
+  return typeof turn === 'string' && liveGroupTurns.has(turn)
+}
+
+/** The marker goes down at SUBMIT, not only at the deadline: a turn this process abandons —
+ *  Desktop quit or crash mid-turn, a submit whose ack never came back — keeps running on the
+ *  member's gateway (a remote member's most of all: its gateway outlives this Desktop), and only
+ *  a persisted marker lets the next boundary harvest the finished reply instead of dropping it
+ *  and re-driving a live session. */
+function markGroupTurnInFlight(group: string, member: GroupMember, marker: { before: number; thread: string; turn: string }) {
+  updateGroupChat(group, (r: GroupChatRoom) => {
+    r.stranded = {
+      ...(r.stranded || {}),
+      [groupMemberKey(member)]: marker
+    }
+
+    return r
+  })
+}
+
+/** Drop the marker only while it is still this poll's: a newer drive may have re-driven the
+ *  member and stamped its own. */
+function clearGroupTurnMarker(group: string, member: GroupMember, turn: string) {
+  updateGroupChat(group, (r: GroupChatRoom) => {
+    const key = groupMemberKey(member)
+    const current = r.stranded?.[key]
+
+    if (current && typeof current === 'object' && current.turn === turn) {
+      const next = {
+        ...(r.stranded || {})
+      }
+
+      delete next[key]
+      r.stranded = next
+    }
+
+    return r
+  })
 }
 
 async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null | string> {
@@ -884,6 +934,8 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     const roomDuringPoll = $groupChats.get()[context.group] || {}
 
     if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
+      clearGroupTurnMarker(context.group, member, context.turn)
+
       return null
     }
 
@@ -962,26 +1014,15 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   }
 
   // Timeout — clear any still-mirrored question card (the server-side
-  // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
-  // (runtime-only) so the finished reply can be posted late into the RIGHT
-  // thread instead of vanishing.
+  // clarify timeout runs its own course) and read as a pass. The marker written
+  // at submit stays, so the finished reply is posted late into the RIGHT thread
+  // instead of vanishing; it stops being "live" when this poll returns.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
     member: groupMemberKey(member),
     thread
   })
   syncGroupClarify(context.group, member, thread, null)
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
-    r.stranded = {
-      ...(r.stranded || {}),
-      [groupMemberKey(member)]: {
-        before,
-        thread
-      }
-    }
-
-    return r
-  })
 
   return null
 }
@@ -1067,20 +1108,45 @@ async function runGroupChatMemberTurnLeased(
 
     runtimeIds.add(liveRuntime)
 
-    return await pollGroupMemberTurn({
-      get group() {
-        return group
-      },
-      member,
-      thread,
-      dispatchEpoch,
-      stored,
-      liveRuntime,
-      runtimeIds,
+    const turn = `${liveRuntime}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+    liveGroupTurns.add(turn)
+    markGroupTurnInFlight(group, member, {
       before,
-      leftover,
-      binding
+      thread,
+      turn
     })
+
+    try {
+      const reply = await pollGroupMemberTurn({
+        get group() {
+          return group
+        },
+        member,
+        thread,
+        dispatchEpoch,
+        stored,
+        liveRuntime,
+        runtimeIds,
+        before,
+        leftover,
+        binding,
+        turn
+      })
+
+      // A reply (or an explicit pass) ends the turn; null is a timeout or a dead
+      // binding, and the marker must outlive this poll for the harvest.
+      if (reply !== null) {
+        clearGroupTurnMarker(group, member, turn)
+      }
+
+      return reply
+    } catch (error) {
+      // The turn died on our prompt: nothing to harvest.
+      clearGroupTurnMarker(group, member, turn)
+      throw error
+    } finally {
+      liveGroupTurns.delete(turn)
+    }
   } finally {
     binding.dispose()
   }
@@ -1102,8 +1168,8 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
 
-    if (typeof strandedBefore !== 'number') {
-      return
+    if (typeof strandedBefore !== 'number' || strandedMarkerIsLive(marker)) {
+      return // nothing stranded, or a poll in this process still owns the turn
     }
 
     let state: GroupSessionSnapshot | null = null
@@ -1119,8 +1185,23 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         session_id: stored || `Group: ${room.roomId || group} · ${strandedThread}`,
         profile: member.name
       })) as GroupSessionSnapshot
-    } catch {
-      return // source unreachable — leave the marker for the next boundary
+    } catch (error: any) {
+      // A session that genuinely no longer exists has nothing to harvest, and a marker that can
+      // never resolve would keep the member out of every round; only unreachability keeps it.
+      if (error?.code === 4007) {
+        updateGroupChat(group, (r: GroupChatRoom) => {
+          const next = {
+            ...(r.stranded || {})
+          }
+
+          delete next[memberKey]
+          r.stranded = next
+
+          return r
+        })
+      }
+
+      return
     }
 
     if (!binding.isLive()) {

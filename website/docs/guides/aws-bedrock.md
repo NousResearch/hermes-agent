@@ -99,8 +99,28 @@ bedrock:
   discovery:
     enabled: true
     provider_filter: ["anthropic", "amazon"]  # Only show these providers
+    model_allowlist: []                        # Exact model IDs to keep ([] = keep everything)
     refresh_interval: 3600                     # Cache for 1 hour
 ```
+
+#### Restricting discovery to the models you can actually invoke
+
+`ListFoundationModels` / `ListInferenceProfiles` answer "what exists in this region", never "what this account may invoke". Where an organization service control policy or a missing AWS Marketplace agreement denies part of the region's catalog, the picker offers IDs that fail at call time with `AccessDeniedException: You don't have access to the model with the specified model ID`. Access can vary *within* a provider, so `provider_filter` cannot express it — `model_allowlist` can:
+
+```yaml
+bedrock:
+  discovery:
+    model_allowlist:
+      - us.anthropic.claude-sonnet-4-6
+      - openai.gpt-oss-120b-1:0
+```
+
+- **Exact IDs, matched case-insensitively.** No prefix or glob matching, deliberately: a prefix rule would silently re-admit a newly published model nobody has verified access to.
+- **Empty (the default) changes nothing** — discovery behaves exactly as before.
+- **It applies everywhere discovery is used:** the `/model` picker, both `hermes model` Bedrock flows (IAM chain and Bedrock API key) and `/model` validation. The Mantle `openai.*` IDs obey it too, even though the control plane never lists them (Hermes merges them in), and an allowlist naming only Mantle IDs offers exactly those.
+- **Nothing matched?** Hermes logs one `bedrock.discovery.model_allowlist matched none of N discovered ids in <region>` warning and the Bedrock row in the `/model` picker offers at most the allowlisted IDs that Hermes' curated static list happens to carry — often none. A stale list or a region change therefore never quietly re-offers the IDs you hid: the curated static list is filtered by the same allowlist, the picker skips its unfiltered curated backfill for Bedrock while an allowlist is set, and the `hermes model` flows intersect their curated fallback the same way. (An allowlisted `us.*` ID that the curated list carries is still offered after a switch to an EU region — the same curated fallback the unfiltered picker uses today, only narrowed to your list.)
+- **Hiding is not disabling.** A model ID you set by hand (`hermes config set model.default …`) still resolves and still validates with the usual "not found in Bedrock model discovery" note, and `hermes doctor` keeps reporting the raw `ListFoundationModels` count.
+- Discovery results are cached (`provider_models_cache.json`, 1 hour, keyed by credentials). The normalized allowlist is folded into that key, so an edit takes effect on the next `/model` open: widening `[A]` to `[A, B]` re-discovers and shows `B`, narrowing hides it again, with no `--refresh` and no TTL wait. The filtered curated fallback (live discovery unavailable while an allowlist is set) is served for that open only and never written to the cache file, so a recovered discovery wins on the very next open. `hermes model --refresh` and `/model --refresh` delete the file outright if you want a clean re-fetch.
 
 ### Prompt caching (cachePoint)
 

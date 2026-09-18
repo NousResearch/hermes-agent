@@ -82,6 +82,7 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
+_backend_selection_identities: Dict[str, Tuple[Any, ...]] = {}
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -165,11 +166,16 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str,
+                     selection_identity: Optional[Tuple[Any, ...]] = None) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
+    if selection_identity is None:
+        from tools.computer_use.cua_backend_driver import computer_use_selection_identity
+        selection_identity = computer_use_selection_identity()
+    _backend_selection_identities[sid] = selection_identity
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
@@ -179,6 +185,7 @@ def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[thr
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
     _backend_permission_modes.pop(sid, None)
+    _backend_selection_identities.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     if sid == "":
         backend = _backend if backend is None else backend
@@ -207,17 +214,20 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
         with _backend_lock:
+            from tools.computer_use.cua_backend_driver import computer_use_selection_identity
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
+            selection_identity = computer_use_selection_identity()
             if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
+                _install_backend(sid, _backend, permission_mode, selection_identity)  # fold injection hook into cache
             if (cached := _backends.get(sid)) is None:
                 backend = _new_backend(permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                return _install_backend(sid, backend, permission_mode, selection_identity)
+            if (_backend_permission_modes.get(sid, "standard") == permission_mode
+                    and _backend_selection_identities.get(sid) == selection_identity):
                 return cached
-            # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
+            # Cua's mode and executable target are immutable after startup: replace only this scoped session.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
@@ -251,7 +261,7 @@ def _shutdown_backend_atexit() -> None:
         if _backend is not None:
             unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
         _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_selection_identities.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -308,7 +318,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                                    "If a Python dependency is missing, the error above shows the exact install command."})
     try:
         with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
+            call_lock = _backend_call_locks.setdefault(_scoped_sid(session_id), threading.RLock())
         with call_lock:
             return _dispatch(backend, action, args, session_id=session_id or None)
     except Exception as e:

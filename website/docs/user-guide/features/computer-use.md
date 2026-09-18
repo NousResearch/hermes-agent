@@ -96,6 +96,54 @@ hermes -t computer_use chat
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
+## WSL: choose the Windows host or Linux guest
+
+A Windows Desktop **Remote** connection changes the chat frontend, not the
+execution host. If the agent runs in WSL, Computer Use still resolves its driver
+there. Connecting Desktop never grants control of the client machine implicitly.
+
+In Desktop's **Capabilities → Computer Use** card, a WSL backend exposes a
+persistent target selector. It writes `computer_use.target` to the selected
+backend/profile, not to a separate local Windows backend:
+
+- **Automatic** (`auto`, default): keep the existing environment/PATH resolution.
+- **Windows host** (`windows`): find the Windows user's installed `cua-driver.exe`
+  and execute it through WSL interop. Never fall back to a Linux driver.
+- **Linux guest** (`linux`): use a native Linux driver; Windows executables,
+  including symlinks to them, are rejected.
+
+The equivalent CLI workflow, run **inside WSL** in the desired Hermes profile:
+
+```bash
+hermes config set computer_use.target windows
+hermes computer-use install
+hermes computer-use status
+```
+
+Installation uses the official Windows installer and its autostart setup through
+`powershell.exe`. WSL interop and Windows PowerShell must
+be available. If Windows blocks installation or the UIAccess worker, complete
+that approval on Windows; Hermes does not dismiss OS permission prompts.
+Unattended updates do not launch this cross-OS installer: use an explicit
+`hermes computer-use install --upgrade` when needed.
+
+The card and CLI status show the effective driver platform/path separately from
+the WSL execution host. The setting is profile-scoped and the next tool call
+replaces that session's old backend if its selected target changed. Recapture
+before using element indices after switching. Existing approval modes and
+session isolation remain in force.
+
+`HERMES_CUA_DRIVER_CMD` remains an authoritative override (including a custom
+Windows installation path). If it conflicts with the explicit target, status
+reports the conflict and execution fails closed; unset or correct it rather
+than expecting a different driver to be chosen silently. Windows target selection
+is supported on native Windows or WSL, not on an arbitrary remote Linux server.
+
+Verify with real tool calls: list Windows windows, then request
+`capture(app="screen", mode="vision")`. A green doctor is a health signal, not
+proof of the intended desktop. Window-specific accessibility failures (for
+example, a Unity UIA timeout) are separate from selecting the correct host.
+
 ## Permission modes and logged-in browser profiles
 
 Hermes maps its existing approval UX onto cua-driver's immutable runtime

@@ -256,6 +256,53 @@ def _report_repair_or_upgrade(ok: bool, *, repair_existing: bool, binary, before
     return ok
 
 
+def _install_wsl_windows_driver(*, upgrade: bool, unattended: bool) -> bool:
+    """Install on the selected Windows host, never on the WSL/Linux guest.
+
+    Native Windows owns install paths and locking. Do not reuse POSIX installer
+    cleanup against a Windows process or silently start its installer on update.
+    """
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
+    from tools.computer_use.cua_backend_driver import computer_use_target_error
+    binary = _resolved_cua_driver_cmd()
+    contract = _cua_driver_contract_status(binary) if binary else {}
+    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    if override and (not contract.get("ready") or upgrade):
+        return _fail(computer_use_target_error() or "    A custom Windows driver is selected.",
+                     "    Update that binary manually, or unset HERMES_CUA_DRIVER_CMD to use the official install.")
+    if contract.get("ready") and not upgrade:
+        _print_success(f"    Windows-host cua-driver is ready: {binary}")
+        return True
+    if unattended:
+        _print_info("    Windows-host installation from WSL requires an explicit computer-use install command.")
+        return bool(contract.get("ready"))
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        return _fail("    Windows PowerShell is unavailable through WSL interop.",
+                     "    Enable WSL interop, or install cua-driver in Windows and select its executable.")
+    # Fixed upstream URL, no interpolated user arguments. Keep the official
+    # Windows installer's autostart setup: standard-mode clients need its daemon.
+    script = (f"$ErrorActionPreference='Stop'; $s=irm {_CUA_INSTALL_PS1_URL}; "
+              "& ([scriptblock]::Create($s))")
+    try:
+        result = _run_text([powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+                            "-ExecutionPolicy", "Bypass", "-Command", script],
+                           timeout=_CUA_INSTALLER_TIMEOUT, stdin=subprocess.DEVNULL,
+                           env=sanitized_cua_driver_env())
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail(f"    Windows-host installer failed: {exc}",
+                     "    Check the Windows installer before retrying; no Linux driver was installed.")
+    if result.returncode != 0:
+        _print_output_tail(result)
+        return _fail("    Windows-host installer failed; no Linux fallback was attempted.")
+    contract = _cua_driver_contract_status()
+    if not contract.get("ready"):
+        return _fail("    Windows installer exited, but the selected driver is not ready.",
+                     str(contract.get("reason") or computer_use_target_error() or "Run hermes computer-use doctor."))
+    _print_success("    Windows-host cua-driver installed and runtime contract verified.")
+    return True
+
+
 def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = False,
                        show_installer_progress: bool = True) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
@@ -263,6 +310,18 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     ``upgrade=False`` (toolset enable flow) keeps a compatible installation, repairs an
     old/incomplete one and installs when missing; ``upgrade=True`` always refreshes."""
     system = platform.system()
+    from hermes_constants import is_wsl
+    from tools.computer_use.cua_backend_driver import (
+        computer_use_target, computer_use_target_error, resolved_cua_driver_platform)
+    target = computer_use_target()
+    wsl = system == "Linux" and is_wsl()
+    if (target not in {"auto", "windows", "linux"}
+            or (target == "windows" and system != "Windows" and not wsl)
+            or (target == "linux" and system != "Linux")):
+        return _fail(computer_use_target_error() or "    Unsupported Computer Use target.")
+    if wsl and (target == "windows" or (
+            target == "auto" and resolved_cua_driver_platform(_resolved_cua_driver_cmd()) == "windows")):
+        return _install_wsl_windows_driver(upgrade=upgrade, unattended=require_confirmed_update)
     if system not in ("Darwin", "Windows", "Linux"):
         if not upgrade:  # silent under `hermes update`, which calls this for every user
             _print_warning(

@@ -1173,7 +1173,9 @@ function ToolsetDetail({
           </div>
         </div>
       )}
-      {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
+      {toolset.name === 'computer_use' && (
+        <ComputerUsePanel key={profileScopeKey(profile)} onConfiguredChange={onConfiguredChange} profile={profile} />
+      )}
       {/* Real-profile consent toggle ABOVE the backend/provider matrix — the
           config option users kept missing because its only GUI home was the
           generic Settings → Config editor. */}

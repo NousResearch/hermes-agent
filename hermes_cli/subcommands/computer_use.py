@@ -18,7 +18,12 @@ def _cu_status(args) -> int:
     import os as _os
     import subprocess
     from hermes_cli.tools_config import _cua_driver_contract_status
-    from tools.computer_use.cua_backend_driver import cua_driver_update_check, resolve_cua_driver_cmd
+    from tools.computer_use.cua_backend_driver import (
+        computer_use_selection_identity, cua_driver_update_check, resolve_cua_driver_cmd)
+    target, driver_platform, _selected, target_error = computer_use_selection_identity()
+    print(f"Computer Use target: {target}; driver platform: {driver_platform or 'unresolved'}")
+    if target_error:
+        print(f"  {target_error}")
     # Must match the runtime resolver: Desktop/TUI processes can omit
     # ~/.local/bin even though the official installer put the driver there.
     path = resolve_cua_driver_cmd()

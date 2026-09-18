@@ -1136,7 +1136,16 @@ export const zh = defineLocale({
     computerUse: {
       accessibility: '辅助功能',
       screenRecording: '屏幕录制',
-      driverHealth: '驱动健康状态'
+      driverHealth: '驱动健康状态',
+      targetTitle: '运行 Computer Use 的位置',
+      targetAutomatic: '自动',
+      targetWindows: 'Windows 主机',
+      targetLinux: 'Linux 客体',
+      targetAutomaticDescription: '沿用现有解析方式：可用时通过 WSL 使用 Windows 主机，否则使用此 Linux 客体。',
+      targetWindowsDescription: '在 Windows 主机上运行 cua-driver，并通过 WSL 访问。',
+      targetLinuxDescription: '在此 WSL Linux 客体内运行 cua-driver。',
+      effectiveDriver: platform => `实际驱动平台：${platform}`,
+      driverCommand: '驱动命令'
     },
     about: {
       heading: 'Hermes Desktop',

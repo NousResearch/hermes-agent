@@ -125,7 +125,7 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
+        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if _driver.resolved_cua_driver_platform(driver_cmd) == "windows"
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:
@@ -203,6 +203,6 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        if not self.socket_path.startswith("\\\\.\\pipe\\") and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)

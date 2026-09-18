@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import corrupt_store_as_status
+from hermes_cli.web_routers._common import config_write_scope, corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
@@ -55,10 +55,13 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
-        with _profile_scope(body.profile or profile):
+        with config_write_scope(body.profile or profile):
             # Full-document replacement: the editor owns the whole file; never
             # merge omitted sections back from disk.
-            # See #62723.
+            # See #62723. RMW span vs. a concurrent config autosave/mutation
+            # from another route — config_write_scope also holds
+            # _CONFIG_MUTATION_LOCK, else whichever save lands second wins
+            # outright and the other's edits are silently discarded.
             approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(read_raw_config())
             save_config(parsed, merge_existing=False)
         # Same indicator refresh as the schema-driven save.

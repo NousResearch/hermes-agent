@@ -128,3 +128,64 @@ def test_custom_endpoint_activate_racing_moa_save_keeps_both_writes(client, monk
     on_disk = _on_disk()
     assert on_disk["model"]["provider"] == "racebox"
     assert on_disk["moa"]["aggregator"]["model"] == "openai/gpt-5.5"
+
+
+def test_raw_config_write_holds_the_config_mutation_lock(client, monkeypatch):
+    """PUT /api/config/raw must serialize behind the same ``_CONFIG_MUTATION_LOCK`` every other
+    config-mutating handler holds — else it can race a concurrent config write (autosave, a
+    custom-endpoint save, ...) and one of the two silently discards the other's change. Because
+    this endpoint does a FULL document replacement, a lost write here is total, not partial.
+
+    Neither ``update_config_raw`` nor ``update_config`` calls ``load_config()`` (both read via
+    ``read_raw_config()``), so the generic ``_race_second_writer_into_first_writers_save`` helper
+    above — keyed on a ``load_config`` call to detect the second writer — cannot observe this
+    pair racing (an earlier version of this test asserted on ``load_config``-based interleaving
+    and passed even without the fix, because that signal never fires for this endpoint at all).
+    Testing the lock directly is deterministic and does not depend on which read function either
+    handler happens to call.
+    """
+    import hermes_cli.config as cfg_mod
+    from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
+
+    real_save = cfg_mod.save_config
+    save_called = threading.Event()
+
+    def _spy_save(*args, **kwargs):
+        save_called.set()
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(cfg_mod, "save_config", _spy_save)
+
+    released = threading.Event()
+
+    def _hold_lock():
+        with _CONFIG_MUTATION_LOCK:
+            released.wait(5.0)
+
+    holder = threading.Thread(target=_hold_lock)
+    holder.start()
+    time.sleep(0.2)  # let the holder actually acquire the lock before starting the writer
+
+    result: dict = {}
+
+    def _raw_write():
+        result["response"] = client.put(
+            "/api/config/raw", json={"yaml_text": "display:\n  personality: after-lock\n"})
+
+    writer = threading.Thread(target=_raw_write)
+    writer.start()
+
+    try:
+        assert not save_called.wait(0.5), (
+            "PUT /api/config/raw reached save_config() while _CONFIG_MUTATION_LOCK was held "
+            "elsewhere — it is not serialized against concurrent config writes"
+        )
+    finally:
+        released.set()
+        holder.join(5)
+
+    assert save_called.wait(5), "PUT /api/config/raw never completed its save after the lock was released"
+    writer.join(5)
+
+    assert result["response"].status_code == 200, result["response"].text
+    assert _on_disk()["display"]["personality"] == "after-lock"

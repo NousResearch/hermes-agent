@@ -36,7 +36,7 @@ _BUMP_GENERATION_SQL = """
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
-_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?"
+_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})"
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
@@ -394,8 +394,9 @@ class SessionMessagesMixin:
         ``None`` for a foreign row."""
         if not session_id or message_row_id is None:
             return None
+        sql, params = self._reaction_row_query(session_id, message_row_id)
         def _do(conn):
-            row = conn.execute(_DISPLAY_META_ROW_SQL, (message_row_id, session_id)).fetchone()
+            row = conn.execute(sql, params).fetchone()
             if row is None:
                 return None
             meta = self._decode_display_metadata(row[0]) or {}
@@ -416,8 +417,15 @@ class SessionMessagesMixin:
         """Reaction list persisted on one message row (never ``None``)."""
         if not session_id or message_row_id is None:
             return []
-        row = self._read_one(_DISPLAY_META_ROW_SQL, (message_row_id, session_id))
+        row = self._read_one(*self._reaction_row_query(session_id, message_row_id))
         return self._reaction_list(self._decode_display_metadata(row[0])) if row is not None else []
+
+    def _reaction_row_query(self, session_id: str, message_row_id: int) -> Tuple[str, tuple]:
+        """A reaction addresses a row the client can SEE, and a display resume materializes the whole
+        compression lineage with row ids — so a row is "in this session" when its owner is any lineage
+        segment, not only the tip. Explicit ``/branch`` copies keep their own rows (``_resume_lineage_ids``)."""
+        lineage = self._resume_lineage_ids(session_id)
+        return _DISPLAY_META_ROW_SQL.format(ids=_placeholders(lineage)), (message_row_id, *lineage)
 
     def take_unseen_reactions(self, session_id: str, *, author: str = "user") -> List[Dict[str, Any]]:
         """Return *author*'s not-yet-surfaced reactions and mark them seen. Reactions are announced on the
@@ -425,12 +433,13 @@ class SessionMessagesMixin:
         Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
         if not session_id:
             return []
+        lineage = self._resume_lineage_ids(session_id)
         def _do(conn):
             pending = []
             for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    "WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+                    f"WHERE session_id IN ({_placeholders(lineage)}) AND (active = 1 OR compacted = 1) "
                     "AND display_metadata IS NOT NULL ORDER BY id",
-                    (session_id,)).fetchall():
+                    tuple(lineage)).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):

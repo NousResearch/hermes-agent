@@ -187,3 +187,34 @@ def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):
             not k.startswith("_") or k in {"_row_id", "_db_persisted"}
             for k in message
         )
+
+
+def test_ancestor_rows_react_through_the_continuation_key(session, db):
+    """A display resume shows the whole compression lineage with row ids, so a row in an ended parent
+    segment must react, read back and announce through the CONTINUATION key the client holds (#80670)."""
+    parent, rows = session
+    assert db.try_acquire_compression_lock(parent, "w", ttl_seconds=60)
+    db.publish_compression_child(parent_session_id=parent, child_session_id="react-tip", source="test",
+                                 messages=[{"role": "user", "content": "summary"}], compression_lock_holder="w")
+    display_rows = [m["_row_id"] for m in db.get_resume_conversations("react-tip")[1]]
+    assert rows[1] in display_rows
+
+    assert db.set_message_reaction("react-tip", rows[1], "👍") == db.get_message_reactions("react-tip", rows[1])
+    assert db.get_message_reactions("react-tip", rows[1])[0]["emoji"] == "👍"
+    assert [p["row_id"] for p in db.take_unseen_reactions("react-tip")] == [rows[1]]
+
+
+def test_lineage_scope_still_rejects_foreign_and_branch_rows(session, db):
+    """Lineage widening must not turn row ids into a global lookup: an unrelated session's row and a row
+    of an explicit /branch copy (which keeps its own rows) stay foreign to the continuation."""
+    parent, rows = session
+    assert db.try_acquire_compression_lock(parent, "w", ttl_seconds=60)
+    db.publish_compression_child(parent_session_id=parent, child_session_id="react-tip", source="test",
+                                 messages=[{"role": "user", "content": "summary"}], compression_lock_holder="w")
+    other = db.create_session("elsewhere", "test")
+    foreign = db.append_message(other, "user", "other conversation")
+    branch = db.create_session("branch", "test", parent_session_id=parent, model_config={"_branched_from": parent})
+
+    assert db.set_message_reaction("react-tip", foreign, "👍") is None
+    assert db.set_message_reaction(branch, rows[0], "👍") is None
+    assert db.get_message_reactions(branch, rows[0]) == []

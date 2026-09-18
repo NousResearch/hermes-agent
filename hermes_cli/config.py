@@ -1,6 +1,7 @@
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
+import base64
 import copy
 import difflib
 import json
@@ -3490,6 +3491,56 @@ def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], 
     sys.exit(1)
 
 
+def _is_valid_scrypt_hash(encoded: str) -> bool:
+    """True when ``encoded`` parses as the dashboard basic-auth provider's own
+    ``scrypt$N$r$p$<salt_b64>$<dk_b64>`` encoding (plugins/dashboard_auth/basic).
+    Mirrors the provider's ``_verify_password`` parsing so the CLI rejects exactly
+    the strings the provider would silently fail to authenticate against."""
+    parts = encoded.split("$")
+    if len(parts) != 6 or parts[0] != "scrypt":
+        return False
+    try:
+        n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+        base64.b64decode(parts[4], validate=True)
+        base64.b64decode(parts[5], validate=True)
+    except (ValueError, TypeError):
+        return False
+    return n > 0 and r > 0 and p > 0
+
+
+def _guard_dashboard_basic_auth_lockout(key: str, value: Any, user_config: Dict[str, Any]) -> None:
+    """Reject ``dashboard.basic_auth`` writes that leave the dashboard with a credential
+    nobody can authenticate with (#110069): a non-empty ``password_hash`` that does not
+    parse as the provider's scrypt encoding (a double-quoted shell argument expands the
+    ``$`` segments away), or clearing ``password`` while no valid ``password_hash`` is
+    stored. The failure mode of storing either is a silent lockout of the surface used
+    to administer the agent, so both are hard-rejected at write time."""
+    segs = _split_key_path(key)
+    if len(segs) != 3 or segs[0] != "dashboard" or segs[1] != "basic_auth":
+        return
+    section = user_config.get("dashboard")
+    section = section.get("basic_auth") if isinstance(section, dict) else None
+    section = section if isinstance(section, dict) else {}
+    if segs[2] == "password_hash":
+        encoded = "" if value is None else str(value).strip()
+        if encoded and not _is_valid_scrypt_hash(encoded):
+            _exit_invalid(
+                f"✗ Cannot set '{key}': value does not parse as the provider's scrypt "
+                "encoding (expected 'scrypt$N$r$p$<salt>$<dk>'). A common cause is shell "
+                "expansion of the '$' segments in a double-quoted argument — re-run with "
+                "the hash in single quotes.")
+    elif segs[2] == "password":
+        if value is None or str(value).strip() == "":
+            existing = str(section.get("password_hash") or "").strip()
+            if not _is_valid_scrypt_hash(existing):
+                _exit_invalid(
+                    f"✗ Cannot set '{key}' to empty: no valid "
+                    "dashboard.basic_auth.password_hash is stored, so this write would "
+                    "leave the dashboard with no usable credential (lockout). Set a "
+                    "valid password_hash first, or remove both keys to disable the "
+                    "provider.")
+
+
 def _touch_skin_file(key: str, value: Any) -> None:
     """``display.skin`` set means "apply NOW": bump the skin file's mtime so the gateway watcher's
     (name, mtime) signature moves even when the name is unchanged. Best-effort."""
@@ -3601,6 +3652,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
     key = _guard_section_overwrite(key, value, user_config, force)
+    _guard_dashboard_basic_auth_lockout(key, value, user_config)
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:

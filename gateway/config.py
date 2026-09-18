@@ -281,6 +281,20 @@ class HomeChannel:
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        # Copy Link is next to Copy Channel ID in Discord. Normalize at the
+        # shared home boundary so env, YAML and plugin-seeded homes agree.
+        if self.platform != Platform.DISCORD or not isinstance(self.chat_id, str):
+            return
+        import re
+        match = re.fullmatch(
+            r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/"
+            r"(?:[0-9]+|@me)/([0-9]+)/?",
+            self.chat_id.strip(),
+        )
+        if match:
+            self.chat_id = match.group(1)
+
     def to_dict(self) -> Dict[str, Any]:
         optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}

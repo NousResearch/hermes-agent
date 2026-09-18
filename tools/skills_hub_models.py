@@ -130,6 +130,7 @@ class SkillSource(ABC):
 
     SOURCE_ID: str = ""
     TRUST_LEVEL: str = "community"
+    fetch_error: str = ""
 
     @abstractmethod
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:

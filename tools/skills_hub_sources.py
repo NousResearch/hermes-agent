@@ -208,12 +208,17 @@ class UrlSource(GuardedFetchMixin, SkillSource):
         )
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        self.fetch_error = ""
         loaded = self._load(identifier)
         if loaded is None:
             return None
         url, text, _fm, name = loaded
         referenced = _referenced_support_paths(text)
         if referenced is None:
+            self.fetch_error = (
+                "SKILL.md references paths outside the skill directory (path traversal). "
+                "Ask the author for a self-contained skill bundle."
+            )
             return None
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"

@@ -93,14 +93,18 @@ class SkillsShSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        self.fetch_error = ""
         canonical = self._normalize_identifier(identifier)
         detail = self._fetch_detail_page(canonical)
 
         def _relabel(github_id: Optional[str]) -> Optional[SkillBundle]:
             bundle = self.github.fetch(github_id) if github_id else None
             if bundle:
+                self.fetch_error = ""
                 bundle.source, bundle.identifier = "skills.sh", self._wrap_identifier(canonical)
                 bundle.metadata.update(self._detail_to_metadata(canonical, detail))
+            elif github_id and self.github.fetch_error:
+                self.fetch_error = self.github.fetch_error
             return bundle or None
 
         for candidate in self._candidate_identifiers(canonical):

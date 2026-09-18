@@ -82,7 +82,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
         assert _names(selected()) == enabled_names
         from agent.skill_utils import _detect_kanban
         assert _detect_kanban(), "Saved opt-in still hides the Kanban playbook"
-        result = json.loads(registry.dispatch("kanban_create", {"title": "opt-in roundtrip", "assignee": "default"}))
+        result = json.loads(registry.dispatch("kanban_create", {"title": "opt-in roundtrip", "assignee": "default", "body": "roundtrip probe"}))
         assert result.get("ok"), result
         from hermes_cli.kanban_db_connect import connect_closing
         from hermes_cli.kanban_db import get_task

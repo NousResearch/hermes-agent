@@ -37,7 +37,7 @@ def main():
         root = kb.create_task(conn, title="root", triage=True, tenant="business-a", parents=[parent])
         downstream = kb.create_task(conn, title="downstream", parents=[root], tenant="business-a")
         child = kb.create_task(conn, title="manual child", parents=[parent])
-        tool = json.loads(_handle_create({"title": "tool child", "assignee": "default", "parents": [parent]}))
+        tool = json.loads(_handle_create({"title": "tool child", "assignee": "default", "body": "tool-path tenant probe", "parents": [parent]}))
         assert tool["ok"]
         out = {"db_tenant": kb.get_task(conn, child).tenant,
                "tool_tenant": kb.get_task(conn, tool["task_id"]).tenant}

@@ -387,7 +387,12 @@ KANBAN_CREATE_SCHEMA = _schema(
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "
                 "links. The assigned worker reads this as part of "
-                "its context."
+                "its context. Required unless triage=true — a "
+                "body-less card is undispatchable junk that burns "
+                "a full worker run; when a dispatcher-owned worker "
+                "omits it, the parent task's body is inherited "
+                "with a provenance note (surfaced as "
+                "body_inherited in the result)."
         )),
         "parents": {
             "type": "array",

@@ -1009,6 +1009,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if path not in media_urls:
                     media_urls.append(path)
                     media_types.append(mime)
+        # Per-channel ephemeral prompt (mirrors Telegram/Slack adapters).
+        # See https://github.com/NousResearch/hermes-agent/pull/47218
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(self.config.extra, chat_id)
+
         return MessageEvent(
             text=body, message_type=_MESSAGE_TYPE_BY_KIND.get(msg_type_str, MessageType.TEXT),
             source=self.build_source(
@@ -1018,4 +1023,5 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_message=raw_message, message_id=wamid, reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
+            channel_prompt=_channel_prompt,
         )

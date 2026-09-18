@@ -1235,6 +1235,48 @@ def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
     return values
 
 
+# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
+# template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
+# writes DOMAIN\user, so equality would flag every healthy registration.
+_TASK_DRIFT_LEAVES = {
+    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
+    "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
+    "Task/Actions/Exec/Arguments": "launcher arguments",
+}
+
+
+def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list[str]:
+    """Human-readable drift fragments between a registered task export and the current template,
+    over ``_TASK_DRIFT_LEAVES`` plus the Task ``version``. Empty when aligned or when either side
+    does not parse (fail open)."""
+    live = _task_xml_leaf_values(registered_xml)
+    want = _task_xml_leaf_values(template_xml)
+    if live is None or want is None:
+        return []
+    missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
+    differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    drift = []
+    if missing:
+        drift.append(f"missing: {', '.join(missing)}")
+    drift.extend(f"{label} differs" for label in differs)
+    if live["Task@version"] != want["Task@version"]:
+        drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
+    return drift
+
+
+def _print_scheduled_task_drift(task_name: str) -> None:
+    """Warn when the registered task predates ``_build_scheduled_task_xml``; silent when it cannot be
+    queried. Reports only — re-registration stays behind the explicit ``hermes gateway install``."""
+    registered = _query_scheduled_task_xml(task_name)
+    if registered is None:
+        return
+    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    drift = compare_scheduled_task_drift(registered, template)
+    if drift:
+        print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")
+        print("  Repair: hermes gateway install")
+
+
 def is_installed() -> bool:
     """True when either the schtasks entry or the Startup fallback is present."""
     return is_task_registered() or is_startup_entry_installed()
@@ -1399,6 +1441,7 @@ def status(deep: bool = False) -> None:
         for key in ("status", "last run time", "last run result"):
             if key in info:
                 print(f"  {key.title()}: {info[key]}")
+        _print_scheduled_task_drift(task_name)
     elif startup_installed:
         entry = get_startup_entry_path()
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")

@@ -78,53 +78,64 @@ def _make_interaction(*, user_id="42", display_name="Tester", roles=None,
     return SimpleNamespace(user=user, response=response, message=message)
 
 
+def _embed_field_text(embed) -> str:
+    """Joined embed field name/value text (real ``discord.Embed`` fields are objects, the
+    gateway test double stores dicts)."""
+    parts = []
+    for field in getattr(embed, "fields", []):
+        name = field["name"] if isinstance(field, dict) else field.name
+        value = field["value"] if isinstance(field, dict) else field.value
+        parts.append(f"{name}\n{value}")
+    return "\n".join(parts)
+
+
 # ===========================================================================
 # ClarifyChoiceView construction
 # ===========================================================================
 
 class TestClarifyChoiceViewConstruction:
-    """The view should build numeric buttons plus an Other button."""
+    """Buttons are bare numbers; the option text lives in the message body."""
 
 
-    def test_truncates_long_choice_label(self):
-        long_choice = "x" * 200
+    def test_buttons_are_bare_numbers(self):
         view = ClarifyChoiceView(
-            choices=[long_choice],
+            choices=["x" * 200, "short"],
             clarify_id="cidZ",
             allowed_user_ids=set(),
         )
-        # 78 chars + single-char ellipsis in the body, plus "1. " prefix.
-        # Uses U+2026 (…) instead of "..." to fit the 80-char Discord cap.
-        first_label = view.children[0].label
-        assert first_label.startswith("1. ")
-        assert first_label.endswith("\u2026")
-        # Final label total <= 80 (Discord cap on button labels)
-        assert len(first_label) <= 80
+        assert [b.label for b in view.children[:-1]] == ["1", "2"]
+        # Other button keeps its fixed label; no label can be truncated.
+        assert view.children[-1].label == "✏️ Other (type answer)"
 
 
-    def test_truncates_long_no_space_choice_on_soft_boundary(self):
-        # A long choice with soft boundaries (commas, hyphens) but no spaces
-        # should still cut on a soft boundary, not mid-word. We use an input
-        # where position 76 is NOT a soft boundary — the test only passes
-        # if the renderer actively searches backward for a soft char
-        # rather than blindly cutting at the budget limit.
+    @pytest.mark.asyncio
+    async def test_long_choices_print_in_full_above_the_buttons(self):
+        # The reported bug: Discord cuts button labels mid-word, so a long option used
+        # to exist nowhere in the message. Both carriers — embed and plain content —
+        # must now hold the whole numbered list.
         long_choice = "a" * 30 + "-" + "b" * 30 + "-" + "c" * 30 + "-" + "d" * 30
-        # 30a-30b-30c-30d = 30 + 1 + 30 + 1 + 30 + 1 + 30 = 123 chars
-        # Position 76 is 'b' (a mid-word alpha). The renderer must look back
-        # for a '-' to cut on.
-        view = ClarifyChoiceView(
-            choices=[long_choice],
-            clarify_id="cidSB",
-            allowed_user_ids=set(),
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 4242
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one",
+            choices=[long_choice, "short"],
+            clarify_id="cidLong",
+            session_key="sk-L",
         )
-        first_label = view.children[0].label
-        assert first_label.endswith("\u2026")
-        assert len(first_label) <= 80
-        body = first_label[len("1. "):].rstrip("\u2026")
-        last_char = body[-1]
-        assert last_char in {"-", ",", ".", ")", " "}, (
-            f"Label cuts mid-word at {last_char!r}: {first_label!r}"
-        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        embed_text = _embed_field_text(kwargs["embed"])
+        assert f"1. {long_choice}" in embed_text
+        assert "2. short" in embed_text
+        assert f"1. {long_choice}" in kwargs["content"]
+        assert [b.label for b in kwargs["view"].children[:-1]] == ["1", "2"]
 
 
 # ===========================================================================
@@ -285,12 +296,9 @@ class TestDiscordSendClarify:
         )
         kwargs = channel.send.call_args.kwargs
         view = kwargs["view"]
-        choice_labels = [b.label for b in view.children[:-1]]  # exclude Other
-        # Only the well-formed dict survives.
-        assert len(choice_labels) == 1, (
-            f"Expected 1 choice, got {len(choice_labels)}: {choice_labels!r}"
-        )
-        assert "real choice" in choice_labels[0]
-        for label in choice_labels:
-            assert "only_name_here" not in label, f"name leaked: {label!r}"
-            assert "only_value_here" not in label, f"value leaked: {label!r}"
+        # Only the well-formed dict survives — one button, and its text is in the body.
+        assert [b.label for b in view.children[:-1]] == ["1"]
+        body = f"{_embed_field_text(kwargs['embed'])}\n{kwargs['content']}"
+        assert "real choice" in body
+        for leaked in ("only_name_here", "only_value_here"):
+            assert leaked not in body, f"{leaked} leaked: {body!r}"

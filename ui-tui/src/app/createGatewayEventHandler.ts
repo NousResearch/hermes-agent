@@ -3,12 +3,18 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { JsonValue, MessageCompletePayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type {
+  GatewayEvent,
+  JsonValue,
+  MessageCompletePayload,
+  SubagentStatus,
+  Usage
+} from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import { type AnyGatewayEvent, type GatewaySkin, type HermesConfigTree, hermesConfigTree } from '../gatewayTypes.js'
+import { type GatewaySkin, type HermesConfigTree, hermesConfigTree } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -429,7 +435,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
 
-export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
+export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   syncThemeToTerminalBackground()
 
   const { rpc } = ctx.gateway
@@ -780,7 +786,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
-  return (ev: AnyGatewayEvent) => {
+  return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
     if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
@@ -800,7 +806,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        let info = ev.payload as SessionInfo | undefined
+        let info: SessionInfo | undefined = ev.payload
 
         if (!info) {
           return

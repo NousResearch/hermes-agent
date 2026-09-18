@@ -8,7 +8,7 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
-import type { ApprovalChoice, ConfigSetResult, RpcMethods } from '@hermes/shared/gateway-events'
+import type { ApprovalChoice, ConfigSetResult, GatewayEvent, RpcMethods } from '@hermes/shared/gateway-events'
 import { type AnyServerRequest, JSON_RPC_METHOD_NOT_FOUND } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -21,7 +21,7 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import { type AnyGatewayEvent, configValueText } from '../gatewayTypes.js'
+import { configValueText } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
@@ -238,7 +238,7 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
+  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const onServerRequestRef = useRef<(request: AnyServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
@@ -936,7 +936,7 @@ export function useMainApp(gw: GatewayClient) {
   onServerRequestRef.current = onServerRequest
 
   useEffect(() => {
-    const handler = (ev: AnyGatewayEvent) => {
+    const handler = (ev: GatewayEvent) => {
       if (ev.type === 'gateway.ready') {
         gaveUpRef.current = false
       }

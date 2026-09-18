@@ -1,8 +1,6 @@
 import type {
   ConfigGetResult,
   ConfigSetResult,
-  GatewayEvent,
-  GatewayEventName,
   JsonValue,
   SessionLiveInfo,
   SkinPayload
@@ -11,10 +9,6 @@ import type {
 /** The resolved skin as the gateway sends it (`gateway.ready`, `skin.changed`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
 export type GatewaySkin = SkinPayload
-
-/** Distributive form of the shared `GatewayEvent<K>` so `switch (ev.type)`
- *  narrows `ev.payload` per case (the generic-defaulted interface does not). */
-export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
 
 // ── Config ───────────────────────────────────────────────────────────
 

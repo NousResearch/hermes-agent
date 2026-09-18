@@ -15,7 +15,6 @@ import {
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
-import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
 
@@ -133,7 +132,7 @@ export class GatewayClient extends EventEmitter {
   // only owns the two transports (child stdio, attached socket) and the
   // buffered-event replay that Ink's mount order needs.
   private readonly channel = new JsonRpcRequestChannel({
-    onEvent: ev => this.publish(ev as AnyGatewayEvent),
+    onEvent: ev => this.publish(ev),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
     onRequestHandlerError: (error, req) =>
       this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
@@ -141,7 +140,7 @@ export class GatewayClient extends EventEmitter {
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true
   })
-  private bufferedEvents = new CircularBuffer<AnyGatewayEvent>(MAX_BUFFERED_EVENTS)
+  private bufferedEvents = new CircularBuffer<GatewayEvent>(MAX_BUFFERED_EVENTS)
   // Server→client requests (clarify, approval, sudo, …) follow the same
   // mount-order contract as events: an attached session mid-turn can send one
   // the instant the socket opens, before the Ink handler is registered.
@@ -176,7 +175,7 @@ export class GatewayClient extends EventEmitter {
     return this.attachUrl !== null
   }
 
-  private publish(ev: AnyGatewayEvent) {
+  private publish(ev: GatewayEvent) {
     if (ev.type === 'gateway.ready') {
       this.ready = true
       this.clearReconnect()
@@ -187,7 +186,7 @@ export class GatewayClient extends EventEmitter {
         this.readyTimer = null
       }
 
-      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat === true && this.ws?.readyState === WS_OPEN) {
+      if (ev.payload?.heartbeat === true && this.ws?.readyState === WS_OPEN) {
         this.channel.startHeartbeat()
       }
     }
@@ -401,7 +400,7 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  publishLocalEvent(ev: AnyGatewayEvent) {
+  publishLocalEvent(ev: GatewayEvent) {
     const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
 
     this.mirrorEventToSidecar(frame)

@@ -1433,9 +1433,10 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "bedrock": _bedrock_catalog}
 
 
-# ``-free`` slugs the relay still LISTS but no longer serves (or that are keyed twins, not
-# anonymous-servable). The live-first keyed Zen/Go pickers filter through this so a stale live
-# listing can never route into a 400/403 (#111749).
+# ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)
+# and the promo it delisted without removing from ``/models`` (``deepseek-v4-flash-free``). The
+# live-first keyed Zen/Go pickers filter through this so a stale live listing can never route
+# into a 400/403 (#111749).
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 

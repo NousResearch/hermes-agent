@@ -1746,10 +1746,6 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
-    status = {
-        "configured": True, "provider": provider_id, "name": pconfig.name, "key_source": "",
-        "base_url": pconfig.inference_base_url, "logged_in": True}
-
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
     env_url = _provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
@@ -1761,10 +1757,10 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = normalize_actual_base_url(base_url)
         actual_local_noauth = not api_key and is_actual_local_base_url(base_url)
     configured = bool(api_key) or actual_local_noauth
-    status.update(  # logged_in mirrors configured for compat with the OAuth status shape
-        configured=configured, base_url=base_url, logged_in=configured,
-        key_source=key_source or ("local-offline" if actual_local_noauth else ""))
-    return status
+    return {  # logged_in mirrors configured for compat with the OAuth status shape
+        "configured": configured, "provider": provider_id, "name": pconfig.name,
+        "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
+        "base_url": base_url, "logged_in": configured}
 
 
 def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:

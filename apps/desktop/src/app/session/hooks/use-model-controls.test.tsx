@@ -282,7 +282,7 @@ describe('useModelControls', () => {
     })
   })
 
-  it('sends an active primary-session picker change without a scope flag so the gateway decides persistence', async () => {
+  it('applies an active primary-session picker change only to that session', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
@@ -296,14 +296,13 @@ describe('useModelControls', () => {
       })
     ).resolves.toBe(true)
 
-    // No hardcoded --global (#90235): resolve_persist_behavior on the gateway
-    // owns the policy — session-only unless model.persist_switch_by_default
-    // is set or no default has ever been configured (#86414's first pick).
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic'
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
     })
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
@@ -352,7 +351,7 @@ describe('useModelControls', () => {
         key: 'model',
         value: 'muse-spark-1.2-contributor'
       })
-      .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
+      .mockResolvedValueOnce({ key: 'model', scope: 'session', value: 'muse-spark-1.2-contributor' })
 
     // Hold the answer open: nothing may be applied or resent until the user
     // actually answers the dialog.
@@ -390,7 +389,7 @@ describe('useModelControls', () => {
       confirm_expensive_model: true,
       key: 'model',
       session_id: 'session-1',
-      value: 'muse-spark-1.2-contributor --provider opencode-go'
+      value: 'muse-spark-1.2-contributor --provider opencode-go --session'
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')

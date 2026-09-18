@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
 from run_agent import AIAgent
 
 
@@ -205,3 +206,51 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+
+
+def test_successful_cross_provider_switch_routes_next_request_to_selected_transport():
+    """The turn immediately after a live picker switch must use the selected
+    transport, not the client that was cached when the session was created.
+    """
+    agent = _make_agent_openrouter()
+    old_client = agent.client
+    selected_client = MagicMock(name="SelectedAnthropicClient")
+    selected_response = object()
+    selected_stream = selected_client.messages.stream.return_value.__enter__.return_value
+    selected_stream.get_final_message.return_value = selected_response
+
+    with (
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=selected_client,
+        ),
+        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+    ):
+        agent.switch_model(
+            new_model="claude-sonnet-4-6",
+            new_provider="anthropic",
+            api_key="anthropic-key-new",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+        )
+
+    request_clients = []
+
+    def make_client(reason, *, kind="openai"):
+        request_clients.append((reason, kind))
+        assert kind == "anthropic_messages"
+        return selected_client
+
+    response = _dispatch_nonstreaming_api_request(
+        agent,
+        {"model": "claude-sonnet-4-6", "messages": []},
+        make_client=make_client,
+    )
+
+    assert response is selected_response
+    assert request_clients == [("anthropic_messages_request", "anthropic_messages")]
+    selected_client.messages.stream.assert_called_once()
+    assert selected_client.messages.stream.call_args.kwargs["model"] == "claude-sonnet-4-6"
+    assert selected_client.messages.stream.call_args.kwargs["messages"] == []
+    old_client.chat.completions.create.assert_not_called()

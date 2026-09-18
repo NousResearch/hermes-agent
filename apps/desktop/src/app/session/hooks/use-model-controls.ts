@@ -241,21 +241,10 @@ export function useModelControls({
         return true
       }
 
-      // The PRIMARY profile's main agent lets the gateway decide persistence
-      // (resolve_persist_behavior): session-only by default, persisted when
-      // model.persist_switch_by_default is true or when no default has ever
-      // been configured (the first-ever pick, so resolve_provider never falls
-      // through to a leftover OPENAI_API_KEY env var — #86414). A plain pick
-      // no longer silently rewrites config.yaml (#90235); Settings → Model
-      // remains the explicit "set as default" door.
-      //
-      // Two things stay --session, deliberately:
-      //  - a SECONDARY chat tile: picking a model there must not rewrite the
-      //    profile default (the cross-session-contamination guard).
-      //  - MoA (mixture-of-agents) presets: a transient orchestration choice
-      //    that must never become the persisted global gateway default.
-      const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
-      const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
+      // A composer pick changes the live conversation, not the profile default.
+      // Persisting it globally lets one chat silently change the provider used
+      // by every new session; Settings remains the explicit place for that.
+      const scope = ' --session'
 
       const requestSwitch = (confirmExpensiveModel = false) =>
         requestGateway<ModelSwitchResponse>('config.set', {

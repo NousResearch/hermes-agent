@@ -189,6 +189,46 @@ mutating.
 Detailed contract:
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
 
+## D-018 — Capability is the reusable deterministic unit; work_execute is runtime infrastructure
+
+D-017 remains valid: adaptive execution precedes progressive compilation. D-018
+defines the reusable unit and execution layering that follows from that rule.
+
+A **Capability** is the canonical abstraction between primitive Tool execution and
+larger Recipe/Routine workflows. It represents versioned deterministic
+operational knowledge with typed inputs, effects, scope, preconditions,
+postconditions/verifiers, dependencies, provenance and validation lifecycle.
+
+A Capability is not a Skill. Skills are LLM-facing knowledge/strategy and may
+call capabilities. Capabilities may call other capabilities and trusted runtime
+primitives. A promoted deterministic capability must not silently call a Skill or
+LLM on its success path; drift returns compact NEEDS_REASONING to the adaptive
+layer.
+
+`work_execute` is the deterministic execution entry point/infrastructure, not a
+global permission gate and not primarily an instruction forcing the model to
+manually rewrite repeated work. Exact compatible promoted Capability/Recipe/
+Routine reuse should be selected by the harness whenever possible.
+
+The low-level execution substrate is a shared **Operational Kernel**. Browser,
+filesystem, process/shell, HTTP/API and future desktop control are backends under
+the same effect/evidence/policy/capability contracts. This architecture is not
+browser-only.
+
+Native Browser semantic identity must be recoverable and stable enough for
+compilation. Transient element refs, tab ids, WebContents ids and arbitrary page
+prose are not durable operation identity. Structural call similarity can support
+discovery but cannot independently establish semantic homogeneity or mandatory
+compilation.
+
+Capability persistence/learning must extend existing RecipeStore,
+ProceduralMemory, ExecutionJournal and ArtifactStore ownership where practical.
+Do not introduce another canonical SessionDB, Kanban, TaskRun, BrowserTask or
+Memory system merely to host capabilities.
+
+Detailed target and acceptance criteria:
+[PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md).
+
 ## Changing a decision
 
 A replacement decision must state which decision it supersedes, why the old invariant no longer holds, how migration/backward compatibility is handled, and which tests prove the new contract. Do not silently drift architecture through implementation-only changes.

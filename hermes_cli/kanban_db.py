@@ -2062,22 +2062,37 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
-
-    See #28712.
-    Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
-    that path.
+    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
+    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
+    breaker trip that exhausted the clean-exit protocol-violation budget. The
+    violation budget is a run-history streak independent of
+    ``consecutive_failures``, so ``recompute_ready``'s counter check cannot see
+    it — without this the trip is promoted back to ``ready`` in the same tick and
+    the card respawns forever. A plain (unified-budget) ``gave_up`` is judged by
+    the counter, and a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row and row["kind"] == "blocked":
+        return True
+    trip = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
+        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
+        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
+    ).fetchone()
+    if not trip:
+        return False
+    verdict = _json_dict(trip["payload"])
+    # The breaker's own verdict: a violation-streak trip, or a trip whose limit
+    # was not the caller's ``failure_limit`` (systemic same-error crashes trip at 1).
+    return "protocol_violation_limit" in verdict or (
+        "effective_limit" in verdict
+        and int(verdict.get("failures") or 0) >= int(verdict["effective_limit"])
+    )
 
 
 def _latest_event(

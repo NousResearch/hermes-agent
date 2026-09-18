@@ -589,7 +589,10 @@ before reaching the nudge, the dispatcher gives the violation a **bounded retry*
 before auto-blocking the task instead of respawning it into the same loop. The
 budget counts only *consecutive* clean-exit protocol violations — interleaved
 rate-limited requeues are neutral, and any other failure kind resets the
-streak — and a per-task `max_retries` overrides the bound. This usually means
+streak — and a per-task `max_retries` overrides the bound. A card blocked by
+this budget stays blocked (it is not auto-promoted like a below-`failure_limit`
+breaker block) until `hermes kanban unblock <id>`, which also grants a fresh
+retry budget. This usually means
 the model wrote a plain-text answer and exited without using the Kanban tool
 surface.
 

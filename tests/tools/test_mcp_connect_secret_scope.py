@@ -22,7 +22,7 @@ def profile_home(tmp_path, monkeypatch):
     """A profile home whose ``.env`` holds the credential an external source tagged."""
     home = tmp_path / "profile"
     home.mkdir()
-    (home / ".env").write_text(f"{TOKEN_NAME}={TOKEN_VALUE}\n")
+    (home / ".env").write_text(f"{TOKEN_NAME}={TOKEN_VALUE}\n", encoding="utf-8")
 
     # An external secret source (secrets.command / bitwarden / 1password) tags names
     # process-wide; the VALUE must come from the active profile's scope.
@@ -79,3 +79,26 @@ def test_single_profile_process_binds_nothing(tmp_path, monkeypatch, spawn_env):
 
     assert spawn_env["env"][TOKEN_NAME] == "process-env-value"
     assert current_secret_scope() is None
+
+
+def test_unscoped_discover_interpolates_header_refs_under_the_owners_scope(profile_home, monkeypatch):
+    """Red on base: ``_load_mcp_config`` interpolates ``${VAR}`` refs BEFORE any connect and swallows
+    the UnscopedSecretError into {}, so discover for a routed profile registered ZERO servers
+    (stdio siblings included). The header carries the OWNING profile's value, never the launch env's."""
+    monkeypatch.setenv(TOKEN_NAME, "launch-env-value")
+    (profile_home / "config.yaml").write_text(
+        "mcp_servers:\n"
+        "  httpsrv:\n    url: https://example.invalid/mcp\n"
+        f"    headers:\n      Authorization: 'Bearer ${{{TOKEN_NAME}}}'\n"
+        "  stdiosrv:\n    command: 'true'\n", encoding="utf-8")
+    handed_over = {}
+    monkeypatch.setattr(discovery, "register_mcp_servers", lambda servers: handed_over.update(servers) or [])
+    monkeypatch.setattr("tools.mcp_tool._ensure_mcp_sdk", lambda: True)
+    assert current_secret_scope() is None
+
+    discovery.discover_mcp_tools()
+
+    assert set(handed_over) == {"httpsrv", "stdiosrv"}
+    assert handed_over["httpsrv"]["headers"]["Authorization"] == f"Bearer {TOKEN_VALUE}"
+    assert current_secret_scope() is None
+

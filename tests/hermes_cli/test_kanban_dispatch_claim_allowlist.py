@@ -76,3 +76,45 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
         res = kbd.dispatch_once(conn, dry_run=True)
     assert [t for t, _a, _w in res.spawned] == [tid]
     assert res.skipped_nonspawnable == []
+
+
+def test_empty_allowlist_claims_nothing_end_to_end(kanban_home, all_assignees_spawnable):
+    """A set-but-empty allowlist is fail-closed end to end: no card is
+    claimable and the wake-up probe reads the board as empty."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles: []\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="any card", assignee="sage")
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+def test_mixed_board_listed_spawns_foreign_bucketed(kanban_home, all_assignees_spawnable):
+    """Both halves at once on a shared board: the listed assignee's card
+    spawns while the foreign default card is bucketed, not silently ignored."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles:\n    - sage\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        foreign = kb.create_task(conn, title="foreign card", assignee="default")
+        ours = kb.create_task(conn, title="our card", assignee="sage")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [t for t, _a, _w in res.spawned] == [ours]
+    assert res.skipped_nonspawnable == [foreign]
+
+
+def test_comma_string_allowlist_gates_like_list_form(kanban_home, all_assignees_spawnable):
+    """The comma-separated string form gates the same way as the list form:
+    the listed assignee spawns, a default-assigned card does not."""
+    (kanban_home / "config.yaml").write_text(
+        'kanban:\n  dispatch_profiles: "sage, researcher"\n', encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        ours = kb.create_task(conn, title="local card", assignee="sage")
+        foreign = kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [t for t, _a, _w in res.spawned] == [ours]
+    assert res.skipped_nonspawnable == [foreign]

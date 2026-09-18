@@ -337,10 +337,20 @@ class TestProfiles:
 # ── detection signals ───────────────────────────────────────────────────────
 
 class TestDetection:
-    @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "AGENTS.md"])
+    @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "Makefile"])
     def test_project_manifest_triggers_without_git(self, tmp_path, marker):
         (tmp_path / marker).write_text("x")
         cfg = {"agent": {"coding_context": "auto"}}
+        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
+
+    @pytest.mark.parametrize("marker", ["AGENTS.md", "CLAUDE.md", ".cursorrules"])
+    def test_project_manifest_triggers_without_git_instruction_marker(self, tmp_path, marker):
+        # An instruction file is NOT dispositive on its own (see
+        # TestInstructionMarkerCorroboration) — it needs source corroboration.
+        (tmp_path / marker).write_text("x")
+        cfg = {"agent": {"coding_context": "auto"}}
+        assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+        (tmp_path / "main.py").write_text("print(1)\n")
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
     def test_marker_in_parent_counts_from_subdir(self, tmp_path):
@@ -353,3 +363,72 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+# ── instruction-marker corroboration ────────────────────────────────────────
+
+class TestInstructionMarkerCorroboration:
+    """An agent-instruction file is not project evidence on its own.
+
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``.cursorrules`` appear in prose, notes and research
+    vaults as often as in code projects, so one alone flipped the whole session into the
+    coding posture — brief, toolset collapse, verify-on-stop — with no code in sight.
+    """
+
+    CFG = {"agent": {"coding_context": "auto"}}
+
+    def _coding(self, cwd):
+        return cc.is_coding_context(platform="cli", cwd=cwd, config=self.CFG)
+
+    @pytest.mark.parametrize("marker", ["AGENTS.md", "CLAUDE.md", ".cursorrules"])
+    def test_instruction_marker_alone_is_not_coding(self, tmp_path, marker):
+        (tmp_path / marker).write_text("# instructions\n")
+        assert self._coding(tmp_path) is False
+
+    @pytest.mark.parametrize("marker", ["AGENTS.md", "CLAUDE.md", ".cursorrules"])
+    def test_instruction_marker_with_source_is_coding(self, tmp_path, marker):
+        (tmp_path / marker).write_text("# instructions\n")
+        (tmp_path / "main.py").write_text("print(1)\n")
+        assert self._coding(tmp_path) is True
+
+    def test_prose_vault_with_git_and_instruction_file_stays_general(self, tmp_path):
+        # The reported case, with the git repo the real vaults have.
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path),
+        }
+        (tmp_path / "AGENTS.md").write_text("# vault rules\n")
+        (tmp_path / "note.md").write_text("prose, not code\n")
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "notes"]):
+            subprocess.run([shutil.which("git"), "-C", str(tmp_path), *args], check=True, env=env)
+        assert self._coding(tmp_path) is False
+
+    def test_source_below_a_package_root_corroborates(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("# rules\n")
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "main.py").write_text("print(1)\n")
+        assert self._coding(tmp_path) is True
+
+    def test_arbitrary_nested_source_does_not_classify_the_root(self, tmp_path):
+        # A prose vault that happens to hold one project folder is still a prose vault:
+        # only conventional package roots (src/app/lib/tests) get the extra scan level.
+        (tmp_path / "AGENTS.md").write_text("# rules\n")
+        nested = tmp_path / "projects" / "utility"
+        nested.mkdir(parents=True)
+        (nested / "main.py").write_text("print(1)\n")
+        assert self._coding(tmp_path) is False
+
+    def test_static_web_source_corroborates(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("# rules\n")
+        (tmp_path / "index.html").write_text("<html></html>\n")
+        assert self._coding(tmp_path) is True
+
+    def test_snapshot_keeps_instruction_files_separate_from_manifests(self, tmp_path):
+        # The snapshot contract is unchanged: instruction files stay listed as context
+        # files, and are not reported as manifests.
+        (tmp_path / "AGENTS.md").write_text("# rules\n")
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+        facts = cc.detect_project_facts(tmp_path)
+        assert facts.context_files == ["AGENTS.md"]
+        assert facts.manifests == ["pyproject.toml"]

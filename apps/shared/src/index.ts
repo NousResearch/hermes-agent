@@ -75,6 +75,7 @@ export {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
+  JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
   type JsonRpcErrorPayload,

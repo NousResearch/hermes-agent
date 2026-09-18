@@ -117,11 +117,9 @@ class UpdateReceipt:
 
 
 def _receipt_dir() -> Path:
-    # ``hermes_constants``, never ``hermes_cli.config``: the receipt is written by the PRE-pull
-    # interpreter after the post-pull module purge, so a ``hermes_cli.config`` import here
-    # re-executes the pulled config.py against whatever is still cached — an ImportError on a
-    # symbol the pull added dropped the whole receipt (#112465, #112558). ``hermes_constants``
-    # is protected from the purge and stdlib-only.
+    # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
+    # writable from the refused/failed paths where config loading itself may be what broke
+    # (#112465, #112558).
     from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
@@ -135,6 +133,27 @@ def begin_update_receipt() -> None:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         _current = None
+
+
+def detach_update_receipt() -> Optional[dict[str, Any]]:
+    """Hand the open receipt to another process: return its data and forget it here.
+
+    The post-swap child resumes it via :func:`resume_update_receipt`; the parent's
+    command-boundary finalize then no-ops, so the run still produces exactly one receipt.
+    """
+    global _current
+    receipt, _current = _current, None
+    return None if receipt is None else receipt.data
+
+
+def resume_update_receipt(data: dict[str, Any]) -> None:
+    """Continue a receipt detached by the pre-swap interpreter (``started_at``, ``pre_update``,
+    ``argv``, steps and plan intact); records this process as the one that finished it."""
+    global _current
+    receipt = UpdateReceipt()
+    receipt.data = data
+    receipt.data["post_swap_pid"] = os.getpid()
+    _current = receipt
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:

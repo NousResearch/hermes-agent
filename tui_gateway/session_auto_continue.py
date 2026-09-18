@@ -109,9 +109,15 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
-            _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            from gateway.warning_notifications import render_notification
+            diagnostic = marker.get("notification_category") == "diagnostic"
+            with _session_profile_runtime_scope(session):
+                def announce():
+                    _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
+                    _emit("message.start", sid)
+                render_notification(announce, platform="tui", diagnostic=diagnostic)
+                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
+                    **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
             _notif_release_turn(session)  # rebound from session_notifications
@@ -379,7 +385,8 @@ def _emit_terminal_turn_error(
         with contextlib.suppress(Exception):
             from agent.error_surface import build_error_surface_from_exception
             error_surface = build_error_surface_from_exception(
-                error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""))
+                error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""),
+                api_key=getattr(agent, "api_key", None))
     with session["history_lock"]:
         _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}

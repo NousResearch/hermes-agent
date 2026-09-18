@@ -162,6 +162,16 @@ family, not to the whole session or turn. The current _work_batch_candidate-styl
 global latch is therefore not an architectural invariant and must be replaced by
 operation-scoped policy.
 
+AEPC-E002 clarifies what “operation-scoped” means: **structural call shape alone
+does not establish one repeatable operation family**. `REQUIRE_COMPILE` needs
+positive semantic homogeneity evidence across the operation and canonical
+route/provider plus an owner-declared or safely derived target-family/contract
+identity. When that evidence is absent, repeated shape may suggest compilation
+or learning but may not, by itself, block bounded adaptive execution. This is
+especially important for native `browser_type`, `browser_click` and
+`browser_press` sequences whose semantic targets can change as page state
+changes. Real same-family fan-out remains compiler/canary gated.
+
 The deterministic runner must return a compact NEEDS_REASONING/drift handoff when
 reality no longer matches its assumptions. It must not trap the agent in a
 durable_compile_required <-> PREFLIGHT_REQUIRED refusal loop.

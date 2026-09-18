@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
 
@@ -236,8 +237,93 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+def _coerce_bool_flag(value, default=False):
+    """Mirror ``TelegramAdapter._coerce_bool_extra`` for standalone pconfig.extra flags:
+    string "false"/"no"/"0"/"off" must coerce to False (naive ``bool("false")`` is True)."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+async def _telegram_try_rich_send(bot, int_chat_id, message, *, thread_kwargs, disable_link_previews,
+                                  rich_enabled, allow_cjk):
+    """Bot API 10.1 ``sendRichMessage`` fast-path for the standalone sender (#46118).
+
+    Eligibility, payload and error classification mirror the gateway adapter's rich policy exactly by
+    borrowing a stateless ``TelegramAdapter`` shell (same ``__new__`` trick as ``_telegram_format``),
+    so the standalone path can never drift from the adapter's gates: ``rich_messages`` opt-in,
+    qualifying constructs only, Desktop details+math crash shape, CJK garble gate, 32,768 cap,
+    async-capable bot.
+
+    Returns:
+      - result dict: terminal outcome — success, or a transient/unknown failure surfaced as an
+        error. Callers must NOT legacy-resend a transient failure: the request may already have
+        reached Telegram, and a resend would duplicate it.
+      - ``None``: fall back to the legacy MarkdownV2 path (gate closed, ineligible, or a
+        permanent/capability failure where a legacy resend is safe).
+    """
+    if not rich_enabled or not (message or "").strip():
+        return None
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        shell = TelegramAdapter.__new__(TelegramAdapter)
+        shell._bot = bot
+        # ``.name`` is a read-only property over ``self.platform.value``; give the shell a platform
+        # shim so adapter-side logging (``_rich_rejected``) has a label. Runtime-safe on a bare
+        # ``__new__`` shell; typed attribute expects a Platform enum, hence the ignore.
+        shell.platform = SimpleNamespace(value="send_message-telegram")  # type: ignore[assignment]
+        # Gate already applied via ``rich_enabled``; hand the shell the CJK/link-preview config so
+        # payload and shape checks match the adapter bit-for-bit.
+        shell._rich_messages_enabled = True
+        shell._allow_cjk_rich_messages = bool(allow_cjk)
+        shell._disable_link_previews = bool(disable_link_previews)
+        if not shell._rich_eligible(message):
+            return None
+        payload = shell._rich_payload_base(int_chat_id, message)
+        payload.update({k: v for k, v in (thread_kwargs or {}).items() if v is not None})
+        try:
+            msg = await bot.do_api_request("sendRichMessage", api_kwargs=payload)
+        except Exception as exc:
+            if shell._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
+                logger.info("Standalone Telegram rich send rejected (%s) — falling back to MarkdownV2",
+                            _sanitize_error_text(exc))
+                return None
+            # Transient/unknown failure — no legacy resend (duplicate risk), mirror adapter policy.
+            logger.warning("Standalone Telegram rich send failed transiently (no legacy resend): %s",
+                           _sanitize_error_text(exc))
+            return _error(f"Telegram rich send failed (no legacy fallback to avoid duplicate delivery): "
+                          f"{_sanitize_error_text(exc)}")
+    except Exception as exc:  # noqa: BLE001 — never let the fast-path break a previously-working send
+        # Reached only before/around the send (import, shell setup, classification); nothing has been
+        # delivered at this point, so the legacy fallback is safe.
+        logger.warning("Standalone Telegram rich fast-path skipped (%s) — using legacy send",
+                       _sanitize_error_text(exc))
+        return None
+    if isinstance(msg, dict):
+        message_id = msg.get("message_id")
+        if message_id is None:
+            message_id = (msg.get("result") or {}).get("message_id")
+    else:
+        message_id = getattr(msg, "message_id", None)
+    if message_id is not None:
+        TelegramAdapter._record_rich_sent(int_chat_id, message_id, message)
+    return _success("telegram", int_chat_id, message_id=str(message_id) if message_id is not None else None,
+                    rich=True)
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, rich_enabled=False, allow_cjk=False):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``rich_enabled`` opts the send into the Bot API 10.1 sendRichMessage fast-path (the
+    ``rich_messages`` config gate — default off, same as the adapter)."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -251,6 +337,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
+        # Bot API 10.1 rich fast-path: raw-markdown text without media, before the MarkdownV2
+        # chunk loop. Terminal result (success / transient error) returns directly; ``None``
+        # (gate closed, ineligible, permanent failure) falls through to the legacy send.
+        if not media_files and not _has_html:
+            rich_result = await _telegram_try_rich_send(
+                bot, int_chat_id, message, thread_kwargs=thread_kwargs,
+                disable_link_previews=disable_link_previews,
+                rich_enabled=rich_enabled, allow_cjk=allow_cjk)
+            if rich_result is not None:
+                return rich_result
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)

@@ -1821,3 +1821,130 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestSendTelegramRichMessageStandalone:
+    """Bot API 10.1 sendRichMessage fast-path in the standalone _send_telegram (#46118).
+
+    Covers the sweeper's required matrix: successful rich delivery, permanent fallback,
+    transient no-resend, and the configured safety gates (rich_messages opt-in, crash shape,
+    CJK garble gate, HTML bypass, non-qualifying constructs)."""
+
+    TABLE = "| col1 | col2 |\n|------|------|\n| a    | b    |"
+
+    @staticmethod
+    def _make_bot(rich_result=None):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_document = AsyncMock()
+        if rich_result is not None:
+            bot.do_api_request = AsyncMock(return_value=rich_result)
+        return bot
+
+    @staticmethod
+    def _run(monkeypatch, bot, message, **kwargs):
+        _install_telegram_mock(monkeypatch, bot)
+        return asyncio.run(_send_telegram("tok", "123", message, **kwargs))
+
+    def test_rich_eligible_uses_sendrichmessage_and_skips_legacy(self, monkeypatch):
+        """rich_messages on + qualifying constructs → sendRichMessage, no legacy resend."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        result = self._run(monkeypatch, bot, self.TABLE, rich_enabled=True)
+
+        bot.do_api_request.assert_awaited_once()
+        assert bot.do_api_request.await_args.args[0] == "sendRichMessage"
+        payload = bot.do_api_request.await_args.kwargs["api_kwargs"]
+        # RAW markdown in the rich payload — never the MarkdownV2-escaped text (pipes survive).
+        assert payload["rich_message"]["markdown"].startswith("| col1 | col2 |")
+        bot.send_message.assert_not_awaited()
+        assert result["success"] is True
+        assert result["message_id"] == "42"
+        assert result["rich"] is True
+
+    def test_rich_disabled_by_default_stays_legacy(self, monkeypatch):
+        """No rich_messages opt-in → identical legacy behaviour, rich endpoint never touched."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        result = self._run(monkeypatch, bot, self.TABLE)
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_non_qualifying_constructs_stay_legacy(self, monkeypatch):
+        """Plain text without tables/task lists/details/block-math never routes rich."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        result = self._run(monkeypatch, bot, "just a plain sentence", rich_enabled=True)
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_desktop_details_math_crash_shape_skips_rich(self, monkeypatch):
+        """Math inside <details> (Telegram Desktop 6.9.1 crash, tdesktop#30808) stays legacy."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        crash = "<details><summary>math</summary>\n$$x=1$$\n</details>"
+        result = self._run(monkeypatch, bot, crash, rich_enabled=True)
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_html_body_skips_rich(self, monkeypatch):
+        """HTML-tagged bodies keep the explicit HTML parse-mode path."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        result = self._run(monkeypatch, bot, "<b>bold</b> hello", rich_enabled=True)
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_permanent_failure_falls_back_to_legacy(self, monkeypatch):
+        """BadRequest (permanent) → legacy MarkdownV2 resend is safe and happens."""
+        import telegram.error
+
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=telegram.error.BadRequest("can't parse entities"))
+        result = self._run(monkeypatch, bot, self.TABLE, rich_enabled=True)
+
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_transient_failure_returns_error_without_legacy_resend(self, monkeypatch):
+        """Timeout after acceptance → structured error, NO legacy resend (duplicate risk)."""
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=Exception("Request timed out"))
+        result = self._run(monkeypatch, bot, self.TABLE, rich_enabled=True)
+
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
+        assert "error" in result
+        assert "duplicate" in result["error"]
+
+    def test_cjk_garble_gate_blocks_rich_unless_allowed(self, monkeypatch):
+        """CJK rich rendering garbles Desktop/macOS (#47653): gated like the adapter."""
+        cjk_table = "| 名称 | 值 |\n|------|----|\n| 测试 | 1  |"
+
+        bot = self._make_bot(rich_result={"message_id": 42})
+        self._run(monkeypatch, bot, cjk_table, rich_enabled=True)
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+        bot = self._make_bot(rich_result={"message_id": 42})
+        result = self._run(monkeypatch, bot, cjk_table, rich_enabled=True, allow_cjk=True)
+        bot.do_api_request.assert_awaited_once()
+        assert result["success"] is True
+
+    def test_string_false_rich_messages_coerces_off(self, monkeypatch):
+        """rich_messages: "false" in YAML extras must not truthy-coerce to on."""
+        bot = self._make_bot(rich_result={"message_id": 42})
+        from tools.send_message_senders import _coerce_bool_flag
+
+        assert _coerce_bool_flag("false") is False
+        assert _coerce_bool_flag("true") is True
+        assert _coerce_bool_flag(None) is False
+        result = self._run(monkeypatch, bot, self.TABLE, rich_enabled=_coerce_bool_flag("false"))
+        bot.do_api_request.assert_not_awaited()
+        assert result["success"] is True
+

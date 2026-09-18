@@ -64,6 +64,33 @@ def test_passive_check_uses_the_api_and_never_fetches(git_repo, monkeypatch):
 
     cached = json.loads((git_repo.parent / ".update_check").read_text())
     assert (cached["head"], cached["target"], cached["behind"]) == (SHA_A, SHA_B, 61)
+    assert cached["branch"] == "main"
+
+
+def test_check_for_updates_uses_configured_branch_and_scopes_cache(git_repo, monkeypatch):
+    """Changing branches invalidates a fresh count and checks the configured target."""
+    from hermes_cli import __version__
+
+    cache_file = git_repo.parent / ".update_check"
+    cache_file.write_text(
+        json.dumps({
+            "ts": time.time(), "behind": 99, "rev": None, "ver": __version__,
+            "head": SHA_A, "branch": "main",
+        }),
+        encoding="utf-8",
+    )
+    _stub_git(monkeypatch, head=SHA_A)
+    tip = MagicMock(return_value=SHA_B)
+    monkeypatch.setattr(banner, "_github_branch_tip", tip)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 4)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"updates": {"branch": "stable"}}
+    )
+
+    assert banner.check_for_updates() == 4
+    tip.assert_called_once_with("nousresearch/hermes-agent", "stable")
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert cached["branch"] == "stable"
 
 
 def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):
@@ -146,15 +173,16 @@ def test_prefetch_banner_data_is_noop_under_pytest(monkeypatch):
     assert banner._banner_data_prefetch_started is True
 
 
-def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
+def test_upstream_branch_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):
     """When the API is unreachable the HTTPS ls-remote fallback must never inherit the terminal."""
     monkeypatch.setattr(banner, "_github_branch_tip", lambda slug, branch: None)
     completed = MagicMock(returncode=1, stdout="", stderr="auth required")
     run = MagicMock(return_value=completed)
     monkeypatch.setattr(banner.subprocess, "run", run)
 
-    assert banner._upstream_main_sha() is None
+    assert banner._upstream_branch_sha("stable") is None
     kwargs = run.call_args.kwargs
+    assert run.call_args.args[0][-1] == "refs/heads/stable"
     assert kwargs["stdin"] is banner.subprocess.DEVNULL
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"

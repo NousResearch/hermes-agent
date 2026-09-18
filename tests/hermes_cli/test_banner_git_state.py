@@ -41,6 +41,33 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
 
 
+def test_get_git_banner_state_reads_configured_branch(tmp_path, monkeypatch):
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".git").mkdir(parents=True)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"updates": {"branch": "stable"}}
+    )
+
+    results = {
+        ("git", "rev-parse", "--short=8", "origin/stable"): MagicMock(returncode=0, stdout="b2f477a3\n"),
+        ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(returncode=0, stdout="af8aad31\n"),
+        ("git", "rev-list", "--count", "origin/stable..HEAD"): MagicMock(returncode=0, stdout="3\n"),
+    }
+
+    def fake_run(cmd, **kwargs):
+        key = tuple(cmd)
+        if key not in results:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return results[key]
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        state = banner.get_git_banner_state(repo_dir)
+
+    assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
+
+
 def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
     """SSH fast path must not report an ahead (carried) HEAD as behind.
 

@@ -2600,6 +2600,76 @@ class TestAgentRuntimePostHookOwnershipSync:
         }
 
 
+class TestRuntimeToolTransformToolResult:
+    """A registered ``transform_tool_result`` replaces what the model sees for an
+    agent-runtime tool, on both the sequential and the concurrent executor path."""
+
+    @staticmethod
+    def _install_rewriting_transform(agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            lambda *args, **kwargs: (None, None),
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: (
+                [f'REWRITTEN[{kwargs["tool_name"]}]{kwargs["result"]}']
+                if hook_name == "transform_tool_result"
+                else []
+            ),
+        )
+        monkeypatch.setattr("tools.todo_tool.todo_tool", lambda **kwargs: '{"ok":true}')
+        agent._memory_manager = None
+
+    def test_concurrent_path_applies_transform(self, agent, monkeypatch):
+        self._install_rewriting_transform(agent, monkeypatch)
+        messages = []
+
+        agent._execute_tool_calls_concurrent(
+            _mock_assistant_msg(
+                content="",
+                tool_calls=[
+                    _mock_tool_call(
+                        name="todo_list", arguments=json.dumps({"todos": []}), call_id=call_id
+                    )
+                    for call_id in ("todo-c1", "todo-c2")
+                ],
+            ),
+            messages,
+            "task-concurrent",
+        )
+
+        tool_results = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_results] == ["todo-c1", "todo-c2"]
+        # Exactly once per call: a second invocation would nest the prefix.
+        assert [str(m["content"]) for m in tool_results] == ['REWRITTEN[todo_list]{"ok":true}'] * 2
+
+    def test_sequential_path_applies_transform(self, agent, monkeypatch):
+        self._install_rewriting_transform(agent, monkeypatch)
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(
+                content="",
+                tool_calls=[
+                    _mock_tool_call(
+                        name="todo_list",
+                        arguments=json.dumps({"todos": []}),
+                        call_id="todo-sequential",
+                    )
+                ],
+            ),
+            messages,
+            "task-sequential",
+        )
+
+        tool_results = [m for m in messages if m.get("role") == "tool"]
+        assert tool_results, "sequential path appended no tool result"
+        # Exactly once: a second invocation would nest the prefix.
+        assert str(tool_results[-1]["content"]) == 'REWRITTEN[todo_list]{"ok":true}'
+
+
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""
 

@@ -33,6 +33,7 @@ from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
+    apply_transform_tool_result,
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
@@ -1545,6 +1546,7 @@ class _SequentialDispatch:
     is_delegate: bool = False
     finish_spinner: bool = True
     finish_in_finally: bool = True  # inline tools print their completion line only on success
+    transform_applied: bool = False  # True when execute already fired transform_tool_result
 
 
 def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _SequentialDispatch:
@@ -1609,6 +1611,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         error_log="handle_function_call raised for %s: %s",
         handles_keyboard_interrupt=True,
         finish_spinner=bool(agent.quiet_mode),
+        transform_applied=True,  # handle_function_call fires transform_tool_result itself
     )
 
 
@@ -1679,19 +1682,28 @@ def _run_sequential_call(
     return managed, tool_duration
 
 
-def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig) -> bool:
+def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig, transform_applied: bool) -> bool:
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
-    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
-    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
-    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
     # observer is suppressed); also stops an abandoned timeout worker reporting late.
+    # transform_tool_result follows the observer, unless the dispatch already fired it.
     if not managed.blocked and not _execution_timed_out:
         ref.emit_post(agent, function_result, duration_ms=int(tool_duration * 1000))
+        if not transform_applied:
+            function_result = apply_transform_tool_result(
+                agent, function_name=ref.name, function_args=ref.args, result=function_result,
+                effective_task_id=ref.task_id, tool_call_id=ref.call_id,
+                duration_ms=int(tool_duration * 1000),
+            )
+    # Classify the result the model will actually see, i.e. after any transform; the
+    # registry and concurrent paths both classify post-transform.
+    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
+    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
+    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
@@ -1762,7 +1774,8 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             display_index=i,
             tool_start_time=tool_start_time,
         )
-        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
+        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i,
+                                          budget=_tool_budget, transform_applied=dispatch.transform_applied):
             return
 
         if agent._interrupt_requested and i < len(tool_calls):

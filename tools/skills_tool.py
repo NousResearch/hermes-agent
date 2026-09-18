@@ -27,6 +27,7 @@ from tools.skills_tool_plugin import (  # noqa: F401
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
@@ -695,10 +696,10 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    # The background-review fork shares the parent's task_id (prefix-cache parity), so its views
-    # would hit stubs for content that is in the PARENT's context, not the fork's — and the stub
-    # path never marks the read the fork's write guard requires (#95976). No dedup in the fork.
-    from tools.skill_provenance import is_background_review
+    # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
+    # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
+    # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
+    # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
     if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
         return stub

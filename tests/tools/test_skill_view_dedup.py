@@ -29,6 +29,8 @@ def skills_home(tmp_path, monkeypatch):
     (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     reset_skill_view_dedup()
+    from tools.skill_manager_guards import _reset_background_review_read_marks
+    _reset_background_review_read_marks()
     return home
 
 
@@ -89,7 +91,7 @@ class TestSkillViewDedup:
         r2 = json.loads(_skill_view_with_bump(args, task_id=None))
         assert "Step one" in r2.get("content", "")
 
-    def test_background_review_has_its_own_dedup_namespace(self, skills_home):
+    def test_background_review_skips_dedup_and_marks_read(self, skills_home):
         from tools.skill_provenance import (
             reset_current_write_origin,
             set_current_write_origin,

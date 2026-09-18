@@ -77,7 +77,8 @@ export function QueuePanel({
         return (
           <StatusRow
             className={cn(
-              isEditing && 'ring-1 ring-inset ring-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
+              isEditing &&
+                'ring-1 ring-inset ring-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
             )}
             dismiss={{ label: c.queueDelete, onDismiss: () => onDelete(entry.id) }}
             key={entry.id}

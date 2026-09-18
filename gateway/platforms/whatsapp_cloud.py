@@ -933,9 +933,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return [local_path], [dl_mime or inbound_mime or "application/octet-stream"], body
 
     @staticmethod
-    def _inject_document_text(media_urls: list[str], body: str) -> str:
-        """Prepend text-readable document contents (≤100KB) to the body."""
-        for doc in map(Path, media_urls):
+    def _inject_document_text(media_urls: list[str], body: str) -> tuple[str, list[bool]]:
+        """Prepend text-readable document contents (≤100KB) to the body; returns
+        ``(body, media_text_inlined)`` with one flag per ``media_urls`` entry (True = injected)."""
+        inlined = [False] * len(media_urls)
+        for i, doc in enumerate(map(Path, media_urls)):
             if doc.suffix.lower() not in _TEXT_INJECT_EXTS:
                 continue
             try:
@@ -945,9 +947,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     continue
                 injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
+                inlined[i] = True
             except OSError:
                 logger.exception("[whatsapp_cloud] failed to read document text: %s", doc)
-        return body
+        return body, inlined
 
     async def _build_message_event_from_cloud(
         self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str], metadata: Dict[str, Any],
@@ -978,11 +981,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         if not self._should_process_message({"chatId": chat_id, "senderId": sender_id, "isGroup": False, "body": body}):
             return None
-        media_urls, media_types = [], []
+        media_urls, media_types, media_text_inlined = [], [], []
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
             if msg_type_str == "document" and media_urls:
-                body = self._inject_document_text(media_urls, body)
+                body, media_text_inlined = self._inject_document_text(media_urls, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
         # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and
         # the quoted attachment reaches the vision/audio pipeline like a direct one.
@@ -1014,5 +1017,5 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             ),
             raw_message=raw_message, message_id=wamid, reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
-            media_urls=media_urls, media_types=media_types,
+            media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
         )

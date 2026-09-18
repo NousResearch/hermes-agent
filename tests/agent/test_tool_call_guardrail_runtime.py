@@ -454,3 +454,133 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+# ── Regression: tool-returned JSON errors must count as failures ──────────
+# Production 2026-09-10: vision_analyze returned
+# {"success": false, "error": "..."} 90 times in one turn and the turn ended
+# with max_iterations_reached(90/90). These lock in that the standard Hermes
+# tool error shape drives BOTH failure counters.
+
+_VISION_ERROR = json.dumps(
+    {
+        "success": False,
+        "error": (
+            "Error analyzing image: Error code: 400 - "
+            "{'message': 'chat_template_kwargs: Extra inputs are not permitted'}"
+        ),
+        "analysis": "There was a problem with the request.",
+    },
+    indent=2,
+)
+
+
+def test_success_false_tool_result_counts_toward_exact_and_same_tool_failures():
+    """A ``{"success": false}`` payload is a failure for both counters."""
+    from agent.tool_guardrails import (
+        ToolCallGuardrailConfig,
+        ToolCallGuardrailController,
+    )
+
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "warn_after": {"exact_failure": 2, "same_tool_failure": 3},
+            "hard_stop_after": {"exact_failure": 5, "same_tool_failure": 8},
+        }
+    )
+    controller = ToolCallGuardrailController(cfg)
+    args = {"image_url": "/tmp/x.png", "user_prompt": "describe"}
+
+    # Classification is not passed in — the controller must infer failure
+    # from the payload itself (the standalone-caller contract).
+    codes = [
+        controller.after_call("vision_analyze", args, _VISION_ERROR).code
+        for _ in range(8)
+    ]
+    assert codes[1] == "repeated_exact_failure_warning"
+    assert codes[7] == "same_tool_failure_halt"
+
+    # Same tool, DIFFERENT args every call: exact_failure can never trip, so
+    # same_tool_failure is the only thing standing between the model and a
+    # 90-iteration loop.
+    varied = ToolCallGuardrailController(cfg)
+    varied_codes = [
+        varied.after_call(
+            "vision_analyze", {"image_url": f"/tmp/{i}.png"}, _VISION_ERROR
+        ).code
+        for i in range(8)
+    ]
+    assert varied_codes[2] == "same_tool_failure_warning"
+    assert varied_codes[7] == "same_tool_failure_halt"
+
+
+def test_success_false_tool_result_halts_turn_through_runtime_path():
+    """End-to-end: a repeatedly-failing tool halts the turn, not max_iterations."""
+    agent = _make_agent(
+        "vision_analyze",
+        max_iterations=90,
+        config=_hard_stop_config(
+            hard_stop_after={
+                "exact_failure": 5,
+                "same_tool_failure": 3,
+                "idempotent_no_progress": 5,
+            }
+        ),
+    )
+    args = {"image_url": "/tmp/x.png"}
+    messages = []
+    for i in range(3):
+        tc = _mock_tool_call("vision_analyze", json.dumps(args), f"v-{i}")
+        with patch("run_agent.handle_function_call", return_value=_VISION_ERROR):
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(content="", tool_calls=[tc]), messages, "task-1"
+            )
+
+    assert agent._tool_guardrail_halt_decision is not None
+    assert agent._tool_guardrail_halt_decision.code == "same_tool_failure_halt"
+
+
+def test_invalid_tool_name_records_a_guardrail_failure():
+    """Hallucinated tool names must not be a free pass out of the guardrail.
+
+    Production 2026-09-10: 9 hallucinated-tool-name calls and 117 malformed
+    ``tool_call`` wrappers burned iterations without ever advancing a
+    guardrail counter. Those calls are short-circuited in the conversation
+    loop before dispatch, so ``after_call`` was never reached for them —
+    only ``_invalid_tool_retries``, which a mixed valid+invalid batch resets
+    to 0 on every iteration.
+    """
+    from agent.tool_guardrails import record_invalid_tool_call
+
+    agent = _make_agent("vision_analyze", config=_hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 5,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 5,
+        }
+    ))
+    for _ in range(3):
+        record_invalid_tool_call(agent, "analyze_the_image", "invalid_tool_name")
+
+    assert agent._tool_guardrail_halt_decision is not None
+    assert agent._tool_guardrail_halt_decision.code == "same_tool_failure_halt"
+
+
+def test_invalid_json_arguments_record_a_guardrail_failure():
+    """Malformed ``tool_call`` wrappers advance the same-tool failure counter."""
+    from agent.tool_guardrails import record_invalid_tool_call
+
+    agent = _make_agent("vision_analyze", config=_hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 5,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 5,
+        }
+    ))
+    for _ in range(3):
+        record_invalid_tool_call(agent, "vision_analyze", "invalid_tool_arguments")
+
+    assert agent._tool_guardrail_halt_decision is not None
+    assert agent._tool_guardrail_halt_decision.code == "same_tool_failure_halt"

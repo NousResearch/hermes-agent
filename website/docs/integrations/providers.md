@@ -1416,6 +1416,8 @@ extra_body:
 
 The configured `extra_body` follows the provider everywhere: it is merged at agent construction, **survives every gateway turn** (including turns where `/fast` layers `service_tier`/`speed` overrides on top — those merge over your `extra_body` rather than replacing it), and is **re-derived on `/model` switches** — switching to a named custom provider applies its `extra_body`, and switching away clears it so it never leaks to another provider.
 
+`chat_template_kwargs` is a vLLM / LM Studio extension, not part of the OpenAI API. Endpoints that do not implement it reject the whole request with a hard `400 chat_template_kwargs: Extra inputs are not permitted`. Auxiliary calls (vision, compression, title generation, …) survive this: Hermes retries once without the field and remembers, per `base_url` for the life of the process, that the server does not support it — so subsequent calls omit it instead of paying the failed round-trip again. The field only steers chat-template rendering, so the retried reply is still valid.
+
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

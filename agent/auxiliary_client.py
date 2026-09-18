@@ -3323,6 +3323,64 @@ def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
                 retry_kwargs.pop("extra_body", None)
             changed = True
     return retry_kwargs if changed else None
+# Servers that have rejected ``chat_template_kwargs``, keyed by base_url.
+# Populated reactively by the retry below so a server only pays the 400 once
+# per process. Never persisted — a restarted/upgraded server gets a fresh try.
+_CHAT_TEMPLATE_KWARGS_UNSUPPORTED: set[str] = set()
+
+
+def _reset_chat_template_kwargs_support() -> None:
+    """Forget every recorded rejection (test hook)."""
+    _CHAT_TEMPLATE_KWARGS_UNSUPPORTED.clear()
+
+
+def _mark_chat_template_kwargs_unsupported(base_url: str) -> None:
+    if base_url:
+        _CHAT_TEMPLATE_KWARGS_UNSUPPORTED.add(base_url)
+
+
+def _chat_template_kwargs_unsupported(base_url: str) -> bool:
+    return bool(base_url) and base_url in _CHAT_TEMPLATE_KWARGS_UNSUPPORTED
+
+
+def _is_chat_template_kwargs_rejection(exc: Exception) -> bool:
+    """Detect a provider 400 that rejects the ``chat_template_kwargs`` field.
+
+    ``chat_template_kwargs`` (typically ``{"enable_thinking": false}`` for Qwen)
+    is a vLLM / LM Studio extension. Other OpenAI-compatible endpoints reject it
+    outright (``chat_template_kwargs: Extra inputs are not permitted``). The field
+    only steers chat-template rendering, so a reply without it is still valid —
+    one retry is the right reaction. Deliberately narrow: the message must name
+    ``chat_template_kwargs`` so this never intercepts the structured-output
+    (``response_format`` / ``output_config``) rejection handled above.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    err_lower = str(exc).lower()
+    if "chat_template_kwargs" not in err_lower:
+        return False
+    if "extra inputs are not permitted" in err_lower:
+        return True
+    return _is_unsupported_parameter_error(exc, "chat_template_kwargs")
+
+
+def _without_chat_template_kwargs(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without the ``extra_body['chat_template_kwargs']`` entry.
+
+    Returns None when there is nothing to strip, so call sites never retry a
+    request the removal did not change.
+    """
+    extra_body = kwargs.get("extra_body")
+    if not isinstance(extra_body, dict) or "chat_template_kwargs" not in extra_body:
+        return None
+    retry_kwargs = dict(kwargs)
+    remaining = {k: v for k, v in extra_body.items() if k != "chat_template_kwargs"}
+    if remaining:
+        retry_kwargs["extra_body"] = remaining
+    else:
+        retry_kwargs.pop("extra_body", None)
+    return retry_kwargs
 
 
 def _is_model_not_found_error(exc: Exception) -> bool:
@@ -7148,6 +7206,12 @@ def _prepare_aux_request(
     client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(request_provider, client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+    # This server already answered 400 for chat_template_kwargs this process;
+    # don't pay the round-trip again.
+    if _chat_template_kwargs_unsupported(base_info):
+        _pruned = _without_chat_template_kwargs(kwargs)
+        if _pruned is not None:
+            kwargs = _pruned
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
@@ -7237,6 +7301,14 @@ def _is_max_tokens_rejection(exc: Exception, client: Any) -> bool:
             or _is_unsupported_parameter_error(exc, "max_tokens") or is_zai_param_error)
 
 
+def _remember_chat_template_kwargs_unsupported(
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any],
+    error: BaseException,
+) -> None:
+    """Record the server that rejected ``chat_template_kwargs`` so the next call skips it up front."""
+    _mark_chat_template_kwargs_unsupported(str(base_url or ""))
+
+
 def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
     """Ordered ``(matches, strip, log message, remember)`` parameter rungs; ``strip`` returns None
     when the field was not on the wire, so an unchanged request is never re-sent; ``remember``
@@ -7244,6 +7316,11 @@ def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
     return (
         (lambda exc: _is_unsupported_parameter_error(exc, "temperature"), _without_temperature,
          "provider rejected temperature; retrying without it", None),
+        # ``chat_template_kwargs`` is a vLLM/LM Studio rendering hint; strict OpenAI-compatible
+        # endpoints 400 on it, and a reply without it is still valid.
+        (_is_chat_template_kwargs_rejection, _without_chat_template_kwargs,
+         "provider rejected chat_template_kwargs; retrying without it",
+         _remember_chat_template_kwargs_unsupported),
         (_is_structured_output_rejection, _without_structured_output_format,
          "provider rejected the structured-output format field; retrying without it "
          "(schema enforcement degrades to prompt compliance)", remember_structured_output_rejection),
@@ -7261,10 +7338,11 @@ def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Parameter rungs: retry without temperature / structured-output format / reasoning field /
-    max_tokens. Rungs chain in whichever order the provider raises them (reasoning models reject
-    temperature AND max_tokens; a reasoning-strip retry can then trip temperature, #78273), each
-    field stripped at most once, so a request with N rejected fields recovers in N retries.
+    """Parameter rungs: retry without temperature / chat_template_kwargs / structured-output
+    format / reasoning field / max_tokens. Rungs chain in whichever order the provider raises them
+    (reasoning models reject temperature AND max_tokens; a reasoning-strip retry can then trip
+    temperature, #78273), each field stripped at most once, so a request with N rejected fields
+    recovers in N retries.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
     rungs = list(_parameter_rungs(client, max_tokens))

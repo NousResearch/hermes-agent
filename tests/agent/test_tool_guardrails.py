@@ -376,3 +376,23 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_guardrail_warn_and_halt_decisions_are_logged(caplog):
+    """Warn/halt decisions must leave a log trace so loops are diagnosable."""
+    import logging
+    
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=True,
+            hard_stop_enabled=True,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+    with caplog.at_level(logging.WARNING, logger="agent.tool_guardrails"):
+        for i in range(3):
+            controller.after_call("vision_analyze", {"i": i}, '{"success": false, "error": "boom"}', failed=True)
+    actions = [r.getMessage() for r in caplog.records if "Tool guardrail" in r.getMessage()]
+    assert any("warn" in m for m in actions)
+    assert any("halt" in m for m in actions)

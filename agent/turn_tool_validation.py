@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
+from agent.tool_guardrails import record_invalid_tool_call
 from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -105,6 +106,13 @@ def validate_tool_calls(
     )
     if _mixed_invalid_batch:
         agent._invalid_tool_retries = 0
+        # A mixed batch resets _invalid_tool_retries to 0 on every iteration, so
+        # the guardrail's same-tool counter is the only thing that can bound a
+        # partially-degraded model. These calls never reach dispatch, so count
+        # them here (#2026-09-10 production turn).
+        for tc in tool_calls:
+            if tc.function.name not in valid_names:
+                record_invalid_tool_call(agent, tc.function.name, "invalid_tool_name")
         _n_valid = sum(1 for tc in tool_calls if tc.function.name in valid_names)
         agent._buffer_vprint(
             f"⚠️  Unknown tool '{_preview_name(invalid_tool_calls[0])}' in batch — erroring that call, "
@@ -135,6 +143,11 @@ def validate_tool_calls(
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),
         )
+        # These calls never reach _execute_tool_calls, so the guardrail would
+        # otherwise never observe them.
+        for tc in tool_calls:
+            if tc.function.name not in valid_names:
+                record_invalid_tool_call(agent, tc.function.name, "invalid_tool_name")
         return _verdict("continue")
     # Reset retry counter on successful tool call validation
     agent._invalid_tool_retries = 0
@@ -207,6 +220,10 @@ def validate_tool_calls(
                 f"Please retry with valid JSON."
             )
 
+        # Malformed wrappers never dispatch, so the guardrail would never count
+        # them; record against the same-tool failure counter.
+        for _name, _ in invalid_json_args:
+            record_invalid_tool_call(agent, _name, "invalid_tool_arguments")
         _append_tool_error_results(messages, tool_calls, _json_error_result)
         return _verdict("continue")
 

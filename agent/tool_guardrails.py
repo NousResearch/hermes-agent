@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+
+logger = logging.getLogger(__name__)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -367,6 +370,24 @@ class ToolCallGuardrailController:
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
         *, failed: bool | None = None,
     ) -> ToolGuardrailDecision:
+        decision = self._after_call(tool_name, args, result, failed=failed)
+        if decision.action != "none":
+            # Warn/halt decisions were previously invisible in logs, which let a
+            # week-long 90-iteration failure loop look like "guardrails never fired".
+            logger.warning(
+                "Tool guardrail %s: %s (tool=%s, count=%s)",
+                decision.action, decision.code, decision.tool_name, decision.count,
+            )
+        return decision
+
+    def _after_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        result: str | None,
+        *,
+        failed: bool | None = None,
+    ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
@@ -630,3 +651,37 @@ def _sha256(value: str) -> str:
     # surrogatepass: web-scraped results can carry unpaired UTF-16 surrogates; a
     # strict encode would raise and take down the conversation loop.
     return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def record_invalid_tool_call(agent: Any, tool_name: str, reason: str) -> None:
+    """Count a tool call that never reached dispatch as a guardrail failure.
+
+    Hallucinated tool names and malformed ``tool_call`` wrappers are
+    short-circuited before dispatch, so ``after_call`` never sees them. Without
+    this they burn iterations for free: the dedicated ``_invalid_tool_retries`` /
+    ``_invalid_json_retries`` counters reset to 0 whenever a turn also contains one
+    valid call, which is exactly what a partially-degraded model produces.
+
+    Only the *same-tool* failure counter is meaningful here — a rejected call has
+    no canonical arguments to key an exact-failure signature on, so the args are
+    recorded as empty. Best-effort: never let guardrail bookkeeping break the turn.
+
+    Production evidence (2026-09-10): a single turn logged 117 malformed wrappers
+    and 9 hallucinated names alongside 90 failing ``vision_analyze`` calls, and
+    still exited via ``max_iterations_reached(90/90)``.
+    """
+    controller = getattr(agent, "_tool_guardrails", None)
+    if controller is None:
+        return
+    try:
+        decision = controller.after_call(
+            tool_name or "<unnamed>",
+            {},
+            json.dumps({"success": False, "error": reason}, ensure_ascii=False),
+            failed=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("invalid-tool-call guardrail record failed: %s", exc)
+        return
+    if decision.should_halt and getattr(agent, "_tool_guardrail_halt_decision", None) is None:
+        agent._tool_guardrail_halt_decision = decision

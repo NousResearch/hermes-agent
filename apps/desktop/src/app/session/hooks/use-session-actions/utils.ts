@@ -366,7 +366,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       return withAuthoritativeTurnState(previous, message)
     }
 
-    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
+    // Empty prose carries no identity: an empty-text cached assistant and an
+    // empty/tool-only hydrated row can share a role ordinal while being
+    // different turns, and plain `'' === ''` would pair them (#114543),
+    // grafting the cached reasoning/tool parts onto the unrelated row.
+    const sameText =
+      nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
 
     // Mid-turn, the authoritative text has advanced past the cached copy by one
     // or more deltas. That is still the same turn, and the cached row holds the
@@ -383,12 +388,15 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
       sameText ||
-      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (nextText.length > 0 &&
+        previousTrimmed.length > 0 &&
+        isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
       (message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
-        isLiveTailRow(previous))
+        isLiveTailRow(previous) &&
+        isLiveTailRow(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -842,6 +850,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     // timeline projection history uses instead of as a user bubble (#112144).
     // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
     const displayKind = projection.inflight?.display_kind
+
     const typed = displayKind
       ? toChatMessages([
           {

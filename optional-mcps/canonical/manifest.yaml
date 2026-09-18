@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: canonical
+description: Verified company search — describe what you want and get an LLM-verified, domain-keyed company shortlist.
+source: https://trycanonical.ai/documentation/mcp
+
+# Canonical ships a remote MCP server with native OAuth 2.0 + Dynamic Client
+# Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh — nothing to install
+# locally.
+transport:
+  type: http
+  url: https://trycanonical.ai/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider. The MCP client triggers the browser flow on the first connect.
+  # Scope: `search`.
+
+# Tool selection at install time:
+# All five tools are READ-ONLY (no mutations, no destructive operations), so
+# the default checklist starts with everything enabled. get_account_status is
+# free; search_companies / find_similar_companies spend credits.
+tools:
+  default_enabled:
+    - search_companies
+    - find_similar_companies
+    - get_company_details
+    - lookup_companies
+    - get_account_status
+
+post_install: |
+  On first connection, Hermes will open a browser to authorize with Canonical
+  (OAuth — no API key to copy). The free tier grants 250 credits on signup, no
+  card. After auth, restart your Hermes session so the Canonical tools load.
+
+  Quick check: ask Hermes to call `get_account_status` — it's free and returns
+  your credit balance, plan, and rate limits.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure canonical

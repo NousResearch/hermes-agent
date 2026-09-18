@@ -2334,6 +2334,40 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _cli_worker_completion_evidence(
+    task_id: str, *, run_started_at: Optional[int] = None
+) -> tuple[bool, Optional[dict]]:
+    """CLI-path mirror of tools/kanban_tools.py::_handle_complete's evidence gate.
+
+    ``hermes kanban complete`` is documented as a trusted-human entry point,
+    but a dispatcher-spawned worker inherits the same OS identity and env as
+    any human operator and can reach this CLI directly via its own
+    ``terminal`` tool (default ``TERMINAL_ENV=local``). Without this check, a
+    worker could shell out to ``hermes kanban complete $HERMES_KANBAN_TASK
+    --summary ...`` and defeat the completion-evidence gate that
+    ``kanban_complete`` (the tool) enforces — a confused-deputy bypass of the
+    entire evidence-hardening effort.
+
+    Delegates to the single source of truth
+    (``tools.kanban_tools._worker_completion_evidence``) rather than
+    reimplementing the identity/receipt logic here, so the two entry points
+    can never drift out of sync. Returns ``(False, None)`` — "not
+    applicable" — for every caller that is not itself the dispatcher-owned
+    worker for ``task_id`` (i.e. ordinary human/CLI use is unaffected);
+    import failures fail closed (evidence required, no receipt), matching
+    the tool path's own defensive posture.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False, None
+    try:
+        from tools.kanban_tools import _worker_completion_evidence
+    except Exception:
+        # Same boundary the tool-path guards against malformed identity:
+        # uncertainty must not resolve to "no evidence needed".
+        return True, None
+    return _worker_completion_evidence(task_id, run_started_at=run_started_at)
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Apply the goal judge to every terminal worker handoff, including review.
 
@@ -2430,13 +2464,42 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            # Completion-evidence gate (mirrors tools/kanban_tools.py
+            # _handle_complete). Without this, a dispatcher-spawned worker
+            # could bypass the evidence-hardening tool path entirely by
+            # shelling out to this CLI from its own terminal tool. No-op for
+            # every caller that isn't the dispatcher-owned worker for this
+            # exact task (i.e. genuine human/CLI completion is unaffected).
+            active_run = kb.latest_run(conn, tid)
+            evidence_required, completion_evidence = _cli_worker_completion_evidence(
+                tid,
+                run_started_at=(
+                    active_run.started_at
+                    if active_run and active_run.status == "running"
+                    else None
+                ),
+            )
+            try:
+                completed = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                    require_completion_evidence=evidence_required,
+                    completion_evidence=completion_evidence,
+                )
+            except kb.CompletionEvidenceError as evidence_err:
+                print(
+                    f"kanban: cannot complete {tid}: {evidence_err}. "
+                    "Run the repository's required verification after the "
+                    "latest edit, then retry, or use the kanban_complete "
+                    "tool instead of this CLI.",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
+            if not completed:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:

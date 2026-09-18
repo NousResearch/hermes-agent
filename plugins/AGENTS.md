@@ -116,3 +116,6 @@ survives only as three inert stubs that already-running pre-removal updaters imp
 `tests/plugins/`. Load through real discovery with a temp `HERMES_HOME`; assert behaviour (tool
 registered, hook fired with expected kwargs), not counts. Opt-in telemetry rule applies to plugins
 too: no attribution tag ships by default.
+
+Matrix outbound HTML sanitisation and TeX helpers are defined in
+`platforms/matrix/rendering.py`; the adapter imports the functions it uses.

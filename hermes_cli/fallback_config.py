@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -9,7 +10,7 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
-def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
+def resolve_entry_api_key(entry: dict[str, Any] | None, *, strict: bool = False) -> str | None:
     """API key for one fallback entry: inline ``api_key``, else ``key_env``.
 
     Mirrors the custom-provider convention (``api_key_env`` accepted as alias); None when neither
@@ -17,15 +18,21 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     ``key_env`` goes through ``agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
     multiplexed gateway a bare env read ignores the active profile's scope and can return another
     profile's credential.
+
+    Manual selection opts into ``strict``: declared but empty/unresolved credentials raise
+    before the caller can fall through to native auth. Absent fields retain native resolution.
     """
     if not isinstance(entry, dict):
         return None
-    if inline := str(entry.get("api_key") or "").strip():
-        return inline
-    if key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip():
+    key = str(entry.get("api_key") or "").strip()
+    if not key and (key_env := str(entry.get("key_env") or entry.get("api_key_env") or "").strip()):
         from agent.secret_scope import get_secret
-        return (get_secret(key_env) or "").strip() or None
-    return None
+        key = (get_secret(key_env) or "").strip()
+    if strict and any(field in entry for field in ("api_key", "key_env", "api_key_env")):
+        if not key or re.search(r"\$\{[^}]*\}", key):
+            from hermes_cli.auth import AuthError
+            raise AuthError("Fallback entry has no usable explicit API key.", code="missing_api_key")
+    return key or None
 
 
 def effective_runtime_provider(

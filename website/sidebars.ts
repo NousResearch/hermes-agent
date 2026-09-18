@@ -143,6 +143,13 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Advanced',
+          items: [
+            'user-guide/features/rl-training',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Skills',
           collapsed: true,
           items: [

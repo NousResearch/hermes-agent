@@ -145,7 +145,7 @@ function sourceColor(source: string): string {
   }
 }
 
-export default function UserStoriesCollage(): JSX.Element {
+export default function UserStoriesCollage() {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [activeSource, setActiveSource] = useState<string>('all');
 

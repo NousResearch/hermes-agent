@@ -3458,6 +3458,29 @@ class TelegramAdapter(BasePlatformAdapter):
             tracked.add(task)
             task.add_done_callback(tracked.discard)
 
+    @staticmethod
+    def _with_send_partial(result: SendResult, chunks: list, message_ids: list) -> SendResult:
+        # Mid-split partial-delivery metadata for a send() failure (#114396).
+        # Mirrors the edit path partial_overflow contract: landed chunks stay
+        # recorded and the unsent remainder is exposed as undelivered_tail.
+        # No-op when nothing landed.
+        if not message_ids:
+            return result
+        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        tail = "".join(re.sub(r" \(\d+/\d+\)$", "", c) for c in chunks[len(message_ids):])
+        raw.update({
+            "partial_overflow": True,
+            "delivered_chunks": len(message_ids),
+            "total_chunks": len(chunks),
+            "last_message_id": message_ids[-1],
+            "continuation_message_ids": tuple(message_ids[1:]),
+            "undelivered_tail": tail,
+        })
+        result.raw_response = raw
+        if result.message_id is None:
+            result.message_id = message_ids[-1]
+        return result
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
@@ -3479,6 +3502,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         error_types = self._telegram_error_types()
+        chunks: list = []
+        message_ids: list = []
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
@@ -3495,7 +3520,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
                     for chunk in chunks
                ]
-            message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
@@ -3503,7 +3527,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 outcome = await self._send_chunk_with_retries(
                     chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types)
                 if isinstance(outcome, SendResult):
-                    return outcome
+                    # Mid-split failure after earlier chunks landed: keep them
+                    # recorded so the caller resumes the tail (#114396).
+                    return self._with_send_partial(outcome, chunks, message_ids)
                 msg, used_thread_fallback = outcome
                 message_ids.append(str(msg.message_id))
             await self._retrigger_typing(chat_id, metadata)
@@ -3519,15 +3545,15 @@ class TelegramAdapter(BasePlatformAdapter):
             # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
             if "message_too_long" in err_str or "too long" in err_str:
                 logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
-                return SendResult(success=False, error="message_too_long", error_kind="too_long")
+                return self._with_send_partial(SendResult(success=False, error="message_too_long", error_kind="too_long"), chunks, message_ids)
             # TimedOut may have reached Telegram — non-retryable so _send_with_retry() doesn't re-send,
             # except a wrapped ConnectTimeout or an httpx pool timeout (safe to re-send).
             _to = error_types[2]
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(
+            return self._with_send_partial(SendResult(
                 success=False, error=safe_error,
                 retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
-                error_kind=error_kind)
+                error_kind=error_kind), chunks, message_ids)
 
     async def send_or_update_status(
         self, chat_id: str, status_key: str, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

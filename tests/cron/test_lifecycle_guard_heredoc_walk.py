@@ -21,6 +21,20 @@ def test_inert_heredoc_body_path_not_walked_as_script(tmp_path):
     assert guard(command, cwd=str(tmp_path)) is False
 
 
+def test_prefixed_inert_heredoc_body_path_not_walked_as_script(tmp_path):
+    big = _big_file(tmp_path)
+    command = (
+        f"cd {tmp_path} && python3 - <<'PY'\n"
+        f"from pathlib import Path\nprint(Path('{big}').stat().st_size)\nPY"
+    )
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_allowlisted_name_function_heredoc_stays_visible(tmp_path):
+    command = "python3() { bash; }; python3 <<'PY'\nhermes gateway restart\nPY"
+    assert guard(command, cwd=str(tmp_path)) is True
+
+
 def test_unquoted_heredoc_body_path_still_walked(tmp_path):
     """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
     big = _big_file(tmp_path)

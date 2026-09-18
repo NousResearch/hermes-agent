@@ -16,6 +16,7 @@ import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
 
 from .tools import _json_loads_maybe, build_tool_complete, build_tool_start, coerce_tool_args, make_tool_call_id
+from agent.message_sanitization import _sanitize_surrogates
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,13 @@ def _make_text_cb(
     # the next delta opens a new bubble instead of merging into the previous one.
     def _cb(text: str | None) -> None:
         if text:
+            # A lone surrogate (a truncated emoji/astral char pasted by the user, or a
+            # provider fragment cut mid-code-point) cannot be encoded to JSON, so building
+            # the ACP update raises and the session/update never ships — the whole turn then
+            # dies as a -32603 carrying Python's own exception text. Repair the code point
+            # here, at the one place every streamed delta passes through, so a bad character
+            # degrades to U+FFFD instead of killing the turn.
+            text = _sanitize_surrogates(text)
             update = wrap(text)
             if message_ids is not None:
                 update.message_id = message_ids.current()

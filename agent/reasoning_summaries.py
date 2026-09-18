@@ -27,6 +27,12 @@ def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
     """
     # Relays also emit content-part lists/dicts; fragments carry their own whitespace.
     delta = flatten_message_text(delta, sep="")
+    # flatten_message_text is total, but this helper is also called directly with a raw relay
+    # delta (RelayChatAccumulator), where the field can be JSON null. `not previous[-1]` would
+    # then die on a None with "'NoneType' object has no attribute 'startswith'" and take the
+    # whole streamed turn down. A non-str fragment carries no boundary to re-derive.
+    if not isinstance(delta, str):
+        return "" if delta is None else str(delta)
     glued = previous and delta and not previous[-1].isspace() and delta.startswith("**") and "**" in delta[2:]
     return f"\n\n{delta}" if glued else delta
 

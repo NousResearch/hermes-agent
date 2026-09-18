@@ -293,6 +293,22 @@ _REQUEST_VALIDATION_PATTERNS = (
     "invalid_request_error", "unknown_parameter", "unsupported_parameter",
 )
 
+# A request rejection carried inside a non-JSON SSE frame (HTTP 200 body = plain-text
+# ``event: error`` data). Same family as the above — identical on every retry — but the
+# wordings are provider-specific, so it gets its own list rather than widening
+# ``_REQUEST_VALIDATION_PATTERNS`` (which also feeds the 400/5xx code paths).
+#
+# Why this matters: without a match the verdict is ``unknown``/retryable, so Hermes burns
+# every retry on a request that can never succeed and never fails over — the turn reads to
+# the user as a silent stall. Live wordings seen: WorkBuddy ``{"code":11101,"message":
+# "Invalid request: tool_calls must not be empty"}`` and ``11128`` system-message-first.
+_SSE_REQUEST_REJECTION_PATTERNS = (
+    "invalid request", "invalid_request_error", "request validation failed",
+    "invalid params", "invalid_params", "validation error", "validation failed",
+    "must not be empty", "must be a non-empty", "is required", "missing required",
+    "invalid argument", "malformed request",
+)
+
 # Parameters Hermes sends on SOME routes only → hosts where that is deliberate.
 # A rejection from any other host means the provider's gateway injected the
 # field itself: a server-side flake, not our request shape. prompt_cache_retention
@@ -673,8 +689,17 @@ def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     """Structured error codes from the response body."""
     # Request-validation failure as plain-text ``event: error`` SSE data behind
     # HTTP 200: retrying cannot succeed, a configured fallback still may.
-    if c.code == PROVIDER_STREAM_NON_JSON_ERROR_CODE and "request validation failed:" in c.msg:
-        return _V_FORMAT_ERROR
+    #
+    # Any 4xx-class request rejection carried in a non-JSON SSE frame is deterministic:
+    # the identical request will be rejected identically, so burning `unknown` retries
+    # (and never failing over) is the worst possible behaviour — the turn looks like a
+    # silent stall. Providers word it differently ("request validation failed:",
+    # "Invalid request: tool_calls must not be empty" [WorkBuddy code 11101],
+    # "Invalid request: system message must be first" [11128], "invalid_request_error"),
+    # so match the family, not one sentence.
+    if c.code == PROVIDER_STREAM_NON_JSON_ERROR_CODE:
+        if "request validation failed:" in c.msg or any(p in c.msg for p in _SSE_REQUEST_REJECTION_PATTERNS):
+            return _V_FORMAT_ERROR
     return _ERROR_CODE_VERDICTS.get(c.code)
 
 

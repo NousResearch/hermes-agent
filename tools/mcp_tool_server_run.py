@@ -18,10 +18,17 @@ logger = logging.getLogger("tools.mcp_tool")
 
 @dataclass
 class _RetryBudget:
-    """Per-run() retry counters (``_reconnect_retries`` stays on the task: handlers/tests read it)."""
+    """Per-run() retry counters (``_reconnect_retries`` stays on the task: handlers/tests read it).
+
+    ``base_backoff`` is the ladder's starting delay (per-server ``reconnect_backoff``); every reset
+    returns ``backoff`` to it rather than to a hardcoded 1s."""
 
     initial_retries: int = 0
     backoff: float = 1.0
+    base_backoff: float = 1.0
+
+    def reset_backoff(self) -> None:
+        self.backoff = self.base_backoff
 
 
 class MCPServerRunMixin:
@@ -332,7 +339,8 @@ class MCPServerRunMixin:
         if not await self._prepare_run(config):
             return
         self._reconnect_retries = 0
-        budget = _RetryBudget()
+        base_backoff = _core._resolve_reconnect_backoff(self.name, config)
+        budget = _RetryBudget(backoff=base_backoff, base_backoff=base_backoff)
         rebuild = False
         while True:
             try:
@@ -384,9 +392,11 @@ class MCPServerRunMixin:
         if self._teardown_race and not self._session_proven:
             logger.info("MCP server '%s': reconnect after teardown race (in-flight calls were failed); "
                         "not charging the rapid-drop budget", self.name)
-            self._teardown_race, budget.backoff = False, 1.0
+            self._teardown_race = False
+            budget.reset_backoff()
         elif self._session_proven:
-            self._reconnect_retries, budget.backoff = 0, 1.0
+            self._reconnect_retries = 0
+            budget.reset_backoff()
         else:
             self._reconnect_retries += 1
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
@@ -406,7 +416,8 @@ class MCPServerRunMixin:
         burning 5 rapid retries. False on shutdown."""
         if await self._park(revival_reason):
             return False
-        self._reconnect_retries, budget.backoff = _core._MAX_RECONNECT_RETRIES, 1.0
+        self._reconnect_retries = _core._MAX_RECONNECT_RETRIES
+        budget.reset_backoff()
         return True
 
     async def _park_initial_failure(self, exc: Exception, revival_reason: str, budget: "_RetryBudget") -> bool:
@@ -415,7 +426,7 @@ class MCPServerRunMixin:
         if await self._park(revival_reason):
             return False
         budget.initial_retries = self._reconnect_retries = 0
-        budget.backoff = 1.0
+        budget.reset_backoff()
         self._error = None
         self._ready.clear()
         return True
@@ -499,7 +510,8 @@ class MCPServerRunMixin:
                 "MCP server '%s': auth error on a previously healthy session — marking suspect and forcing "
                 "one reconnect instead of parking (state: connected → suspect): %s: %s",
                 self.name, type(root).__name__, root)
-            self._reconnect_retries, budget.backoff = 0, 1.0
+            self._reconnect_retries = 0
+            budget.reset_backoff()
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.

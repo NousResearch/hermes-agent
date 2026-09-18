@@ -1527,6 +1527,11 @@ platform_toolsets:
 #     ~15s), otherwise idle tool calls hit an expired session and pay a slow
 #     reconnect. Stdio servers disable keepalive by default; set this explicitly
 #     to opt a stdio server in.
+#   reconnect_backoff: base reconnect delay in seconds (default: 1). The
+#     reconnect ladder doubles from this base, capped at 60s. Raise it for
+#     endpoints whose outages come in multi-minute bursts (e.g. 503 storms
+#     from a hosted MCP backend), so the retry ladder spans the burst instead
+#     of exhausting inside it and parking the server. Clamped to [1, 60].
 #   lazy: register the server's tools from the on-disk schema cache at startup
 #     and only spawn/connect it on the first tool call (default: false). Saves
 #     one child process per server in processes that rarely call tools. Needs

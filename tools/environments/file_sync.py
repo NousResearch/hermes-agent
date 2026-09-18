@@ -24,6 +24,8 @@ except ImportError:
 from pathlib import Path
 from typing import Callable
 
+import psutil
+
 from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
@@ -48,7 +50,7 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
-_SYNC_BACK_MAX_BYTES_ENV = "HERMES_SYNC_BACK_MAX_BYTES"
+_SYNC_BACK_MAX_BYTES_KEY = "sync_back_max_bytes"  # config.yaml terminal.<key>
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
 # a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entry names embed the
@@ -60,14 +62,16 @@ _SYNC_BACK_STALE_SECONDS = 30 * 60
 
 
 def _sync_back_max_bytes() -> int:
-    """Extraction cap; ``HERMES_SYNC_BACK_MAX_BYTES`` overrides it for trees that legitimately
-    exceed 2 GiB (a skipped extraction silently discards the whole download)."""
-    raw = os.environ.get(_SYNC_BACK_MAX_BYTES_ENV, "").strip()
-    if raw:
+    """Extraction cap; config.yaml ``terminal.sync_back_max_bytes`` overrides it for trees that
+    legitimately exceed 2 GiB (a skipped extraction silently discards the whole download)."""
+    from hermes_cli.config import load_config
+
+    raw = ((load_config() or {}).get("terminal") or {}).get(_SYNC_BACK_MAX_BYTES_KEY)
+    if raw is not None:
         try:
             return int(raw)
-        except ValueError:
-            logger.warning("sync_back: ignoring non-integer %s=%r", _SYNC_BACK_MAX_BYTES_ENV, raw)
+        except (TypeError, ValueError):
+            logger.warning("sync_back: ignoring non-integer terminal.%s=%r", _SYNC_BACK_MAX_BYTES_KEY, raw)
     return _SYNC_BACK_MAX_BYTES
 
 
@@ -80,13 +84,9 @@ def _sync_back_temp_prefix() -> str:
 
 def _temp_entry_owner_alive(name: str) -> bool:
     """Whether the process that created a sync-back temp entry may still be running.
-    Names without a PID (and hosts without psutil) count as alive: the age cutoff applies."""
+    Names without a PID count as alive: the age cutoff applies."""
     pid_part = name[len(_SYNC_BACK_TEMP_PREFIX):].split("-", 1)[0]
     if not pid_part.isdigit():
-        return True
-    try:
-        import psutil
-    except ImportError:
         return True
     return psutil.pid_exists(int(pid_part))
 
@@ -404,8 +404,8 @@ class FileSyncManager:
             max_bytes = _sync_back_max_bytes()
             if tar_size > max_bytes:
                 logger.warning(
-                    "sync_back: remote tar is %d bytes (cap %d, override with %s) — skipping extraction",
-                    tar_size, max_bytes, _SYNC_BACK_MAX_BYTES_ENV)
+                    "sync_back: remote tar is %d bytes (cap %d, override with terminal.%s) — skipping extraction",
+                    tar_size, max_bytes, _SYNC_BACK_MAX_BYTES_KEY)
                 return
 
             with tempfile.TemporaryDirectory(prefix=_sync_back_temp_prefix()) as staging:

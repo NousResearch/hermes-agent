@@ -500,8 +500,8 @@ class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 
     def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
-        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
-        # Build a download_fn that writes a small tar, but patch the cap
+        """A tar larger than terminal.sync_back_max_bytes should be skipped with a warning."""
+        # Build a download_fn that writes a small tar, but lower the configured cap
         # so the test doesn't need to produce a 2 GiB file.
         skill_host = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
@@ -515,7 +515,7 @@ class TestSyncBackSizeCap:
 
         # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
-            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+            with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
@@ -539,23 +539,30 @@ class TestSyncBackSizeCap:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
 
-    def test_cap_override_env_raises_the_cap(self, tmp_path, monkeypatch, caplog):
-        """HERMES_SYNC_BACK_MAX_BYTES overrides the 2 GiB default; a non-integer value is
-        ignored with a warning and the default applies."""
+    def test_cap_override_config_key_raises_the_cap(self, tmp_path, monkeypatch, caplog):
+        """config.yaml ``terminal.sync_back_max_bytes`` overrides the 2 GiB default; a
+        non-integer value is ignored with a warning and the default applies. The env var
+        the first cut used is gone — non-secret settings live in config.yaml."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["terminal"]["sync_back_max_bytes"] == 2 * 1024 * 1024 * 1024
+
         host_file = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
         mgr = _make_manager(tmp_path, file_mapping=[(host_file, "/root/.hermes/skill.md")],
                             bulk_download_fn=_make_download_fn(files))
 
-        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")  # the first cut's env var: must be ignored
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": 1}})
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
 
-        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "lots")
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
-        assert any("HERMES_SYNC_BACK_MAX_BYTES" in r.message for r in caplog.records)
+        assert any("sync_back_max_bytes" in r.message for r in caplog.records)
 
 
 class TestSyncBackWindowsHost:

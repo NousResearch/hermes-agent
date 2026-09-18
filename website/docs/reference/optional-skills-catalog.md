@@ -216,6 +216,7 @@ hermes skills uninstall <skill-name>
 | [**here-now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish sites to &#123;slug&#125;.here.now and store files in Drives. |
 | [**live-dashboard**](/docs/user-guide/skills/optional/productivity/productivity-live-dashboard) | Build self-updating dashboards from live sources. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcards: create, review, quiz, export. |
+| [**memory-extension**](/docs/user-guide/skills/optional/productivity/productivity-memory-extension) | Extend Hermes memory: index + on-demand detail files. |
 | [**property-listings**](/docs/user-guide/skills/optional/productivity/productivity-property-listings) | Present property and rental listings as desktop cards. |
 | [**shop**](/docs/user-guide/skills/optional/productivity/productivity-shop) | Shop catalog search, checkout, order tracking, returns. |
 | [**shopify**](/docs/user-guide/skills/optional/productivity/productivity-shopify) | Query Shopify Admin/Storefront GraphQL APIs via curl. |

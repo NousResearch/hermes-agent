@@ -2,7 +2,7 @@
 
 Date established: 2026-09-18
 
-Status: **IMPLEMENTED / CONTRACT VERIFIED — native product validation pending**
+Status: **IMPLEMENTED BASELINE / SEMANTIC-HOMOGENEITY HARDENING OPEN — native product validation pending**
 
 This document refines the durable-execution boundary after real native-browser
 dogfood showed that the baseline compiler guard could prevent legitimate work.
@@ -13,18 +13,26 @@ canonical evidence requirements.
 ## Implemented boundary — 2026-09-18
 
 Baseline/main audited: `c04906aacee568bb6480287717c76afd230cf4a7`.
-Implementation: `365794e29d66cd63a6134c5c67ecc1ef603d70a6`.
+Remote implementation: `9e7292ab7825e5ce1ea294490eec57ba1f286069`.
+Remote documentation/evidence: `5e1b22527fd40d732ee4fa7a1035e6366953f6b7`.
+Local pre-publish implementation SHA: `365794e29d66cd63a6134c5c67ecc1ef603d70a6`.
+Follow-up audit head: `c4234200145162eefb60f6070c9f170b4bf79321`.
 The original reproduction below remains historical evidence.
 
 `execution_policy.py` projects CompilationCandidates from the existing mutation
 ledger. ExecutionMode names ADAPTIVE, COMPILED, ROUTINE and HUMAN;
 CompilationDecision distinguishes ALLOW_ADAPTIVE, SUGGEST_COMPILE,
 REQUIRE_COMPILE and REQUIRE_HUMAN. Repeatability prose is only
-`_work_repeatability_hint`. First and second distinct equivalent mutations permit
-bounded adaptive execution; the second suggests compilation, and the third
-requires it. Signatures include owner target family, operation selectors and
-declared routes. An unrelated action is evaluated independently. Exact duplicates
-remain under ordinary guardrails; uncertainty overrides adaptive permission.
+`_work_repeatability_hint`. The first implementation permits bounded adaptive execution for the first two
+structurally equivalent mutations, suggests compilation on the second and can
+require compilation on the third. Signatures incorporate owner metadata when it
+exists. Follow-up audit AEPC-E002 found that **structural equivalence is not
+sufficient semantic proof of one repeatable operation family**: built-in native
+browser mutations currently lack a concrete target-family contract, so distinct
+stateful UI actions may still collide at the shape level. Mandatory compilation
+must therefore be conditioned on proven semantic homogeneity, not merely a
+threshold over shape-equivalent calls. Exact duplicates remain under ordinary
+guardrails; uncertainty overrides adaptive permission.
 
 The central dispatcher rechecks final middleware arguments and records mutable
 dispatch in ArtifactStore before I/O, inside the existing ordered start section.
@@ -80,6 +88,76 @@ results, not paid-provider savings or native Electron product proof. Electron
 executable and built main bundle were absent; packaged/native authenticated smoke
 remains open. Full commands, intermediate failures and limits are in
 [the journal](engineering-journal/CURRENT.md) and [TESTING.md](TESTING.md).
+
+## AEPC-E002 — semantic homogeneity hardening
+
+Follow-up audit of remote `main@c4234200145162eefb60f6070c9f170b4bf79321`
+confirmed that the global latch is gone and the major reliability contracts are
+sound, but exposed one residual false-positive class.
+
+Current `structural_signature()` intentionally abstracts scalar values. That is
+useful for batch discovery, but a shape such as
+`browser_type(ref=str, text=str)` does not prove that two calls target the same
+semantic operation. The built-in `browser_type`, `browser_click` and
+`browser_press` registrations do not currently provide a concrete
+`mutation_target` / `target_family_fields` contract. Therefore a long adaptive
+workflow can perform three semantically different UI actions with the same tool
+shape and accidentally satisfy the current threshold for `REQUIRE_COMPILE`.
+
+New invariant:
+
+> **same call shape != same repeatable operation**
+
+`REQUIRE_COMPILE` is permitted only when the runtime has positive semantic
+evidence that the calls belong to one compilable family. At minimum, the family
+must be stable across the canonical operation, route/provider and an
+owner-declared or safely derived target-family/contract identity. If that evidence
+is absent, structural repetition may support `SUGGEST_COMPILE`/learning, but it
+must not by itself block bounded adaptive work.
+
+Native browser behavior is especially important:
+
+- three different textbox edits are not homogeneous merely because all use
+  `browser_type`;
+- three different semantic clicks are not homogeneous merely because all use
+  `browser_click`;
+- state changes and newly reacquired anchors may represent different operations
+  even when argument schemas match;
+- real repeated fan-out with the same semantic family must still transition to
+  TaskCompiler/canary and may not be exempted by tool name.
+
+Required paired regression:
+
+~~~text
+long stateful browser:
+navigate -> snapshot
+type target A -> snapshot
+click target B -> snapshot
+type target C -> snapshot
+click target D -> snapshot
+type target E
+=> stays bounded ADAPTIVE when semantic families differ
+
+true homogeneous fan-out:
+update same operation/family target 1
+update same operation/family target 2
+update same operation/family target 3
+=> third distinct mutation REQUIRE_COMPILE
+~~~
+
+Do not fix this by raising the threshold, resetting counters around navigation,
+hard-coding `if browser: allow`, or disabling compiler/canary. Fix the meaning
+of the candidate itself.
+
+`CompilationCandidate.successful_occurrences` must also stop counting
+`executed_unverified` as semantic success. Rename that metric to
+`executed_occurrences`, or increment `successful_occurrences` only after the
+existing verification/acceptance path proves success. The metric may never grant
+mutation authority by itself.
+
+Closure requires the paired regressions above, the existing uncertainty/fencing/
+route/evidence/replay suites, Work100, and the separate packaged/native browser
+gate when the environment supports it.
 
 ## Executive principle
 

@@ -2232,35 +2232,50 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Schedule a job for the next tick (ID or name). ``extra_prompt`` is stamped as
-    ``manual_run_prompt`` for that single fire only; ``mark_job_run`` clears it."""
+    ``manual_run_prompt`` for that single fire only; ``mark_job_run`` clears it.
+
+    The exhausted-one-shot refusal and the stamp write share one ``_with_job``
+    section so an in-flight ``mark_job_run`` cannot land between them and
+    leave a live manual due on a pending-re-enabled exhausted record.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    if is_terminal_job(job):
-        name = job.get("name", job_id)
-        raise ValueError(
-            f"Cannot run: job '{name}' is {job.get('state')} (terminal). "
-            f"Create a new occurrence with 'hermes cron resume {name} "
-            "--run-now' or '--at <ISO-8601>'.")
-    now = _hermes_now()
-    # Pending re-enable leaves a budget-exhausted one-shot scheduled so the
-    # 202 batch can drain. A run-now in that window is the same class as a
-    # terminal trigger: refuse it (resume --run-now). In-flight leftover
-    # stamps are still accepted here and dropped at mark_job_run.
-    refusal = _exhausted_oneshot_manual_run_refusal(job, job_id, now)
-    if refusal:
-        raise ValueError(refusal)
-    manual_run_at = now.isoformat()
-    return update_job(job["id"], {
-        "enabled": True,
-        "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
-        "next_run_at": manual_run_at,
+    extra = extra_prompt or None
+
+    def apply(jobs, i, stored):
+        if is_terminal_job(stored):
+            name = stored.get("name", job_id)
+            raise ValueError(
+                f"Cannot run: job '{name}' is {stored.get('state')} (terminal). "
+                f"Create a new occurrence with 'hermes cron resume {name} "
+                "--run-now' or '--at <ISO-8601>'.")
+        now = _hermes_now()
+        # Pending re-enable leaves a budget-exhausted one-shot scheduled so the
+        # 202 batch can drain. A run-now in that window is the same class as a
+        # terminal trigger: refuse it (resume --run-now). In-flight leftover
+        # stamps are still accepted here and dropped at mark_job_run.
+        refusal = _exhausted_oneshot_manual_run_refusal(stored, job_id, now)
+        if refusal:
+            raise ValueError(refusal)
+        manual_run_at = now.isoformat()
+        stored["enabled"] = True
+        stored["state"] = "scheduled"
+        stored["paused_at"] = None
+        stored["paused_reason"] = None
+        stored["next_run_at"] = manual_run_at
         # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state.
-        "manual_run_at": manual_run_at,
-        "manual_run_prompt": (extra_prompt or None),
-    })
+        stored["manual_run_at"] = manual_run_at
+        stored["manual_run_prompt"] = extra
+        stored.pop("pending_slot", None)
+        jobs[i] = stored
+        save_jobs(jobs)
+        return _normalize_job_record(stored)
+
+    found = _with_job(job["id"], apply, missing=_MISSING)
+    if found is _MISSING:
+        return None
+    return found
 
 
 def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
@@ -2554,12 +2569,13 @@ def mark_job_run(
                 job["state"] = "scheduled"
         elif this_claim_consumed_manual and pending_after:
             # Run-now while events are still queued: occurrence-free, no repeat bump.
-            # next_run_at was already re-anchored at claim time for interval jobs.
-            # A finite one-shot's consumed stamp is not an occurrence; leaving
-            # that past instant as next_run_at lets a foreign process's tick
-            # hit the dispatch-limit guard and delete the record under a live
-            # drain run.
-            if _oneshot_repeat_limit_reached(job):
+            # next_run_at was already re-anchored at claim time for interval/cron
+            # (a live scheduled due). A one-shot's consumed stamp is not an
+            # occurrence regardless of repeat budget — leaving that past instant
+            # as next_run_at fires a phantom bare run after drain, or lets a
+            # foreign tick hit the dispatch-limit guard. A leftover run-now
+            # still due is restored below, not here.
+            if (job.get("schedule") or {}).get("kind") == "once" and not leftover_manual_at:
                 job["next_run_at"] = None
             else:
                 job["next_run_at"] = scheduled_next
@@ -2601,7 +2617,12 @@ def mark_job_run(
             )
             job.pop("manual_run_at", None)
             job.pop("manual_run_prompt", None)
-            if _oneshot_repeat_limit_reached(job):
+            if (
+                _oneshot_repeat_limit_reached(job)
+                or (job.get("schedule") or {}).get("kind") == "once"
+            ):
+                # Dropped leftover is not a live scheduled due. Do not leave
+                # that stamp as next_run_at for a later tick to fire.
                 job["next_run_at"] = None
         elif leftover_manual_at:
             # In-flight completion did not own this run-now: keep the operator

@@ -80,7 +80,26 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines += [f"{label:<30}{value}" for label, value in rows]
+
+    # Account limits (codex / anthropic / openrouter / xai-oauth) — the CLI's _show_usage
+    # appends the same block; without it TUI/Desktop /usage never shows provider quotas.
+    # Bounded off-pool fetch: slash.exec runs on the RPC pool, so cap the provider call.
+    provider = getattr(agent, "provider", "") if agent is not None else ""
+    if provider:
+        with contextlib.suppress(Exception):
+            import concurrent.futures
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                snapshot = pool.submit(
+                    fetch_account_usage, provider,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                ).result(timeout=10.0)
+            if snapshot is not None:
+                lines.append("")
+                lines += render_account_usage_lines(snapshot)
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:

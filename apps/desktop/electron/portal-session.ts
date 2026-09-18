@@ -1,6 +1,6 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
 
-import { cookiesHavePrivyAccessToken, cookiesHavePrivySession } from './connection-config'
+import { cookiesHavePortalAccessToken, cookiesHavePortalSession, portalAccessCookies } from './portal-cookies'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
 interface PortalSessionDependencies {
@@ -22,45 +22,37 @@ export function createPortalSession({
   createWindow,
   rememberLog
 }: PortalSessionDependencies) {
-  // Whether the OAuth partition currently holds a live Nous portal session — the
-  // credential that powers both discovery and the silent cascade. The portal
-  // authenticates via PRIVY, not the Hermes gateway session cookies, so this
-  // checks for the `privy-token` cookie on the portal host (NOT
-  // hasLiveOauthSession, which looks for hermes_session_at/rt that the portal
-  // never sets). See connection-config.ts cookiesHavePrivySession.
-  //
-  // Mirrors hasLiveOauthSession's cold-start guard (#73495): a `persist:`
-  // partition's cookie store hydrates lazily, so the FIRST read on a fresh boot
-  // can come back empty even for a signed-in user. The renderer checks Cloud
-  // status exactly once on entering cloud mode, so a single false-negative here
-  // used to clear the discovered agent list and demand a re-login that a plain
-  // retry would have avoided. Warm the store and re-read with a short backoff
-  // before trusting a negative.
-  async function hasLivePortalSession() {
+  // One reader for every portal-cookie question so the failure rungs cannot
+  // drift between callers: URL-scoped first, host-scoped when Chromium rejects
+  // the URL form, empty when the jar is unreadable.
+  async function readPortalCookies() {
     const sess = getOauthSession()
 
     if (!sess) {
-      return false
+      return []
     }
 
     const portalBaseUrl = resolvePortalBaseUrl()
-    const parsed = new URL(portalBaseUrl)
 
-    const readPortal = async () => {
+    try {
+      return await sess.cookies.get({ url: portalBaseUrl })
+    } catch {
       try {
-        const cookies = await sess.cookies.get({ url: portalBaseUrl })
-
-        return cookiesHavePrivySession(cookies)
+        return await sess.cookies.get({ domain: new URL(portalBaseUrl).hostname })
       } catch {
-        try {
-          const cookies = await sess.cookies.get({ domain: parsed.hostname })
-
-          return cookiesHavePrivySession(cookies)
-        } catch {
-          return false
-        }
+        return []
       }
     }
+  }
+
+  // A persisted Chromium jar hydrates lazily; warm and retry before reporting
+  // signed-out on a cold start. Both access and refresh credentials count here.
+  async function hasLivePortalSession() {
+    if (!getOauthSession()) {
+      return false
+    }
+
+    const readPortal = async () => cookiesHavePortalSession(await readPortalCookies())
 
     if (await readPortal()) {
       return true
@@ -79,51 +71,20 @@ export function createPortalSession({
     return readPortal()
   }
 
-  // Whether the jar holds the short-lived Privy ACCESS token — the exact cookie
-  // `/api/agents` validates. hasLivePortalSession() answers "signed in at all?"
-  // (renewal material counts); this answers "can discovery succeed right now?".
-  async function hasPortalAccessToken() {
-    const sess = getOauthSession()
-
-    if (!sess) {
-      return false
-    }
-
-    const portalBaseUrl = resolvePortalBaseUrl()
-    const parsed = new URL(portalBaseUrl)
-
-    try {
-      const cookies = await sess.cookies.get({ url: portalBaseUrl })
-
-      return cookiesHavePrivyAccessToken(cookies)
-    } catch {
-      try {
-        const cookies = await sess.cookies.get({ domain: parsed.hostname })
-
-        return cookiesHavePrivyAccessToken(cookies)
-      } catch {
-        return false
-      }
-    }
+  async function readAccessCookies() {
+    return portalAccessCookies(await readPortalCookies())
   }
 
-  // Bounded silent renewal of the short-lived Privy access token (#73495).
-  //
-  // After a Desktop restart the long-lived `privy-session` / `privy-refresh-token`
-  // cookies routinely survive while the ~1h `privy-token` access cookie has
-  // expired. Discovery then 401s and the only offered recovery used to be a full
-  // interactive re-login — even though the persisted refresh material can mint a
-  // fresh access token with no user action: loading any portal page runs the
-  // Privy client, which rotates a new `privy-token` from the refresh session.
-  //
-  // This drives exactly that, headlessly: a hidden window on the portal root in
-  // the OAuth partition, polled until the access cookie lands, torn down on a
-  // bounded timeout. Never shown — if renewal can't complete silently the caller
-  // falls back to the interactive needsCloudLogin path. The in-flight promise is
-  // shared so concurrent discovery + cascade calls ride one renewal.
+  async function hasPortalAccessToken() {
+    return cookiesHavePortalAccessToken(await readAccessCookies())
+  }
+
+  // Loading the portal lets NAS choose its own refresher: Privy client renewal,
+  // or the NAS server-side refresh redirect. Never pin a provider in Desktop.
+  // Share a single renewal so concurrent calls cannot race rotating refresh tokens.
   let portalAccessRenewal: Promise<boolean> | null = null
 
-  function renewPortalAccessSilently() {
+  function renewPortalAccessSilently({ force = false } = {}) {
     if (portalAccessRenewal) {
       return portalAccessRenewal
     }
@@ -145,7 +106,9 @@ export function createPortalSession({
         return false
       }
 
-      if (await hasPortalAccessToken()) {
+      const previousAccess = await readAccessCookies()
+
+      if (!force && previousAccess.length > 0) {
         return true
       }
 
@@ -153,9 +116,9 @@ export function createPortalSession({
 
       return await new Promise<boolean>(resolve => {
         let settled = false
-        let win = null
-        let pollTimer = null
-        let deadlineTimer = null
+        let win: BrowserWindow | null = null
+        let pollTimer: ReturnType<typeof setInterval> | null = null
+        let deadlineTimer: ReturnType<typeof setTimeout> | null = null
 
         const finish = (ok: boolean) => {
           if (settled) {
@@ -189,7 +152,12 @@ export function createPortalSession({
             return
           }
 
-          if (await hasPortalAccessToken()) {
+          const access = await readAccessCookies()
+
+          // A rejected token still in Chromium's jar is not a successful renewal.
+          if (
+            access.some(cookie => !previousAccess.some(old => old.name === cookie.name && old.value === cookie.value))
+          ) {
             finish(true)
           }
         }
@@ -260,8 +228,8 @@ export function createPortalSession({
       }
 
       let settled = false
-      let win = null
-      let pollTimer = null
+      let win: BrowserWindow | null = null
+      let pollTimer: ReturnType<typeof setInterval> | null = null
 
       const finish = err => {
         if (settled) {
@@ -294,8 +262,9 @@ export function createPortalSession({
           return
         }
 
-        // A live portal (Privy) session cookie means sign-in completed.
-        if (await hasLivePortalSession()) {
+        // Refresh material alone must not close the window before the portal
+        // can replace it with usable access, regardless of the login provider.
+        if (await hasPortalAccessToken()) {
           finish(null)
         }
       }
@@ -336,8 +305,7 @@ export function createPortalSession({
         }
       })
 
-      // Land on the portal root; any authenticated portal page sets the session
-      // cookie. We only care that the partition cookie jar is populated.
+      // The portal owns provider selection, provisioning and refresh redirects.
       win.loadURL(portalBaseUrl).catch(error => {
         finish(error instanceof Error ? error : new Error(String(error)))
       })

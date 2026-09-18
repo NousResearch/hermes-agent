@@ -641,6 +641,19 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     return {key: hermes.get(key, []) for key in _CONDITION_KEYS}
 
 
+def extract_skill_activation(frontmatter: Dict[str, Any]) -> str:
+    """Return ``auto`` or ``explicit`` from ``metadata.hermes.activation``.
+
+    Unknown or malformed values fail open to the historical ``auto`` behavior.
+    ``explicit`` affects only automatic model selection from the skills index;
+    direct slash commands and ``skill_view`` loads remain available.
+    """
+    activation = _hermes_metadata(frontmatter).get("activation", "auto")
+    if isinstance(activation, str) and activation.strip().lower() == "explicit":
+        return "explicit"
+    return "auto"
+
+
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract ``metadata.hermes.config`` declarations (key/description/default/prompt).
     Entries missing ``key`` or ``description`` are skipped; ``prompt`` defaults to the description."""

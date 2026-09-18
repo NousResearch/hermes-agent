@@ -23,7 +23,8 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
-    extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
+    extract_skill_activation, extract_skill_conditions, extract_skill_description, get_all_skills_dirs,
+    get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
@@ -1106,8 +1107,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+# v2 added org provenance fields; v3 adds per-skill activation policy.
+_SKILLS_SNAPSHOT_VERSION = 3
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1182,7 +1183,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
-        "conditions": extract_skill_conditions(frontmatter),
+        "conditions": extract_skill_conditions(frontmatter), "activation": extract_skill_activation(frontmatter),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1302,7 +1303,10 @@ def _collect_extra_skills(
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
             claimed.add(fm_name)
-            skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
+            desc = f"{desc_prefix}{entry['description']}".strip()
+            if entry.get("activation") == "explicit":
+                desc = f"[explicit only] {desc}".strip()
+            skills_by_category.setdefault(entry["category"], []).append((fm_name, desc))
         except Exception as e:
             logger.debug(log_fmt, skill_file, e)
 
@@ -1315,6 +1319,8 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
     for entry in visible_entries:
         fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
+        if entry.get("activation") == "explicit":
+            desc = f"[explicit only] {desc}".strip()
         if org_id:
             author = entry.get("org_author") or ""
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
@@ -1356,15 +1362,13 @@ def _render_skills_index(
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     return (
         "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
-        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
-        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
-        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
-        "code review, planning, and testing — load them even for tasks you already know how to do, because "
-        "the skill defines how it should be done here.\n"
+        "Before replying, scan the skills below. Load a skill only when it clearly and materially matches the "
+        "task and its instructions are needed to complete the request correctly. Do not load a skill merely "
+        "because it is adjacent or potentially useful. For ordinary tasks, load at most one skill initially; "
+        "load another only when the first skill explicitly names it as a dependency or the user requests it. "
+        f"Proceed without loading a skill when the task can be completed safely and accurately with {_basic_tools} "
+        "and the instructions already present. Skills marked [explicit only] must never be selected automatically: "
+        "load them only when the user explicitly asks for that skill, named model, reviewer, subagent, or capability.\n"
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
@@ -1372,7 +1376,7 @@ def _render_skills_index(
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"
-        "Only proceed without loading a skill if genuinely none are relevant to the task."
+        "A merely relevant skill is not enough; load only what is necessary."
         + hidden_note
     )
 

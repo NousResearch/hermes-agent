@@ -17,8 +17,9 @@ Reviewing a skill PR: check the target directory — heavy-dep or niche skills g
 
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,
 `[linux, macos]`, ...), `metadata.hermes.tags`, `metadata.hermes.category`,
-`metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml settings the skill needs —
-stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
+`metadata.hermes.related_skills`, `metadata.hermes.activation` (`auto` default or `explicit` opt-in),
+`metadata.hermes.config` (config.yaml settings the skill needs — stored under
+`skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
 `category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
 
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)

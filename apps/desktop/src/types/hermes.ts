@@ -1516,21 +1516,6 @@ export interface StaleAuxAssignment {
   model: string
 }
 
-export type CronModelDriftAxis = 'model' | 'provider'
-
-export interface CronModelImpactJob {
-  id: string
-  name: string
-  drifted_axes: CronModelDriftAxis[]
-}
-
-export interface CronModelImpact {
-  available: boolean
-  affected_count: number
-  truncated: boolean
-  jobs: CronModelImpactJob[]
-}
-
 /** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
  *  `GET /api/skills/hub/sources`. */
 export interface SkillHubSource {
@@ -1699,8 +1684,6 @@ export interface ModelAssignmentResponse {
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */
   gateway_tools?: string[]
-  /** Additive profile-local cron impact returned after a persisted main assignment. */
-  cron_model_impact?: CronModelImpact
   confirm_message?: string
   confirm_required?: boolean
   model?: string

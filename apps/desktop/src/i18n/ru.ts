@@ -2319,18 +2319,14 @@ export const ru = defineLocale({
     failedCreate: 'Не удалось создать профиль',
     failedRename: 'Не удалось переименовать профиль'
   },
+  modelAssignment: {
+    saveFailed: 'Hermes не сохранил это изменение модели.'
+  },
+
   cron: {
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
-    modelImpact: {
-      title: 'Запланированные задачи остаются на исходной модели',
-      message: count =>
-        `${count} незакреплённых запланированных задач продолжат работать на модели, с которой были созданы. Закрепите их или задайте cron.model, чтобы перевести.`,
-      detailMore: (names, remaining) => `${names} и ещё ${remaining}`,
-      review: 'Проверить запланированные задачи',
-      saveFailed: 'Hermes не сохранил это изменение модели.'
-    },
     search: 'Поиск cron-задач...',
     loading: 'Загрузка cron-задач...',
     states: {

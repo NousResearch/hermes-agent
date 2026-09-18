@@ -363,6 +363,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
         "provider": job.get("provider"),
+        # Locked to its own model; unpinned jobs follow cron.model, then the main agent model.
+        "pinned": bool(str(job.get("model") or "").strip()),
         "base_url": job.get("base_url"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),

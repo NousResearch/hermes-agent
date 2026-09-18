@@ -2207,21 +2207,18 @@ export interface Translations {
     failedRename: string
   }
 
+  modelAssignment: {
+    saveFailed: string
+    confirmTitle: string
+    confirmDetail: string
+    confirmAction: string
+    declined: string
+  }
+
   cron: {
     close: string
     title: string
     count: (count: number) => string
-    modelImpact: {
-      title: string
-      message: (count: number) => string
-      detailMore: (names: string, remaining: number) => string
-      review: string
-      saveFailed: string
-      confirmTitle: string
-      confirmDetail: string
-      confirmAction: string
-      declined: string
-    }
     search: string
     loading: string
     states: Record<string, string>

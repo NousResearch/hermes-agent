@@ -397,8 +397,8 @@ def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) ->
     """Legacy ``custom_providers`` list entries with no ``providers:`` twin (raw-file diagnostic).
 
     The v11→v12 migration (config_migrations._migrate_to_12) moves the list into ``providers:`` ONCE, at
-    the version bump; an entry hand-written afterwards is served by the chat picker (dual-read) but has no
-    row on the Custom Endpoints settings pages, which list only ``providers:`` — deletable nowhere.
+    the version bump; an entry hand-written afterwards lives on in the retired list store (dual-read by the
+    picker and the Custom Endpoints page) instead of the ``providers:`` map every other surface edits.
     """
     from hermes_cli.config import read_user_config_raw
     raw_config = read_user_config_raw(config_path)
@@ -412,7 +412,7 @@ def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) ->
             continue
         label = str(entry.get("name") or "").strip() or _endpoint_url(entry)
         check_warn(f"Legacy custom_providers entry '{label}' has no providers: twin",
-                   "(shown in the model picker, missing from the Custom Endpoints settings page)")
+                   "(still read from the retired list store; every other surface edits providers:)")
         f.manual_issues.append(
             f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.api: "
             f"{_endpoint_url(entry)}` and delete it from the list — the v12 list migration ran once and does not re-fire")

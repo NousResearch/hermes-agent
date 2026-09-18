@@ -21,7 +21,8 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
+from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -433,7 +434,31 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 raw_entry, _model_names_provider(model_cfg, endpoint_id, raw_entry), "providers",
             ))
 
-    if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+    # Legacy ``custom_providers:`` list entries the migration left behind are
+    # still routed at runtime (get_compatible_custom_providers), so they need a
+    # row too, or the panel hides an endpoint the agent can pick. Entries from
+    # ``providers:`` carry ``provider_key``; the legacy ones do not. A bare
+    # ``provider: custom`` main slot is "current" for the legacy row whose
+    # base_url it points at.
+    is_bare_custom = current_provider.lower() == "custom" and bool(current_base_url)
+    seen_ids = {e["id"] for e in endpoints}
+    for entry in get_compatible_custom_providers(cfg):
+        if entry.get("provider_key"):
+            continue
+        endpoint_id = _custom_endpoint_id(entry["name"])
+        if endpoint_id in seen_ids:
+            continue
+        seen_ids.add(endpoint_id)
+        models = _models_from_custom_endpoint_entry(entry)
+        is_current = is_bare_custom and entry["base_url"].rstrip("/") == current_base_url.rstrip("/")
+        endpoints.append(_endpoint_row(
+            endpoint_id, entry["name"], entry["base_url"],
+            str(entry.get("model") or (models[0] if models else "")), models,
+            entry.get("context_length"), bool(entry.get("discover_models", True)),
+            entry, is_current, "custom_providers",
+        ))
+
+    if is_bare_custom and not any(e["id"] == "custom" or e["is_current"] for e in endpoints):
         endpoints.insert(0, _endpoint_row(
             "custom", "Custom", current_base_url, current_model, [current_model] if current_model else [],
             model_cfg.get("context_length"), True, model_cfg, True, "direct-config",
@@ -445,6 +470,17 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "provider": current_provider, "model": current_model, "base_url": current_base_url,
         },
     }
+
+
+def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optional[Dict[str, Any]]:
+    """Remove and return the legacy ``custom_providers:`` list entry whose name slugs to *provider_key*."""
+    legacy = cfg.get("custom_providers")
+    if not isinstance(legacy, list):
+        return None
+    for index, entry in enumerate(legacy):
+        if isinstance(entry, dict) and _custom_endpoint_id(str(entry.get("name") or "")) == provider_key:
+            return legacy.pop(index)
+    return None
 
 
 def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
@@ -602,12 +638,23 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             cfg = load_config()
             stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
-            provider_key = coerce_provider_id(stored_key)
+                # A legacy ``custom_providers:`` row: the main slot names providers by
+                # key, so promote the entry to ``providers.<key>`` (the v12 shape the
+                # migration would have written) before activating it.
+                provider_key = _custom_endpoint_id(endpoint_id)
+                legacy = _pop_legacy_custom_provider(cfg, provider_key)
+                entry = _custom_provider_entry_to_provider_config(legacy, provider_key=provider_key) if legacy else None
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
+                providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+                providers[provider_key] = entry
+                cfg["providers"] = providers
+            else:
+                provider_key = coerce_provider_id(stored_key)
 
             models = _models_from_custom_endpoint_entry(entry)
-            model = str(entry.get("model") or (models[0] if models else "")).strip()
-            base_url = str(entry.get("base_url") or "").strip()
+            model = str(entry.get("model") or entry.get("default_model") or (models[0] if models else "")).strip()
+            base_url = str(entry.get("base_url") or entry.get("api") or "").strip()
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
@@ -643,11 +690,15 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             cfg = load_config()
             providers = cfg.get("providers")
             stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
-            if entry is None or not isinstance(providers, dict):
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
-            provider_key = coerce_provider_id(stored_key)
-            providers.pop(stored_key, None)
-            cfg["providers"] = providers
+            if entry is not None and isinstance(providers, dict):
+                provider_key = coerce_provider_id(stored_key)
+                providers.pop(stored_key, None)
+                cfg["providers"] = providers
+            else:
+                # A legacy ``custom_providers:`` row is addressed by its slug.
+                provider_key = _custom_endpoint_id(endpoint_id)
+                if _pop_legacy_custom_provider(cfg, provider_key) is None:
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
             _detach_main_model_from_provider(cfg, provider_key, entry)
             remove_env_value(custom_endpoint_key_env(provider_key))
             save_config(cfg)

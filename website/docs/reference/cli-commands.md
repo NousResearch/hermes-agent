@@ -914,7 +914,7 @@ The **API Connectivity** section includes an `IPv6 route` check: it opens one sh
 Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 
 - `custom_providers` that is not a YAML list (for example a string left by a bad `config set`) is reported as an error naming the key and the received type — the runtime ignores every custom endpoint until it is a list again.
-- A legacy `custom_providers` list entry with no matching `providers:` entry (same endpoint URL) is reported with the move to make: such an entry shows up in the model picker but has no row on the Custom Endpoints settings page, and the one-shot v12 migration that moved the list into `providers:` does not run again.
+- A legacy `custom_providers` list entry with no matching `providers:` entry (same endpoint URL) is reported with the move to make: such an entry is still served from the retired list store (the model picker and the Custom Endpoints page dual-read it) rather than the `providers:` map every other surface edits, and the one-shot v12 migration that moved the list into `providers:` does not run again.
 
 ## `hermes dump`
 

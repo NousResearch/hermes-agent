@@ -1535,8 +1535,8 @@ class TestDoctorStaleMaxIterationsDrift:
 
 
 class TestDoctorLegacyCustomProvidersResidue:
-    """A legacy ``custom_providers`` list entry without a ``providers:`` twin is picker-visible but has no
-    Custom Endpoints row; doctor must name it and point at the move. Twins (URL modulo trailing slash /
+    """A legacy ``custom_providers`` list entry without a ``providers:`` twin lives on in the retired list
+    store; doctor must name it and point at the move. Twins (URL modulo trailing slash /
     case) and non-list values are not this step's business."""
 
     def _run(self, tmp_path, yaml_text):

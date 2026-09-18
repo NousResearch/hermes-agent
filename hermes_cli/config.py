@@ -1235,11 +1235,11 @@ def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
             "warning", "custom_providers[{i}] is not a dict (got {type})",
             "Each entry should have at minimum: name, base_url"))
     else:
-        # get_compatible_custom_providers() returns [] for any non-list: every endpoint vanishes
+        # get_compatible_custom_providers() returns [] for any non-list: the legacy entries vanish
         # ("0 endpoints") with nothing naming the cause.
         _issue(issues, "error",
                f"custom_providers is a {type(cp).__name__} — it must be a YAML list (items prefixed with '-'); "
-               "every custom endpoint is ignored until it is", _CP_LIST_HINT)
+               "legacy custom_providers entries are ignored until it is", _CP_LIST_HINT)
 
 
 def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:

@@ -31,6 +31,15 @@ class LoginBackend(ABC):
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
 
+    @classmethod
+    def is_available(cls, config: Dict) -> bool:
+        """Whether this backend's local dependency is usable for ``config``.
+
+        Plugin backends must override this with a non-interactive availability
+        probe (usually a configured binary path or ``PATH`` lookup).
+        """
+        return False
+
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
 
@@ -97,29 +106,40 @@ def _cfg() -> Dict:
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    from agent.vault_backends.registry import list_backends
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, *list_backends())
 
 
-def is_installed(name: str) -> bool:
-    """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
-    import shutil
+def is_installed(name: str, backend_class=None) -> bool:
+    """Is a backend available, without invoking or authenticating its CLI."""
     section = _cfg().get(name) or {}
-    explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
-    if explicit:
-        return Path(explicit).is_file()
+    section = section if isinstance(section, dict) else {}
+    # Preserve the bundled managers' existing detection paths. Third-party
+    # classes supply the same signal through the plugin contract below.
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
-        return find_op() is not None
-    return shutil.which("bw") is not None
+        return find_op(str(section.get("binary_path") or "")) is not None
+    if name == "bitwarden":
+        import shutil
+        explicit = str(section.get("binary_path") or "")
+        return Path(explicit).is_file() if explicit else shutil.which("bw") is not None
+    if backend_class is None:
+        backend_class = next((cls for cls in external_backend_classes() if cls.name == name), None)
+    if backend_class is None:
+        return False
+    try:
+        return bool(backend_class.is_available(section))
+    except Exception:
+        return False
 
 
-def is_enabled(name: str) -> bool:
+def is_enabled(name: str, backend_class=None) -> bool:
     """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
     Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
     section = _cfg().get(name) or {}
     if isinstance(section, dict) and section.get("enabled") is False:
         return False
-    return is_installed(name)
+    return is_installed(name, backend_class)
 
 
 def enabled_backends() -> List[LoginBackend]:
@@ -129,7 +149,7 @@ def enabled_backends() -> List[LoginBackend]:
     cfg = _cfg()
     out: List[LoginBackend] = [LocalLoginBackend()]
     for cls in external_backend_classes():
-        if is_enabled(cls.name):
+        if is_enabled(cls.name, cls):
             section = cfg.get(cls.name) or {}
             out.append(cls(section if isinstance(section, dict) else {}))
     return out

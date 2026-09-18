@@ -382,6 +382,33 @@ class PluginContext:
         logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
+    def register_login_backend(self, backend_class) -> Optional[PluginRegistration]:
+        """Register a :class:`LoginBackend` class for browser credential-vault routing.
+
+        The class owns its ``vault.<name>`` configuration and must implement a
+        non-interactive ``is_available(config)`` probe. Built-in names and
+        handle prefixes are reserved, and registration is profile-scoped.
+        """
+        from agent.vault_backends import registry
+        from agent.vault_backends.base import LoginBackend
+
+        if not isinstance(backend_class, type) or not issubclass(backend_class, LoginBackend):
+            logger.warning("Plugin '%s' tried to register a login backend that does not inherit from LoginBackend. "
+                           "Ignoring.", self.manifest.name)
+            return None
+        name = backend_class.name
+        if not isinstance(name, str):
+            logger.warning("Plugin '%s' tried to register a login backend with an invalid name. Ignoring.",
+                           self.manifest.name)
+            return None
+        scope = self._manager.scope_key
+        previous = registry.snapshot_registration(name, scope=scope)
+        if not registry.register_backend(backend_class, scope=scope):
+            return None
+        return self._manager._track_scoped_registration(
+            self.manifest, "login_backend", name, registry, backend_class, previous,
+        )
+
     @property
     def llm(self) -> Any:
         """Host-owned :class:`agent.plugin_llm.PluginLlm` facade: completions on the user's active

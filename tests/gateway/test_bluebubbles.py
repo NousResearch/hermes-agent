@@ -1,12 +1,14 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from datetime import datetime
 
 import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.bluebubbles import _DUPLICATE_DELIVERY_WINDOW_S
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -114,6 +116,91 @@ class TestBlueBubblesMentionGating:
 
         assert response.status == 200
         assert handled == []
+
+
+class TestBlueBubblesCanonicalChatId:
+
+    def test_service_prefixes_collapse_to_bare_address(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        for prefixed in ("iMessage;-;+15551234567", "any;-;+15551234567", "SMS;-;+15551234567"):
+            assert adapter._canonical_chat_id(prefixed, None, None) == "+15551234567"
+
+    def test_bare_address_and_fallbacks_pass_through(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._canonical_chat_id(None, "+15551234567", None) == "+15551234567"
+        assert adapter._canonical_chat_id("iMessage;+;group-chat", None, None) == "iMessage;+;group-chat"
+        assert adapter._canonical_chat_id(None, None, "user@example.com") == "user@example.com"
+        assert adapter._canonical_chat_id(None, None, None) == ""
+
+
+class TestBlueBubblesDuplicateDelivery:
+
+    def test_same_guid_replay_is_suppressed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_duplicate_delivery("m-1", "+15551234567", "Good to go?") is False
+        assert adapter._is_duplicate_delivery("m-1", "+15551234567", "Good to go?") is True
+
+    def test_variant_payload_shapes_dedupe_either_order(self, monkeypatch):
+        # Real-world case: BB fires guid+prefixed-chat and guid-less+bare-address variants ~1s apart.
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_duplicate_delivery(None, "+15551234567", "Good to go?") is False
+        assert adapter._is_duplicate_delivery("m-1", "+15551234567", "Good to go?") is True
+
+        adapter2 = _make_adapter(monkeypatch)
+        assert adapter2._is_duplicate_delivery("m-2", "+15551234567", "Good to go?") is False
+        assert adapter2._is_duplicate_delivery(None, "+15551234567", "Good to go?") is True
+
+    def test_distinct_guids_same_text_both_deliver(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_duplicate_delivery("m-1", "+15551234567", "ok") is False
+        assert adapter._is_duplicate_delivery("m-2", "+15551234567", "ok") is False
+
+    def test_repeat_outside_window_delivers(self, monkeypatch):
+        from datetime import timedelta
+        adapter = _make_adapter(monkeypatch)
+        assert adapter._is_duplicate_delivery(None, "+15551234567", "ok") is False
+        stale = (datetime.now() - timedelta(seconds=_DUPLICATE_DELIVERY_WINDOW_S * 2), None)
+        adapter._recent_events[("+15551234567", "ok")] = stale
+        assert adapter._is_duplicate_delivery(None, "+15551234567", "ok") is False
+
+
+class TestBlueBubblesWebhookDuplicateSuppression:
+
+    @pytest.mark.asyncio
+    async def test_variant_deliveries_dispatch_one_event(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        guid_payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "E288AD24-82F6-46F5-815C-B65C7BBE9D5A",
+                "text": "Good to go?",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;+15551234567"}],
+            },
+        }
+        bare_payload = {
+            "type": "new-message",
+            "data": {
+                "text": "Good to go?",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+            },
+        }
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(guid_payload))).status == 200
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(bare_payload))).status == 200
+        await asyncio.sleep(0)
+
+        assert len(handled) == 1
+        source = handled[0].source
+        assert source.chat_id == "+15551234567"  # canonical bare address, not any;-;+15551234567
+        assert source.user_id == "+15551234567"
 
 
 class TestBlueBubblesWebhookParsing:

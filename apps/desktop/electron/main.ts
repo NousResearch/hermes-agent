@@ -5,7 +5,7 @@ import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLoc
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
 configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
-  const backend = await ensureRuntime(resolveHermesBackend([]))
+  const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
   if (backend.kind !== 'python' || backend.shell) {
     throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
   }
@@ -45,6 +45,7 @@ import {
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
   destroyKeepaliveAgents,
+  htmlResponseError,
   httpStatusError,
   jsonAgentFor,
   readStatusCode,
@@ -66,22 +67,17 @@ import {
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
 } from './backend-claim'
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
-import {
-  canImportHermesCli,
-  execProbeSync,
-  PROBE_TIMEOUT_MS,
-  shouldTrustHermesOverride,
-  verifyHermesCli
-} from './backend-probes'
+import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -90,6 +86,7 @@ import {
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
+import { describeBootstrapFailure, missingInstallPartMessage } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -108,6 +105,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
@@ -135,12 +133,12 @@ import {
   profileRemoteOverride,
   profileSshOverride,
   type RegistryBackendRequestScope,
-  remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   withTransientRetries
@@ -177,6 +175,13 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import {
+  createDesktopProfilePreferences,
+  DESKTOP_PROFILE_NAME_RE,
+  type DesktopProfileRoute,
+  resolveDesktopConnectionRequest,
+  resolveDesktopWindowRoute
+} from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -222,6 +227,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
+import { envTokenRejected, githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -254,6 +260,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -353,8 +360,12 @@ import {
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
   applyRemoteRequestHeaders,
+  attachRemoteRequestHeaderListener,
+  collectRemoteHeaderSources,
   createRegistryGatewayWsUrlHandler,
-  createRemoteWsHeaderStore
+  createRemoteWsHeaderStore,
+  oauthLoginLoadUrlOptions,
+  resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
@@ -380,6 +391,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
@@ -397,12 +409,21 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  describeUpdateCheckFailure,
+  githubRepoSlug,
+  parseCompare,
+  rateLimitFromHeaders
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
+  describeUpdaterHandoffFailure,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
@@ -416,6 +437,7 @@ import {
 import {
   formatBlockerMessage,
   formatProbeFailedMessage,
+  resolveVenvDir,
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
@@ -875,7 +897,7 @@ const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'ma
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const PROFILE_NAME_RE = DESKTOP_PROFILE_NAME_RE
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -1531,7 +1553,7 @@ let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
-let remoteHeaderRulesInstalled = false
+const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -2306,10 +2328,31 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
-      dialog.showErrorBox(
-        'Hermes update did not finish',
-        `${result.message}\n\nDetails: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
-      )
+      const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
+
+      // Async so boot is not blocked behind the dialog; the response handlers
+      // reuse the menu's open-updates path (queued until the renderer is ready)
+      // and the same reveal primitive as 'hermes:logs:reveal'.
+      void dialog
+        .showMessageBox({
+          type: 'error',
+          title: 'Hermes update',
+          message: "Hermes couldn't finish updating",
+          detail:
+            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
+            `Details: ${result.message}`,
+          buttons: ['Try again', 'Open log', 'Close'],
+          defaultId: 0,
+          cancelId: 2,
+          noLink: true
+        })
+        .then(({ response }) => {
+          if (response === 0) {
+            sendOpenUpdatesRequested()
+          } else if (response === 1) {
+            shell.showItemInFolder(handoffLogPath)
+          }
+        })
     }
   } catch (err) {
     rememberLog(`[updates] could not read hand-off result: ${err.message}`)
@@ -2390,7 +2433,7 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, backendArgs) {
+async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   return resolveVenvHermesCommand(command, backendArgs, {
     isWindows: IS_WINDOWS,
     isCommandScript,
@@ -2413,75 +2456,14 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 // detect support so getBackendArgsForRuntime() can route old runtimes through
 // the legacy `dashboard --no-open` form instead of crashing on an unknown
 // subcommand (would brick every user mid-upgrade — #54568 follow-up).
-//
-// Fast path: read the runtime's own dashboard.py (instant, covers managed
-// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
-const _serveSupportCache = new Map()
-
-function backendSupportsServe(backend) {
-  if (!backend || !backend.command) {
-    return true
-  }
-
-  const key = `${backend.command}::${backend.root || ''}`
-
-  if (_serveSupportCache.has(key)) {
-    return _serveSupportCache.get(key)
-  }
-
-  let supported = null
-
-  if (backend.root) {
-    try {
-      const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
-      supported = sourceDeclaresServe(src)
-    } catch {
-      supported = null // source unreadable — fall through to the probe
-    }
-  }
-
-  if (supported === null) {
-    try {
-      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      // Same cold-Windows Python-startup class as the runtime probes
-      // (#61764/#72632/#72707): `serve --help` imports at least as much as
-      // `hermes --version` (~10.5s measured cold), and a false negative here
-      // is cached for the process lifetime, silently routing a modern
-      // runtime through the legacy `dashboard` form. Share the probe budget
-      // and its timeout-only retry instead of a thinner local bound.
-      execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
-        cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: PROBE_TIMEOUT_MS,
-        stdio: 'ignore',
-        // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
-        // (see resolveHermesBackend step 4); execFileSync of a .cmd without
-        // shell throws EINVAL on modern Node, which the catch below would
-        // mis-cache as "serve unsupported" for the process lifetime.
-        shell: Boolean(backend.shell),
-        windowsHide: true
-      })
-      supported = true
-    } catch {
-      supported = false
-    }
-  }
-
-  _serveSupportCache.set(key, supported)
-  rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
-  )
-
-  return supported
-}
+// Fast-path / probe / cache strategy: see backend-serve-support.ts header.
+const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
 
 // Given a resolved backend whose args target `serve`, return the args the
 // runtime actually understands: unchanged when `serve` is supported, or
 // rewritten to `dashboard --no-open` for older runtimes.
-function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+async function getBackendArgsForRuntime(backend) {
+  return (await backendSupportsServe(backend)) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -2531,7 +2513,7 @@ function isHermesSourceRoot(root) {
   return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
 }
 
-function findPythonForRoot(root) {
+async function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
 
   if (override && fileExists(override)) {
@@ -2553,7 +2535,7 @@ function findPythonForRoot(root) {
   return findSystemPython()
 }
 
-function findSystemPython() {
+async function findSystemPython() {
   if (!IS_WINDOWS) {
     // POSIX systems: PATH lookup is safe.
     for (const command of ['python3', 'python']) {
@@ -2614,13 +2596,10 @@ function findSystemPython() {
   for (const hive of ['HKLM', 'HKCU']) {
     for (const version of SUPPORTED_VERSIONS) {
       try {
-        const out = execFileSync(
+        const out = await execText(
           'reg',
           ['query', `${hive}\\SOFTWARE\\Python\\PythonCore\\${version}\\InstallPath`, '/ve', '/reg:64'],
-          // Registry reads are near-instant; the bound only exists so a
-          // pathologically wedged reg.exe can't hang the synchronous boot
-          // resolver forever (this ran unbounded before).
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
+          { timeout: 5_000 }
         )
 
         // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
@@ -2670,19 +2649,9 @@ function findSystemPython() {
   if (pyExe) {
     for (const version of SUPPORTED_VERSIONS) {
       try {
-        const out = execFileSync(
-          pyExe,
-          [`-${version}`, '-c', 'import sys; print(sys.executable)'],
-          hiddenWindowsChildOptions({
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            // Bare interpreter startup — much lighter than the hermes-import
-            // probes, but still python.exe under cold cache / AV scan, so
-            // share the probe budget rather than running unbounded (this
-            // synchronous exec previously had no timeout at all).
-            timeout: PROBE_TIMEOUT_MS
-          })
-        )
+        const out = await execText(pyExe, [`-${version}`, '-c', 'import sys; print(sys.executable)'], {
+          timeout: PROBE_TIMEOUT_MS
+        })
 
         const candidate = out.trim()
 
@@ -3042,7 +3011,9 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
     return {
       supported: false,
       reason: 'not-a-git-checkout',
-      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
+      message:
+        "This copy of Hermes can't update itself from inside the app. Download the latest version from the Hermes website, " +
+        `or reinstall Hermes to enable in-app updates. Details: ${updateRoot} has no version-control metadata.`,
       hermesRoot: updateRoot,
       branch
     }
@@ -3174,55 +3145,50 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
   return { behind: null, updateAvailable: true, targetSha, commits: [] }
 }
 
-// One line a user can act on (or paste into a bug report) instead of the
-// generic "couldn't reach the update server": which host, which failure.
-// #105855 was a run of GitHub outages that read as a Hermes bug because the
-// UI hid the cause.
-function describeUpdateCheckFailure(error) {
-  const status = error?.statusCode
-  const code = error?.code
+// GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
+// from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
+// header shape is otherwise unchanged. Read per request, never stored.
+//
+// A token GitHub rejects (401: expired, revoked, malformed) must not turn a
+// check that worked anonymously into a hard failure, so the call is retried
+// once without it; the rejection is logged once per process.
+let warnedRejectedGitHubToken = false
 
-  if (status === 403 || status === 429) {
-    return `GitHub API rate limit reached (HTTP ${status}) — try again in an hour.`
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = githubTokenFromEnv(process.env)
+
+  try {
+    return await fetchGitHubApiOnce(url, accept, token)
+  } catch (error) {
+    if (!envTokenRejected(error)) {
+      throw error
+    }
+
+    if (!warnedRejectedGitHubToken) {
+      warnedRejectedGitHubToken = true
+      rememberLog(
+        '[updates] api.github.com rejected the GITHUB_TOKEN / GH_TOKEN from the environment (HTTP 401); ' +
+          'retrying the update check anonymously'
+      )
+    }
+
+    return fetchGitHubApiOnce(url, accept, null)
   }
-
-  if (typeof status === 'number' && status >= 500) {
-    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
-  }
-
-  if (typeof status === 'number') {
-    return `api.github.com answered HTTP ${status}.`
-  }
-
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
-  }
-
-  if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
-    return 'api.github.com did not answer within 10 seconds.'
-  }
-
-  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
-  }
-
-  if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
-    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
-  }
-
-  return `api.github.com: ${error?.message || String(error)}`
 }
 
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+function fetchGitHubApiOnce(url, accept, token) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
       {
-        headers: {
-          Accept: accept,
-          // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
-        },
+        headers: githubApiHeaders(
+          {
+            Accept: accept,
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          token
+        ),
         timeout: 10_000
       },
       res => {
@@ -3233,7 +3199,13 @@ function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
           const body = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { statusCode: res.statusCode }))
+            reject(
+              Object.assign(new Error(`HTTP ${res.statusCode}`), {
+                statusCode: res.statusCode,
+                ...rateLimitFromHeaders(res.headers),
+                authenticated: Boolean(token)
+              })
+            )
 
             return
           }
@@ -3318,9 +3290,11 @@ function repairMacUpdaterHelper(updater) {
 // fresh entry points. On Windows this is the file the running backend
 // `hermes.exe` holds open; on POSIX it's never mandatory-locked.
 function venvHermesShimPath(updateRoot) {
+  const venvDir = resolveVenvDir(updateRoot)
+
   return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+    ? path.join(venvDir, 'Scripts', 'hermes.exe')
+    : path.join(venvDir, 'bin', 'hermes')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -3366,7 +3340,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
     return
   }
 
-  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
+  const scriptsDir = path.join(resolveVenvDir(updateRoot), 'Scripts')
 
   let holders = []
 
@@ -3913,7 +3887,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       updaterArgs.push('--target-app', targetApp)
     }
 
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+    const venvBin = path.join(resolveVenvDir(updateRoot), IS_WINDOWS ? 'Scripts' : 'bin')
 
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
@@ -4141,7 +4115,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
 
     if (!handoffOutcome.ok) {
-      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+      const message = describeUpdaterHandoffFailure(handoffOutcome)
 
       rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -4205,7 +4179,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+  const venvBin = path.join(resolveVenvDir(updateRoot), IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
@@ -4464,7 +4438,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
       ...process.env,
       HERMES_HOME,
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
+      PATH: pathWithHermesManagedNode(path.join(resolveVenvDir(updateRoot), 'bin'))
     },
     detached: true,
     stdio: 'ignore'
@@ -4494,7 +4468,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
 
   if (!handoffOutcome.ok) {
-    const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+    const message = describeUpdaterHandoffFailure(handoffOutcome)
 
     rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
     emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -4544,27 +4518,30 @@ function readBootstrapMarker() {
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
+async function isActiveRuntimeUsable() {
   const venvPython = getVenvPython(VENV_ROOT)
 
   return (
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
     fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
+    // Explicit await: a bare promise as the last `&&` operand only works via
+    // async-return flattening; any operand appended after it would make the
+    // expression truthy regardless of the probe result.
+    (await canImportHermesCli(venvPython, {
       env: {
         PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       }
-    })
+    }))
   )
 }
 
-function activeRuntimeState() {
+async function activeRuntimeState() {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, await isActiveRuntimeUsable())
 }
 
 function writeBootstrapMarker(payload) {
@@ -4615,7 +4592,15 @@ function resolveWebDist() {
   return fallback
 }
 
-function resolveRendererIndex() {
+// Same resolution as resolveRendererIndex, but also hands back the missing
+// asset list already computed for the copy it chose. The primary-window path
+// needs BOTH, and re-deriving the list means walking the whole renderer
+// generation a second time: missingRendererAssets follows index.html's
+// modulepreload refs and then every chunk's inline __vite__mapDeps table, so
+// on a release build it reads ~28 MiB across ~160 files synchronously on the
+// main thread — measured ~49 ms per walk, twice before loadWindowUrl().
+// Callers that only need the path keep using resolveRendererIndex below.
+function resolveRendererIndexWithMissing(): { index: string; missing: string[] } {
   const asarIndex = path.join(APP_ROOT, 'dist', 'index.html')
   const webDistIndex = path.join(resolveWebDist(), 'index.html')
 
@@ -4638,11 +4623,20 @@ function resolveRendererIndex() {
   // first lazy import with "Failed to fetch dynamically imported module" and
   // every restart reloads the same torn copy. Prefer a copy whose modules are
   // all present, so the intact generation heals the boot by itself.
+  // Remember the FIRST candidate's list: if every copy turns out to be torn we
+  // load present[0], and its list is already in hand — recomputing it there
+  // would reintroduce the very second walk this function exists to avoid.
+  let firstMissing: string[] | null = null
+
   for (const candidate of present) {
     const missing = missingRendererAssets(candidate)
 
     if (missing.length === 0) {
-      return candidate
+      return { index: candidate, missing: [] }
+    }
+
+    if (firstMissing === null) {
+      firstMissing = missing
     }
 
     rememberLog(
@@ -4662,7 +4656,9 @@ function resolveRendererIndex() {
         `Repair with: hermes desktop --force-build`
     )
 
-    return present[0]
+    // present[0]'s own list, captured on the first loop iteration — never the
+    // last candidate's, which would describe a bundle we are not loading.
+    return { index: present[0], missing: firstMissing ?? [] }
   }
 
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with
@@ -4674,7 +4670,13 @@ function resolveRendererIndex() {
       `Rebuild with: hermes desktop --force-build`
   )
 
-  return candidates[0]
+  return { index: candidates[0], missing: [] }
+}
+
+// Path-only accessor: unchanged behaviour for the window loaders that do not
+// need the torn-asset list.
+function resolveRendererIndex() {
+  return resolveRendererIndexWithMissing().index
 }
 
 // True when `dir` lives inside the packaged app bundle / install tree.
@@ -4790,8 +4792,8 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, backendArgs, options: any = {}) {
-  const python = findPythonForRoot(root)
+async function createPythonBackend(root, label, backendArgs, options: any = {}) {
+  const python = await findPythonForRoot(root)
 
   if (!python) {
     return null
@@ -4826,9 +4828,9 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(backendArgs) {
+async function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  const command = fileExists(venvPython) ? venvPython : await findSystemPython()
 
   return {
     kind: 'python',
@@ -4846,13 +4848,13 @@ function createActiveBackend(backendArgs) {
   }
 }
 
-function resolveHermesBackend(backendArgs) {
+async function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
 
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
+    const backend = await createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
 
     if (backend) {
       return backend
@@ -4864,7 +4866,7 @@ function resolveHermesBackend(backendArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
+    const backend = await createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
 
     if (backend) {
       return backend
@@ -4879,7 +4881,7 @@ function resolveHermesBackend(backendArgs) {
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeRuntime = activeRuntimeState()
+  const activeRuntime = await activeRuntimeState()
 
   if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
     if (!activeRuntime.hasValidMarker) {
@@ -4926,7 +4928,7 @@ function resolveHermesBackend(backendArgs) {
     }
 
     if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+      const unwrapped = await unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
 
       if (unwrapped) {
         return unwrapped
@@ -4945,7 +4947,10 @@ function resolveHermesBackend(backendArgs) {
       // the Nix wrapper), not a discovered PATH candidate. It must not fall
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      if (
+        shouldTrustHermesOverride(hermesOverride) ||
+        (await verifyHermesCli(hermesCommand, { shell: shellForProbe }))
+      ) {
         // `unwrapped` above already answered "is this a Windows venv shim?" —
         // it was null (not a shim, or its import probe failed). Do NOT re-run
         // unwrapWindowsVenvHermesCommand here: the second call repeats the
@@ -4971,7 +4976,7 @@ function resolveHermesBackend(backendArgs) {
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
   //    take ownership.
-  const python = findSystemPython()
+  const python = await findSystemPython()
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the
@@ -4982,7 +4987,7 @@ function resolveHermesBackend(backendArgs) {
     // Verify the import works before trusting the candidate; on
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
+    if (await canImportHermesCli(python)) {
       return {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
@@ -5023,12 +5028,13 @@ function resolveHermesBackend(backendArgs) {
   }
 }
 
-function ensureRuntime(backend: any): Promise<any> {
-  return localBackendLifecycle.start(() => runEnsureRuntime(backend))
+function ensureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
+  return localBackendLifecycle.start(() => runEnsureRuntime(backend, assertStillOwned))
 }
 
-async function runEnsureRuntime(backend: any): Promise<any> {
+async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
   localBackendLifecycle.assertCanStart()
+  assertStillOwned()
 
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
@@ -5121,10 +5127,10 @@ async function runEnsureRuntime(backend: any): Promise<any> {
     }
 
     if (!bootstrapResult.ok) {
+      // Plain lead sentence + trailing "Details:" line; the install overlay
+      // shows this verbatim and offers Reload and retry / Open logs itself.
       const bootstrapError = new Error(
-        `Hermes bootstrap failed${bootstrapResult.failedStage ? ` at stage '${bootstrapResult.failedStage}'` : ''}: ` +
-          `${bootstrapResult.error || 'unknown error'}. ` +
-          `Check ${path.join(HERMES_HOME, 'logs', 'desktop.log')} for the full transcript.`
+        describeBootstrapFailure(bootstrapResult.failedStage, bootstrapResult.error)
       ) as any
 
       bootstrapError.isBootstrapFailure = true
@@ -5140,7 +5146,7 @@ async function runEnsureRuntime(backend: any): Promise<any> {
 
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
-    return ensureRuntime(resolveHermesBackend(backend.args))
+    return ensureRuntime(await resolveHermesBackend(backend.args), assertStillOwned)
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
@@ -5150,10 +5156,7 @@ async function runEnsureRuntime(backend: any): Promise<any> {
   // (install.ps1 owns those concerns now and the bootstrap-complete marker
   // attests they ran successfully).
   if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
-    throw new Error(
-      `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
-        'Reinstall via the desktop installer or scripts/install.ps1.'
-    )
+    throw new Error(missingInstallPartMessage(`Hermes source files are missing or incomplete at ${ACTIVE_HERMES_ROOT}`))
   }
 
   // On Windows, preflight Git Bash. Hermes' terminal tool calls bash.exe
@@ -5164,10 +5167,8 @@ async function runEnsureRuntime(backend: any): Promise<any> {
   // here via an external `hermes` on PATH, this check still helps.
   if (IS_WINDOWS && !findGitBash()) {
     throw new Error(
-      'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
-        "which the agent's terminal tool uses). Install it from " +
-        'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
-        'then relaunch Hermes.'
+      "Hermes needs a helper called Git for Windows, which isn't installed. " +
+        'Choose Repair install to add it automatically, or install it yourself from git-scm.com and reopen Hermes.'
     )
   }
 
@@ -5181,9 +5182,7 @@ async function runEnsureRuntime(backend: any): Promise<any> {
     // plus an importable hermes_cli before it hands back the active runtime.
     // If we hit this, the user (or a deleted venv) broke the invariant; tell
     // them to re-run the install.
-    throw new Error(
-      `Hermes venv missing at ${VENV_ROOT}. Re-run the desktop installer or ` + '`scripts/install.ps1` to rebuild it.'
-    )
+    throw new Error(missingInstallPartMessage(`Python environment missing at ${VENV_ROOT}`))
   }
 
   backend.command = getVenvPython(VENV_ROOT)
@@ -5281,6 +5280,15 @@ function fetchJson(url, token, options: any = {}) {
                 return
               }
 
+              // http.request never follows redirects, so any 3xx -- with an HTML
+              // login page, an empty body, whatever -- is the request bouncing
+              // off a proxy or a scheme/slash mismatch, never JSON.
+              if (res.statusCode >= 300) {
+                reject(htmlResponseError(url, res.statusCode, res.headers.location))
+
+                return
+              }
+
               if (!text) {
                 resolve(null)
 
@@ -5295,12 +5303,7 @@ function fetchJson(url, token, options: any = {}) {
               const contentType = String(res.headers['content-type'] || '')
 
               if (looksHtml || contentType.includes('text/html')) {
-                reject(
-                  new Error(
-                    `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                      'The endpoint is likely missing on the Hermes backend.'
-                  )
-                )
+                reject(htmlResponseError(url, res.statusCode))
 
                 return
               }
@@ -5390,6 +5393,12 @@ function fetchPublicJson(url, options: any = {}) {
                 return
               }
 
+              if (res.statusCode >= 300) {
+                reject(htmlResponseError(url, res.statusCode, res.headers.location))
+
+                return
+              }
+
               if (!text) {
                 resolve(null)
 
@@ -5400,12 +5409,7 @@ function fetchPublicJson(url, options: any = {}) {
               const contentType = String(res.headers['content-type'] || '')
 
               if (looksHtml || contentType.includes('text/html')) {
-                reject(
-                  new Error(
-                    `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                      'The endpoint is likely missing on the Hermes backend.'
-                  )
-                )
+                reject(htmlResponseError(url, res.statusCode))
 
                 return
               }
@@ -6656,15 +6660,23 @@ async function showPluginCompatNoticeOnce() {
   rememberLog(`[plugins] compat notice shown (${notice.key})`)
 
   try {
-    await dialog.showMessageBox(mainWindow, {
+    // 'OK' is the default and cancel so a stray Enter/Escape never navigates;
+    // 'Open Plugins' rides the existing deep-link channel (hermes://open/…),
+    // which the renderer already maps to its hash router.
+    const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
       title: notice.title,
       message: notice.message,
       detail: notice.detail,
-      buttons: ['OK'],
-      defaultId: 0,
+      buttons: ['Open Plugins', 'OK'],
+      defaultId: 1,
+      cancelId: 1,
       noLink: true
     })
+
+    if (response === 0) {
+      handleDeepLink(`${HERMES_PROTOCOL}://open/skills?tab=plugins`)
+    }
   } finally {
     try {
       recordPluginCompatDismissed(app.getPath('userData'), notice.key)
@@ -6675,7 +6687,12 @@ async function showPluginCompatNoticeOnce() {
 }
 
 function sendOpenUpdatesRequested() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
+  // The renderer mounts its open-updates listener in the same effect pass that
+  // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
+  // before the window is up) queue the request; 'hermes:deep-link-ready' flushes it.
+  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
+    _pendingOpenUpdates = true
+
     return
   }
 
@@ -7229,6 +7246,7 @@ function getOauthSession() {
   }
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
+  installRemoteHeaderRulesOnSession(oauthSession)
 
   return oauthSession
 }
@@ -7269,6 +7287,7 @@ function getOauthSessionForUrl(url) {
   if (!sess) {
     sess = session.fromPartition(partition)
     oauthSessionsByPartition.set(partition, sess)
+    installRemoteHeaderRulesOnSession(sess)
   }
 
   return sess
@@ -7581,7 +7600,11 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // silent=false loads the public ``/login`` chooser for interactive sign-in.
     const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
     const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
-    win.loadURL(loginUrl).catch(error => {
+    const loginHeaders = headersForRemoteRequest(loginUrl)
+    rememberLog(
+      `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
+    )
+    win.loadURL(loginUrl, oauthLoginLoadUrlOptions(loginHeaders)).catch(error => {
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -8923,7 +8946,12 @@ function decryptRemoteHeaders(headers) {
   const out = {}
 
   for (const [name, secret] of Object.entries(normalized)) {
-    const value = decryptDesktopSecret(secret)
+    // Sanitize AFTER decryption as well as at ingest: a safeStorage envelope
+    // stores ciphertext, so normalizeRemoteHeaders never sees its plaintext.
+    // This is the single funnel every consumer of header values goes through
+    // (login window extraHeaders, onBeforeSendHeaders, electronNet setHeader,
+    // and both connection-test paths), so CR/LF can't reach a request here.
+    const value = sanitizeRemoteHeaderValue(decryptDesktopSecret(secret))
 
     if (value) {
       out[name] = value
@@ -8985,41 +9013,85 @@ function rememberRemoteWsHeaders(wsUrl, headers = {}) {
   remoteWsHeaderStore.remember(wsUrl, headers)
 }
 
-function headersForRemoteRequest(requestUrl) {
-  const exactWsHeaders = remoteWsHeaderStore.headersFor(requestUrl)
+// Decrypted header sources, memoized against the two config caches this
+// process already keys off mtime. onBeforeSendHeaders now runs on every OAuth
+// partition as well as defaultSession, so without this every subresource
+// request would decrypt EVERY registry connection's headers — and a
+// safeStorage-encoded value costs a keychain round-trip per read.
+// Both readers refresh their cache object whenever the file mtime moves, so
+// identity comparison on the cached objects is a correct staleness check.
+let remoteHeaderSourcesCache: any = null
+let remoteHeaderSourcesConfigKey: any = null
+let remoteHeaderSourcesRegistryKey: any = null
 
-  if (exactWsHeaders && Object.keys(exactWsHeaders).length > 0) {
-    return exactWsHeaders
-  }
-
+function remoteHeaderSources() {
   const config = readDesktopConnectionConfig()
+  const registry = readDesktopConnectionsRegistry()
 
-  if (modeIsRemoteLike(config.mode) && config.remote?.url) {
-    const headers = decryptRemoteHeaders(config.remote.headers)
-
-    if (Object.keys(headers).length > 0 && remoteRequestMatchesBaseUrl(requestUrl, config.remote.url)) {
-      return headers
-    }
+  if (
+    remoteHeaderSourcesCache &&
+    remoteHeaderSourcesConfigKey === config &&
+    remoteHeaderSourcesRegistryKey === registry
+  ) {
+    return remoteHeaderSourcesCache
   }
 
-  return {}
+  const sources = collectRemoteHeaderSources({
+    connections: (registry?.connections || []).map(entry => ({
+      kind: entry.kind,
+      url: entry.url,
+      headers: decryptRemoteHeaders(entry.headers)
+    })),
+    v1Remote:
+      modeIsRemoteLike(config.mode) && config.remote?.url
+        ? { url: config.remote.url, headers: decryptRemoteHeaders(config.remote.headers) }
+        : null
+  })
+
+  remoteHeaderSourcesCache = sources
+  remoteHeaderSourcesConfigKey = config
+  remoteHeaderSourcesRegistryKey = registry
+
+  return sources
 }
 
-function installRemoteHeaderRules() {
-  if (remoteHeaderRulesInstalled) {
+function headersForRemoteRequest(requestUrl) {
+  return resolveRemoteRequestHeaders(requestUrl, {
+    exactHeaders: remoteWsHeaderStore.headersFor(requestUrl),
+    sources: remoteHeaderSources()
+  })
+}
+
+function installRemoteHeaderRulesOnSession(sess) {
+  if (!sess || remoteHeaderSessions.has(sess)) {
     return
   }
 
-  remoteHeaderRulesInstalled = true
-  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const nativeHeaders = localGatewayDials.headers(details)
+  remoteHeaderSessions.add(sess)
 
-    if (nativeHeaders) { callback({ requestHeaders: nativeHeaders });
+  if (sess === session.defaultSession) {
+    // Native one-use gateway dials (renderer WebSocket) drop Origin and ride
+    // the minted ticket; every other request keeps the remote-header path.
+    sess.webRequest.onBeforeSendHeaders((details, callback) => {
+      const nativeHeaders = localGatewayDials.headers(details)
 
- return }
+      if (nativeHeaders) {
+        callback({ requestHeaders: nativeHeaders })
 
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
-  })
+        return
+      }
+
+      applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    })
+
+    return
+  }
+
+  attachRemoteRequestHeaderListener(sess, headersForRemoteRequest)
+}
+
+function installRemoteHeaderRules() {
+  installRemoteHeaderRulesOnSession(session.defaultSession)
 }
 
 // Validate + normalize the per-profile remote overrides map read from disk.
@@ -9453,36 +9525,34 @@ async function saveRegistryConnection(input: any = {}) {
   return sanitizeRegistryConnection(entry)
 }
 
-// Returns the desktop's chosen profile name, or null when unset. "default" is
-// a valid stored value (pins the root HERMES_HOME explicitly); null means "no
-// preference" and preserves the legacy launch (no --profile flag).
-function readActiveDesktopProfile() {
-  try {
-    const raw = fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8')
-    const parsed = JSON.parse(raw)
-    const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
-
-    if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
-      return name
+// Last-used profile and explicit app-wide default share the existing desktop
+// preference file, but only the explicit action changes the default route.
+const desktopProfilePreferences = createDesktopProfilePreferences(DESKTOP_PROFILE_CONFIG_PATH, {
+  validateRoute: validateDesktopProfileRoute,
+  onDefaultChanged: route => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send('hermes:profile:default:changed', route)
+      }
     }
-  } catch {
-    // Missing or malformed → no preference.
   }
+})
 
-  return null
+function validateDesktopProfileRoute(route: DesktopProfileRoute) {
+  if (
+    route.connectionId &&
+    !readDesktopConnectionsRegistry().connections.some((source: { id: string }) => source.id === route.connectionId)
+  ) {
+    throw new Error(`No connection with id "${route.connectionId}".`)
+  }
+}
+
+function readActiveDesktopProfile() {
+  return desktopProfilePreferences.readActive()
 }
 
 function writeActiveDesktopProfile(name) {
-  const value = typeof name === 'string' ? name.trim() : ''
-
-  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
-    throw new Error(`Invalid profile name: ${value}`)
-  }
-
-  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
-
-  return value || null
+  return desktopProfilePreferences.remember(name)
 }
 
 // True when the given pid belongs to a running process whose command line
@@ -9885,6 +9955,9 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
+  log: chunk => sshRememberLog(chunk)
+})
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -10095,6 +10168,7 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
 
 async function teardownSshConnection(profile) {
   const scope = sshScopeKey(profile)
+  sshIsolatedKeepalives.stop(scope)
   const state = sshConnections.get(scope)
 
   if (!state) {
@@ -10368,6 +10442,7 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
   }
 
   if (sshConnections.get(scope)?.ssh === ssh) {
+    sshIsolatedKeepalives.stop(scope)
     sshConnections.delete(scope)
   }
 
@@ -10402,6 +10477,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     }
 
     ssh = null
+    sshIsolatedKeepalives.stop(scope)
     sshConnections.delete(scope)
   }
 
@@ -10527,6 +10603,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
+      sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })
     },
     rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
   })
@@ -11042,12 +11119,20 @@ function resetHermesConnection({ soft = false } = {}) {
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
-  const hermesProcess = backendConnectionState.invalidate()
+  const hermesProcess = invalidatePrimaryConnection()
   stopBackendChild(hermesProcess)
 
   if (!soft) {
     resetBootProgressForReconnect()
   }
+}
+
+// Every deliberate emptying of the primary slot goes through here. Main's
+// #112344 exit supervisor (respawn when a Desktop-owned child dies) has no
+// counterpart on the canonical path: the gateway owns its own lifetime and
+// this slot only caches its descriptor, so forgetting it just forces a re-dial.
+function invalidatePrimaryConnection() {
+  return backendConnectionState.invalidate()
 }
 
 // Re-home the primary backend: reset connection state, then wait for the live
@@ -11215,10 +11300,13 @@ async function ensureBackend(profile, opts: { passive?: boolean } = {}) {
     // A shared backend still owes the caller its profile scope, so renderer-side
     // WebSocket, filesystem, and cache routing target the selected profile.
     // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag.
+    // also carry `profile`, so only this descriptor gets the flag. The
+    // unshared primary carries its own key too: a profile-less descriptor
+    // reads as "default" downstream, which breaks per-source profile memory
+    // (the primary IS "default" only when it actually booted as default).
     return route.descriptorProfile
       ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
-      : connection
+      : { ...connection, profile: key }
   }
 
   const existing = backendPool.get(key)
@@ -11426,8 +11514,9 @@ async function ensureRegistryBackend(
           await stopPoolBackend(key)
 
           if (source.kind === 'ssh') {
-            await sshBootstrapCoordinator.cancelAndWait(key)
-            await teardownSshConnection(key)
+            // Teardown runs INSIDE the bootstrap drain barrier so a reconnect
+            // cannot start a new SSH bootstrap into a dying scope (#106935).
+            await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
           }
         }
       })
@@ -11494,6 +11583,13 @@ async function connectRegistryBackend(
 
     poolEntry.remoteBaseUrl = connection.baseUrl
 
+    // SSH backends always run on a remote host — their POSIX paths can never
+    // be opened through this machine's wsl.exe. Register the profile as
+    // bridge-inactive so file panels/dialogs don't spawn wsl.exe (visible
+    // black window on WSL-less Windows) for remote paths. The v1 path does
+    // this in ensureBackend(); the registry SSH path was missing it.
+    setWslBridgeProfileState(profileKey, false)
+
     return {
       ...connection,
       profile: profileKey,
@@ -11525,6 +11621,10 @@ async function connectRegistryBackend(
 
   await waitForHermes(connection.baseUrl, connection.token, undefined, connection.authMode, connection.headers)
   poolEntry.remoteBaseUrl = connection.baseUrl
+
+  // Remote/cloud backends live on another host too — disable the WSL path
+  // bridge for their profiles for the same reason as the SSH branch above.
+  setWslBridgeProfileState(profileKey, false)
 
   return {
     ...connection,
@@ -11868,6 +11968,7 @@ async function drainManagedSshScope(scope) {
       }
 
       if (state && sshConnections.get(scope.key) === state) {
+        sshIsolatedKeepalives.stop(scope.key)
         sshConnections.delete(scope.key)
       }
     }
@@ -12026,10 +12127,7 @@ async function stopRegistryConnectionBackends(connectionId) {
   ])
 
   await Promise.all(
-    [...sshScopes].map(async scope => {
-      await sshBootstrapCoordinator.cancelAndWait(scope)
-      await teardownSshConnection(scope)
-    })
+    [...sshScopes].map(scope => sshBootstrapCoordinator.cancelAndWait(scope, () => teardownSshConnection(scope)))
   )
 }
 
@@ -12087,7 +12185,10 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
   )
 
   const connection = await ensureLocalGateway(async () => {
-    const backend = await ensureRuntime(resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']))
+    const backend = await ensureRuntime(
+      await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
+      () => assertPoolEntryStillOwned(poolKey, entry)
+    )
     profileDeletionGate.assertCanStart(profile)
     assertPoolEntryStillOwned(poolKey, entry)
 
@@ -12277,18 +12378,14 @@ async function startHermes(requestedProfile?: string) {
       // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
       // mint). If a newer attempt started meanwhile (e.g. the user switched
       // remotes and Apply invalidated this attempt), bail before probing.
-      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-      }
+      backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
-      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-      }
+      backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
       updateBootProgress({
         phase: 'backend.ready',
@@ -12334,8 +12431,10 @@ async function startHermes(requestedProfile?: string) {
 
     const setup = await runPrimaryBackendStartup({
       signal: localBackendLifecycle.signal,
+      assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
       connectRemote,
-      ensureLocalRuntime: ensureRuntime,
+      ensureLocalRuntime: backend =>
+        ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
@@ -12354,6 +12453,8 @@ async function startHermes(requestedProfile?: string) {
       waitForLocalStart: waitForUpdateToFinish
     })
 
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+
     if (setup.kind === 'remote') {
       // Paths from the remote backend belong to a host the Windows desktop
       // cannot open via wsl.exe — disable WSL path bridging so native dialogs
@@ -12370,21 +12471,22 @@ async function startHermes(requestedProfile?: string) {
     const connection = await ensureLocalGateway(() => runGatewayEnsure({ ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}, GUEST_ONBOARDING) }, resolveHermesCwd(), HERMES_HOME))
     void showPluginCompatNoticeOnce()
 
-    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-    }
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     backendStartFailure = null
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
     bootstrapRepairAttempt = 0
 
-    return { ...connection, logs: hermesLog.slice(-80), ...getWindowState() }
+    // The primary descriptor names its own profile: a profile-less descriptor
+    // reads as "default" downstream and breaks per-source profile memory when
+    // the primary actually booted as another profile (#825324fd).
+    return { ...connection, profile: primaryProfileKey(), logs: hermesLog.slice(-80), ...getWindowState() }
   })().catch(async error => {
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }
 
-    const failedProcess = backendConnectionState.invalidate()
+    const failedProcess = invalidatePrimaryConnection()
     stopBackendChild(failedProcess)
 
     if (error instanceof FirstRunSetupResetError) {
@@ -12750,8 +12852,7 @@ const instanceWindows = new Set<any>()
 // exactly on top of its source. Falls back to the persisted primary geometry
 // when there's no live source window (e.g. all windows closed on macOS). The
 // pure cascade math lives in session-windows.ts (instanceWindowBounds).
-function nextInstanceBounds() {
-  const source = BrowserWindow.getFocusedWindow() || mainWindow
+function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
   const fallback = computeWindowOptions(readWindowState(), screen.getAllDisplays())
   const base = source && !source.isDestroyed() ? source.getBounds() : null
 
@@ -12761,14 +12862,22 @@ function nextInstanceBounds() {
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
 // options (shared chatWindowWebPreferences + streamThrottle registration so a
 // streamed answer never stalls in the background) but is a peer, not the
-// primary: it never overwrites the mainWindow global, doesn't start the backend
-// (the renderer's getConnection() joins the already-running one), and loads the
-// plain renderer URL so the full app renders.
-function createInstanceWindow() {
+// primary: it never overwrites mainWindow or re-homes the source. Its renderer
+// joins the requested pooled backend through its own connection/profile route.
+function createInstanceWindow(
+  options?: DesktopProfileRoute,
+  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
+) {
+  const route = resolveDesktopWindowRoute(
+    options,
+    source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
+    { connectionId: null, profile: primaryProfileKey() }
+  )
+  validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
-    ...nextInstanceBounds(),
+    ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -12782,6 +12891,7 @@ function createInstanceWindow() {
   })
 
   instanceWindows.add(win)
+  recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
@@ -12824,6 +12934,7 @@ function createInstanceWindow() {
   loadWindowUrl(
     win,
     buildInstanceWindowUrl({
+      ...route,
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
@@ -13780,6 +13891,14 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
+  const defaultRoute = desktopProfilePreferences.getDefault()
+
+  if (defaultRoute) {
+    recordWindowConnectionRoute(mainWindow.webContents, {
+      ...defaultRoute,
+      registryScoped: defaultRoute.connectionId !== null
+    })
+  }
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
@@ -13812,6 +13931,10 @@ function createWindow() {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
       schedulePersistWindowState()
+
+      // #111906: the Linux launcher holds back its .desktop entry write until the
+      // window is on screen (a STARTING gnome-shell app must not see its entry change).
+      notifyLauncherWindowRevealed()
 
       // #38216: clear the mid-boot marker only after a window is actually usable.
       // Keep sticky `fallback` when we launched with --no-sandbox so the next
@@ -13960,8 +14083,9 @@ function createWindow() {
   // copies; here we refuse to load one into the PRIMARY window and put the
   // visible repair page in it instead. The Reload button re-attempts the
   // bundle in case the file lock cleared since boot.
-  const rendererIndex = DEV_SERVER ? null : resolveRendererIndex()
-  const tornAssets = rendererIndex ? missingRendererAssets(rendererIndex) : []
+  const resolvedRenderer = DEV_SERVER ? null : resolveRendererIndexWithMissing()
+  const rendererIndex = resolvedRenderer?.index ?? null
+  const tornAssets = resolvedRenderer?.missing ?? []
 
   if (!DEV_SERVER && rendererIndex && tornAssets.length > 0) {
     rememberLog(
@@ -13990,7 +14114,8 @@ function createWindow() {
   // shared (backendConnectionState), so the renderer's getConnection() joins
   // this in-flight boot instead of duplicating it; early boot-progress events
   // the renderer misses are recovered by its getBootProgress() pull on mount.
-  startHermes().catch(error => rememberLog(error.stack || error.message))
+  const startup = defaultRoute ? connectDesktopProfileRoute(defaultRoute) : startHermes()
+  startup.catch(error => rememberLog(error.stack || error.message))
 
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
@@ -14000,19 +14125,35 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile) => {
+ipcMain.handle('hermes:connection', async (event, profile) => {
+  const route = resolveDesktopConnectionRequest(
+    profile,
+    windowConnectionRoutes.get(event.sender.id),
+    primaryProfileKey()
+  )
+
+  return connectDesktopProfileRoute(route)
+})
+
+async function connectDesktopProfileRoute(route: DesktopProfileRoute) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  const profileKey = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
-  const scopeKey = backendScopeKey(null, profileKey)
-  const connection = await backendDialClaims.run(scopeKey, () => ensureBackend(profile))
+  const scopeKey = backendScopeKey(route.connectionId, route.profile)
+  const connection = await backendDialClaims.run(scopeKey, () =>
+    route.connectionId ? ensureRegistryBackend(route.connectionId, route.profile) : ensureBackend(route.profile)
+  )
+
+  if (route.connectionId) {
+    return { ...connection, connectionId: route.connectionId, registryScoped: true }
+  }
 
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
 
   return connectionId ? { ...connection, connectionId } : connection
-})
+}
+
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
 // connectionId '' / 'local' / the registry primary all behave sensibly; the
 // local kind delegates to ensureBackend when the v1 route is local, and
@@ -14023,20 +14164,14 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
 
-  // Same single-owner claim as 'hermes:connection', keyed by the composite
-  // (connectionId, profile) scope (#90812): concurrent registry dials for one
-  // scope share the first spawn instead of bootstrapping duplicate remotes.
-  const scopeKey = backendScopeKey(id, profile)
-  const connection = await backendDialClaims.run(scopeKey, () => ensureRegistryBackend(id, profile))
-
-  return { ...connection, connectionId: id, registryScoped: true }
+  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' })
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
 const windowConnectionRouteOwners = new Set<number>()
 
-ipcMain.on('hermes:connection:active-route', (event, route) => {
-  const id = event.sender.id
+function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
+  const id = sender.id
   const previous = windowConnectionRoutes.get(id)
   const next = windowConnectionRoutes.set(id, route)
 
@@ -14050,13 +14185,15 @@ ipcMain.on('hermes:connection:active-route', (event, route) => {
 
   if (!windowConnectionRouteOwners.has(id)) {
     windowConnectionRouteOwners.add(id)
-    event.sender.once('destroyed', () => {
+    sender.once('destroyed', () => {
       windowConnectionRoutes.delete(id)
       windowConnectionRouteOwners.delete(id)
       void resetPreviewReach(id)
     })
   }
-})
+}
+
+ipcMain.on('hermes:connection:active-route', (event, route) => recordWindowConnectionRoute(event.sender, route))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -14098,8 +14235,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 
       if (conn?.remoteKind === 'ssh') {
         const profile = primaryProfileKey()
-        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile))
-        await teardownSshConnection(profile)
+        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile), () => teardownSshConnection(profile))
       }
     }
 
@@ -14156,8 +14292,7 @@ function revalidateSuspectPoolAfterResume() {
         // The pool key doubles as the SSH scope for registry SSH backends and
         // resolves through sshScopeKey() for bare-profile remotes; both
         // teardown calls no-op when the scope holds no SSH state.
-        await sshBootstrapCoordinator.cancelAndWait(poolKey)
-        await teardownSshConnection(poolKey)
+        await sshBootstrapCoordinator.cancelAndWait(poolKey, () => teardownSshConnection(poolKey))
       },
       tracker: remoteLiveness
     })
@@ -14179,8 +14314,8 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openInstance', async () => {
-  createInstanceWindow()
+ipcMain.handle('hermes:window:openInstance', async (event, options) => {
+  createInstanceWindow(options, BrowserWindow.fromWebContents(event.sender))
 
   return { ok: true }
 })
@@ -14211,7 +14346,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
 
   try {
     const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
 
     if (!backend.command) {
       return { ok: false, error: 'Hermes is not installed yet' }
@@ -14555,6 +14690,7 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   // removed connection keep their WebSocket open (remote/cloud have no local
   // process to kill) and stream ghost events until page reload.
   broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
+  desktopProfilePreferences.connectionRemoved(key)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
@@ -15341,11 +15477,12 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
+ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
+ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
-// Desktop should boot into next launch WITHOUT tearing down the backend or
-// reloading the window — the rail's live workspace switch already re-homed
-// the gateway (#79886).
+// Desktop last used WITHOUT tearing down the backend or reloading the window.
+// An explicit default route wins at launch and is never replaced here.
 ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
   profile: writeActiveDesktopProfile(name)
 }))
@@ -15774,7 +15911,7 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   const key = backendScopeKey(connectionId, profile)
   await Promise.all([
     stopPoolBackend(key),
-    sshBootstrapCoordinator.cancelAndWait(key).then(() => teardownSshConnection(key))
+    sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
   ])
 }
 
@@ -15790,7 +15927,10 @@ async function handleHermesApiRequest(request) {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (registryConnectionId) {
-    return dispatchRegistryApiRequest(request, registryConnectionId)
+    const response = await dispatchRegistryApiRequest(request, registryConnectionId)
+    desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response)
+
+    return response
   }
 
   // Remote-profile session requests would otherwise hit the local primary off
@@ -15902,7 +16042,11 @@ async function handleHermesApiRequest(request) {
     throw error
   }
 
-  await profileRename?.complete()
+  try {
+    desktopProfilePreferences.afterProfileRequest(null, request, response)
+  } finally {
+    await profileRename?.complete()
+  }
 
   return response
 }
@@ -15916,7 +16060,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
+    const response = await dispatchConnectionScopedProfileDelete(request, {
       acquire: profile => profileDeletionGate.acquire(profile),
       connectionKind: connectionId => registryConnectionKind(connectionId),
       dispatch: routeProfile =>
@@ -15926,6 +16070,9 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
       teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
     })
+    desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response)
+
+    return response
   }
 
   if (!mutatingProfile) {
@@ -16333,6 +16480,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
 })
 
@@ -17005,7 +17153,7 @@ async function runDesktopUninstall(mode) {
   let pythonPath = null
 
   if (modeRemovesAgent(mode)) {
-    const sysPy = findSystemPython()
+    const sysPy = await findSystemPython()
 
     if (sysPy) {
       py = sysPy
@@ -17120,6 +17268,8 @@ const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
 const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
+// Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
+let _pendingOpenUpdates = false
 
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) {
@@ -17184,6 +17334,11 @@ function handleDeepLink(url) {
 // a link that arrived during boot/install is flushed exactly once.
 ipcMain.handle('hermes:deep-link-ready', () => {
   _rendererReadyForDeepLink = true
+
+  if (_pendingOpenUpdates) {
+    _pendingOpenUpdates = false
+    sendOpenUpdatesRequested()
+  }
 
   if (_pendingDeepLink) {
     const queued = _pendingDeepLink
@@ -17314,6 +17469,7 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+  installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()

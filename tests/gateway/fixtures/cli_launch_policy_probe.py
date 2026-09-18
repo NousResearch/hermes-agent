@@ -32,7 +32,7 @@ class Model(BaseHTTPRequestHandler):
             self.server.barrier.wait(timeout=30)
         message = {'role': 'assistant', 'content': 'LAUNCH_POLICY_OK'}
         budget = any('BUDGET' in str(m.get('content', '')) for m in body['messages'] if m['role'] == 'user')
-        if budget and body.get('tools'):
+        if budget and body.get('tools') and not _is_summary_round(body):
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'index': 0, 'id': 'budget-' + str(len(body['messages'])), 'type': 'function',
                 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'printf budget'})}}]}
@@ -49,6 +49,13 @@ class Model(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+
+def _is_summary_round(body):
+    """The iteration-limit summary request keeps ``tools`` for prompt-cache lineage (main's
+    ``_chat_summary_attempt``); it is not a tool-calling round the max_turns budget paid for."""
+    last = body['messages'][-1]
+    return last['role'] == 'user' and 'maximum number of tool-calling iterations' in str(last.get('content', ''))
 
 
 def probe(tmp_path):
@@ -149,7 +156,9 @@ def probe(tmp_path):
                 start = len(peer.requests)
                 cli(side, sessions[side], budget=True)
                 rounds = peer.requests[start:]
-                assert sum(bool(x['body'].get('tools')) for x in rounds) == expected, rounds
+                budgeted = [x for x in rounds if x['body'].get('tools') and not _is_summary_round(x['body'])]
+                assert len(budgeted) == expected, rounds
+                assert all(x['body'].get('tools') for x in rounds), rounds
         count = len(peer.requests)
         with daemon(root, home, env, barrier=False) as (proc, desc):
             pids.append(proc.pid)

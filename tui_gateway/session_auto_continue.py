@@ -345,6 +345,10 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
+        snapshot["display_kind"] = display_kind
+    if isinstance(display_metadata := turn.get("display_metadata"), dict):
+        snapshot["display_metadata"] = dict(display_metadata)
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [(str(c), raw_offsets[i] if i < len(raw_offsets) else None)
                         for i, c in enumerate(turn.get("corrections") or []) if str(c).strip()]
@@ -379,7 +383,7 @@ def _emit_terminal_turn_error(
         turn = session.get("inflight_turn") or {}
         message, partial = str(turn.get("error") or "turn failed"), str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
-    text = partial or f"Error: {message}"
+    text = partial or turn_error_text(message, error_surface)
     rendered = ""
     with contextlib.suppress(Exception):
         rendered = render_message(text, cols)

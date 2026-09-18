@@ -14,7 +14,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
 _sessions: Dict[str, Dict[str, Any]] = {}
@@ -49,6 +49,8 @@ def _validate_client_redirect_uri(uri: str) -> str:
 def _start_loopback_listener(flow) -> "http.server.HTTPServer":
     """Bind a loopback callback listener feeding ``flow.deliver_callback``; returns the
     HTTPServer already serving on a daemon thread (caller pins ``flow.redirect_uri`` from it)."""
+    from tools.mcp_oauth import _parse_redirect_query
+
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 — stdlib naming
             parsed = urlparse(self.path)
@@ -56,12 +58,10 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
                 self.send_response(404)
                 self.end_headers()
                 return
-            qs = parse_qs(parsed.query)
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(
-                    **{k: (qs.get(k) or [None])[0] for k in ("code", "state", "error")})
+                flow.deliver_callback(**_parse_redirect_query(parsed.query))
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400
@@ -255,7 +255,7 @@ def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str
 
 def deliver_callback_flow(
     session_id: str, server_name: str, *, code: Optional[str], state: Optional[str],
-    error: Optional[str] = None) -> Dict[str, Any]:
+    error: Optional[str] = None, iss: Optional[str] = None) -> Dict[str, Any]:
     """Relay a client-captured OAuth redirect into a session's flow (remote-backend companion
     to ``start_flow(client_redirect_uri=...)``); ``deliver_callback`` still verifies ``state``
     and rejects replays. Returns ``{ok: true}`` or ``{ok: false, error_message}``."""
@@ -263,7 +263,7 @@ def deliver_callback_flow(
     if rec is None:
         return {"ok": False, "error_message": err}
     try:
-        rec["flow"].deliver_callback(code=code, state=state, error=error)
+        rec["flow"].deliver_callback(code=code, state=state, error=error, iss=iss)
     except ValueError as exc:
         return {"ok": False, "error_message": str(exc)}
     return {"ok": True, "session_id": session_id}

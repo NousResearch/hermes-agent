@@ -38,10 +38,21 @@ class SetupRecord:
     has_identity: bool             # a Nous identity (free tier or account) is on disk
     other_providers: bool          # the inventory found something usable BESIDES the free tier
     error: str = ""                # why the mint did not happen, when it did not; "" otherwise
+    # The mint memo's verdict, verbatim (``anon_auth.MintFailure.as_payload``):
+    # ``{error, error_code, retryable, retry_after}`` when the mint did not happen, else ``{}``.
+    # One wire shape: every status RPC spreads it as is.
+    failure: Dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
     def as_payload(self) -> Dict[str, Any]:
-        return asdict(self)
+        # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
+        # so a client keys on ``error_code`` identically whichever surface it read.
+        payload = asdict(self)
+        payload.update(payload.pop("failure"))
+        return payload
+
+    def failure_fields(self) -> Dict[str, Any]:
+        return dict(self.failure)
 
 
 _lock = threading.Lock()
@@ -96,6 +107,38 @@ def _resolve_inference() -> str:
         return ""
 
 
+def _build_record(*, other: bool, force: bool) -> SetupRecord:
+    """One inventory-then-mint pass into a record. ``force`` is the user's own retry: it makes one
+    attempt even inside the mint memo's cooldown (``anon_auth.ensure_portal_identity``)."""
+    from hermes_cli import anon_auth
+
+    error = ""
+    failure: Dict[str, Any] = {}
+    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
+    if anon_auth.guest_enabled():
+        try:
+            # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
+            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other, force=force)
+        except Exception as exc:
+            error = str(exc)
+            logger.info("Nous free tier not set up at boot: %s", exc)
+        if state is None:
+            # Either this attempt failed (the memo now holds why) or an earlier one did and its
+            # cooldown still runs: the record carries that verdict either way.
+            failure = anon_auth.last_mint_failure() or {}
+            error = error or str(failure.get("error") or "")
+    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
+    return SetupRecord(
+        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
+        inference_provider=_resolve_inference(),
+        free_tier=free_tier,
+        has_identity=bool(state),
+        other_providers=other,
+        error=error,
+        failure=failure,
+    )
+
+
 def run_bootstrap(*, announce: bool = True) -> SetupRecord:
     """Inventory -> ensure identity (gate permitting) -> resolve inference -> record -> broadcast.
 
@@ -113,33 +156,69 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
                 return _record
         _started = True
 
-    from hermes_cli import anon_auth
-
-    other = _inventory_other_providers()
-    error = ""
-    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
-    if anon_auth.guest_enabled():
-        try:
-            # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
-            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other)
-        except Exception as exc:
-            error = str(exc)
-            logger.info("Nous free tier not set up at boot: %s", exc)
-    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
-    record = SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
-        inference_provider=_resolve_inference(),
-        free_tier=free_tier,
-        has_identity=bool(state),
-        other_providers=other,
-        error=error,
-    )
+    record = _build_record(other=_inventory_other_providers(), force=False)
     with _lock:
         _record = record
         _done.set()
     if announce:
         _broadcast(record)
     return record
+
+
+# Background retries after a boot-time mint failure: the memo's cooldown decides WHEN (a server
+# ``Retry-After``, the ops-breaker floor, or the unreachable ladder), this decides HOW MANY before
+# the process stops trying on its own (the user's retry button, ``free_tier.provision``, is not
+# counted). A terminal code (gate closed, proof of work, locked) is never retried.
+BOOTSTRAP_RETRY_ATTEMPTS = 3
+_sleep = time.sleep      # seam for tests
+
+
+def retry_bootstrap_mint(*, force: bool = False, announce: bool = True) -> SetupRecord:
+    """Re-run the mint once (``force`` bypasses the cooldown), replace the record and announce it.
+
+    The desktop's ``free_tier.provision`` calls this with ``force=True``; the background loop calls
+    it as each cooldown passes. Returns the existing record untouched when no bootstrap ran yet
+    (nothing to replace) or when an identity already exists."""
+    global _record
+    current = _record
+    if current is None:
+        return run_bootstrap(announce=announce)
+    if current.has_identity:
+        return current
+    # Re-inventory: a provider the user connected during the cooldown must keep inference; the
+    # boot-time answer is stale by now.
+    record = _build_record(other=_inventory_other_providers(), force=force)
+    with _lock:
+        # Two retries can race (the background loop and the user's click): a build that found no
+        # identity must not overwrite one that did.
+        if _record is not None and _record.has_identity and not record.has_identity:
+            return _record
+        _record = record
+    if announce:
+        _broadcast(record)
+    return record
+
+
+def _retry_until_settled() -> None:
+    """The background loop behind ``start_background_bootstrap``: wait out each cooldown and try
+    again, up to ``BOOTSTRAP_RETRY_ATTEMPTS``, while the record says a later attempt can succeed."""
+    for _ in range(BOOTSTRAP_RETRY_ATTEMPTS):
+        record = _record
+        if record is None or record.has_identity or not record.failure.get("retryable"):
+            return
+        _sleep(max(1, int(record.failure.get("retry_after") or 0)))
+        record = retry_bootstrap_mint(force=False)
+        if record.has_identity:
+            logger.info("Nous free tier set up after a boot-time retry")
+            return
+
+
+def _bootstrap_then_retry() -> None:
+    run_bootstrap()
+    try:
+        _retry_until_settled()
+    except Exception as exc:  # the loop is best effort; the record already says what happened
+        logger.debug("free tier bootstrap retry loop stopped: %s", exc)
 
 
 def _broadcast(record: SetupRecord) -> None:
@@ -152,6 +231,6 @@ def _broadcast(record: SetupRecord) -> None:
 
 def start_background_bootstrap() -> threading.Thread:
     """``hermes serve`` entry: run on a daemon thread so a slow portal never delays the socket."""
-    thread = threading.Thread(target=run_bootstrap, daemon=True, name="free-tier-bootstrap")
+    thread = threading.Thread(target=_bootstrap_then_retry, daemon=True, name="free-tier-bootstrap")
     thread.start()
     return thread

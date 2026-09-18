@@ -226,6 +226,8 @@ The learning journey is a timeline view of everything Hermes has learned — sav
 - **TUI** — `/journey` (aliases: `/learning`, `/memory-graph`) opens the timeline as an overlay.
 - **Desktop app** — `/journey` opens the Star Map / memory-graph panel, an interactive visual of the same nodes.
 
+A skill appears on the timeline as soon as it has a learning signal: it was created in this profile (a `/learn` result or a foreground `skill_manage` create), created by the background review, or used at least once. Bundled skills and hand-written skills that have never been used stay out of the timeline.
+
 Beyond viewing, the journey is also where you **prune and correct** what Hermes has learned:
 
 | Command | What it does |
@@ -351,7 +353,7 @@ A review using the same model as the parent **always inherits the parent's reaso
 
 Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
 
-To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; its separate task-effort bug is tracked in [#94825](https://github.com/NousResearch/hermes-agent/issues/94825). These frequency and routing controls do not decouple same-model reasoning.
+To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
 
 ### Disabling automatic reviews (`enabled`)
 

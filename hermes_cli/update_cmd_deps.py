@@ -12,7 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
-from hermes_constants import venv_python_path
+from hermes_constants import project_venv_dir, venv_python_path
+from hermes_cli._subprocess_compat import bounded_probe_run
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -57,6 +58,10 @@ def _critical_module_import_failures(
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
+        # Importing hermes_cli.main runs the startup dotenv load, which pulls external secret
+        # sources (op/bws/command helpers, up to 120s each) unless argv says ``update``. The
+        # probe only checks importability, so it inherits the updater's own argv contract.
+        "sys.argv = ['hermes', 'update']\n"
         "failures = []\n"
         "for name in %r:\n"
         "    try:\n"
@@ -80,17 +85,20 @@ def _critical_module_import_failures(
     try:
         interpreter = sys.executable
         with suppress(Exception):
-            venv_python = venv_python_path(Path(root) / "venv", windows=_m()._is_windows())
+            venv_dir = project_venv_dir(root) or Path(root) / "venv"
+            venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
             if venv_python.exists():
                 interpreter = str(venv_python)
-        result = subprocess.run(
-            [interpreter, "-c", probe], cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120)
-    except subprocess.TimeoutExpired:
-        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
+        result = bounded_probe_run(
+            [interpreter, "-c", probe], timeout=120, cwd=str(root), raise_on_spawn_failure=True,
+        )
     except (OSError, subprocess.SubprocessError):
-        # Can't run the probe — don't block the update on our own tooling.
+        # Keep this guard advisory: a probe we could not even spawn (unreadable venv
+        # interpreter, fork failure) says nothing about the checkout, so it must not
+        # fail an otherwise successful update. A spawned child that hangs does.
         return {}
+    if result is None:
+        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
     output = result.stdout or ""
     if marker not in output:
         return _probe_failure(
@@ -631,7 +639,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     imports, catching a half-updated venv that "Already up to date!" would otherwise never re-sync.
     Returns ``(healthy, detail)``; never raises, unknown states report healthy."""
     from hermes_cli.update_cmd import _m
-    venv_dir = _m().PROJECT_ROOT / "venv"
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
     venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
     if not venv_python.exists():
         # No venv: normal for a dev checkout (healthy), but on a MANAGED install (bootstrap
@@ -943,7 +951,7 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
     See #83529.
     """
-    foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    foreign = _venv_foreign_owned_paths(project_venv_dir(project_root) or Path(project_root) / "venv")
     if not foreign:
         return
     print("\n✗ Update stopped: this install's venv contains files owned by another user.")

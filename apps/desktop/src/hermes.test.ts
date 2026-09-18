@@ -191,6 +191,19 @@ describe('Hermes REST helpers', () => {
     expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
   })
 
+  it('pins the profile list to an explicit (connection, profile) scope', async () => {
+    setApiRequestConnection('remote-a')
+    setApiRequestProfile('iris')
+
+    await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
+    await getProfiles({ connectionId: 'local', profile: 'default' })
+
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles' }),
+      expect.objectContaining({ connectionId: 'local', profile: 'default', path: '/api/profiles' })
+    ])
+  })
+
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
     api.mockResolvedValue({ ...emptySessionsResponse, exists: true, runtime_revision: 9, runtime_generation: 2 })

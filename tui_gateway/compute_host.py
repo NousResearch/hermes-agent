@@ -190,7 +190,9 @@ class ComputeHost:
         self._guarded(frame, "interrupt.ack", body, applied=False)
 
     def _handle_respond(self, frame: dict[str, Any]) -> None:
-        """Resolve an interactive request in the host-owned pending registry."""
+        """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
+        frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
+        result so the parent can ack the client)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -198,7 +200,13 @@ class ComputeHost:
             if error:
                 self._reply("respond.error", sid, request_id, message=error)
                 return
-            response = server._methods["clarify.respond"](request_id, params)
+            from tui_gateway import server_requests
+            if isinstance(params.get("lock"), dict):
+                response = server._methods["clarify.lock"](request_id, params["lock"])
+            else:
+                response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
+                resolved = server_requests.resolve_response(response_frame)
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {"status": "ok" if resolved else "expired"}}
             self._reply("respond.ack", sid, request_id, response=response)
         self._guarded(frame, "respond.error", body)
 
@@ -316,6 +324,7 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                cwd_override=str(frame.get("cwd") or "") or None,
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 session_db=session_db, auth_user_id=frame.get("auth_user_id"))

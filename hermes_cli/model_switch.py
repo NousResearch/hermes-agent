@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, file_signature
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -270,10 +270,10 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         stat = path.stat()
     except OSError:
         # A missing config is still a definite identity for this profile.
-        return (str(path), None, None)
+        return (str(path), None)
     except Exception:
         return None
-    return (str(path), stat.st_mtime_ns, stat.st_size)
+    return (str(path), file_signature(stat))
 
 
 def _ensure_direct_aliases() -> None:
@@ -447,6 +447,7 @@ class ModelFlagParseResult:
     """Parsed flags for a /model command."""
     model_input: str
     explicit_provider: str = ""
+    reasoning_effort: str = ""
     is_global: bool = False
     force_refresh: bool = False
     is_session: bool = False
@@ -456,32 +457,36 @@ class ModelFlagParseResult:
 # --- Flag parsing
 
 _BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once"}
+_VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort"}
 
 
 def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
-    """Parse /model flags: ``--provider X``, ``--global``, ``--session``, ``--refresh``, ``--once``.
+    """Parse /model flags: ``--provider X``, ``--reasoning <level>``, ``--global``, ``--session``,
+    ``--refresh``, ``--once``.
 
     ``--once`` is parsed here but interpreted by each caller (each frontend has its own
     live-session restore hook). ``is_global`` / ``is_session`` are raw flag presences; the
-    effective persistence decision belongs to :func:`resolve_persist_behavior`."""
+    effective persistence decision belongs to :func:`resolve_persist_behavior`. ``reasoning_effort``
+    is the raw level word (validated by :func:`hermes_constants.parse_reasoning_effort` at apply
+    time) so a model pick and its effort travel as ONE request on every surface."""
     # Telegram/iOS auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
     # a flag keyword.
-    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
+    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|reasoning|global|session|refresh|once)', r'--\1', raw_args)
 
     # Hand-rolled: model IDs may contain colons/slashes and the historical parser did not
     # require shell quoting.
-    flags = dict.fromkeys(_BOOL_FLAGS.values(), False)
-    explicit_provider = ""
+    flags: dict[str, bool] = dict.fromkeys(_BOOL_FLAGS.values(), False)
+    values: dict[str, str] = dict.fromkeys(_VALUE_FLAGS.values(), "")
     filtered: list[str] = []
     tokens = iter(raw_args.split())
     for tok in tokens:
         if tok in _BOOL_FLAGS:
             flags[_BOOL_FLAGS[tok]] = True
-        elif tok == "--provider" and (value := next(tokens, None)) is not None:
-            explicit_provider = value
+        elif tok in _VALUE_FLAGS and (value := next(tokens, None)) is not None:
+            values[_VALUE_FLAGS[tok]] = value
         else:
             filtered.append(tok)  # a trailing bare ``--provider`` stays part of the model text
-    return ModelFlagParseResult(model_input=" ".join(filtered).strip(), explicit_provider=explicit_provider, **flags)
+    return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
@@ -534,12 +539,14 @@ def resolve_persist_behavior(
 # Error codes emitted by parse_model_switch_args().
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
+MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
-    MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider."}
+    MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
 
 
 @dataclass(frozen=True)
@@ -554,6 +561,7 @@ class ModelSwitchRequest:
     raw: str
     target: str
     explicit_provider: str = ""
+    reasoning_effort: str = ""
     is_global: bool = False
     is_session: bool = False
     is_once: bool = False
@@ -574,7 +582,8 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     """The ONE parser for every /model surface: tokenization plus flag-conflict validation.
 
     ``--once`` + ``--global`` -> ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``; ``--once`` with neither
-    a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``. Targets pass through
+    a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``; an unknown
+    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``. Targets pass through
     untouched (bare names, ``vendor/model``, ``vendor:model``) for :func:`switch_model`."""
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -584,13 +593,17 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         errors.append(MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL)
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
+    if parsed.reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(parsed.reasoning_effort) is None:
+            errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")
     return ModelSwitchRequest(
         raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
         **{f: getattr(parsed, f)
-           for f in ("explicit_provider", "is_global", "is_session", "is_once", "force_refresh")})
+           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
 
 
 def _effective_model_candidate(value: Any) -> str:
@@ -844,8 +857,14 @@ def _configured_provider_matches(
     if isinstance(user_providers, dict):
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
+    # get_compatible_custom_providers() re-lists every ``providers.<slug>`` row as a ``custom:<name>``
+    # entry stamped with ``provider_key: <slug>``; callers (gateway, TUI, CLI) pass both views, so
+    # that projection is the same endpoint as the row above, not a second declaration (#112788).
+    # Hand-written ``custom_providers:`` rows carry no provider_key and stay separate candidates.
+    projected = {slug for slug, _ in candidates}
     candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+                   if isinstance(e.get("name"), str) and e["name"].strip()
+                   and str(e.get("provider_key") or "").strip() not in projected]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates:
@@ -1299,7 +1318,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider)
         except Exception as e:
-            return st.fail_on_target(f"Could not resolve credentials for provider '{st.provider_label}': {e}")
+            return st.fail_on_target(
+                f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
+                f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
+                f"  Details: {e}")
     return None
 
 
@@ -1530,7 +1552,13 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
     targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
     provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
-    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
+    The ``key_env`` / ``api_key_env`` credential POINTER (written by custom-endpoint activation
+    and, for REGISTRY providers too, by the Desktop settings UI (#106336); resolved by
+    runtime_provider / auxiliary_client / ``auth._model_level_key_env``) clears only when the
+    route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
+    var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
+    dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
+    (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
@@ -1543,10 +1571,13 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    if not target.startswith("custom") or _route_changed(model_cfg, result):
-        for key in ("api_key", "api"):
-            if key in model_cfg:
-                updates[key] = None
+    route_changed = _route_changed(model_cfg, result)
+    stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
+    if route_changed:
+        stale += ["key_env", "api_key_env"]
+    for key in stale:
+        if key in model_cfg:
+            updates[key] = None
     return updates
 
 

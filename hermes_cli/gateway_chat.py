@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 import sys
@@ -79,7 +80,7 @@ def validate_options(args):
                                  f"\n  Example: {_SAFE_MODE_EXAMPLE}")
 
 
-async def run_gateway_chat(args):
+async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     async with connect_gateway() as client:
         description = await client.rpc("runtime.describe")
@@ -124,14 +125,16 @@ async def run_gateway_chat(args):
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
         print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
+        if emitter is not None:
+            emitter.bind_session(snapshot["stored_session_id"])
         query = getattr(args, "query", None) or getattr(args, "q", None)
         oneshot_prompt = getattr(args, "oneshot", None)
         if isinstance(oneshot_prompt, str):
             query = oneshot_prompt
-        quiet = bool(getattr(args, "quiet", False) or oneshot_prompt)
+        quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
         oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
                        (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
-        view = GatewayChatView(client, snapshot, quiet=quiet)
+        view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter)
         if (getattr(args, "resume", None) or title) and not quiet:
             for row in snapshot.get("messages", []):
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
@@ -141,11 +144,35 @@ async def run_gateway_chat(args):
 
 def launch_from_args(args) -> int:
     from websockets.exceptions import WebSocketException
+    emitter = None
+    if getattr(args, "output_format", "text") == "stream-json":
+        # Built before validation/connection so any failed start still closes the protocol
+        # (init + result) instead of exiting with an empty stdout.
+        from hermes_cli.stream_json import StreamJsonEmitter
+        emitter = StreamJsonEmitter(model=getattr(args, "model", None) or "")
+
+    def failed(message, code):
+        print("Error: " + message, file=sys.stderr)
+        if emitter is not None:
+            return emitter.emit_result({"failed": True, "error": message}, exit_code=code)
+        return code
+
     try:
         validate_options(args)
         from hermes_cli.gateway_chat_startup import ensure_launch_provider
-        if not ensure_launch_provider(args):
-            return 0
+        if emitter is None:
+            if not ensure_launch_provider(args):
+                return 0
+        else:
+            # Setup guidance is human text and the guard exits on a non-TTY: both must become
+            # stderr diagnostics + a failed ``result`` when stdout is machine-readable.
+            try:
+                with contextlib.redirect_stdout(sys.stderr):
+                    configured = ensure_launch_provider(args)
+            except SystemExit:
+                configured = False
+            if not configured:
+                return failed("credentials or agent init failed", 1)
         query_file = getattr(args, "query_file", None)
         if query_file:
             args.query = sys.stdin.read() if query_file == "-" else Path(query_file).read_text(encoding="utf-8")
@@ -153,14 +180,15 @@ def launch_from_args(args) -> int:
                 raise GatewayClientError("--query-file is empty")
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
-        return asyncio.run(run_gateway_chat(args))
+        return asyncio.run(run_gateway_chat(args, emitter=emitter))
     except (GatewayClientError, OSError, TimeoutError, WebSocketException) as exc:
         # WebSocket errors can embed credential URLs/remote bodies.
         message = str(exc) if isinstance(exc, GatewayClientError) else "Gateway connection/read failed; no local fallback"
-        print("Error: " + message, file=sys.stderr)
-        return 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1
+        return failed(message, 2 if isinstance(exc, GatewayClientError) and ("Unsupported" in message or "unsupported" in message) else 1)
     except KeyboardInterrupt:
         print("Detached; accepted work continues at the gateway.", file=sys.stderr)
+        if emitter is not None:
+            return emitter.emit_result({"interrupted": True}, exit_code=130)
         return 130
 
 

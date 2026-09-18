@@ -91,9 +91,12 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
 
     assert result["final_response"] == "The answer is 42 because of the calculation above."
     assert result["api_calls"] == 1
-    # The promoted text is durable content, so the next turn replays a real answer.
-    assert result["messages"][-1]["role"] == "assistant"
-    assert result["messages"][-1]["content"] == "The answer is 42 because of the calculation above."
+    # The promoted text replays as a real answer through the api_content sidecar; the row's
+    # own content stays empty so chain-of-thought is never persisted as an ordinary reply.
+    row = result["messages"][-1]
+    assert row["role"] == "assistant"
+    assert not row.get("content")
+    assert row["api_content"] == "The answer is 42 because of the calculation above."
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

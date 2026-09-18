@@ -17,6 +17,7 @@ This test covers the two fallback paths that previously lacked
 import sys
 import types
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,6 +27,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_transcript import TranscriptReadError
+from gateway.turn_context import TurnContext
 
 
 def _bootstrap(monkeypatch, tmp_path):
@@ -126,6 +128,16 @@ def _assert_user_call_has_skip_db(calls, expected_skip_db: bool):
         )
 
 
+def _assistant_transcript_calls(calls):
+    return [
+        call
+        for call in calls
+        if len(call.args) >= 2
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("role") == "assistant"
+    ]
+
+
 # ── Test 1: agent_failed_early path uses skip_db=True ─────────────────
 
 
@@ -162,7 +174,8 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
         if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
     ]
     assert [row["role"] for row in transcript_rows] == ["user", "assistant"]
-    assert transcript_rows[-1]["content"] == runner._FAILED_TURN_NOTICE
+    expected_fallback = response.rsplit(f"\n\n{runner._FAILED_TURN_NOTICE}", 1)[0]
+    assert transcript_rows[-1]["content"] == expected_fallback
 
     # The next unrelated input remains its own turn instead of alternation repair
     # merging the failed mutating request into it.
@@ -255,6 +268,165 @@ async def test_failed_turn_with_tool_activity_does_not_recommend_blind_retry(
     assert "Send it again" not in response
 
 
+@pytest.mark.asyncio
+async def test_agent_failed_early_persists_gateway_fallback_assistant_turn(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    fallback = (
+        "⚠️ Provider authentication failed. Check the configured credentials; "
+        "raw provider details are in the gateway logs."
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": fallback,
+            "error": "401 token expired",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = _assistant_transcript_calls(
+        runner.session_store.append_to_transcript.call_args_list
+    )
+    assert len(assistant_calls) == 1
+    expected_fallback = response.rsplit(f"\n\n{runner._FAILED_TURN_NOTICE}", 1)[0]
+    assert assistant_calls[0].args[1]["content"] == expected_fallback
+    assert assistant_calls[0].kwargs.get("skip_db", False) is False
+
+
+@pytest.mark.asyncio
+async def test_agent_failed_early_does_not_repeat_gateway_fallback_for_duplicate_event(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.has_platform_message_id.return_value = True
+    runner.session_store.transcript_tail_role.return_value = "assistant"
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "⚠️ Provider authentication failed.",
+            "error": "401 token expired",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = _assistant_transcript_calls(
+        runner.session_store.append_to_transcript.call_args_list
+    )
+    assert assistant_calls == []
+
+
+@pytest.mark.asyncio
+async def test_agent_failed_early_does_not_duplicate_agent_assistant_turn(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.transcript_tail_role.return_value = "assistant"
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "Runtime context is too small.",
+            "error": "runtime context error",
+            "messages": [
+                {"role": "user", "content": "hello world"},
+                {"role": "assistant", "content": "Runtime context is too small."},
+            ],
+            "history_offset": 1,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = _assistant_transcript_calls(
+        runner.session_store.append_to_transcript.call_args_list
+    )
+    assert assistant_calls == []
+
+
+@pytest.mark.asyncio
+async def test_agent_failed_early_does_not_duplicate_compressed_agent_assistant_turn(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.transcript_tail_role.return_value = "assistant"
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "Runtime context is too small.",
+            "error": "runtime context error",
+            "messages": [
+                {"role": "user", "content": "hello world"},
+                {"role": "assistant", "content": "Runtime context is too small."},
+            ],
+            # Compression can make the pre-compaction offset invalid for the retained messages.
+            "history_offset": 99,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = _assistant_transcript_calls(
+        runner.session_store.append_to_transcript.call_args_list
+    )
+    assert assistant_calls == []
+
+
+@pytest.mark.asyncio
+async def test_agent_timeout_does_not_persist_gateway_fallback_before_agent_stops(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "gateway_timeout_fallback": True,
+            "final_response": "⏱️ Agent inactive.",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_calls = _assistant_transcript_calls(
+        runner.session_store.append_to_transcript.call_args_list
+    )
+    assert assistant_calls == []
+
+
+def test_real_inactivity_timeout_result_marks_gateway_fallback_unsafe():
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._agent_activity_summary = lambda _agent: {}
+
+    result = runner._run_agent_timeout_result(
+        SimpleNamespace(agent_timeout=60), TurnContext(session_key="sess-timeout")
+    )
+
+    assert result["gateway_timeout_fallback"] is True
+
+
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 
@@ -309,5 +481,3 @@ async def test_transcript_read_failure_stops_turn_before_agent_or_append(
 
 
 # ── Test 4: normal path (new_messages found) uses skip_db=True ────────
-
-

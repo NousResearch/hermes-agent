@@ -1747,7 +1747,8 @@ class GatewayTurnMixin:
 
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
-        prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
+        prepared, response, fallback_response, agent_failed_early, hidden_reasoning_incomplete,
+        is_context_overflow_failure,
     ):
         """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
         transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
@@ -1786,6 +1787,7 @@ class GatewayTurnMixin:
                 # Transient failure / hidden-reasoning incomplete: persist the user message without
                 # the provider error text (a gateway hint, not model output). Dedupe on platform
                 # message_id (Telegram retries after transient failures).
+                gateway_fallback_persisted = False
                 if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
                     logger.info(
                         "Skipping duplicate user turn (message_id=%s) in session %s",
@@ -1793,9 +1795,36 @@ class GatewayTurnMixin:
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                    # Preserve the safe reply shown to the user when the gateway, rather than the
+                    # agent, owns this failed turn's terminal assistant row.  The retry notice is
+                    # delivery-only; ``fallback_response`` is captured before that notice is added.
+                    # A timed-out agent can still flush, so it continues to own its terminal state.
+                    if (
+                        agent_failed_early
+                        and fallback_response
+                        and not agent_result.get("gateway_timeout_fallback")
+                    ):
+                        from gateway.media_repair import _current_turn_messages
+
+                        turn_messages = _current_turn_messages(
+                            agent_messages,
+                            agent_result.get("history_offset", len(history)),
+                        )
+                        agent_persisted_assistant = agent_persisted and any(
+                            message.get("role") == "assistant"
+                            for message in turn_messages
+                        )
+                        if not agent_persisted_assistant:
+                            await store.append_to_transcript(
+                                sid,
+                                {"role": "assistant", "content": fallback_response, "timestamp": ts},
+                                skip_db=False,
+                            )
+                            gateway_fallback_persisted = True
                 # Close the failed turn: a user-only tail lets alternation repair merge this request
                 # into an unrelated future message and replay stale side effects (#107070).
-                await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
+                if not gateway_fallback_persisted and not agent_result.get("gateway_timeout_fallback"):
+                    await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.
@@ -2149,6 +2178,7 @@ class GatewayTurnMixin:
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
+            fallback_response = response
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
@@ -2157,7 +2187,7 @@ class GatewayTurnMixin:
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
-                response=response, agent_failed_early=agent_failed_early,
+                response=response, fallback_response=fallback_response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
@@ -3455,6 +3485,9 @@ class GatewayTurnMixin:
             "tools": tools_holder[0] or [],
             "history_offset": 0,
             "failed": True,
+            # The executor worker may still flush its own terminal rows after this handler returns.
+            # Do not let gateway transcript persistence race it with a synthetic assistant fallback.
+            "gateway_timeout_fallback": True,
         }
 
     async def _run_agent_await_turn_worker(

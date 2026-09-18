@@ -18,10 +18,10 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=(
-        "Universal desktop control via cua-driver (macOS, Windows, Linux). Works with any "
-        "tool-capable model (Anthropic, OpenAI, OpenRouter, local vLLM, "
-        "etc.). Background computer-use: does NOT steal the user's cursor "
-        "or keyboard focus."
+        "Desktop and browser control. For a multi-step GUI/browser goal prefer "
+        "action=run_goal so System-One (Jev when keyed) loops without a frontier "
+        "model; fail-open falls back to capture/click. Background by default — "
+        "does not steal the user's cursor or keyboard focus."
     ),
 )
 

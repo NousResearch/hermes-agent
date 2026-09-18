@@ -48,7 +48,7 @@ class TestSchema:
         assert actions >= {
             "capture", "click", "double_click", "right_click", "middle_click",
             "drag", "scroll", "type", "key", "wait", "list_apps", "list_windows",
-            "focus_app",
+            "focus_app", "decide", "run_goal", "navigate",
         }
 
     def test_schema_no_longer_advertises_max_elements(self):

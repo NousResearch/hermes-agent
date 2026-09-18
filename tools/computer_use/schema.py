@@ -32,12 +32,16 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "decide",
+            "run_goal",
+            "navigate",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "Which action to perform. For a multi-step desktop or browser goal, prefer `run_goal` "
+            "so System-One (rules → reranker → Jev) drives decide→act without a frontier-model "
+            "round trip; if it fail-opens, fall back to `capture` then click/type. `decide` is one "
+            "typed step. `navigate` opens a URL (new tab if a page is already loaded) on the browser "
+            "backend. `capture` is free. All other actions require approval unless auto-approved."
         ),
     },
     "mode": {
@@ -141,6 +145,21 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "text": {"type": "string", "description": "Text to type (respects the current layout)."},
+    "goal": {
+        "type": "string",
+        "description": (
+            "For action='decide' or 'run_goal': the task the System-One lane should advance. "
+            "Semantic AX state is captured automatically; no screenshot is sent."
+        ),
+    },
+    "max_steps": {
+        "type": "integer",
+        "description": "For action='run_goal': max decide→act iterations (default 8, cap 20).",
+    },
+    "url": {
+        "type": "string",
+        "description": "For navigate / run_goal on the browser backend: page to open.",
+    },
     "keys": {
         "type": "string",
         "description": (

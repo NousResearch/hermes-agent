@@ -1,0 +1,164 @@
+"""System-One decision lane for computer use (#113850).
+
+Backend order: rules → reranker → Jev (if TYPESAFE_API_KEY / JEV_API_KEY) → fail-open.
+A stage that cannot run must return None, never guess.
+Packets record refs/labels only — no pixels or secrets.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
+
+ACTION_KINDS: tuple[str, ...] = ("click", "type", "key", "scroll", "wait", "done", "escalate")
+
+CONFIDENCE_THRESHOLD = 0.75
+
+
+@dataclass(frozen=True)
+class ElementCandidate:
+    """One currently visible semantic element. Refs and labels only."""
+
+    ref: str
+    label: str = ""
+    role: str = ""
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class SemanticState:
+    """Minimal screen summary the lane reasons over. No pixels, no secrets."""
+
+    elements: tuple[ElementCandidate, ...] = ()
+    busy: bool = False
+    goal_hint: str = ""
+
+
+@dataclass(frozen=True)
+class Decision:
+    action: str
+    target_ref: str | None = None
+    needs_vision: bool = False
+    needs_generation: bool = False
+    done: bool = False
+    confidence: float = 0.0
+    backend: str = "rules"
+
+    def __post_init__(self) -> None:
+        if self.action not in ACTION_KINDS:
+            raise ValueError(f"unknown action: {self.action!r}")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence out of range: {self.confidence!r}")
+
+
+@dataclass(frozen=True)
+class DecisionPacket:
+    """Replayable record of one lane run. Serializable; A/B-able across backends."""
+
+    state_summary: dict[str, Any]
+    candidates: list[dict[str, Any]]
+    scores: dict[str, float]
+    chosen_action: dict[str, Any] | None
+    chosen_backend: str | None
+    latency_s: float
+    verifier_outcome: str  # "accept", "veto", or "skipped"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DecisionPacket":
+        return cls(**data)
+
+
+Stage = Callable[[SemanticState, tuple[ElementCandidate, ...]], "Decision | None"]
+Verifier = Callable[[SemanticState, "Decision"], bool]
+
+
+def rules_stage(state: SemanticState, candidates: tuple[ElementCandidate, ...]) -> Decision | None:
+    """Deterministic first stage. Abstains unless exactly one rule fires."""
+    live = [c for c in candidates if c.enabled]
+    if not live:
+        return Decision(action="escalate", confidence=1.0, backend="rules")
+    if state.busy:
+        return Decision(action="wait", confidence=0.9, backend="rules")
+    hint = (state.goal_hint or "").strip().lower()
+    if hint:
+        exact = [c for c in live if c.label.strip().lower() == hint]
+        if len(exact) == 1:
+            return Decision(
+                action="click", target_ref=exact[0].ref, confidence=0.9, backend="rules")
+    return None
+
+
+def jev_available() -> bool:
+    """True when a Jev call could be attempted (key present)."""
+    return any(os.environ.get(name, "").strip() for name in ("TYPESAFE_API_KEY", "JEV_API_KEY"))
+
+
+def run_decision_lane(
+    state: SemanticState,
+    candidates: tuple[ElementCandidate, ...] | list[ElementCandidate],
+    *,
+    reranker: Stage | None = None,
+    jev: Stage | None = None,
+    verifier: Verifier | None = None,
+    confidence_threshold: float = CONFIDENCE_THRESHOLD,
+) -> tuple[Decision | None, DecisionPacket]:
+    """Run the backend order; return (decision, packet). None = fail open."""
+    cands = tuple(candidates)
+    started = time.monotonic()
+    scores: dict[str, float] = {}
+    stages: list[tuple[str, Stage | None]] = [
+        ("rules", rules_stage),
+        ("reranker", reranker),
+        ("jev", jev if jev_available() else None),
+    ]
+    chosen: Decision | None = None
+    chosen_backend: str | None = None
+    for name, stage in stages:
+        if stage is None:
+            continue
+        try:
+            decision = stage(state, cands)
+        except Exception:
+            continue  # a broken stage abstains, never blocks the lane
+        if decision is None:
+            continue
+        scores[name] = decision.confidence
+        if decision.confidence >= confidence_threshold:
+            chosen, chosen_backend = decision, name
+            break
+    verdict = "skipped"
+    if chosen is not None and verifier is not None:
+        try:
+            ok = verifier(state, chosen)
+        except Exception:
+            ok = False
+        verdict = "accept" if ok else "veto"
+        if not ok:
+            chosen, chosen_backend = None, None
+    packet = DecisionPacket(
+        state_summary={
+            "busy": state.busy,
+            "goal_hint": state.goal_hint,
+            "element_count": len(cands),
+        },
+        candidates=[{"ref": c.ref, "label": c.label, "role": c.role} for c in cands],
+        scores=scores,
+        chosen_action={
+            "action": chosen.action,
+            "target_ref": chosen.target_ref,
+            "needs_vision": chosen.needs_vision,
+            "needs_generation": chosen.needs_generation,
+            "done": chosen.done,
+            "confidence": chosen.confidence,
+            "backend": chosen.backend,
+        } if chosen is not None else None,
+        chosen_backend=chosen_backend,
+        latency_s=time.monotonic() - started,
+        verifier_outcome=verdict,
+    )
+    return chosen, packet

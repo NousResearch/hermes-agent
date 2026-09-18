@@ -1,5 +1,5 @@
 import { firstStringField, normalize } from '@/lib/text'
-import type { SubagentProgress, SubagentStatus } from '@/store/subagents'
+import type { SubagentCostStatus, SubagentProgress, SubagentStatus } from '@/store/subagents'
 
 import { numberValue, parseMaybeObject } from './fallback-model'
 
@@ -12,6 +12,7 @@ import { numberValue, parseMaybeObject } from './fallback-model'
 export interface DelegateRow {
   /** Latest relayed activity, oldest → newest. The card tickers the tail. */
   activity: string[]
+  costStatus?: SubagentCostStatus
   costUsd?: number
   durationSeconds?: number
   goal: string
@@ -37,6 +38,18 @@ export interface DelegateRow {
 export type DelegateRowStatus = SubagentStatus | 'dispatched'
 
 const field = (record: Record<string, unknown>, key: string): string => firstStringField(record, [key])
+
+const parsedCostStatus = (value: unknown): SubagentCostStatus | undefined =>
+  value === 'actual' || value === 'estimated' || value === 'included' || value === 'unknown' ? value : undefined
+
+export function delegateCostLabel(costUsd: number | undefined, status?: SubagentCostStatus): string | undefined {
+  if (status === 'unknown') return 'cost unavailable'
+  if (costUsd === undefined) return undefined
+  const value = `$${costUsd.toFixed(4)}`
+  if (status === 'estimated') return `estimated ${value}`
+  if (status === 'included') return 'included'
+  return value
+}
 
 function resultToolCount(entry: Record<string, unknown>): number | undefined {
   const direct = numberValue(entry.tool_count)
@@ -106,6 +119,7 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
 
     return {
       activity: summary ? [summary] : [],
+      costStatus: entry ? parsedCostStatus(entry.cost_status) : undefined,
       costUsd: entry ? numberValue(entry.cost_usd) ?? undefined : undefined,
       durationSeconds: entry ? (numberValue(entry.duration_seconds) ?? undefined) : undefined,
       goal,
@@ -125,6 +139,7 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
 function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: string): DelegateRow {
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
+    costStatus: live.costStatus,
     costUsd: live.costUsd ?? undefined,
     durationSeconds: live.durationSeconds,
     goal: live.goal || fallbackGoal,

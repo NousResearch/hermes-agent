@@ -644,7 +644,13 @@
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
 
-    const cursorRef = useRef(0);
+    const cursorRef = useRef({ board, cursor: 0, ready: false });
+    // A new board starts a new cursor scope; late callbacks retain the old
+    // object, so even A -> B -> A cannot revive an obsolete snapshot.
+    if (cursorRef.current.board !== board) {
+      cursorRef.current = { board, cursor: 0, ready: false };
+    }
+    const cursorScope = cursorRef.current;
     const reloadTimerRef = useRef(null);
     const scheduleReloadRef = useRef(null);
 
@@ -671,14 +677,19 @@
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
+          if (cursorRef.current !== cursorScope) return;
           setBoardData(data);
-          cursorRef.current = data.latest_event_id || 0;
+          cursorScope.cursor = Math.max(cursorScope.cursor, data.latest_event_id || 0);
+          cursorScope.ready = true;
           setError(null);
         })
         .catch(function (err) {
+          if (cursorRef.current !== cursorScope) return;
           setError(String(err && err.message ? err.message : err));
         })
-        .finally(function () { setLoading(false); });
+        .finally(function () {
+          if (cursorRef.current === cursorScope) setLoading(false);
+        });
     }, [tenantFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
@@ -727,7 +738,7 @@
     // Filters change the reload callback, not the lifetime of the stream.
     scheduleReloadRef.current = scheduleReload;
     useEffect(function () {
-      if (!boardData) return undefined;
+      if (!cursorScope.ready) return undefined;
       let closed = false;
       let socket = null;
       let retryTimer = null;
@@ -746,7 +757,7 @@
         // also applies the dashboard base-path prefix for reverse-proxied
         // deployments, which the old inline URL did not. It's async (gated
         // mode mints a fresh ticket per connect), so resolve then open.
-        const wsParams = { since: String(cursorRef.current || 0) };
+        const wsParams = { since: String(cursorScope.cursor) };
         // Pin the WS stream to the currently-selected board so events
         // from other boards don't bleed in. Includes "default" so the
         // dashboard's own board pin always wins over the server-side
@@ -764,11 +775,11 @@
             setError(null);
           };
           ws.onmessage = function (ev) {
-            if (closed) return;
+            if (closed || cursorRef.current !== cursorScope) return;
             try {
               const msg = JSON.parse(ev.data);
+              if (msg) cursorScope.cursor = Math.max(cursorScope.cursor, msg.cursor || 0);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
-                cursorRef.current = msg.cursor || cursorRef.current;
                 // Stamp per-task signal so the TaskDrawer can reload itself.
                 setTaskEventTick(function (prev) {
                   const next = Object.assign({}, prev);
@@ -801,7 +812,7 @@
         clearTimeout(retryTimer);
         try { socket && socket.close(); } catch (_e) { /* noop */ }
       };
-    }, [!!boardData, board]);
+    }, [cursorScope.ready, board]);
 
     // --- filtering ----------------------------------------------------------
     const filteredBoard = useMemo(function () {
@@ -1155,7 +1166,7 @@
       // event cursor so the WS reopens aligned to the new board's
       // latest_event_id on the next loadBoard.
       setBoardData(null);
-      cursorRef.current = 0;
+      cursorRef.current = { board: nextSlug, cursor: 0, ready: false };
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);

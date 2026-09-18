@@ -21,7 +21,7 @@ function harness() {
   const SDK = { React: {createElement: h, Component: class {}, ...hooks}, hooks,
     components: Object.fromEntries(['Card','CardContent','Badge','Button','Input','Label','Select','SelectOption','Checkbox'].map(x => [x,x])),
     utils: {cn: (...xs) => xs.filter(Boolean).join(' '), timeAgo: () => ''},
-    fetchJSON: async url => url.includes('/boards') ? {boards:[{slug:'default'}],current:'default'} : url.includes('/config') ? {} : data,
+    fetchJSON: async url => url.includes('/boards') ? {boards:[{slug:'default'},{slug:'other'}],current:'default'} : url.includes('/config') ? {} : typeof data === 'function' ? data(url) : data,
     buildWsUrl: async (_, params) => { mints.push(params); return 'ws://fixture/' + mints.length; },
   };
   function element(attrs={}) {
@@ -153,9 +153,52 @@ test('drag restores empty Ready and collapsed Done using desktop and touch singl
     assert.equal(ended.props.draggingTaskId,null);
     tree=board.render({...props,draggingTaskId:ended.props.draggingTaskId});
     assert.equal(x.nodes(tree).some(n=>n.type?.name==='Column' && ['ready','done'].includes(n.props.column.name)),false);
-    assert.equal(x.storage.get('hermes-kanban-done-expanded'),undefined,'drag does not persist expansion');
+    assert.equal(x.storage.get('hermes.kanban.doneExpanded'),undefined,'drag does not persist expansion');
     page.unmount(); board.unmount();
   }
+});
+
+test('in-flight snapshot cannot roll back WS cursor before an auth remint', async () => {
+  const x=harness(), page=x.mount(x.Page);
+  page.render(); await x.flush(); page.render(); await x.flush(); page.render(); await x.flush();
+  const ws=x.sockets.at(-1); ws.onopen();
+  ws.onmessage({data:JSON.stringify({events:[{task_id:'r1'}],cursor:8})});
+  x.setData({columns:[],tenants:[],assignees:[],latest_event_id:8});
+  x.runTimer(250);
+  ws.onmessage({data:JSON.stringify({events:[{task_id:'r1'}],cursor:9})});
+  await x.flush();
+  ws.onclose({code:1008}); x.runTimer(1000); await x.flush();
+  assert.equal(x.mints.at(-1).since,'9');
+  const retry=x.sockets.at(-1); retry.onopen();
+  retry.onmessage({data:JSON.stringify({events:[{task_id:'r1'}],cursor:8})});
+  retry.onclose({code:1008}); x.runTimer(1000); await x.flush();
+  assert.equal(x.mints.at(-1).since,'9','WS messages cannot lower the cursor either');
+  page.unmount();
+});
+
+test('switching boards resets to its own snapshot and discards old-board HTTP responses', async () => {
+  const x=harness(), page=x.mount(x.Page);
+  page.render(); await x.flush(); page.render(); await x.flush(); page.render(); await x.flush();
+  const ws=x.sockets.at(-1);
+  let resolveOld;
+  x.setData(()=>new Promise(resolve=>{resolveOld=resolve;}));
+  ws.onmessage({data:JSON.stringify({events:[{task_id:'r1'}],cursor:90})});
+  x.runTimer(250);
+  const switcher=x.nodes(page.render()).find(n=>n.type?.name==='BoardSwitcher');
+  assert.ok(switcher);
+  const snapshot={columns:[],tenants:[],assignees:[],latest_event_id:2};
+  x.setData(snapshot);
+  switcher.props.onSwitch('other');
+  page.render(); await x.flush(); page.render(); await x.flush();
+  assert.equal(x.mints.at(-1).board,'other');
+  assert.equal(x.mints.at(-1).since,'2','never max across boards');
+  resolveOld({...snapshot,latest_event_id:100,columns:[{name:'ready',tasks:[{id:'old-board'}]}]});
+  await x.flush();
+  const bn=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+  assert.equal(bn.props.board.columns.length,0,'stale snapshot must not replace the selected grid');
+  const other=x.sockets.at(-1); other.onclose({code:1008}); x.runTimer(1000); await x.flush();
+  assert.equal(x.mints.at(-1).since,'2','stale response cannot contaminate new cursor');
+  page.unmount();
 });
 
 module.exports = {harness};

@@ -168,3 +168,61 @@ def test_profile_opt_in_setup_and_new_session_schemas(
     finally:
         secret_scope.reset_secret_scope(scope)
         secret_scope.set_multiplex_active(False)
+
+
+@pytest.mark.parametrize("stack,input_tool", [("off", "browser_type"), ("browser-use", "browser_exec")])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("rebuild", ["resume", "refresh"])
+def test_saved_vault_tools_respect_opt_out_on_session_rebuild(
+    monkeypatch, browser_available, stack, input_tool, enabled, rebuild,
+):
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import set_config_value
+    from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix, refresh_agent_mcp_tools
+
+    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({
+        "browser": {"backend": stack}, "vault": {"enabled": True},
+    }))
+    before = [{"type": "function", "function": schema} for schema in _schemas().values()]
+    saved_names = [t["function"]["name"] for t in before]
+    original = json.dumps(before, sort_keys=True)
+    set_config_value("vault.enabled", "true" if enabled else "false")
+    fresh = [{"type": "function", "function": schema} for schema in _schemas().values()]
+    persisted = []
+    agent = SimpleNamespace(
+        tools=fresh if rebuild == "resume" else before,
+        valid_tool_names={t["function"]["name"] for t in (fresh if rebuild == "resume" else before)},
+        enabled_toolsets=["browser", "browser-use", "terminal"], disabled_toolsets=None,
+        session_id="resumed-session",
+        _session_db=SimpleNamespace(update_session_tool_names=lambda sid, names: persisted.append(names)),
+    )
+    if rebuild == "resume":
+        restore_agent_tool_prefix(agent, saved_names)
+    else:
+        refresh_agent_mcp_tools(agent, preserve_prefix=True)
+    names = agent_tool_names(agent)
+    assert input_tool in names
+    assert any(n.startswith("browser_vault_") for n in names) is enabled
+    assert ("Passwords are typed ONLY" in json.dumps(agent.tools)) is enabled
+    assert ("Never type a password" in json.dumps(agent.tools)) is enabled
+    assert json.dumps(before, sort_keys=True) == original
+    if not enabled:
+        assert persisted and persisted[-1] == names  # don't resurrect the old persisted pin again
+
+
+@pytest.mark.parametrize("input_tool", ["browser_type", "browser_exec"])
+def test_opt_out_removes_vault_note_when_browser_probe_flaps(browser_available, input_tool):
+    from model_tools import _VAULT_NO_PASSWORD_NOTE
+    from hermes_constants import get_hermes_home
+    from tools.mcp_tool_agent import _merge_preserving_prefix
+
+    (get_hermes_home() / "config.yaml").write_text("vault:\n  enabled: false\n")
+    current = [{"type": "function", "function": {
+        "name": input_tool, "description": "Ordinary browser input." + _VAULT_NO_PASSWORD_NOTE,
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+    original = json.dumps(current, sort_keys=True)
+    merged, names = _merge_preserving_prefix(current, [], {input_tool})
+    assert names == {input_tool}  # retain an ordinary tool on a transient availability failure
+    assert merged[0]["function"]["description"] == "Ordinary browser input."
+    assert json.dumps(current, sort_keys=True) == original

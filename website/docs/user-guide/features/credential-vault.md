@@ -27,10 +27,15 @@ vault:
 ```
 
 For a named profile, use `hermes -p <profile> config set vault.enabled true`.
-Start a **new session** after changing the setting: Hermes does not rewrite the
-tool schemas or instructions of an existing conversation, preserving prompt caching.
+Start a **new session** after enabling the setting so the additional tools and
+instructions are advertised. Existing conversation snapshots normally preserve
+prompt caching; an explicit vault opt-out is honored when that snapshot is rebuilt.
 To turn it off, run `hermes config set vault.enabled false`; vault tool calls are
-refused immediately, and a new session removes the old vault tools and instructions.
+refused immediately. Start a new session or restart the gateway to rebuild the
+advertised tools and instructions. Resuming an existing conversation after restart
+also honors the opt-out: its saved tool list cannot restore disabled vault tools.
+At a tool-snapshot rebuild, disabling vault takes precedence over the old cached
+vault policy; unrelated tools retain their prefix-preservation behavior.
 
 When disabled, none of the `browser_vault_*` tools or mandatory vault-only
 password/card/verification-code instructions are advertised. Normal browser tools

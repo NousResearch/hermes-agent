@@ -84,8 +84,8 @@ def _check_circuit_breaker(server_name: str, tool_name: Optional[str] = None) ->
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown.
     An open state reached on application strikes only (the server answered every time) blocks the
-    tool whose rejections tripped it, not the whole server (#47851): the transport is healthy and
-    the model's recovery route via this server's other tools must stay open."""
+    tools whose rejections struck in the streak, not the whole server (#47851): the transport is
+    healthy and the model's recovery route via this server's other tools must stay open."""
     from tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key(server_name)
     failures = _core._server_error_counts.get(key, 0)
@@ -94,8 +94,8 @@ def _check_circuit_breaker(server_name: str, tool_name: Optional[str] = None) ->
         return None
     retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
     if _core._server_errors_all_application.get(key):
-        blocked_tool = _core._server_breaker_application_tool.get(key)
-        if blocked_tool and tool_name is not None and tool_name != blocked_tool:
+        blocked = _core._server_breaker_application_tool.get(key)
+        if blocked and tool_name is not None and tool_name not in blocked:
             return None
         # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
         # model to the user instead of to its own arguments (#11113).
@@ -164,19 +164,21 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     return srv if ok else None
 
 
-def _retry_once(server_name: str, retry_call, op_description: str, what: str):
+def _retry_once(server_name: str, retry_call, op_description: str, what: str, tool_name: Optional[str] = None):
     """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
     (an application error is still the tool's real answer, and still a breaker strike per #10447);
-    None when the retry raised (caller falls through)."""
+    None when the retry raised (caller falls through). *tool_name* keeps a post-retry application
+    strike scoped to the rejected tool instead of blocking the whole server (#47851)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    return _record_call_outcome(server_name, result)
+    return _record_call_outcome(server_name, result, tool_name=tool_name)
 
 
-def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                 tool_name: Optional[str] = None):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
@@ -195,14 +197,15 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         if srv is not None and _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=f"{op_description} after OAuth recovery", timeout=15):
             _core._reset_server_error(server_name)
-        result = _retry_once(server_name, retry_call, op_description, "auth recovery")
+        result = _retry_once(server_name, retry_call, op_description, "auth recovery", tool_name=tool_name)
         if result is not None:
             return result
     return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
-                                      *, call_may_have_side_effects: bool = False):
+                                      *, call_may_have_side_effects: bool = False,
+                                      tool_name: Optional[str] = None):
     """Transport reconnect + one retry on session expiry; None to fall through. Skips
     ``handle_401``: the token is valid, only the server-side session is stale.
 
@@ -244,7 +247,7 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
         logger.warning("MCP server '%s': reconnect did not ready within 15s after session-expired error; "
                        "falling through to error response.", server_name)
         return None
-    return _retry_once(server_name, retry_call, op_description, "session reconnect")
+    return _retry_once(server_name, retry_call, op_description, "session reconnect", tool_name=tool_name)
 
 
 class _StdioChildExited(RuntimeError):
@@ -255,7 +258,8 @@ class _StdioChildExited(RuntimeError):
         self.in_flight = in_flight
 
 
-def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
+def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str,
+                                         tool_name: Optional[str] = None):
     """Respawn a dead stdio child; retry once only when it was dead before dispatch.
 
     A mid-call exit is ambiguous: the server may have applied a side effect before its
@@ -291,7 +295,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     if not reconnected:
         return _strike(server_name, _STDIO_NO_RESPAWN_MSG.format(s=server_name, t=_core._STDIO_RESPAWN_WAIT_SEC))
     try:
-        return _record_call_outcome(server_name, retry_call())
+        return _record_call_outcome(server_name, retry_call(), tool_name=tool_name)
     except _StdioChildExited as retry_exc:
         # Died again right after respawn: broken server; run()'s budget takes it to the park.
         logger.warning("MCP server '%s': %s stdio subprocess exited again right after respawn (%s); not retrying "
@@ -553,10 +557,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
-        session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
+        session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only,
+                                  tool_name=tool_name)
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+            (partial(_handle_stdio_child_exited_and_retry, tool_name=tool_name),
+             partial(_handle_auth_error_and_retry, tool_name=tool_name),
+             session_expired),
             _on_failure, record_outcome=True, tool_name=tool_name)
     return _handler
 

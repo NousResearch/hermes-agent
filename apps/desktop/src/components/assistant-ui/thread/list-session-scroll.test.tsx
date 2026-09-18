@@ -148,6 +148,7 @@ describe('list session-scroll restore', () => {
     if (offset) {
       saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
     }
+
     const messages = sessionMessages('a')
 
     const pane = (visible: boolean) => (
@@ -200,6 +201,7 @@ describe('list session-scroll restore', () => {
     if (offset) {
       saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
     }
+
     const messages = sessionMessages('a')
     let runtimeId: string | null = null
 
@@ -321,11 +323,13 @@ describe('list session-scroll restore', () => {
     if (profileFirst) {
       setActiveProfile('pr-bot')
     }
+
     rerender(pane(false))
 
     if (!profileFirst) {
       setActiveProfile('pr-bot')
     }
+
     const otherKey = threadScrollStorageKey()
     await settleScroll(10)
     // The selected global profile can still belong to the other Bot when the
@@ -482,6 +486,7 @@ describe('list session-scroll restore', () => {
     for (let step = 0; step < 5; step++) {
       await settleScroll(20)
     }
+
     act(() => window.dispatchEvent(new Event('beforeunload')))
     expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
     expect(viewportEl(container).scrollTop).toBe(0)

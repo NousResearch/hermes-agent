@@ -51,7 +51,14 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
 
         // A history replacement can notify this row before its parent updates indices.
         return message
-          ? [{ index, id: message.id, role: responseMessageRole(message), hasText: contentHasVisibleText(message.content) }]
+          ? [
+              {
+                index,
+                id: message.id,
+                role: responseMessageRole(message),
+                hasText: contentHasVisibleText(message.content)
+              }
+            ]
           : []
       })
     )

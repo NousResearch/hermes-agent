@@ -11,10 +11,15 @@ export function UpdateSkillsButton({ profile }: { profile?: ProfileScope }) {
   const updating = useStoreSelector($hubActions, actions => actions[UPDATE_ALL_KEY]?.running ?? false)
 
   return (
-    <Button disabled={updating} onClick={() => {
-      notify({ kind: 'success', title: h.updateStarted, message: h.actionLog })
-      void updateHubSkills(profile).catch(err => notifyError(err, h.actionFailed))
-    }} size="xs" variant="text">
+    <Button
+      disabled={updating}
+      onClick={() => {
+        notify({ kind: 'success', title: h.updateStarted, message: h.actionLog })
+        void updateHubSkills(profile).catch(err => notifyError(err, h.actionFailed))
+      }}
+      size="xs"
+      variant="text"
+    >
       {updating ? h.updating : h.updateAll}
     </Button>
   )

@@ -31,7 +31,10 @@ beforeEach(() => {
 // "Needs setup" pill inside Skills → Tools → Terminal; nothing told the user
 // shell commands could not run.
 test('a selected non-local backend that is not ready warns once with Use Local / Open settings', async () => {
-  getTerminalBackends.mockResolvedValue({ active: 'docker', backends: [row('local', 'ready'), row('docker', 'unavailable', true)] })
+  getTerminalBackends.mockResolvedValue({
+    active: 'docker',
+    backends: [row('local', 'ready'), row('docker', 'unavailable', true)]
+  })
   selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'local' })
 
   expect(await warnIfTerminalBackendUnavailable()).toBe(true)

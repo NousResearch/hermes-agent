@@ -953,6 +953,7 @@ class TestDockerContainerMediaPathTranslation:
         [
             "/root/.hermes/auth.json",
             "/root/x/../.hermes/auth.json",
+            "//root/.hermes/auth.json",
         ],
     )
     @pytest.mark.parametrize("strict_mode", [False, True])
@@ -983,6 +984,73 @@ class TestDockerContainerMediaPathTranslation:
             monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
 
         assert BasePlatformAdapter.validate_media_delivery_path(container_path) is None
+
+    def test_unc_sources_and_candidates_fail_closed(self, tmp_path, monkeypatch):
+        """Forward-slash UNC (//server/share) and backslash UNC (\\\\server\\share) sources
+        and container candidates must be rejected fail-closed."""
+        import json
+
+        host_ws = tmp_path / "host-ws"
+        host_ws.mkdir()
+        media = host_ws / "shot.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        # UNC host volume specifications are rejected by _parse_docker_volume_mounts
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([
+                "//server/share/ws:/workspace",
+                r"\\server\share\ws:/workspace2",
+            ]),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert BasePlatformAdapter.validate_media_delivery_path("/workspace/shot.png") is None
+        assert BasePlatformAdapter.validate_media_delivery_path("/workspace2/shot.png") is None
+
+        # Valid volume mount, but UNC container candidates fail closed
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_ws.as_posix()}:/workspace"]),
+        )
+        assert BasePlatformAdapter.validate_media_delivery_path("//workspace/shot.png") is None
+        assert BasePlatformAdapter.validate_media_delivery_path(r"\\workspace\shot.png") is None
+
+    @pytest.mark.windows_only
+    def test_windows_native_docker_media_path_translation(self, tmp_path, monkeypatch):
+        """On native Windows:
+        1. Both backslash (C:\\path) and forward-slash (C:/path) host volume paths translate.
+        2. Absolute POSIX container paths (/workspace/shot.png) map correctly without being
+           misidentified as drive-relative Windows paths.
+        3. Double-slash container candidates fail closed.
+        """
+        import json
+
+        host_ws = tmp_path / "win-ws"
+        host_ws.mkdir()
+        media = host_ws / "diagram.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        # Native Windows backslash path
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{str(host_ws)}:/workspace"]),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/diagram.png"
+        ) == str(media.resolve())
+
+        # Native Windows forward-slash path (Docker Desktop style)
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_ws.as_posix()}:/workspace"]),
+        )
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/diagram.png"
+        ) == str(media.resolve())
+
+        # UNC paths fail closed
+        assert BasePlatformAdapter.validate_media_delivery_path("//workspace/diagram.png") is None
 
 
 # ---------------------------------------------------------------------------

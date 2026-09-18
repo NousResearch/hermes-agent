@@ -617,10 +617,10 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             providers = cfg.get("providers")
-            provider_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
+            stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
             if entry is None or not isinstance(providers, dict):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
-            stored_key, _ = _resolve_custom_endpoint_entry(providers, endpoint_id)
+            provider_key = stored_key
             providers.pop(stored_key, None)
             cfg["providers"] = providers
             _detach_main_model_from_provider(cfg, provider_key)

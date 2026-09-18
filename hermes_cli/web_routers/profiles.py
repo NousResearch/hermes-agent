@@ -44,7 +44,7 @@ from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
     ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileModelUpdate, ProfileDescribeAuto,
     SessionPrScanBody)
-from hermes_cli.web_server_profiles import _hermes_home_scope
+from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -101,6 +101,13 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
+def _scope_profile_name(path: Path) -> Optional[str]:
+    """Map a profile directory onto the query name ``_config_profile_scope`` expects: None for
+    the process home (current-profile semantics: launch secret scope, no home override), the
+    directory name for ``profiles/<name>``."""
+    return None if path.resolve() == get_process_hermes_home().resolve() else path.name
+
+
 def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:
     """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
     through the same validated /model shape as ``POST /api/model/set``.
@@ -108,12 +115,17 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     ``validate_in`` is the home whose ``providers:``/``.env``/catalog vouch for the pick (default:
     ``profile_dir`` itself). Profile-create passes the dashboard's own home: the picker that offered
     the model read THAT catalog, and a just-created profile has no credentials yet, so validating
-    in the empty profile rejected every non-env provider (anthropic, ollama, custom)."""
+    in the empty profile rejected every non-env provider (anthropic, ollama, custom).
+
+    Both spans enter ``_config_profile_scope`` (home + secret scope), matching ``/api/model/set``:
+    once the dashboard has served a secondary profile, ``switch_model``'s ``key_env`` probe goes
+    through ``get_secret``, which fails closed without a scope and reports the provider as
+    unconnected (UnscopedSecretError class, #114676)."""
     from hermes_cli.config import load_config, save_config
-    with _hermes_home_scope(validate_in or profile_dir):
+    with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model)
-    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
+    with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)

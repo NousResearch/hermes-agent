@@ -8,7 +8,15 @@ description: "On-demand knowledge documents — progressive disclosure, agent-ma
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
-All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
+## Skill storage, ownership, and curation contract
+
+The active profile's **`~/.hermes/skills/`** is Hermes's profile-local skill library. It is the effective storage for bundled and Hub-installed skills, the curator's sidecar state and archives, and new skills unless `skills.create_dir` redirects creation. It is not a universal claim of ownership over every skill that Hermes can load.
+
+- **Distribution and updates:** bundled skills originate in the Hermes `skills/` distribution and are copied into the profile library on installation. `hermes update`/skill sync updates only profile-local bundled copies that still match their recorded bundled version; it preserves user-modified copies and does not manage external or project directories. Hub installs are recorded as Hub-owned in the profile library. A plugin-provided skill is distributed and updated with its plugin, not by the profile skill updater.
+- **Where skills resolve:** a configured `skills.create_dir` receives new `skill_manage` creations and is scanned by the system-prompt index; `skills.external_dirs` are additional configured scan roots; trusted project roots contribute `<project>/.hermes/skills/` and `<project>/.agents/skills/` only in sessions in that project. Plugin-provided skills resolve by their registered plugin-qualified name. For a name collision in the system-prompt index, the order is **project → profile-local → create_dir → external**.
+- **Write policy:** user-directed `skill_manage` operations update a resolved profile-local, creation-directory, or external skill in place, subject to filesystem permissions and `skills.write_approval` when enabled. Project-local skills are a loading tier, not a `skill_manage` creation or resolution target. New skills use `skills.create_dir` when set, otherwise the profile-local library. Bundled sync is deliberately conservative: it never overwrites a locally modified bundled package.
+- **Ownership and provenance:** bundled and Hub provenance are tracked separately from user-created skills. A `created_by: agent` (or legacy `agent_created: true`) record in the profile-local usage sidecar is a **curator-management opt-in**, not proof of authorship. `hermes curator adopt` declares that opt-in; it does not infer who wrote a skill.
+- **Scope and Curator eligibility:** profile-local skills and their curator state are profile-scoped. Shared content can live in `create_dir` or external roots, but usage, provenance, archives, and curator ledger state remain profile-local. Trusted project skills are session-and-repository scoped, external/project roots are externally owned for autonomous maintenance, and plugin-provided artifacts remain plugin-owned. The curator may manage opted-in profile-local skills; Hub, external, project, and plugin-provided skills are never curator targets. Bundled profile-local skills are a limited exception: with `curator.prune_builtins: true`, they may be archived for inactivity, but are never autonomously patched, consolidated, or deleted. See [Curator](/user-guide/features/curator#curator-eligibility-and-provenance) for lifecycle details.
 
 You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
 
@@ -437,9 +445,9 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
+- **Create at the configured destination, update in place**: New skills are written to `~/.hermes/skills/` by default (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
-- **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
+- **Precedence**: Outside a trusted project, profile-local skills win over `create_dir` and external duplicates; `create_dir` wins over external duplicates. Inside a trusted project, project skills take precedence over all of them. See the [storage contract](#skill-storage-ownership-and-curation-contract).
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
 
@@ -474,8 +482,8 @@ What this changes:
 
 - **`skill_manage` create writes there.** New skills (including category subdirectories) are created under `create_dir` instead of the local skills dir. The directory is created on first write if it doesn't exist.
 - **The agent's instructions follow the config.** Every agent-facing instruction that names the skill-creation path — the `skill_manage` tool description and related prompt text — dynamically renders the configured directory, so the agent is told to create skills there. No system-prompt overrides or filesystem tricks needed.
-- **The directory is fully integrated.** Skills under `create_dir` are scanned alongside the local dir: they appear in the skill index, `skills_list`, `skill_view`, slash commands, and can be patched or deleted like any local skill.
-- **Everything else stays local.** Existing skills are still modified in place wherever they live; bundled skill sync, the hub, and the curator keep operating on the profile-local dir.
+- **Discovery differs by surface.** The system-prompt index scans `create_dir`, and `skill_manage` can patch or delete skills there. `skills_list`, `skill_view`, and slash-command discovery currently scan the project, profile-local, and external roots rather than `create_dir`.
+- **Profile-managed state stays local.** Existing skills are still modified in place wherever they live; bundle sync, Hub state, and curator state remain in the profile-local root. The curator does not autonomously maintain skills in `create_dir`.
 
 Paths support `~` expansion and `${VAR}` substitution; relative paths resolve against your Hermes home. Setting `create_dir` to the local skills dir is the same as leaving it unset.
 
@@ -511,9 +519,9 @@ Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.y
 
 ### Precedence
 
-Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
+Project skills are the **highest-precedence tier**: `project → profile-local → create_dir → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
 
-Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
+Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them. New skills go to `skills.create_dir` when configured, otherwise to the profile-local library; project discovery never redirects creation.
 
 ### Scan-time quarantine
 

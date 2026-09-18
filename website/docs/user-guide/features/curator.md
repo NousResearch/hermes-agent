@@ -6,9 +6,11 @@ description: "Background maintenance for agent-created skills — usage tracking
 
 # Curator
 
-The curator is a background maintenance pass for **agent-created skills**. It tracks how often each skill is viewed, used, and patched, moves long-unused skills through `active → stale → archived` states, and periodically spawns a short auxiliary-model review that proposes consolidations or patches drift.
+For the scope and maintenance rules governing Curator, see the [Skills storage, ownership, and curation contract](/user-guide/features/skills#skill-storage-ownership-and-curation-contract). It controls Curator's eligible profile-local scope.
 
-It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Every time the agent solves a novel problem and saves a skill, that skill lands in `~/.hermes/skills/`. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
+The curator is a background maintenance pass for eligible profile-local skills. It tracks how often each skill is viewed, used, and patched, moves long-unused skills through `active → stale → archived` states, and periodically spawns a short auxiliary-model review that proposes consolidations or patches drift. Its storage, ownership, write boundary, and source precedence follow the [Skills storage, ownership, and curation contract](/user-guide/features/skills#skill-storage-ownership-and-curation-contract).
+
+It exists so that skills created via the [self-improvement loop](/user-guide/features/skills#agent-managed-skills-skill_manage-tool) don't pile up forever. Eligible skills live in the active profile's local library; a configured `skills.create_dir`, external directory, or trusted project directory does not make a skill autonomously curator-owned. Without maintenance, you end up with dozens of narrow near-duplicates that pollute the catalog and waste tokens.
 
 By default (`prune_builtins: true`) the curator can archive **unused bundled built-in skills** (shipped with the repo) after `archive_after_days` of non-use, alongside the agent-created skills it primarily manages. Hub-installed skills (from [agentskills.io](https://agentskills.io)) are always off-limits. Set `curator.prune_builtins: false` to restore the old agent-created-only behavior, where bundled skills are never touched. The curator also **never auto-deletes** — the worst outcome is archival into `~/.hermes/skills/.archive/`, which is recoverable.
 
@@ -190,11 +192,9 @@ hermes curator purge             # delete archives older than the TTL (with conf
 hermes curator purge --days 90   # one-off TTL override
 ```
 
-## What "agent-created" means
+## Curator eligibility and provenance
 
-The curator only manages skills explicitly marked as **agent-created** in
-`~/.hermes/skills/.usage.json`. A skill qualifies when ALL of the following
-are true:
+This section applies the [Skills storage, ownership, and curation contract](/user-guide/features/skills#skill-storage-ownership-and-curation-contract). The curator's ordinary mutable set is profile-local skills explicitly marked as **agent-created** in `~/.hermes/skills/.usage.json`. A skill qualifies when ALL of the following are true:
 
 1. Its name is **not** in `~/.hermes/skills/.bundled_manifest` (bundled skills shipped with the repo).
 2. Its name is **not** in `~/.hermes/skills/.hub/lock.json` (hub-installed skills).
@@ -214,10 +214,11 @@ curator opt-in. They are considered user-directed and the curator intentionally
 leaves them alone.
 
 :::warning Your hand-written skills are NOT curated
-If you manually created a `SKILL.md` or pointed Hermes at an external skill
-directory, that skill will have a `.usage.json` entry with `created_by: null`
-(or the field absent). The curator will not touch it. The same applies to
-skills the foreground agent created at your request (`created_by: learn`).
+If you manually created a profile-local `SKILL.md`, it can have a `.usage.json`
+entry with `created_by: null` (or the field absent). The curator will not touch
+it. The same applies to skills the foreground agent created at your request
+(`created_by: learn`). External and trusted project directories are outside the
+curator's write scope regardless of their usage records.
 
 **To see which skills the curator actually manages**, run `hermes curator status`.
 If the agent-created count is 0, no skills are currently in the curator's
@@ -285,7 +286,8 @@ says nothing about who authored the file.
 :::
 
 :::note Provenance is declared, never inferred
-Adoption is deliberately manual. Telemetry cannot establish authorship: a skill
+Adoption is deliberately manual. It only considers the profile-local library;
+project-local skills are not adoption candidates. Telemetry cannot establish authorship: a skill
 with thousands of patches proves the agent **maintains** it, not that the agent
 **wrote** it — Hermes edits user-authored skills on your behalf constantly. An
 automatic "looks agent-made, adopt it" heuristic would eventually archive
@@ -293,9 +295,9 @@ something you hand-wrote. `adopt` refuses bundled, hub-installed, external, and
 protected built-in skills, which have an owner other than you.
 :::
 
-Skills that ARE agent-created follow the full lifecycle:
+Curator-managed skills follow the full lifecycle:
 
-- `active` → (30d unused) `stale` → (90d unused) `archived`
+- `active` → (`stale_after_days`, default 14 days, unused) `stale` → (`archive_after_days`, default 30 days, unused) `archived`
 - Pinned skills bypass all auto-transitions
 - Archives are recoverable via `hermes curator restore <name>`
 
@@ -321,7 +323,7 @@ The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills
 
 Skills named in any cron job's `skills:` list are protected the same way for **auto-transitions** (the curator never stales/archives them while the reference remains), even when the job is paused or disabled. Prefer an explicit pin when you also want `skill_manage delete` blocked.
 
-Only **agent-created** skills can be pinned — `hermes curator pin` refuses on bundled and hub-installed skills with an explanatory message if you try. Hub-installed skills are never subject to curator mutation. Bundled built-in skills are only touched when `curator.prune_builtins: true` (the default), and even then only archived after `archive_after_days` of non-use — never patched, consolidated, or deleted. Set `curator.prune_builtins: false` to exempt bundled skills entirely.
+Only **agent-created** profile-local skills can be pinned — `hermes curator pin` refuses on bundled and Hub-installed skills with an explanatory message if you try. Hub-installed, external, and trusted project skills are never subject to curator mutation. Bundled built-in profile-local skills are only touched when `curator.prune_builtins: true` (the default), and even then only archived after `archive_after_days` of non-use — never patched, consolidated, or deleted. Set `curator.prune_builtins: false` to exempt bundled skills entirely.
 
 A small set of **protected built-ins** can be hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX, so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. (The set is currently empty — `plan`, its original member, graduated to a built-in `/plan` command with no skill on disk.) Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
 

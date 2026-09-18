@@ -23,11 +23,31 @@ def isolated_kanban_home_with_profiles(monkeypatch):
         with open(os.path.join(test_home, "profiles", prof, "config.yaml"), "w") as fh:
             fh.write("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db
+    # Snapshot and restore sys.modules around the purge (2026-09-18 wave-8
+    # follow-up): a bare `del` leaves test modules that imported
+    # ``hermes_cli.kanban_db`` at collection time holding STALE module
+    # objects, while the conftest write-guard patches the FRESH re-import.
+    # Any wrapper wired via ``sys.modules`` then silently misses the stale
+    # references (split-brain) — exactly the leak vector the guard exists
+    # to close. Restoring the purge puts every holder back on one object.
+    purge = [
+        mod
+        for mod in list(sys.modules.keys())
+        if mod.startswith("hermes_cli")
+        or mod.startswith("hermes_state")
+        or mod == "hermes_constants"
+    ]
+    snapshot = {mod: sys.modules[mod] for mod in purge}
+    for mod in purge:
+        del sys.modules[mod]
+    try:
+        from hermes_cli import kanban_db
+        yield kanban_db
+    finally:
+        for mod, obj in snapshot.items():
+            current = sys.modules.get(mod)
+            if current is not obj:
+                sys.modules[mod] = obj
 
 
 def _fake_spawn(*args, **kwargs):

@@ -28,6 +28,13 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Capture the sandbox root BEFORE redirecting Path.home (2026-09-18 wave
+    # 8 follow-up): the guard's deny-root pins itself at first use from the
+    # process home view. Sandbox paths already captured are recognised, so
+    # this must run while ``home`` is still the process-visible root.
+    from hermes_state_guard import pin_sandbox_root
+
+    pin_sandbox_root(home)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home

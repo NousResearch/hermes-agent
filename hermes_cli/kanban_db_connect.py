@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import random
 import re
 import secrets
@@ -32,6 +33,13 @@ _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
+
+# ``@pytest.mark.live_system_guard_bypass`` escape hatch, mirroring
+# ``hermes_state._STATE_DB_GUARD_BYPASS``: the hermetic conftest flips the
+# module global for a marked test; a child process exports the env twin
+# instead (a module global cannot cross a process boundary).
+_KANBAN_GUARD_BYPASS = False
+_KANBAN_GUARD_BYPASS_ENV = "HERMES_KANBAN_GUARD_BYPASS"
 
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
@@ -665,6 +673,74 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
+def _ensure_test_isolation(path: Path) -> None:
+    """Fail-closed choke point: refuse a PRODUCTION kanban DB from a test-context
+    process, before any mkdir/connect/pragma (mirrors ``hermes_state._ensure_test_isolation``).
+
+    The conftest write-guard (``tests/conftest.py::_kanban_write_guard``) only
+    patches ``connect`` for modules already in ``sys.modules`` at fixture time,
+    so the FIRST test in a file that lazily imports ``hermes_cli.kanban_db``
+    inside its body writes before any patch exists (2026-09-17: the first
+    parametrized case of ``test_kanban_creator_origin`` / ``test_kanban_provenance``
+    leaked ``owner``/``child`` fixture rows into the live ``~/.hermes/kanban.db``).
+    This guard instead arms on env/ancestry test signals — see
+    ``hermes_state_guard._in_test_context`` — so it is active from the very
+    first call, patching or not.
+
+    Deny predicate is deliberately narrower than "anywhere under the real
+    root": sandboxed homes parked under ``~/.hermes`` (pytest ``--basetemp
+    ~/.hermes/tmp/...``) are legitimate, so only the production board files
+    themselves are refused: ``<root>/kanban.db``, ``<root>/kanban/`` (boards,
+    workspaces-side DBs), and ``<root>/profiles/<name>/`` kanban paths.
+
+    Escape hatch mirrors ``hermes_state._STATE_DB_GUARD_BYPASS``: the
+    ``@pytest.mark.live_system_guard_bypass`` conftest wiring flips the module
+    global (``_KANBAN_GUARD_BYPASS``), and spawned children export the env twin
+    (``HERMES_KANBAN_GUARD_BYPASS=1``) instead of stripping markers.
+    """
+    if _KANBAN_GUARD_BYPASS or os.environ.get(_KANBAN_GUARD_BYPASS_ENV):
+        return
+    try:
+        from hermes_state_guard import _in_test_context, _real_platform_state_root
+    except ImportError:
+        return
+    if not _in_test_context():
+        return
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return
+    root = _real_platform_state_root()
+    if root is None:
+        return
+    try:
+        from hermes_state_guard import _path_in_sandbox
+
+        if _path_in_sandbox(resolved):
+            return  # fixture-registered sandbox root: never production
+    except ImportError:
+        pass
+    try:
+        parts = resolved.relative_to(root).parts
+    except ValueError:
+        return
+    production = (
+        parts == ("kanban.db",)
+        or (len(parts) >= 2 and parts[0] == "kanban")
+        or (len(parts) == 3 and parts[0] == "profiles")
+    )
+    if production:
+        raise RuntimeError(
+            "kanban test-isolation guard: test attempted to open the "
+            f"production kanban DB at {resolved} (under real Hermes root {root}). "
+            "Tests must run against a temporary HERMES_HOME outside the real "
+            "root — or export HERMES_KANBAN_GUARD_BYPASS=1 for a test that "
+            "genuinely needs the live board."
+        )
+
+
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -673,6 +749,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _ensure_test_isolation(path)
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
@@ -758,6 +835,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _ensure_test_isolation(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:
@@ -1199,6 +1277,36 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     since those side effects would fire while the outer txn can still roll back.
     """
     _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
+    # Write-boundary choke (2026-09-18 wave 8): ``connect()``/``init_db()``
+    # refuse the production board from a test context, but a conn opened via
+    # raw ``sqlite3.connect`` (or opened before this process imported the
+    # guard) reaches every write helper here unguarded. The write boundary is
+    # the last choke a fixture can hit before touching the live board.
+    db_file = _main_db_file(conn)
+    if db_file:
+        db_path = Path(db_file).expanduser().resolve()
+        # The deny-root is the REAL home (passwd), so a sandbox conn whose
+        # path sits under the test's redirected home is NOT production:
+        # pre-filter with the process view and fixture-registered sandbox
+        # roots before paying the strict check. A conn ON the production
+        # board passes neither filter and still hits the guard.
+        skip = False
+        try:
+            from hermes_state_guard import _path_in_sandbox
+
+            skip = _path_in_sandbox(db_path)
+        except ImportError:
+            pass
+        if not skip:
+            try:
+                from hermes_constants import get_hermes_home
+
+                process_root = Path(get_hermes_home()).expanduser().resolve()
+                skip = db_path.is_relative_to(process_root)
+            except Exception:
+                pass
+        if not skip:
+            _ensure_test_isolation(db_path)
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

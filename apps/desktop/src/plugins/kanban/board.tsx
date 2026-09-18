@@ -1149,6 +1149,32 @@ export function buildFilterQuery(hash: string, facets: FilterQuery): string {
   return next ? `${path}?${next}` : path
 }
 
+/** The query half of a `#/route?query` hash (no `?`), empty when there is none. */
+function hashQuery(hash: string): string {
+  return hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : ''
+}
+
+/** The query the page was OPENED with, captured at module load: the router
+ *  assigns the whole hash on navigation, so a shared link's facets can already
+ *  be gone by the time the board mounts. */
+const BOOT_QUERY = hashQuery(window.location.hash)
+
+/** Cleared by the first mount's seed, so a later re-mount cannot re-apply a
+ *  stale boot query after the user cleared the filters on purpose. */
+let bootQueryPending = true
+
+/** The hash a mount seeds its facets from: the boot query once, then the live
+ *  hash — which the write-back effect keeps in step with the atoms. */
+export function seedHash(bootQuery: string, liveHash: string, pending = true): string {
+  if (!pending || !bootQuery) {
+    return liveHash
+  }
+
+  const [route = ''] = liveHash.split('?')
+
+  return `${route}?${bootQuery}`
+}
+
 /** One task against the facet filters — an empty dimension passes everything. */
 export function matchesFacetFilters(task: KanbanTask, facets: FilterQuery): boolean {
   return (
@@ -1446,7 +1472,12 @@ export function KanbanBoardPage() {
   )
 
   useEffect(() => {
-    const seed = parseFilterQuery(window.location.hash)
+    // Seed from the query the page was OPENED with (see BOOT_QUERY), not just
+    // the live hash: boot-time navigation and this component's own first write
+    // both rewrite the hash, so a re-mount would otherwise re-read it empty.
+    const seed = parseFilterQuery(seedHash(BOOT_QUERY, window.location.hash, bootQueryPending))
+
+    bootQueryPending = false
 
     $filterStatus.set(seed.status)
     $filterPriority.set(seed.priority)
@@ -1454,7 +1485,14 @@ export function KanbanBoardPage() {
   }, [])
 
   useEffect(() => {
-    const next = buildFilterQuery(window.location.hash, facets)
+    // Read the atoms, never this render's `facets`: on the first pass the
+    // closure still holds their pre-seed defaults, so writing from it would
+    // clobber the query this page was opened with before the seed above ran.
+    const next = buildFilterQuery(window.location.hash, {
+      priority: $filterPriority.get(),
+      status: $filterStatus.get(),
+      triage: $filterTriage.get()
+    })
 
     if (!window.location.hash || next === window.location.hash.replace(/^#/, '')) {
       return

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildFilterQuery, CARD_ACTIONS, type CardActionKey, matchesFacetFilters, parseFilterQuery } from './board'
+import { buildFilterQuery, CARD_ACTIONS, type CardActionKey, matchesFacetFilters, parseFilterQuery, seedHash } from './board'
 import type { KanbanTask } from './types'
 
 const visible = (status: string): CardActionKey[] =>
@@ -69,5 +69,28 @@ describe('filter facets', () => {
     expect(matchesFacetFilters(task({ priority: 5, status: 'done' }), { priority: [0], status: ['todo'], triage: false })).toBe(
       false
     )
+  })
+})
+
+describe('filter seed', () => {
+  // AC4: a shared URL reopens the same view. Boot-time navigation assigns the
+  // whole hash, so a mount must fall back to the query the page was opened with
+  // — once — and never resurrect it after the user clears the filters.
+  it('falls back to the boot query while the live hash has lost it', () => {
+    expect(seedHash('triage=1&status=blocked', '#/kanban')).toBe('#/kanban?triage=1&status=blocked')
+    expect(seedHash('triage=1', '#/kanban?board=ops')).toBe('#/kanban?triage=1')
+  })
+
+  it('uses the live hash once the boot query is spent', () => {
+    expect(seedHash('triage=1', '#/kanban?status=todo', false)).toBe('#/kanban?status=todo')
+    expect(seedHash('', '#/kanban')).toBe('#/kanban')
+  })
+
+  it('parses a seeded hash into the facets the filter kebab shows', () => {
+    expect(parseFilterQuery(seedHash('triage=1&status=blocked', '#/kanban'))).toEqual({
+      priority: [],
+      status: ['blocked'],
+      triage: true
+    })
   })
 })

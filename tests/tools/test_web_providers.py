@@ -367,9 +367,9 @@ class TestDispatchersTriggerPluginDiscovery:
                 lambda: {"extract_backend": "firecrawl"},
             )
             monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
-            async def _allow_ssrf(_url: str) -> bool:
-                return True
-            monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+            async def _allow_ssrf(_url: str):
+                return None  # no block reason == safe
+            monkeypatch.setattr(web_tools, "async_url_block_reason", _allow_ssrf)
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 

@@ -204,6 +204,7 @@ def gateway_lifecycle_block(
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
+        contains_host_interpreter_kill,
         contains_launchctl_submit_command,
         lifecycle_scan_root_within_budget,
         scan_gateway_lifecycle,
@@ -244,6 +245,16 @@ def gateway_lifecycle_block(
             "error",
         )
     if unsafe:
+        # Name the ownership-scoped route for image-name kills: the intent is almost always "stop
+        # MY background job", and re-rolling the same over-broad spelling is what takes the gateway down.
+        if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
+            return _blocked_json(
+                "Blocked: this command kills every process whose image/name matches the Python "
+                "interpreter, which is the process hosting this gateway (and this command). "
+                "Stop only the process you own instead: process(action=\"kill\", session_id=\"proc_…\") "
+                "for a background job Hermes started, or kill/taskkill by its explicit PID.",
+                "error",
+            )
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "

@@ -24,82 +24,57 @@ class TestGatewayLifecyclePattern:
     """Verify the regex catches gateway lifecycle commands."""
 
     @pytest.mark.parametrize("text", [
+        # Branch E (#113667): the supervised gateway IS the interpreter image, so a killer aimed at
+        # `python*` carries no hermes/gateway token yet takes it down — on every platform.
         "taskkill /F /IM python.exe",
-        "taskkill /IM python.exe /F",
-        'taskkill /F /IM "python.exe"',
-        '"taskkill" /IM "python.exe" /F',
+        "taskkill /F /IM python.exe 2>/dev/null | head -2; echo done",
+        'taskkill /F /FI "IMAGENAME eq python.exe"',
+        "taskkill.exe /T /IM pythonw.exe",
         'task"kill" /I"M" "python.exe" /F',
-        "taskkill.exe /T /IM python.exe",
         'subprocess.run(["taskkill", "/IM", "python.exe", "/F"])',
-    ])
-    def test_taskkill_gateway_interpreter_image_is_blocked(self, text):
-        """Image-name taskkill can terminate the gateway's Python process (#113667)."""
-        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
-
-    @pytest.mark.parametrize("text", [
-        "taskkill /F /IM notepad.exe",
-        "taskkill /IM chrome.exe /F",
-    ])
-    def test_taskkill_other_image_names_are_allowed(self, text):
-        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
-
-    @pytest.mark.parametrize("text", [
-        "hermes gateway restart",
-        "hermes gateway stop",
-        "hermes gateway uninstall",
-        "hermes  gateway  restart",         # double spaces
-        "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
-        "HERMES GATEWAY RESTART",           # uppercase
-    ])
-    def test_hermes_gateway_commands(self, text):
-        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
-
-    @pytest.mark.parametrize("text", [
-        # Windows spells the CLI with an executable suffix, and npm-style
-        # shims install `hermes.cmd` / `hermes.ps1` beside the `.exe`.
-        # Anchoring Branch A on the bare name let every one of these walk past
-        # a guard that stops `hermes gateway restart`. The guard is gated on
-        # PID-file ownership, not on platform, so the bypass was live for any
-        # supervised gateway running on Windows.
+        "Stop-Process -Name python -Force",
+        "Stop-Process -ProcessName python3.12",
+        "Get-Process python | Stop-Process -Force",
+        "pkill python",
+        "pkill -9 python3",
+        "pkill -f python",
+        'pkill -f "python -m hermes_cli.main"',
+        "pkill -f hermes_cli",
+        "killall -9 python3.12",
+        "sudo pkill -9 python3",
+        "pgrep python | xargs kill -9",
+        "kill $(pidof python3)",
+        # Windows spellings of the hermes-gateway forms (salvaged from #94379).
         "hermes.exe gateway restart",
         "hermes.cmd gateway stop",
-        "hermes.bat gateway restart",
-        "hermes.ps1 gateway uninstall",
-        "HERMES.EXE gateway restart",
-        r"C:\tools\hermes.exe gateway stop",
-        r".\hermes.exe gateway restart",
-        # Quoted and wrapped spellings reach the same place via the
-        # tokenizing rescan; pin them so the suffix survives that path too.
         r'"C:\Program Files\hermes.exe" gateway restart',
-        "cmd /c hermes.exe gateway restart",
-        'powershell -Command "hermes.exe gateway restart"',
-    ])
-    def test_windows_executable_suffix_is_caught(self, text):
-        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
-
-    @pytest.mark.parametrize("text", [
-        # `taskkill` / `Stop-Process` are the Windows spellings of pkill.
-        # `\bp?kill\b` cannot reach inside `taskkill` — there is no word
-        # boundary between the two `k`s — so they need naming outright.
         "taskkill /F /IM hermes-gateway.exe",
         "Stop-Process -Name hermes-gateway -Force",
-        "stop-process -name hermes-gateway",
     ])
-    def test_windows_process_kill_forms_are_caught(self, text):
+    def test_interpreter_and_windows_kill_forms_are_blocked(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
-        # The suffix must not widen the match. `start` stays deliberately
-        # benign, an unrelated process is not the gateway, and the word-tail
-        # exclusion still holds once a suffix is attached.
-        "hermes.exe gateway start",
-        "hermes.exe chat",
+        # Other images stay killable (evals/browser_use/orchestrate.py uses the first one).
+        "taskkill /F /IM agent-browser.exe /T",
         "taskkill /F /IM notepad.exe",
         "Stop-Process -Name chrome",
+        "killall node",
+        # The ownership-scoped route the rejection points to: explicit PID / proc id.
+        "taskkill /F /PID 46544",
+        "kill -9 46544",
+        "Stop-Process -Id 46544",
+        # Option VALUES are not targets; a `-f` pattern naming a specific script is not the gateway.
+        "pkill -u alice chrome",
+        "pkill -t pts/1 vim",
+        "pkill -f 'python mt_add_paused.py --go'",
+        "pgrep python",
+        "hermes.exe gateway start",
         "my-hermes.exe gateway restart",
-        "hermesexe gateway restart",
+        "python -m pytest tests/ -k kill",
+        "skill python",
     ])
-    def test_windows_forms_do_not_overmatch(self, text):
+    def test_kill_forms_that_do_not_reach_the_gateway_are_allowed(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [

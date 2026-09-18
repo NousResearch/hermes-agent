@@ -100,6 +100,18 @@ restarting the gateway from inside its own supervised process. A self-restart ca
 terminate the tool before it finishes and cause a supervisor/auto-resume loop.
 User approval, YOLO mode, and `force=True` do not bypass this guard.
 
+The guard also refuses process killers aimed at the interpreter image the gateway
+runs as — `taskkill /F /IM python.exe`, `taskkill /FI "IMAGENAME eq python.exe"`,
+`Stop-Process -Name python`, `pkill -9 python3`, `killall python`, `pkill -f python`,
+and name-derived kills such as `pgrep python | xargs kill` — because a supervised
+gateway is literally a `python` process and such a command takes it (and the agent's
+own turn) down. Kills scoped to a process the agent owns pass: the `proc_*` id of a
+background job (`process(action="kill", …)`) or an explicit PID
+(`taskkill /F /PID <pid>`, `kill <pid>`). Other image names (`taskkill /F /IM notepad.exe`)
+are unaffected. The guard is active under every generated launcher — systemd unit,
+launchd plist, s6 run script and the Windows Scheduled Task — via the
+`HERMES_SUPERVISED_CHILD` marker they export.
+
 On macOS, executed `launchctl submit` and `launchctl bootstrap` commands are
 restricted **regardless of the job label**. This is a conservative registration
 restriction intended to catch indirect restart helpers with neutral labels, not

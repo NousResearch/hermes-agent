@@ -62,7 +62,7 @@ def client(monkeypatch, profiles_on_disk):
     return c
 
 
-def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None):
+def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False):
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
@@ -77,6 +77,8 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
     try:
         db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
         db.append_message(session_id=session_id, role="user", content="hi")
+        if pinned:
+            assert db.set_session_pinned(session_id, True)
     finally:
         db.close()
 
@@ -264,30 +266,19 @@ class TestSidebarTruncation:
         # Regression for #81484: the window is a LIMIT page by recency, so a
         # pin among the newest rows takes a slot. Discounting pins reported 18
         # < 20 and the sidebar never offered "Load more" for the older rows.
-        from hermes_state import SessionDB
-
         home = profiles_on_disk["default"]
         params = {"recents_profile": "default", "recents_limit": 4}
 
-        def truncated():
+        def window():
             payload = client.get("/api/profiles/sessions/sidebar", params=params).json()
             return len(payload["recents"]["sessions"]), payload["recents"]["profiles_truncated"]
 
-        def pin(session_id):
-            db = SessionDB(db_path=home / "state.db")
-            try:
-                assert db.set_session_pinned(session_id, True)
-            finally:
-                db.close()
-
         for index in range(3):
-            _seed_session(home, f"s-{index}", source="desktop")
-        pin("s-2")
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 2)
         # Short list: the pin is already on the page, nothing to back-fill, no "more".
-        assert truncated() == (3, {"default": False})
+        assert window() == (3, {"default": False})
 
         for index in range(3, 6):
-            _seed_session(home, f"s-{index}", source="desktop")
-        pin("s-5")
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
         # Six on disk, two pins among the newest four: a full window, more below it.
-        assert truncated() == (4, {"default": True})
+        assert window() == (4, {"default": True})

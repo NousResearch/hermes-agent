@@ -101,7 +101,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `RAMP_ROUTER_API_KEY` | Ramp Router API key ([app.router.com/keys](https://app.router.com/keys)); alias `ROUTER_API_KEY` also accepted |
 | `RAMP_ROUTER_BASE_URL` | Override Ramp Router base URL (default: `https://api.router.com/v1`) |
 | `IONET_API_KEY` | IO Intelligence (io.net) API key — open-weight models at `https://api.intelligence.io.solutions/api/v1` ([io.net key guide](https://io.net/docs/guides/intelligence/api-keys-and-secrets)) |
-| `IOINTELLIGENCE_API_KEY` | Alias for `IONET_API_KEY` (the models.dev name for the same IO Intelligence key); takes precedence when both are set |
+| `IOINTELLIGENCE_API_KEY` | Alias for `IONET_API_KEY` (the models.dev name for the same IO Intelligence key); `IONET_API_KEY` wins if both are set |
 | `IONET_BASE_URL` | Override IO Intelligence base URL (default: `https://api.intelligence.io.solutions/api/v1`) |
 | `NEBIUS_API_KEY` | Nebius Token Factory API key ([tokenfactory.nebius.com](https://tokenfactory.nebius.com/)); `NEBIUS_TOKEN_FACTORY_API_KEY` also accepted |
 | `NEBIUS_BASE_URL` | Override Nebius Token Factory base URL (default: `https://api.tokenfactory.nebius.com/v1`) |

@@ -1330,6 +1330,7 @@ class TestIonetProvider:
 
     def test_ionet_runtime_resolves_chat_completions(self, monkeypatch):
         monkeypatch.setenv("IONET_API_KEY", "io-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="io-net")
         assert result["provider"] == "io-net"
@@ -1419,8 +1420,15 @@ class TestIonetProvider:
         models_pricing._fetch_ionet_pricing(force_refresh=True)
         assert call_count["n"] == 2
 
-    def test_ionet_pricing_registered(self):
+    def test_ionet_pricing_registered(self, monkeypatch):
         from hermes_cli import models_pricing
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
         assert models_pricing._PRICING_FETCHERS["io-net"] is models_pricing._fetch_ionet_pricing_for_provider
         assert models_pricing._STATIC_PRICING_SCOPES["io-net"] is models_pricing._ionet_pricing_scope
         assert models_pricing.pricing_cache_scope("io-net") == "https://api.intelligence.io.solutions/api/v1"
+
+    def test_ionet_curated_models_match_profile_fallbacks(self):
+        """The static offline tier mirrors the profile's fallback_models (setup-flow fallback)."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from providers import get_provider_profile
+        assert list(_PROVIDER_MODELS["io-net"]) == list(get_provider_profile("io-net").fallback_models)

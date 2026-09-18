@@ -643,9 +643,7 @@
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
-    const wsRef = useRef(null);
-    const wsBackoffRef = useRef(1000);
-    const wsClosedRef = useRef(false);
+    const scheduleReloadRef = useRef(null);
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -723,11 +721,21 @@
     }, [loadBoard]);
 
     // --- WebSocket ---------------------------------------------------------
+    // Filters change the reload callback, not the lifetime of the stream.
+    scheduleReloadRef.current = scheduleReload;
     useEffect(function () {
       if (!boardData) return undefined;
-      wsClosedRef.current = false;
+      let closed = false;
+      let socket = null;
+      let retryTimer = null;
+      let backoff = 1000;
+      function retry() {
+        if (closed) return;
+        retryTimer = setTimeout(openWs, backoff);
+        backoff = Math.min(backoff * 2, 30000);
+      }
       function openWs() {
-        if (wsClosedRef.current) return;
+        if (closed) return;
         // Build the WS URL via the host SDK so the correct auth param is used
         // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
         // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
@@ -743,12 +751,17 @@
         // Regression: #20879.
         if (board) wsParams.board = board;
         SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
-          if (wsClosedRef.current) return;
+          if (closed) return;
           let ws;
-          try { ws = new WebSocket(url); } catch (_e) { return; }
-          wsRef.current = ws;
-          ws.onopen = function () { wsBackoffRef.current = 1000; };
+          try { ws = new WebSocket(url); } catch (_e) { retry(); return; }
+          socket = ws;
+          ws.onopen = function () {
+            if (closed) return;
+            backoff = 1000;
+            setError(null);
+          };
           ws.onmessage = function (ev) {
+            if (closed) return;
             try {
               const msg = JSON.parse(ev.data);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
@@ -761,36 +774,31 @@
                   }
                   return next;
                 });
-                scheduleReload();
+                scheduleReloadRef.current();
               }
             } catch (_e) { /* ignore */ }
           };
           ws.onclose = function (ev) {
-            if (wsClosedRef.current) return;
+            if (closed) return;
             if (ev && ev.code === 1008) {
               setError(tx(t, "wsAuthFailed",
                 "WebSocket auth failed — reload the page to refresh the session token."));
-              return;
             }
-            const delay = Math.min(wsBackoffRef.current, 30000);
-            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-            setTimeout(openWs, delay);
+            retry();
           };
         }).catch(function () {
           // Ticket mint / URL build failed (e.g. session expired). Back off
           // and retry; a hard auth failure surfaces via the 1008 close path.
-          if (wsClosedRef.current) return;
-          const delay = Math.min(wsBackoffRef.current, 30000);
-          wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-          setTimeout(openWs, delay);
+          retry();
         });
       }
       openWs();
       return function () {
-        wsClosedRef.current = true;
-        try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
+        closed = true;
+        clearTimeout(retryTimer);
+        try { socket && socket.close(); } catch (_e) { /* noop */ }
       };
-    }, [!!boardData, board, scheduleReload]);
+    }, [!!boardData, board]);
 
     // --- filtering ----------------------------------------------------------
     const filteredBoard = useMemo(function () {

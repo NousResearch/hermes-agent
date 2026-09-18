@@ -337,6 +337,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    research_trace_enabled: bool = False
 
     @property
     def approval_session_key(self) -> str:
@@ -493,6 +494,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    from tools.research_trace import enabled_for_request
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -503,7 +505,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author,
+        research_trace_enabled=enabled_for_request(body))
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -563,7 +566,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             from tools.research_trace import trace_context
-            with trace_context(trace_callback):
+            with trace_context(trace_callback if run.research_trace_enabled else None):
                 r = agent.run_conversation(
                     user_message=run.user_message, conversation_history=run.conversation_history,
                     task_id=effective_task_id, **author_kwargs)
@@ -624,7 +627,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
-        _trace_event({"type": "research.completed", "status": status})
+        if run.research_trace_enabled:
+            _trace_event({"type": "research.completed", "status": status})
 
     def _trace_event(event: dict[str, Any]) -> None:
         event = dict(event or {})

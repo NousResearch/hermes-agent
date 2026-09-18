@@ -613,6 +613,7 @@ def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypa
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     _clear_ttfb_env(monkeypatch)
+    agent.reasoning_config = {"enabled": False}  # no effort floor: isolate the cap interaction
 
     huge_input = "x" * 440_000  # ~110k estimated tokens → largest idle bucket
     wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})

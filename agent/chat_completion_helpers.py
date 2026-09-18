@@ -1133,7 +1133,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     HERMES_CODEX_TTFB_TIMEOUT_SECONDS,
     HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each),
     HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS / HERMES_CODEX_TTFB_STRICT,
-    HERMES_CODEX_TTFB_MAX_SECONDS, HERMES_CODEX_HARD_TIMEOUT_SECONDS.
+    HERMES_CODEX_TTFB_MAX_SECONDS (opt-in ceiling, default 0 = none), HERMES_CODEX_HARD_TIMEOUT_SECONDS.
     """
     # The effort floor on the STALE timeout lives inside _compute_non_stream_stale_timeout so the
     # run-budget cap still bounds it; here the floor only raises the TTFB/idle implicit defaults.
@@ -1177,17 +1177,15 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
             ttfb_timeout = idle_default
-        # Scaling above is the default policy for large contexts. Keep the independent maximum
-        # opt-in so its implicit default cannot undo that policy; operators may still set a finite
-        # ceiling explicitly (#91621).
+        # Opt-in ceiling (0 = off): a 120s default here silently undid the scale-up above (#91621).
         ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
             logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
-                "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
+                "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
     if ttfb_enabled and not ttfb_explicit:
-        # High-effort thinking precedes the first event; the floor outranks the implicit cap.
+        # High-effort thinking precedes the first event; the floor outranks the cap.
         ttfb_timeout = max(ttfb_timeout, effort_floor)
 
     # An operator-set idle timeout keeps first-event semantics; only the implicit

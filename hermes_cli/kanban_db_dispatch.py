@@ -3201,9 +3201,21 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
-            auto = _record_spawn_failure(
+            from tools.process_registry import RestartSafeScopeUnavailable
+
+            # The host refused the spawn (no restart-safe scope): nothing about
+            # the card ran, so it must not spend the card's retry budget (#114720).
+            infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+            if infrastructure:
+                _log.warning(
+                    "kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s",
+                    claimed.id, exc,
+                )
+            auto = _record_task_failure(
                 conn, claimed.id, str(exc),
-                failure_limit=failure_limit,
+                outcome="spawn_failed", failure_limit=failure_limit,
+                release_claim=True, end_run=True,
+                infrastructure=infrastructure,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -3344,9 +3356,21 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
-            auto = _record_spawn_failure(
+            from tools.process_registry import RestartSafeScopeUnavailable
+
+            # Host refused the spawn (no restart-safe scope): #114720 — never
+            # charges the card's retry budget.
+            infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+            if infrastructure:
+                _log.warning(
+                    "kanban dispatcher: review spawn of %s deferred, host cannot place the worker: %s",
+                    claimed.id, exc,
+                )
+            auto = _record_task_failure(
                 conn, claimed.id, str(exc),
-                failure_limit=failure_limit,
+                outcome="spawn_failed", failure_limit=failure_limit,
+                release_claim=True, end_run=True,
+                infrastructure=infrastructure,
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
@@ -3746,9 +3770,20 @@ def _dispatch_once_locked(
                     _consume_daily_spawn(conn)
 
             except Exception as exc:
-                auto = _record_spawn_failure(
+                from tools.process_registry import RestartSafeScopeUnavailable
+
+                # Host refused the spawn (no restart-safe scope): #114720.
+                infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+                if infrastructure:
+                    _log.warning(
+                        "kanban dispatcher: pipeline spawn of %s deferred, host cannot place the worker: %s",
+                        claimed.id, exc,
+                    )
+                auto = _record_task_failure(
                     conn, claimed.id, str(exc),
-                    failure_limit=failure_limit,
+                    outcome="spawn_failed", failure_limit=failure_limit,
+                    release_claim=True, end_run=True,
+                    infrastructure=infrastructure,
                 )
                 if auto:
                     result.auto_blocked.append(claimed.id)
@@ -3947,7 +3982,7 @@ def _write_fallback_council_verdict(artifact_dir: str, task_id: str, error: str)
         os.makedirs(artifact_dir, exist_ok=True)
         md_path = os.path.join(artifact_dir, "council-verdict.md")
         json_path = os.path.join(artifact_dir, "council-verdict.json")
-        with open(md_path, "w") as f:
+        with open(md_path, "w", encoding="utf-8") as f:
             f.write(
                 f"# Council Verdict — {task_id}\n\n"
                 f"**Verdict: REVISE**\n\n"
@@ -3957,7 +3992,7 @@ def _write_fallback_council_verdict(artifact_dir: str, task_id: str, error: str)
                 f"Deliberation could not complete; manual review required.\n"
             )
         import json as _json
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             _json.dump({
                 "verdict": "REVISE",
                 "issues": [{"severity": "critical",

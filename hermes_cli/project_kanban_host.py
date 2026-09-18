@@ -918,6 +918,21 @@ class ProjectKanbanHost:
                         actor="project-kanban-host",
                     )
                 if not changed:
+                    # A dependency refusal must say WHICH parent is open, not the
+                    # generic text (parity with the dashboard's _open_parent_refusal;
+                    # the host-backed PATCH path bypasses that helper).
+                    detail = None
+                    if status in ("done", "review"):
+                        blockers = kanban_db.unsatisfied_parents(conn, task_id)
+                        if blockers:
+                            detail = "; ".join(f"{pid} ({st})" for pid, st in blockers)
+                    if detail:
+                        raise HostError(
+                            "transition_conflict",
+                            f"cannot move {task_id} to {status!r}: unsatisfied parent "
+                            f"dependencies: {detail}; complete the parents first "
+                            f"(done or archived)",
+                        )
                     raise HostError(
                         "transition_conflict",
                         "task cannot enter the requested state",

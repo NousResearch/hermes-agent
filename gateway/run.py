@@ -4403,6 +4403,9 @@ def _start_gateway_housekeeping(
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_profile_reconcile import _mcp_config_reconciler
     chores: list[tuple[int, str, Any]] = []
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

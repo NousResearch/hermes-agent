@@ -29,6 +29,8 @@ def settled_native(owner, paths):
 
 @pytest.mark.parametrize('settled', [False, True], ids=['queued-holder', 'terminal-holder'])
 def test_api_image_survives_native_cleanup_while_unique_native_bytes_are_collected(api, owner, settled):
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    initialize_input_custody(owner.db)
     _, _, row = admit_api_turn(api, session_id='image-holder', request_id='api-image',
         user_message=[{'type': 'image_url', 'image_url': {
             'url': 'data:image/png;base64,' + base64.b64encode(PNG).decode()}}], conversation_history=[])

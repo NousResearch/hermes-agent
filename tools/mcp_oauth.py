@@ -731,7 +731,7 @@ _SSH_HINT_PROXY = (
     "  which forwards to the callback listener on this machine — no SSH tunnel needed.\n")
 _SSH_HINT_LOOPBACK = (
     "  Remote session detected. After you authorize, the provider redirects to\n"
-    "    http://127.0.0.1:{port}/callback\n"
+    "    http://{host}:{port}/callback\n"
     "  which only the listener on THIS machine can receive. Two options:\n"
     "\n"
     "    1. Easiest — when your browser shows a connection error after\n"
@@ -746,14 +746,16 @@ _SSH_HINT_LOOPBACK = (
     "  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n")
 
 
-def _announce_authorization_url(authorization_url: str, port: int, redirect_uri: str | None) -> None:
+def _announce_authorization_url(
+    authorization_url: str, port: int, redirect_uri: str | None, redirect_host: str | None = None,
+) -> None:
     """Print the URL (always, as the fallback) and open the browser when possible."""
     print(f"\n  MCP OAuth: authorization required.\n  Open this URL in your browser:\n\n    {authorization_url}\n", file=sys.stderr)
     if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"):
         if redirect_uri:
             print(_SSH_HINT_PROXY.format(redirect_uri=redirect_uri), file=sys.stderr)
         elif port:
-            print(_SSH_HINT_LOOPBACK.format(port=port), file=sys.stderr)
+            print(_SSH_HINT_LOOPBACK.format(host=redirect_host or "127.0.0.1", port=port), file=sys.stderr)
     if not _can_open_browser():
         note = "Headless environment detected — open the URL manually."
     else:
@@ -764,9 +766,11 @@ def _announce_authorization_url(authorization_url: str, port: int, redirect_uri:
     print(f"  ({note})\n", file=sys.stderr)
 
 
-def _make_redirect_handler(port: int, redirect_uri: str | None = None):
+def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
-    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the hint.
+    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
+    hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
+    :func:`_resolve_redirect_uri`).
 
     Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
     when multiple MCP servers run OAuth concurrently (fixes #44588).
@@ -787,7 +791,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
-        _announce_authorization_url(authorization_url, port, redirect_uri)
+        _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
 
     return _redirect_handler
 

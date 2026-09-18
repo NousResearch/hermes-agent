@@ -197,6 +197,9 @@ class RunIdempotencyStore:
                 terminal = False
             if terminal:
                 self._conn.execute(
+                    "DELETE FROM run_event_journal WHERE run_id=(SELECT run_id FROM run_idempotency "
+                    "WHERE scope=? AND idempotency_key=?)", (stale_scope, stale_key))
+                self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:

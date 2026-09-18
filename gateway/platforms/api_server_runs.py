@@ -84,13 +84,16 @@ def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
 
 def _publish_run_event(self, run_id: str, event: Dict[str, Any], *, dedupe_key: str = None,
                        loop: "asyncio.AbstractEventLoop" = None) -> Dict[str, Any]:
-    """Persist and enqueue a redacted public event, preserving the legacy envelope."""
+    """Persist and fan out a redacted public event to every live subscriber."""
     status = self._run_statuses.get(run_id, {})
     if status.get("turn_id") is not None:
         event.setdefault("turn_id", status["turn_id"])
     event = self._run_idempotency_store.append_event(run_id, event, dedupe_key=dedupe_key)
-    q = self._run_streams.get(run_id)
-    if q is not None:
+    queues = list(self._run_stream_subscriber_queues.get(run_id, ()))
+    if not queues:
+        q = self._run_streams.get(run_id)
+        queues = [q] if q is not None else []
+    for q in queues:
         with suppress(Exception):
             if loop is not None:
                 loop.call_soon_threadsafe(q.put_nowait, event)
@@ -144,6 +147,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
+    self._run_stream_subscriber_queues: dict[str, set[asyncio.Queue]] = {}
     self._stopping_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
@@ -396,8 +400,12 @@ class _RunLaunch:
         return self.run_id
 
     def put_event(self, event: Optional[Dict]) -> None:
-        """Enqueue only while this run still owns live transport state."""
-        if self.owner._run_streams.get(self.run_id) is self.queue:
+        """Fan out the terminal sentinel without destructively draining a shared queue."""
+        queues = list(self.owner._run_stream_subscriber_queues.get(self.run_id, ()))
+        if queues:
+            for queue in queues:
+                queue.put_nowait(event)
+        elif self.owner._run_streams.get(self.run_id) is self.queue:
             self.queue.put_nowait(event)
 
 
@@ -782,6 +790,15 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
     return err or web.json_response(status)
 
 
+def _run_sse_frame(event: Dict[str, Any]) -> bytes:
+    """Encode a journal event with the durable cursor in the SSE ``id`` field."""
+    event_name = str(event.get("event") or "message")
+    event_id = event.get("event_id")
+    prefix = f"id: {int(event_id)}\n" if event_id is not None else ""
+    return (f"{prefix}event: {event_name}\n"
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n").encode()
+
+
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":
     """GET /v1/runs/{run_id}/events — stream structured agent lifecycle events."""
     auth_err = self._check_auth(request)
@@ -807,16 +824,16 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         cursor = int(request.query.get("after", request.headers.get("Last-Event-ID", "0")) or 0)
     except (TypeError, ValueError):
         return _json_error(_api_server._openai_error, "Invalid event cursor", code="invalid_cursor", status=400)
-    q = self._run_streams.get(run_id)
-    if q is not None:
-        self._run_stream_subscribers.add(run_id)
+    q = asyncio.Queue()
+    self._run_stream_subscriber_queues.setdefault(run_id, set()).add(q)
+    self._run_stream_subscribers.add(run_id)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     await response.prepare(request)
     try:
         replay = self._run_idempotency_store.events_after(run_id, cursor)
         for event in replay:
-            await response.write(_api_server._sse_frame(event))
+            await response.write(_run_sse_frame(event))
             cursor = max(cursor, int(event.get("event_id", 0)))
         status = self._run_statuses.get(run_id) or self._durable_run_status(request, run_id) or {}
         if status.get("status") in TERMINAL_STATUSES:
@@ -835,13 +852,20 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             event_id = int(event.get("event_id", 0) or 0)
             if event_id and event_id <= cursor:
                 continue
-            await response.write(_api_server._sse_frame(event))
+            await response.write(_run_sse_frame(event))
             cursor = max(cursor, event_id)
     except Exception as exc:
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        subscribers = self._run_stream_subscriber_queues.get(run_id)
+        if subscribers is not None:
+            subscribers.discard(q)
+            if not subscribers:
+                self._run_stream_subscriber_queues.pop(run_id, None)
+                self._run_stream_subscribers.discard(run_id)
+                status = self._run_statuses.get(run_id) or {}
+                if status.get("status") in TERMINAL_STATUSES:
+                    _drop_run_transport(self, run_id)
     return response
 
 

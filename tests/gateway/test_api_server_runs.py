@@ -500,7 +500,39 @@ class TestRunEvents:
                 after = await cli.get(f"/v1/runs/{run_id}/events?after={cursor}")
                 after_body = await after.text()
                 assert after.status == 200
-                assert after_body.count("run.completed") == 1
+                assert after_body.count("event: run.completed") == 1
+                assert "id: " in after_body
+                assert "event: run.completed" in after_body
+
+    @pytest.mark.asyncio
+    async def test_two_active_event_subscribers_each_receive_live_terminal_event(self, adapter):
+        app = _create_runs_app(adapter)
+        started_gate = threading.Event()
+        finish_gate = threading.Event()
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+                def run_conversation(**_kwargs):
+                    started_gate.set()
+                    finish_gate.wait(timeout=3)
+                    return {"final_response": "live"}
+                agent.run_conversation.side_effect = run_conversation
+                create.return_value = agent
+                response = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await response.json())["run_id"]
+                assert started_gate.wait(timeout=3)
+
+                async def consume():
+                    return await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+                first = asyncio.create_task(consume())
+                second = asyncio.create_task(consume())
+                await asyncio.sleep(0.05)
+                finish_gate.set()
+                first_body, second_body = await asyncio.gather(first, second)
+                assert first_body.count("event: run.completed") == 1
+                assert second_body.count("event: run.completed") == 1
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -1325,6 +1357,18 @@ class TestRunIdempotency:
         assert [event["event_id"] for event in store.events_after("run-events", first["event_id"])] == [
             first["event_id"] + 1, third["event_id"]
         ]
+        store.close()
+
+    def test_event_journal_is_pruned_with_expired_terminal_run(self, tmp_path):
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        store = RunIdempotencyStore(str(tmp_path / "retention.db"))
+        with patch("gateway.platforms.api_server_run_idempotency.time.time", return_value=100):
+            store.reserve("scope", "key", "fp", "run-expired", {"status": "completed"})
+            store.append_event("run-expired", {"event": "run.completed"}, dedupe_key="completed")
+        with patch("gateway.platforms.api_server_run_idempotency.time.time", return_value=100 + store.RETENTION_SECONDS + 1):
+            store.lookup("scope", "other", "other-fp")
+        assert store.events_after("run-expired") == []
         store.close()
 
     def test_event_journal_survives_store_restart(self, tmp_path):

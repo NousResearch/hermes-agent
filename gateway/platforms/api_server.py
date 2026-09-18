@@ -71,7 +71,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "profiles_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
@@ -95,6 +95,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("profiles", ("GET", "/v1/profiles")),
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
     ("artifact_upload", ("POST", "/v1/artifacts/upload")),
@@ -1581,6 +1582,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
+            ("GET", "/v1/profiles", self._handle_profiles),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             # Browser-control (gated on browser.extension_control.enabled + API key): POST
             # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
@@ -2317,6 +2319,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             logger.exception("[%s] GET /api/model/options failed", self.name)
             return _error_response("Failed to list model options.", 500, code="model_options_failed")
+
+    @_require_auth
+    async def _handle_profiles(self, request: "web.Request") -> "web.Response":
+        """GET /v1/profiles — the agents this gateway serves, so a client can offer a switcher.
+
+        Names and URL prefixes only; profile homes stay private. With multiplexing off the
+        gateway serves exactly its active profile at the root, so ``prefix`` is empty. With it
+        on, ``default`` is served at the root and every other profile under ``/p/<name>``."""
+        cfg = getattr(self.gateway_runner, "config", None)
+        multiplex = bool(getattr(cfg, "multiplex_profiles", False))
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            served = profiles_to_serve(
+                multiplex=multiplex,
+                profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))
+        except Exception:
+            logger.exception("[%s] GET /v1/profiles failed", self.name)
+            return _error_response("Failed to list profiles.", 500, code="profiles_failed")
+        data = [
+            {"id": name, "object": "hermes.profile", "default": name == "default" or not multiplex,
+             "prefix": f"/p/{name}" if multiplex and name != "default" else ""}
+            for name, _home in served]
+        return web.json_response({"object": "list", "multiplex": multiplex, "data": data})
 
     @_require_auth
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":

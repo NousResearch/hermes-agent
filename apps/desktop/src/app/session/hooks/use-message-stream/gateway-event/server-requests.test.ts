@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest, previewSessionRoute } from './server-requests'
@@ -67,6 +68,27 @@ describe('preview action request routing', () => {
     for (const { handled, respond } of reads) {
       expect(handled).toBe(true)
       expect(respond).not.toHaveBeenCalled()
+    }
+  })
+
+  it('answers pane reads for a session hosted in one of this window\'s tiles', async () => {
+    // The tile session is not the active one, but this window hosts it: its
+    // panes are here, so an 'ignore' would stall the tool until its deadline.
+    $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' } as never])
+
+    try {
+      const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
+        deliver(method, { session_id: 'session-a' }, 'session-b')
+      )
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      for (const { handled, respond } of reads) {
+        expect(handled).toBe(true)
+        expect(respond).toHaveBeenCalledTimes(1)
+      }
+    } finally {
+      $sessionTiles.set([])
     }
   })
 

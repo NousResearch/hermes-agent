@@ -234,3 +234,72 @@ class TestSplitTextFenceBalanced:
             )
 
 
+def _texts(blocks):
+    """Every string a reader would actually see, flattened out of the block tree."""
+    out = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == "text" and isinstance(node.get("text"), str):
+                out.append(node["text"])
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(blocks)
+    return out
+
+
+def _elements(blocks, kind):
+    """Every element of ``kind`` anywhere in the block tree."""
+    out = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == kind:
+                out.append(node)
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(blocks)
+    return out
+
+
+class TestEmphasisSpanningAnotherInlineConstruct:
+    """Emphasis is resolved before the constructs it may wrap.
+
+    Regression: emphasis used to be resolved LAST — after inline code and after
+    links — so a span wrapping either one had its delimiters consumed as ordinary
+    text by the earlier passes. The message then rendered with a literal ``**`` in
+    it: either as a standalone element, or glued to the surrounding words when the
+    span wrapped code.
+    """
+
+    def test_emphasis_wrapping_a_link_styles_the_link_element(self):
+        blocks = render_blocks("- **[docs](https://example.com/x)** — read this")
+        # no element is left holding only emphasis markers
+        markers_only = [t for t in _texts(blocks) if t.strip() and set(t.strip()) <= set("*_~`")]
+        assert markers_only == []
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/x"]
+        # the emphasis lands on the link instead of being dropped
+        assert links[0]["style"]["bold"] is True
+
+    def test_emphasis_spanning_inline_code_keeps_both_styles(self):
+        blocks = render_blocks("- **upstream `hermes send --blocks` only** — one route")
+        # markers must not survive into any visible string
+        assert [t for t in _texts(blocks) if "**" in t or "__" in t] == []
+        code = [e for e in _elements(blocks, "text") if e.get("style", {}).get("code")]
+        assert [e["text"] for e in code] == ["hermes send --blocks"]
+        # the inner element inherits the emphasis the span was wrapped in
+        assert code[0]["style"]["bold"] is True
+        # and code stays opaque: markers INSIDE backticks are never emphasis
+        assert "a_b_c" in _texts(render_blocks("- `a_b_c` stays literal"))
+
+
+

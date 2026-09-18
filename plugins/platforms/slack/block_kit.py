@@ -79,6 +79,15 @@ _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
+# Strongest emphasis first, each paired with the width of its closing delimiter, so a
+# candidate match can be rejected when that delimiter sits inside an inline code span
+# (code is opaque: a `*` or `_` between backticks is never emphasis).
+_EMPHASIS_RULES = (
+    (_BOLD_RE, "bold", 2),
+    (_STRIKE_RE, "strike", 2),
+    (_ITALIC_RE, "italic", 1),
+)
+
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
     """Parse a run of inline markdown into rich_text section child elements.
@@ -94,10 +103,33 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
             el["style"] = style
         elements.append(el)
 
-    # Tokenize by the highest-priority markers first using a single scan.
-    # We recursively split on code, then links, then emphasis to keep spans
-    # from overlapping incorrectly.
+    # Emphasis is resolved outermost, then inline code, then links. That order is
+    # the fix, not an accident: emphasis has to be found before the constructs it
+    # may wrap, or its own delimiters get consumed as ordinary text by the earlier
+    # passes and leak into the rendered message (see _EMPHASIS_RULES below). Code
+    # spans stay opaque — a `*` or `_` inside backticks is never emphasis — so a
+    # candidate match is only accepted when both of its delimiters sit outside one.
     def walk(s: str, style: Dict[str, bool]) -> None:
+        if not s:
+            return
+        spans = [(m.start(), m.end()) for m in _INLINE_CODE_RE.finditer(s)]
+
+        def in_code(pos: int) -> bool:
+            return any(a <= pos < b for a, b in spans)
+
+        for rx, key, delim in _EMPHASIS_RULES:
+            for m in rx.finditer(s):
+                if in_code(m.start()) or in_code(m.end() - delim):
+                    continue
+                inner_style = dict(style)
+                inner_style[key] = True
+                walk(s[: m.start()], style)
+                walk(m.group(1), inner_style)
+                walk(s[m.end() :], style)
+                return
+        _walk_code(s, style)
+
+    def _walk_code(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         # inline code is opaque — no nested styling
         for m in _INLINE_CODE_RE.finditer(s):
@@ -105,30 +137,17 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
             emit_text(m.group(1), {**style, "code": True})
             pos = m.end()
         _walk_links(s[pos:], style)
+
     def _walk_links(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         for m in _LINK_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
+            emit_text(s[pos : m.start()], dict(style) if style else None)
             link_el: Dict[str, Any] = {"type": "link", "url": m.group(2), "text": m.group(1)}
             if style:
                 link_el["style"] = dict(style)
             elements.append(link_el)
             pos = m.end()
-        _walk_emphasis(s[pos:], style)
-    def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
-        if not s:
-            return
-        # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
-            m = rx.search(s)
-            if m:
-                _walk_emphasis(s[: m.start()], style)
-                inner_style = dict(style)
-                inner_style[key] = True
-                _walk_emphasis(m.group(1), inner_style)
-                _walk_emphasis(s[m.end() :], style)
-                return
-        emit_text(s, dict(style) if style else None)
+        emit_text(s[pos:], dict(style) if style else None)
     walk(text, {})
     return elements or [{"type": "text", "text": text}]
 

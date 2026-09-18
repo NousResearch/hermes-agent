@@ -52,7 +52,10 @@ def _same_chat_key_slots(
     rest = slots[3:]
     if rest[1] == chat_id:
         return rest[0], rest[2:]
-    if len(rest) >= 3 and rest[2] == chat_id:
+    # Only Slack ever carries the scope slot (``build_session_key``). Tolerating it on other
+    # platforms would let a group key's trailing participant id alias a chat_id: a Telegram DM
+    # keys ``chat_id`` as the USER id, so ``group:<chat>:<user>`` would read as "<user>'s chat".
+    if platform == Platform.SLACK.value and len(rest) >= 3 and rest[2] == chat_id:
         if scope_id and rest[1] != str(scope_id):
             return None
         return rest[0], rest[3:]
@@ -1108,16 +1111,17 @@ class GatewayBusySessionMixin:
         so the handler falls back chat-wide on an exact + thread-sibling miss — which is also what
         lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
 
-        A run in a DIFFERENT thread of the same channel is a different conversation and stays
-        untouched: only the caller's own thread, a slotless run (top-level channel turn, rolling
-        DM) and non-thread keys (group/channel participant slots) are reachable. Callers gate on
-        authz.
+        A stop sent from INSIDE a thread only reaches runs whose own thread slot is that thread (or
+        that carry no thread slot at all — a top-level channel turn's relay-stamped slot is the
+        reply thread it belongs to, the rolling-DM shape is slotless). Anything else in the channel
+        is a different conversation: another reply thread, or a peer's top-level run. Callers gate
+        on authz.
         """
-        thread_id = getattr(source, "thread_id", None)
+        thread_id = str(getattr(source, "thread_id", None) or "")
         return [
             key
-            for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
-            if not (key_chat_type == "thread" and thread_id and tail and tail[0] != str(thread_id))
+            for key, _key_chat_type, tail in self._same_chat_runs(source, own_key)
+            if not (thread_id and tail and tail[0] != thread_id)
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:

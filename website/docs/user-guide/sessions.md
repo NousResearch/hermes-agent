@@ -801,9 +801,10 @@ By default, Hermes uses `group_sessions_per_user: true` in `config.yaml`. That m
 
 `/stop` means "stop what is running in this chat": it first tries the caller's own session key,
 then other participants' runs in the caller's own thread, then any live turn in the same room —
-authorization-gated, and never another room, workspace, profile or thread. So an idle Alice's
-`/stop` can end a turn Bob (or a bot) started in the room she is in; it cannot reach a turn in a
-different thread of the same channel.
+authorization-gated, and never another room, workspace or profile. So an idle Alice's `/stop` can
+end a turn Bob (or a bot) started in the room she is in. A `/stop` sent from *inside* a thread is
+narrower: it only reaches runs belonging to that thread (or to no thread at all), never a turn in
+another thread of the same channel.
 
 If you want one shared "room brain" instead, set:
 

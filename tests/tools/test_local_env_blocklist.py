@@ -963,7 +963,9 @@ class TestPythonpathSelectiveStrip:
         import tools.code_execution_tool as cet
         from tools.code_execution_tool import execute_code
 
-        def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+        def _mock_handle_function_call(
+            function_name, function_args, task_id=None, user_task=None, programmatic=False,
+        ):
             return '{"output": "mock", "exit_code": 0}'
 
         hermes_root = str(Path(cet.__file__).resolve().parents[1])

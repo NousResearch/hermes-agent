@@ -1,29 +1,16 @@
-"""System-One decision lane substrate for computer use (#113850, Phase 0).
+"""System-One decision lane for computer use (#113850).
 
-Reframes bounded GUI steps from generation into typed decisions so cheap
-backends can answer without a frontier-model round trip. Backend order:
-
-    deterministic rules -> local semantic reranker -> fast aux model
-    -> Jev (only when TYPESAFE_API_KEY is set) -> abstain (fail open)
-
-Only the rules stage ships here; the other stages plug in as callables with
-the same ``(state, candidates) -> Decision | None`` shape (None = abstain).
-A stage that cannot run must abstain, never guess: the caller falls back to
-the current planner. Approval and safety paths are untouched.
-
-Decisions are recorded as replayable packets (state refs, candidates,
-scores, chosen action, latency, verifier outcome). Packets never carry
-screenshots or secrets — only element refs and labels the caller already had.
+Backend order: rules → reranker → Jev (if TYPESAFE_API_KEY / JEV_API_KEY) → fail-open.
+A stage that cannot run must return None, never guess.
+Packets record refs/labels only — no pixels or secrets.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Literal
-
-ActionKind = Literal["click", "type", "key", "scroll", "wait", "done", "escalate"]
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
 
 ACTION_KINDS: tuple[str, ...] = ("click", "type", "key", "scroll", "wait", "done", "escalate")
 
@@ -116,29 +103,23 @@ def run_decision_lane(
     candidates: tuple[ElementCandidate, ...] | list[ElementCandidate],
     *,
     reranker: Stage | None = None,
-    aux: Stage | None = None,
     jev: Stage | None = None,
     verifier: Verifier | None = None,
     confidence_threshold: float = CONFIDENCE_THRESHOLD,
 ) -> tuple[Decision | None, DecisionPacket]:
-    """Run the backend order; return (decision, packet). None = fail open.
-
-    The Jev stage runs only when ``jev_available()`` and a ``jev`` callable
-    is injected (no System One transport ships in-tree yet).
-    """
+    """Run the backend order; return (decision, packet). None = fail open."""
     cands = tuple(candidates)
     started = time.monotonic()
     scores: dict[str, float] = {}
-    stages: list[tuple[str, Stage | None, bool]] = [
-        ("rules", rules_stage, True),
-        ("reranker", reranker, True),
-        ("aux", aux, True),
-        ("jev", jev, jev_available() and jev is not None),
+    stages: list[tuple[str, Stage | None]] = [
+        ("rules", rules_stage),
+        ("reranker", reranker),
+        ("jev", jev if jev_available() else None),
     ]
     chosen: Decision | None = None
     chosen_backend: str | None = None
-    for name, stage, enabled in stages:
-        if not enabled or stage is None:
+    for name, stage in stages:
+        if stage is None:
             continue
         try:
             decision = stage(state, cands)

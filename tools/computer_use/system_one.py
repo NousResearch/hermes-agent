@@ -1,12 +1,11 @@
-"""TypeSafe System One protocol adapter for computer-use decision lane (#113850).
+"""TypeSafe System One adapter for the computer-use decision lane (#113850).
 
-Pure functions + explicit transport injection. Parses choice/noul/score answers with
-full probability distributions. No network in this module — callers inject transport.
+Pure functions + injected transport. Parses choice/noul answers. No network here.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 ENDPOINT = "/v1/systemone"
@@ -40,9 +39,6 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
 
-    def as_dict(self) -> dict[str, int]:
-        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens}
-
 
 @dataclass(frozen=True)
 class Answer:
@@ -52,9 +48,7 @@ class Answer:
     probabilities: dict[str, float]
     noul: float | None = None
     choice: str | None = None
-    score: float | None = None
     confidence: float | None = None
-    legend: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -62,8 +56,6 @@ class ParsedResponse:
     model: str
     answers: dict[str, Answer]
     usage: Usage
-    abstain: bool = False
-    abstain_reason: str | None = None
 
 
 Transport = Callable[[dict[str, Any]], dict[str, Any]]
@@ -78,7 +70,7 @@ def build_request(
     if not questions:
         raise ProtocolError("questions map must be non-empty")
     for key, q in questions.items():
-        if not isinstance(q, dict) or q.get("type") not in {"noul", "choice", "score"}:
+        if not isinstance(q, dict) or q.get("type") not in {"noul", "choice"}:
             raise ProtocolError(f"question {key!r} missing documented type")
         if "instructions" not in q:
             raise ProtocolError(f"question {key!r} missing instructions")
@@ -86,10 +78,6 @@ def build_request(
             criteria = q.get("criteria")
             if not isinstance(criteria, dict) or not criteria:
                 raise ProtocolError(f"choice {key!r} needs criteria map")
-        if q["type"] == "score":
-            criteria = q.get("criteria")
-            if not isinstance(criteria, list) or len(criteria) < 2:
-                raise ProtocolError(f"score {key!r} needs >=2 level descriptions")
         if q["type"] == "noul" and any(k in q for k in ("true", "false")) and "criteria" not in q:
             raise ProtocolError(
                 f"noul {key!r} puts true/false at top level; official schema nests them under criteria"
@@ -150,36 +138,12 @@ def parse_answer(qid: str, question: Mapping[str, Any], raw: Mapping[str, Any]) 
             id=qid, kind="choice", raw=payload, probabilities=dist,
             choice=str(choice), confidence=confidence,
         )
-    if kind == "score":
-        levels = question.get("criteria") or []
-        keys = {str(i) for i in range(len(levels))}
-        dist = _require_distribution(raw.get("probabilities"), keys, where=qid)
-        legend = raw.get("legend")
-        if not isinstance(legend, dict) or set(legend) != keys:
-            raise ProtocolError(f"{qid}: legend keys must match level indices")
-        for i, desc in enumerate(levels):
-            if legend[str(i)] != desc:
-                raise ProtocolError(f"{qid}: legend[{i}] != criteria[{i}]")
-        score = raw.get("score")
-        if isinstance(score, bool) or not isinstance(score, (int, float)):
-            raise ProtocolError(f"{qid}: score must be a number")
-        expected = sum(int(k) * p for k, p in dist.items())
-        if abs(float(score) - expected) > 1e-4:
-            raise ProtocolError(f"{qid}: score is not probability-weighted level index")
-        conf = raw.get("confidence")
-        confidence = None if conf is None else _finite_prob(conf, where=f"{qid}.confidence")
-        return Answer(
-            id=qid, kind="score", raw=payload, probabilities=dist,
-            score=float(score), confidence=confidence, legend=dict(legend),
-        )
     raise ProtocolError(f"{qid}: unknown type")
 
 
 def parse_systemone_response(
     raw: Mapping[str, Any],
     questions: Mapping[str, dict],
-    *,
-    abstain_if_missing: bool = False,
 ) -> ParsedResponse:
     if not isinstance(raw, dict):
         raise ProtocolError("response must be object")
@@ -190,13 +154,9 @@ def parse_systemone_response(
     extra = set(answers_raw) - set(questions)
     if extra:
         raise ProtocolError(f"unexpected answer ids: {sorted(extra)}")
-    if missing and not abstain_if_missing:
+    if missing:
         raise ProtocolError(f"missing answers: {sorted(missing)}")
-    parsed: dict[str, Answer] = {}
-    for qid, q in questions.items():
-        if qid not in answers_raw:
-            continue
-        parsed[qid] = parse_answer(qid, q, answers_raw[qid])
+    parsed = {qid: parse_answer(qid, q, answers_raw[qid]) for qid, q in questions.items()}
     usage_raw = raw.get("usage") or {}
     if not isinstance(usage_raw, dict):
         raise ProtocolError("usage must be object")
@@ -208,13 +168,10 @@ def parse_systemone_response(
         if isinstance(val, bool) or type(val) is not int or val < 0:
             raise ProtocolError(f"usage.{key} must be a non-negative int")
         usage_kwargs[key] = val
-    abstain = bool(missing) if abstain_if_missing else False
     return ParsedResponse(
         model=str(raw.get("model") or ""),
         answers=parsed,
         usage=Usage(**usage_kwargs),
-        abstain=abstain,
-        abstain_reason="missing_answers" if abstain else None,
     )
 
 

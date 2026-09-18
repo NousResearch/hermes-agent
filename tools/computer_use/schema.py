@@ -38,7 +38,7 @@ _PROPERTIES: Dict[str, Any] = {
         ],
         "description": (
             "Which action to perform. For a multi-step desktop or browser goal, prefer `run_goal` "
-            "so System-One (rules → reranker → aux → Jev) drives decide→act without a frontier-model "
+            "so System-One (rules → reranker → Jev) drives decide→act without a frontier-model "
             "round trip; if it fail-opens, fall back to `capture` then click/type. `decide` is one "
             "typed step. `navigate` opens a URL (new tab if a page is already loaded) on the browser "
             "backend. `capture` is free. All other actions require approval unless auto-approved."

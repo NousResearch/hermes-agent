@@ -68,9 +68,9 @@ def test_broken_stage_abstains():
 
 def test_verifier_veto_fails_open():
     decider = lambda state, cands: Decision(
-        action="click", target_ref="b1", confidence=0.95, backend="aux")
+        action="click", target_ref="b1", confidence=0.95, backend="reranker")
     decision, packet = run_decision_lane(
-        SemanticState(), (_cand("b1", "x"),), aux=decider, verifier=lambda s, d: False)
+        SemanticState(), (_cand("b1", "x"),), reranker=decider, verifier=lambda s, d: False)
     assert decision is None
     assert packet.verifier_outcome == "veto"
 
@@ -85,9 +85,9 @@ def test_jev_stage_skipped_without_key_or_callable(monkeypatch):
 def test_packet_round_trip_and_no_pixels_or_secrets():
     decider = lambda state, cands: Decision(
         action="type", target_ref="f1", needs_generation=True,
-        confidence=0.9, backend="aux")
+        confidence=0.9, backend="reranker")
     _, packet = run_decision_lane(
-        SemanticState(goal_hint="name"), (_cand("f1", "Name"),), aux=decider)
+        SemanticState(goal_hint="name"), (_cand("f1", "Name"),), reranker=decider)
     clone = DecisionPacket.from_dict(packet.to_dict())
     assert clone == packet
     blob = repr(packet.to_dict()).lower()

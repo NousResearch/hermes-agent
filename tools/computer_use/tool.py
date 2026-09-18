@@ -406,20 +406,6 @@ def _elements_to_candidates(elements):
         for el in (elements or [])
     )
 
-def _persist_decision_packet(packet) -> Optional[str]:
-    home = os.environ.get("HERMES_HOME", "").strip()
-    if not home:
-        return None
-    folder = os.path.join(home, "cache", "computer_use")
-    try:
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"decision_{uuid.uuid4().hex}.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(packet.to_dict(), fh, ensure_ascii=False, indent=1)
-        return path
-    except OSError:
-        return None
-
 def _decide_hint(decision) -> str:
     if decision.done:
         return "Goal appears complete on the current screen."
@@ -434,18 +420,18 @@ def _decide_hint(decision) -> str:
             f"(backend={decision.backend}, conf={decision.confidence:.2f}).")
 
 def _do_decide(backend, action, args, session_id=None, **_):
-    """System-One lane: rules → reranker → aux → Jev. Fail-open to the planner."""
+    """System-One lane: rules → reranker → Jev. Fail-open to the planner."""
     goal = (args.get("goal") or args.get("goal_hint") or "").strip()
     if not goal:
         return json.dumps({"error": "decide requires `goal`"})
     from tools.computer_use.decision_lane import jev_available, run_decision_lane, SemanticState
-    from tools.computer_use.decision_stages import aux_stage, jev_stage, reranker_stage
+    from tools.computer_use.decision_stages import jev_stage, reranker_stage
     cap = backend.capture(mode="ax", app=args.get("app"),
                           **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     candidates = _elements_to_candidates(cap.elements)
     state = SemanticState(elements=candidates, busy=bool(args.get("busy")), goal_hint=goal)
     decision, packet = run_decision_lane(
-        state, candidates, reranker=reranker_stage, aux=aux_stage, jev=jev_stage,
+        state, candidates, reranker=reranker_stage, jev=jev_stage,
     )
     payload: Dict[str, Any] = {
         "ok": True,
@@ -453,7 +439,6 @@ def _do_decide(backend, action, args, session_id=None, **_):
         "fail_open": decision is None,
         "jev_available": jev_available(),
         "decision_packet": packet.to_dict(),
-        "decision_packet_path": _persist_decision_packet(packet),
         "app": cap.app,
         "window_title": cap.window_title,
         "element_count": len(candidates),

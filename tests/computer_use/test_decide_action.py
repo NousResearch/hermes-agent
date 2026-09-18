@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 
 from tools.computer_use import tool as cu_tool
 from tools.computer_use.backend import CaptureResult, UIElement
 from tools.computer_use.decision_lane import ElementCandidate, SemanticState
 from tools.computer_use.decision_stages import (
-    _parse_aux_json,
-    aux_stage,
     build_jev_questions,
     jev_stage,
     parse_jev_response,
@@ -64,40 +61,6 @@ def test_parse_jev_response_done():
     decision = parse_jev_response(parsed, (ElementCandidate("1", "OK"),))
     assert decision is not None
     assert decision.action == "done" and decision.done is True
-
-
-def test_parse_aux_json_maps_target_ref():
-    cands = (ElementCandidate("2", "Submit", role="button"),)
-    decision = _parse_aux_json(
-        '{"action":"click","target_ref":"2","confidence":0.9}', cands
-    )
-    assert decision is not None
-    assert decision.action == "click" and decision.target_ref == "2"
-
-
-def test_parse_aux_json_abstains_on_invalid():
-    cands = (ElementCandidate("1", "OK", role="button"),)
-    assert _parse_aux_json("not json", cands) is None
-    assert _parse_aux_json('{"action":"click","confidence":0.9}', cands) is None
-
-
-def test_aux_stage_uses_call_llm(monkeypatch):
-    cands = (ElementCandidate("5", "Submit", role="button"),)
-    state = SemanticState(goal_hint="press submit", elements=cands)
-
-    class _Msg:
-        content = '{"action":"click","target_ref":"5","confidence":0.88}'
-
-    class _Choice:
-        message = _Msg()
-
-    class _Resp:
-        choices = [_Choice()]
-
-    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: _Resp())
-    decision = aux_stage(state, cands)
-    assert decision is not None
-    assert decision.backend == "aux" and decision.target_ref == "5"
 
 
 def test_jev_stage_uses_injected_transport(monkeypatch):

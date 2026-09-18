@@ -1,4 +1,4 @@
-"""Pluggable decision-lane stages: reranker, Jev, and state rendering (#113850)."""
+"""Reranker + Jev stages for the computer-use decision lane (#113850)."""
 
 from __future__ import annotations
 
@@ -59,85 +59,8 @@ def _tokenize(text: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if t}
 
 
-def _parse_aux_json(content: str, candidates: tuple[ElementCandidate, ...]) -> Decision | None:
-    """Map aux-LLM JSON to a lane Decision. Abstains on parse/validation errors."""
-    stripped = (content or "").strip()
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[-1]
-        if stripped.endswith("```"):
-            stripped = stripped[:-3].strip()
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    action = str(parsed.get("action") or "").strip().lower()
-    if action not in _ACTION_CRITERIA:
-        return None
-    try:
-        confidence = float(parsed.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        return None
-    if not 0.0 <= confidence <= 1.0:
-        return None
-    live_refs = {c.ref for c in candidates if c.enabled}
-    target_ref = parsed.get("target_ref")
-    if target_ref is not None:
-        target_ref = str(target_ref)
-    elif parsed.get("target_element") is not None:
-        target_ref = str(parsed.get("target_element"))
-    if action in {"click", "type"}:
-        if not target_ref or target_ref not in live_refs:
-            return None
-    elif target_ref and target_ref not in live_refs:
-        target_ref = None
-    needs_vision = bool(parsed.get("needs_vision"))
-    needs_generation = bool(parsed.get("needs_generation"))
-    done = action == "done" or bool(parsed.get("done"))
-    return Decision(
-        action=action,
-        target_ref=target_ref if action in {"click", "type"} else None,
-        needs_vision=needs_vision,
-        needs_generation=needs_generation,
-        done=done,
-        confidence=confidence,
-        backend="aux",
-    )
-
-
-def aux_stage(state: SemanticState, candidates: tuple[ElementCandidate, ...]) -> Decision | None:
-    """Fast auxiliary LLM stage. Abstains when no provider resolves or parse fails."""
-    state_text = render_state_text(state, candidates)
-    prompt = (
-        "You are a desktop automation controller. Given the accessibility tree below, "
-        'reply with ONLY JSON: {"action":"click|type|key|scroll|wait|done|escalate", '
-        '"target_ref":"<element ref or null>", "confidence":0-1, '
-        '"needs_vision":false, "needs_generation":false}. '
-        "Pick the best next step toward the GOAL. Use target_ref from the [ref] ids.\n\n"
-        + state_text
-    )
-    try:
-        from agent.auxiliary_client import call_llm
-
-        response = call_llm(
-            task="default",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
-            temperature=0,
-        )
-        content = ""
-        try:
-            content = response.choices[0].message.content or ""
-        except Exception:
-            content = str(response)
-    except Exception:
-        return None
-    return _parse_aux_json(content, candidates)
-
-
 def reranker_stage(state: SemanticState, candidates: tuple[ElementCandidate, ...]) -> Decision | None:
-    """Local semantic reranker: label overlap against goal_hint. Abstains on ambiguity."""
+    """Label overlap against goal_hint. Abstains on ambiguity."""
     hint = (state.goal_hint or "").strip()
     if not hint:
         return None
@@ -145,9 +68,6 @@ def reranker_stage(state: SemanticState, candidates: tuple[ElementCandidate, ...
     if not live:
         return None
     hint_lower = hint.lower()
-    exact = [c for c in live if c.label.strip().lower() == hint_lower]
-    if len(exact) == 1:
-        return Decision(action="click", target_ref=exact[0].ref, confidence=0.88, backend="reranker")
     hint_tokens = _tokenize(hint)
     if not hint_tokens:
         return None
@@ -330,6 +250,6 @@ def jev_stage(state: SemanticState, candidates: tuple[ElementCandidate, ...]) ->
     state_text = render_state_text(state, candidates)
     try:
         parsed = ask(http_transport, state_text, questions, model=_jev_model())
-    except (TransportError, Exception):
+    except Exception:
         return None
     return parse_jev_response(parsed, candidates)

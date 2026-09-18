@@ -74,6 +74,21 @@ function mountActions() {
   return { ...result, navigate, requestGateway }
 }
 
+function mountSlashCommand(startFreshSessionDraft: () => void) {
+  return renderHook(() =>
+    useSlashCommand({
+      activeSessionIdRef: { current: 'existing-runtime' },
+      busyRef: { current: false },
+      selectedStoredSessionIdRef: { current: null },
+      startFreshSessionDraft,
+      requestGateway: vi.fn(async () => ({})),
+      copy: {},
+      getRoutedStoredSessionId: () => null,
+      getRuntimeIdForStoredSession: () => null
+    } as never)
+  )
+}
+
 beforeEach(() => {
   _resetSessionOwnerHintsForTests()
   $defaultProfileRoute.set(null)
@@ -139,18 +154,7 @@ describe('generic new session default routing', () => {
       await act(() => result.current.openNewSessionTile('right'))
     } else {
       if (action === 'slash') {
-        const slash = renderHook(() =>
-          useSlashCommand({
-            activeSessionIdRef: { current: 'existing-runtime' },
-            busyRef: { current: false },
-            selectedStoredSessionIdRef: { current: null },
-            startFreshSessionDraft: result.current.startFreshSessionDraft,
-            requestGateway: vi.fn(async () => ({})),
-            copy: {},
-            getRoutedStoredSessionId: () => null,
-            getRuntimeIdForStoredSession: () => null
-          } as never)
-        )
+        const slash = mountSlashCommand(result.current.startFreshSessionDraft)
 
         await act(() => slash.result.current('/new'))
       } else {
@@ -223,19 +227,7 @@ describe('generic new session default routing', () => {
     async query => {
       window.history.replaceState(null, '', query)
       const { result } = mountActions()
-
-      const slash = renderHook(() =>
-        useSlashCommand({
-          activeSessionIdRef: { current: 'existing-runtime' },
-          busyRef: { current: false },
-          selectedStoredSessionIdRef: { current: null },
-          startFreshSessionDraft: result.current.startFreshSessionDraft,
-          requestGateway: vi.fn(async () => ({})),
-          copy: {},
-          getRoutedStoredSessionId: () => null,
-          getRuntimeIdForStoredSession: () => null
-        } as never)
-      )
+      const slash = mountSlashCommand(result.current.startFreshSessionDraft)
 
       await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
       await act(() => slash.result.current('/new'))

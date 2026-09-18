@@ -1,20 +1,29 @@
-# tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
+# tui_gateway/ + ui-tui/ + crates/tui/ — the TUI and its JSON-RPC backend
 
 Applies on top of the root `AGENTS.md`. The TUI fully replaces the classic prompt_toolkit CLI;
 activate with `hermes --tui` or `HERMES_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
 and the dashboard `/chat` talk to — changes here have three consumers.
 
+Ink (`ui-tui/`) is the default screen client. An experimental native client (`crates/tui/`,
+binary `hermes-tui-native`) speaks the same newline-delimited JSON-RPC and is opt-in via
+`hermes --tui --native` or `HERMES_TUI_NATIVE=1`. Do not replace Ink or change the
+`hermes --tui` default until the native client has soak time. The dashboard PTY embed always
+stays on Ink (`HERMES_TUI_DASHBOARD=1` ignores the native opt-in). `--dev` is Ink-only.
+
 ## Process model
 
 ```
 hermes --tui
-  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
+  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)     # default
        │                                  └─ AIAgent + tools + sessions
        └─ renders transcript, composer, prompts, activity
+
+hermes --tui --native
+  └─ hermes-tui-native (ratatui) ──stdio JSON-RPC──  Python (tui_gateway)
 ```
 
-TypeScript owns the screen. Python owns sessions, tools, model calls, and slash-command logic.
-Never move agent behaviour into the renderer.
+The screen client (Ink or ratatui) owns drawing and local overlays. Python owns sessions, tools,
+model calls, and slash-command logic. Never move agent behaviour into the renderer.
 
 ## Transport
 

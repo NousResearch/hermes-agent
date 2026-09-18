@@ -388,7 +388,7 @@ test.describe('inbox view-only gallery', () => {
     await row.click()
   })
 
-  test('context fallback button and panel close', async () => {
+  test('open full chat escalation button and panel close', async () => {
     const p = fixture.page
     await openInbox(p)
     await waitForRows(p)
@@ -397,10 +397,9 @@ test.describe('inbox view-only gallery', () => {
     const row = p.locator('[data-panel-row="gallery-goals"]')
     await row.click()
     await p.waitForTimeout(500)
-    await expect(p.getByText('Exact request location unavailable')).toBeVisible()
-    const btn = p.getByRole('button', { name: /open chat for context/i })
+    const btn = p.getByRole('button', { name: /open full chat/i })
     await expect(btn).toBeVisible()
-    await shot(p, 'context-fallback.png', 'context', 'Context button visible')
+    await shot(p, 'context-fallback.png', 'context', 'Open full chat stays the escalation beside the inline context')
     await btn.click()
     await p.waitForTimeout(1000)
     await expect(p.getByRole('heading', { name: 'Agent Inbox' })).not.toBeVisible()

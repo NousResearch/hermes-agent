@@ -128,22 +128,25 @@ _ORPHAN_CONTIGUITY_DONORS_SQL = f"""
                         ORDER BY last_active DESC
                         LIMIT 2
                         """
-_TOPIC_TABLE_NAMES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
+_OPTIONAL_TABLE_NAMES = (
+    "telegram_dm_topic_mode", "telegram_dm_topic_bindings", "delivery_obligations")
 
 
-def _topic_table_columns(conn) -> Dict[str, Set[str]]:
-    """Live column sets of the Telegram topic tables that exist (``{}`` when none do).
+def _optional_table_columns(conn) -> Dict[str, Set[str]]:
+    """Live column sets of the lazily-created tables that exist (``{}`` when none do).
 
     ``apply_telegram_topic_migration`` runs only on explicit ``/topic`` opt-in, so a store
-    can hold supported v1/v2 tables without ``profile_name`` for its whole life. Identity
-    settlement must gate its ``profile_name`` SQL on the column actually being there rather
-    than on table existence, and must not force that migration (#113757).
+    can hold supported v1/v2 tables without ``profile_name`` for its whole life; likewise the
+    delivery ledger adds ``delivery_obligations.adapter_profile`` only when a gateway opens
+    it. Identity settlement must gate its column SQL on the column actually being there
+    rather than on table existence, and must not force those migrations (#113757).
     """
     existing = {row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)", _TOPIC_TABLE_NAMES)}
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
+        _OPTIONAL_TABLE_NAMES)}
     return {
         table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
-        for table in _TOPIC_TABLE_NAMES if table in existing
+        for table in _OPTIONAL_TABLE_NAMES if table in existing
     }
 
 
@@ -577,7 +580,7 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            topic_columns = _topic_table_columns(conn)
+            topic_columns = _optional_table_columns(conn)
             collision = conn.execute(
                 "SELECT old.scope, ? || substr(old.session_key, ?) "
                 "FROM gateway_routing AS old JOIN gateway_routing AS target "
@@ -628,9 +631,10 @@ class SessionGatewayMixin:
             counts["sessions_origin_json"] = origin_count
 
             if "delivery_obligations" in existing:
-                counts["delivery_obligations_adapter_profile"] = conn.execute(
-                    "UPDATE delivery_obligations SET adapter_profile = ? WHERE adapter_profile = ?",
-                    (new, old)).rowcount
+                if "adapter_profile" in topic_columns.get("delivery_obligations", set()):
+                    counts["delivery_obligations_adapter_profile"] = conn.execute(
+                        "UPDATE delivery_obligations SET adapter_profile = ? WHERE adapter_profile = ?",
+                        (new, old)).rowcount
                 counts["delivery_obligations_session_key"] = conn.execute(
                     "UPDATE delivery_obligations SET session_key = ? || substr(session_key, ?) "
                     "WHERE substr(session_key, 1, ?) = ?",
@@ -706,7 +710,7 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            topic_columns = _topic_table_columns(conn)
+            topic_columns = _optional_table_columns(conn)
             if "gateway_routing" in existing:
                 counts["gateway_routing"] = conn.execute(
                     "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
@@ -718,11 +722,15 @@ class SessionGatewayMixin:
                 # Terminalize, never hard-delete: a pending obligation is delivery state someone may
                 # still care about, and the ledger's own retention prunes abandoned rows. Only
                 # non-terminal rows are touched — delivered history is left exactly as it was.
+                # A ledger created before ``adapter_profile`` existed matches on namespace alone.
+                by_profile = ("adapter_profile = ? OR "
+                              if "adapter_profile" in topic_columns.get("delivery_obligations", set())
+                              else "")
+                params = (time.time(), name, ns_len, ns) if by_profile else (time.time(), ns_len, ns)
                 counts["delivery_obligations"] = conn.execute(
                     "UPDATE delivery_obligations SET state='abandoned', updated_at=? "
-                    "WHERE (adapter_profile = ? OR substr(session_key, 1, ?) = ?) "
-                    "AND state NOT IN ('delivered', 'abandoned')",
-                    (time.time(), name, ns_len, ns)).rowcount
+                    f"WHERE ({by_profile}substr(session_key, 1, ?) = ?) "
+                    "AND state NOT IN ('delivered', 'abandoned')", params).rowcount
             if "profile_name" in topic_columns.get("telegram_dm_topic_mode", set()):
                 counts["telegram_dm_topic_mode"] = conn.execute(
                     "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount

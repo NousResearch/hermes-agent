@@ -44,6 +44,24 @@ def _create_legacy_v2_topic_tables(db):
     """)
 
 
+def _create_legacy_ledger_without_adapter_profile(db):
+    """The delivery_obligations shape before ``adapter_profile`` was added (ledger never reopened)."""
+    db._write_sql("""
+        CREATE TABLE delivery_obligations (
+            obligation_id TEXT PRIMARY KEY, session_key TEXT NOT NULL,
+            platform TEXT NOT NULL, chat_id TEXT NOT NULL, thread_id TEXT, content TEXT NOT NULL,
+            state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            owner_pid INTEGER, owner_started_at INTEGER, last_error TEXT
+        )
+    """)
+    for oid, key in (("ob_gone", "agent:gone:feishu:dm:chatA"), ("ob_keep", "agent:keepme:feishu:dm:chatB")):
+        db._write_sql(
+            "INSERT INTO delivery_obligations (obligation_id, session_key, platform, chat_id, "
+            "content, state, created_at, updated_at) VALUES (?, ?, 'feishu', 'c', 'hi', 'pending', 1, 1)",
+            (oid, key))
+
+
 def _write_obligation(db, monkeypatch, obligation_id, session_key, chat_id, profile,
                       state="pending"):
     """delivery_obligations is created lazily by the delivery ledger against the same state.db."""
@@ -203,3 +221,14 @@ class TestPurgeProfileState:
         assert db._read_one(
             "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
         )["session_key"] == "agent:keepme:telegram:dm:chatB"
+
+    def test_purges_legacy_ledger_without_adapter_profile_by_session_key(self, db):
+        """A ledger created before adapter_profile existed is settled on its namespace alone."""
+        _create_legacy_ledger_without_adapter_profile(db)
+
+        counts = db.purge_profile_state("gone")
+
+        assert counts["delivery_obligations"] == 1
+        states = {row["obligation_id"]: row["state"] for row in db._read_all(
+            "SELECT obligation_id, state FROM delivery_obligations")}
+        assert states == {"ob_gone": "abandoned", "ob_keep": "pending"}

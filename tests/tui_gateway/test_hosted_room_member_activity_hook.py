@@ -68,7 +68,7 @@ def test_room_member_session_events_reach_plugins_with_room_coordinates(observer
         # An approval is a server→client REQUEST frame, not an event; it is member activity all the same.
         from tui_gateway import server_requests
         server_requests.send_async("approval", "room-sid", _approval("room-sid", "rm -rf build"),
-                                   lambda result: None)("answered")
+                                   lambda result: None)("resolved")
         server._emit("session.info", "room-sid", SessionInfoPayload(title="chrome, not member activity"))
         server._emit("tool.complete", "room-sid", ToolCompletePayload(tool_id="call-1", name="terminal", result="ok"))
     finally:
@@ -92,7 +92,7 @@ def test_ordinary_session_events_never_fire_the_room_hook(observer):
     try:
         server._emit("tool.start", "plain-sid", ToolStartPayload(tool_id="call-1", name="terminal"))
         from tui_gateway import server_requests
-        server_requests.send_async("approval", "plain-sid", _approval("plain-sid", "ls"), lambda result: None)("answered")
+        server_requests.send_async("approval", "plain-sid", _approval("plain-sid", "ls"), lambda result: None)("resolved")
         server._emit("message.delta", "plain-sid", StreamDeltaPayload(text="hi"))
     finally:
         with server._sessions_lock:

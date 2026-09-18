@@ -7,6 +7,7 @@
  */
 
 import {
+  Button,
   cn,
   coarseElapsed,
   Codicon,
@@ -18,8 +19,15 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   haptic,
   host,
+  Input,
   queryClient,
   RowButton,
   SessionStatusDot,
@@ -28,6 +36,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -61,7 +70,7 @@ import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
-import { duplicateBot } from './profile-ops'
+import { duplicateBot, duplicateNameTaken, nextDuplicateName } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
@@ -118,6 +127,48 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
   const meta = botRosterMeta(bot, allMeta)
+  // Duplicate-with-name: the dialog's draft. Empty submission keeps the
+  // legacy auto-suffix ("<base>-2") behavior — the prompt is an offer, not a
+  // toll gate on the existing one-click path.
+  const [dupOpen, setDupOpen] = useState(false)
+  const [dupName, setDupName] = useState('')
+  const [dupError, setDupError] = useState<string | null>(null)
+
+  const submitDuplicate = () => {
+    const wanted = dupName.trim()
+
+    if (wanted && duplicateNameTaken(bot, $lastRoster.get(), wanted)) {
+      setDupError(`"${wanted}" is already one of your agents.`)
+
+      return
+    }
+
+    setDupOpen(false)
+    setDupError(null)
+    host.notify({
+      kind: 'info',
+      message: `Duplicating ${displayName(bot, meta)}…`
+    })
+    void duplicateBot(bot, $lastRoster.get(), wanted ? { name: wanted } : {})
+      .then(name => {
+        // Clear the field only on success: a rejected name must survive the
+        // retry, or the dialog reopens with the error next to an empty field.
+        setDupName('')
+        queryClient.invalidateQueries({
+          queryKey: ROSTER_KEY
+        })
+        host.notify({
+          kind: 'success',
+          message: `Created ${name} — full copy of ${bot.name}`
+        })
+      })
+      .catch(err => {
+        setDupError(String((err as Error)?.message || err))
+        setDupOpen(true)
+        host.notifyError(err, b.bot.duplicateFailed)
+      })
+  }
+
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
   const sourceStatus = botSourceStatus(bot)
@@ -317,29 +368,30 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   )
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() => {
-            void ensureBotMetadata(bot)
-              .then(current => {
-                const pinned = Boolean(current.pinned)
-                void saveBotMeta(bot, {
-                  pinned: !pinned
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() => {
+              void ensureBotMetadata(bot)
+                .then(current => {
+                  const pinned = Boolean(current.pinned)
+                  void saveBotMeta(bot, {
+                    pinned: !pinned
+                  })
+                  host.notify({
+                    kind: 'info',
+                    message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
+                  })
                 })
-                host.notify({
-                  kind: 'info',
-                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
-                })
-              })
-              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
-          }}
-        >
-          {pinned ? b.bot.unpin : b.bot.pinToTop}
-        </ContextMenuItem>
+                .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
+            }}
+          >
+            {pinned ? b.bot.unpin : b.bot.pinToTop}
+          </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {
             void ensureBotMetadata(bot)
@@ -386,21 +438,16 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {
-            host.notify({
-              kind: 'info',
-              message: `Duplicating ${displayName(bot, meta)}…`
-            })
-            duplicateBot(bot, $lastRoster.get())
-              .then(name => {
-                queryClient.invalidateQueries({
-                  queryKey: ROSTER_KEY
-                })
-                host.notify({
-                  kind: 'success',
-                  message: `Created ${name} — full copy of ${bot.name}`
-                })
-              })
-              .catch(err => host.notifyError(err, b.bot.duplicateFailed))
+            // Name-first duplicate: prefill "<base>-2" so one Enter keeps the
+            // exact legacy outcome, while the field lets the user own the new
+            // agent's identity before it exists (auto-suffix minted a name
+            // they could not choose or correct at creation).
+            // Same helper the operation uses: one rule for the base truncation
+            // (#19) and one for the connection scope, so the field shows the
+            // name `duplicateBot` would actually mint.
+            setDupName(nextDuplicateName(bot, $lastRoster.get()) ?? '')
+            setDupError(null)
+            setDupOpen(true)
           }}
         >
           {b.bot.duplicate}
@@ -457,8 +504,42 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             {t.common.delete}
           </ContextMenuItem>
         )}
-      </ContextMenuContent>
-    </ContextMenu>
+        </ContextMenuContent>
+      </ContextMenu>
+      <Dialog onOpenChange={setDupOpen} open={dupOpen}>
+        <DialogContent>
+          <form
+            onSubmit={event => {
+              event.preventDefault()
+              submitDuplicate()
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{b.bot.duplicate}</DialogTitle>
+              <DialogDescription>{b.bot.duplicateNameHint(bot.name)}</DialogDescription>
+            </DialogHeader>
+            <Input
+              aria-label={b.bot.duplicateNameLabel}
+              autoFocus
+              maxLength={64}
+              onChange={event => {
+                setDupName(event.target.value)
+                setDupError(null)
+              }}
+              placeholder={bot.name}
+              value={dupName}
+            />
+            {dupError ? <div className="text-xs text-red-400">{dupError}</div> : null}
+            <DialogFooter>
+              <Button onClick={() => setDupOpen(false)} type="button" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button type="submit">{t.common.confirm}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

@@ -39,6 +39,43 @@ class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead."""
 
 
+def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
+    """True when a stateless (``api_server``) destination's raw session id is canonically owned by
+    served *profile*'s own session store.
+
+    A shared-listener mirror platform has no chat/thread/guild anchor a ``profile_routes`` entry
+    could match, so the session store itself is the ownership proof: the row must exist in that
+    profile's ``state.db`` under its own home and carry that profile's stamp (a NULL legacy stamp
+    belongs to the store's own profile — the same rule the dashboard's session routes apply). An
+    unserved profile, a missing row, a row stamped for another profile, or an unreadable store all
+    fail closed. Shared by the Kanban notifier and the background-process wake path.
+    """
+    import contextlib
+    from pathlib import Path
+    if not session_id or not profile:
+        return False
+    profile = str(profile)
+    try:
+        from gateway.run import _multiplex_profile_homes
+        home = dict(_multiplex_profile_homes(config)).get(profile)
+        if home is None:
+            return False
+        from hermes_state import SessionDB
+        db = SessionDB(Path(home) / "state.db", read_only=True)
+    except Exception as exc:
+        logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
+        return False
+    try:
+        row = db.get_session(str(session_id))
+    except Exception as exc:
+        logger.debug("wake: session ownership lookup failed for %s/%s: %s", profile, session_id, exc)
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            db.close()
+    return bool(row) and (row.get("profile_name") or profile) == profile
+
+
 async def admit_internal_event(adapter: Any, event: Any) -> None:
     """Require a concrete adapter admission, not merely a handler returning None.
 

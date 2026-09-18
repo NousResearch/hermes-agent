@@ -1049,6 +1049,7 @@ class GatewayNotificationsMixin:
         self-post them as a new role=user prompt. Other watch events wake the session via self-post.
         """
         from gateway.wake import deliver_wake, persist_delegation_delivery
+        scope = contextlib.nullcontext()
         if evt.get("type") == "async_delegation":
             info = "Async delegation completion — persisting delivery row for api_server session %s (no wake turn)"
             fail = "Async delegation delivery persist failed for session %s: %s"
@@ -1057,15 +1058,50 @@ class GatewayNotificationsMixin:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
             from agent.notification_presentation import diagnostic_process_event
-            deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid,
+            try:
+                served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
+            except LookupError as e:
+                logger.warning(fail, raw_sid, e)
+                return False
+            if served:
+                # The wake runs in the OWNING profile's scope, in-process (see ``deliver_wake``):
+                # the raw event carries no profile, so a completion scope was never installed.
+                from gateway.run import _async_profile_runtime_scope
+                source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
+                scope = _async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+            deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid, profile=served,
                 notification_category="diagnostic" if diagnostic_process_event(evt) else "result")  # noqa: E731
         try:
             logger.info(info, raw_sid)
-            await deliver()
+            async with scope:
+                await deliver()
             return True
         except Exception as e:
             logger.warning(fail, raw_sid, e)
             return False
+
+    def _served_api_server_wake_profile(self, evt: dict, raw_sid: str) -> Optional[str]:
+        """The served (non-primary) profile whose own session store holds *raw_sid*, else ``None``
+        (the default profile's HTTP self-post). Blocking: reads served ``state.db`` files.
+
+        A served profile's ``api_server`` turn binds the RAW session id as its session key, so its
+        completion event names no profile: the only ownership proof is the served profile's own
+        store, exactly the rung the Kanban notifier applies. An event whose source DOES name a
+        served profile (structured key / persisted origin) must be owned by that profile or it
+        raises ``LookupError`` — never a wake in the default profile's store.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        from gateway.run import _multiplex_profile_homes
+        from gateway.wake import session_owned_by_profile
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        hinted = str(getattr(self._build_process_event_source(evt), "profile", None) or "").strip()
+        if hinted and hinted != primary:
+            if session_owned_by_profile(self.config, hinted, raw_sid):
+                return hinted
+            raise LookupError(f"session is not in served profile {hinted!r}'s own store")
+        return next((name for name, _home in _multiplex_profile_homes(self.config)
+                     if name != primary and session_owned_by_profile(self.config, name, raw_sid)), None)
 
     def _resolve_injection_adapter(self, platform_name: str, source=None):
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
@@ -1119,6 +1155,10 @@ class GatewayNotificationsMixin:
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = self._resolve_injection_adapter(platform_name, source)
+        if not adapter and platform_name == Platform.API_SERVER.value and getattr(source, "profile", None):
+            # A route-only served profile owns no adapter map; the shared listener wakes exactly the
+            # session that profile's store owns (proven in ``_self_post_api_server``), fail-closed.
+            adapter = self.adapters.get(Platform.API_SERVER)
         if not adapter:
             return False
         if not adapter_supports_push(adapter):

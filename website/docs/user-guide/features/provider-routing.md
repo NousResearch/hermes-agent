@@ -84,6 +84,8 @@ provider_routing:
     - "amazon-bedrock"
 ```
 
+Combining `:nitro` or `:floor` on the model id with `provider_routing.order` disables that variant's tier-admission. OpenRouter replaces the variant sort with your explicit `order`, so priority/flex endpoints are no longer admitted automatically. Hermes still sends `order` unchanged — the combination is valid when you list a tier-suffixed slug such as `openai/priority`, `openai/fast`, or `google-vertex/flex`. Sticky pin is not applied to `:nitro` / `:floor` models for the same reason.
+
 ### `require_parameters`
 
 When `true`, OpenRouter will only route to providers that support **all** parameters in your request (like `temperature`, `top_p`, `tools`, etc.). This avoids silent parameter drops.
@@ -124,8 +126,10 @@ provider_routing:
 Matching is spelling-tolerant like `agent.reasoning_overrides` (`claude-fable-5.1` / `claude-fable-5-1`,
 with or without the `openrouter/` prefix). The override follows the model the agent is *currently* on, so
 `/model` switches, fallback activation, cron jobs, and delegated subagents on another model each get their
-own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
-reads as path separators.
+own pins. Pinning a provider per model also keeps OpenRouter's prompt cache warm: repeatedly hitting the
+same upstream provider preserves the cached prefix, while load-balancing across providers loses it.
+Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
+reads as path separators. `provider_routing` itself is an open dict, so `hermes config set provider_routing.sticky_order.enabled true` and `provider_routing.models.*` paths are accepted without `--force`.
 
 ## Practical Examples
 
@@ -190,9 +194,54 @@ provider_routing:
   require_parameters: true
 ```
 
+### Sticky Order
+
+A manual `order` turns off [OpenRouter's own sticky routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching). Without a pin, the aggregator may hop to a different upstream provider on every request. Prompt cache is **not** shared across those providers, so a long agent session can repay the full prefill on each hop.
+
+`sticky_order` is an opt-in pin (default **off**). Hermes sends only the current slug from the resolved `order` — intersected with `only` if you set one — and rotates to the next slug when that provider fails. Per-model overlay (`models.<id>`) is applied at request time first; the pin then lands **inside** that already-overlaid pool. Turn it on for long agent sessions that use `order` and pay a meaningful prefill.
+
+A **logical request** is each model API call — including every tool-loop round inside a user turn, and the iteration-limit summary. An idle gap longer than `ttl_seconds` between any two of those calls resets the pin to `pool[0]`. In-request retry backoff (retries of the same API call) does not count as idle.
+
+```yaml
+provider_routing:
+  order: ["z-ai/fp8", "novita/fp8"]
+  sticky_order:
+    enabled: true      # default false — opt-in
+    ttl_seconds: 600   # default 600
+```
+
+| Event | What happens |
+|-------|----------------|
+| Timeout or overload | Rotate the pin, then retry the same logical request on the next slug. These two classes also use the deferred eager-fallback gate: model fallback waits until every pool slug has produced one of these errors |
+| Server error (5xx) | Rotate the pin and retry on the next slug. `server_error` is **not** added to the transport-failure eager-fallback class — after retries it follows the normal (non-deferred) fallback path |
+| Rate limit (429) or empty/invalid response | Stay on the current slug. Normal retry / model-fallback still applies — these errors do not walk the pin pool |
+| Every slug has failed with timeout or overload | Eager transport-failure model fallback may fire (not before the last slug has failed). This delays OpenRouter-level fallback until the local pool is exhausted |
+| Idle longer than `ttl_seconds` between logical requests | Reset to the first slug (every provider's cache is already cold). In-request retry backoff does not count as idle |
+| A single eligible slug (pool of one) | Pins without rotation |
+
+If `order ∩ only` is empty, `sticky_order` silently disables with a warning in the log. With no `order` at all, the feature is a no-op — it does not rotate over a bare `only` list.
+
+The pin applies on full-agent paths that actually resolve a sticky pool (`providers_order` / `only`): the main conversation, session summary, subagents, and cron. Batch workers do not receive the flat constructor routing args (`providers_order`, `only`, and the rest) from `config.yaml` — those land only when the batch CLI passes them. The request-time per-model overlay (`provider_routing.models.<id>`) and sticky bind still apply from config when configured. State is per-agent and is never persisted to SessionDB or written into the prompt. A delegated child is a new agent and never inherits the parent's pin object.
+
+Transient connection drops retry on the same provider first (bounded `HERMES_STREAM_RETRIES` micro-retries) so a warm prompt cache is not thrown away. The pin rotates only when the failure classifies as provider-unhealthy (`timeout` / `overloaded` / `server_error`) after those retries are exhausted.
+
+Sticky is live only on the native OpenRouter **chat-completions** path. Nous Portal is excluded: the Portal ignores or rejects the `provider` object. `custom:` endpoints are not live — sticky requires the transport to actually send a `provider` object. Any other `api_mode` (`anthropic_messages`, `codex_responses`, and future modes) and direct provider connections are a no-op.
+
+Sticky is not applied to `@preset/` models. Request-level provider routing for those models is unchanged. Sticky is also not applied to `:nitro` / `:floor` models — `provider.order` disables their tier-admission. Configured `order` is still sent unchanged; to keep tier endpoints eligible, name a tier-suffixed slug in `order` (see [`order`](#order)).
+
+Sticky is also off for OpenRouter speed-tier models (`openai/gpt-6-astra`, `openai/gpt-6-astra-pro`, and their `-fast` / `-flex` slugs). The OpenRouter plugin owns `provider.only` for those endpoints; a sticky pin would make `order` and `only` disjoint.
+
+Light auxiliary calls through `agent/auxiliary_client.py` (title generation, vision, compression, and other `auxiliary.<task>` work) never receive the sticky pin. Configure those independently under `auxiliary.<task>.extra_body`.
+
+Precedence: per-model `provider_routing.models.<model>` wins over the flat `provider_routing` keys; sticky then narrows `order` to the active slug **inside** that already-resolved pool. When you also configured `only`, sticky narrows that list to the active slug as well.
+
 ## How It Works
 
-Provider routing preferences are passed to OpenRouter on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
+Provider routing preferences (`order`, `only`, and the rest of the `provider` object) are passed via the `extra_body.provider` field on agent chat requests and iteration-limit summaries wherever the active profile emits provider prefs. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Per-model `provider_routing.models.<id>` overlays those prefs at request time from the current `agent.model`.
+
+The sticky pin itself (`order=[active_slug]`, `allow_fallbacks=false`) is applied only on native OpenRouter. Regular (non-sticky) `provider_routing` `order`/`only` is unchanged and is still emitted wherever the profile already sends provider preferences.
+
+Light auxiliary tasks that go through `agent/auxiliary_client.py` are configured independently under `auxiliary.<task>.extra_body`. Those calls never receive the sticky pin.
 
 - **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
 - **Gateway mode** — same config file, loaded when the gateway starts
@@ -207,6 +256,8 @@ provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
 provider_data_collection    ← from provider_routing.data_collection
 ```
+
+Per-model `models.<id>` overlays those constructor values again at request time. Sticky then narrows the overlaid `order` (and `only`, when set) to the active slug.
 
 :::tip
 You can combine multiple options. For example, sort by price but exclude certain providers and require parameter support:

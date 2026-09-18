@@ -446,7 +446,9 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
 
     ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
     ``agent.model`` (so ``/model`` switches, fallbacks, and delegated children on another
-    model each get their own pins without any surface re-plumbing the kwargs)."""
+    model each get their own pins without any surface re-plumbing the kwargs). Sticky
+    then pins inside that already-resolved pool.
+    """
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
         "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
         "data_collection": agent.provider_data_collection}
@@ -459,7 +461,25 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
     merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
     merged["require_parameters"] = True if merged["require_parameters"] else None
-    return {key: value for key, value in merged.items() if value}
+    preferences = {key: value for key, value in merged.items() if value}
+    try:
+        from agent.sticky_provider_order import (
+            apply_sticky_order_to_preferences,
+            maybe_warn_nitro_floor_order,
+            maybe_warn_speed_tier_sticky,
+        )
+
+        # * Overlay first (above); pin second. This composer must not bind,
+        # rotate, or start TTLs — begin_sticky_logical_request owns that.
+        preferences = apply_sticky_order_to_preferences(agent, preferences)
+        maybe_warn_nitro_floor_order(agent, preferences)
+        maybe_warn_speed_tier_sticky(agent, preferences)
+    except Exception:
+        logger.warning(
+            "sticky_provider_order: failed to apply pin to preferences",
+            exc_info=True,
+        )
+    return preferences
 
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
@@ -547,6 +567,42 @@ def _codex_wait_notice_recovery(*, stale_timeout: float, ttfb_enabled: bool, ttf
 # restore_primary_runtime — the streak measured the OLD provider). Past the
 # give-up threshold, calls abort immediately with an actionable error.
 
+_STALE_PIN_UNSET = object()
+
+
+def _current_stale_pin_slug(agent):
+    """Pinned OpenRouter slug when sticky is live; else None (unscoped)."""
+    try:
+        from agent.sticky_provider_order import sticky_is_live, sticky_state
+
+        if not sticky_is_live(agent):
+            return None
+        state = sticky_state(agent)
+        return state.active_slug if state is not None else None
+    except Exception:
+        logger.debug("stale pin slug lookup failed", exc_info=True)
+        return None
+
+
+def _align_stale_streak_to_pin(agent) -> None:
+    """Reset the shared stale counter when the pinned slug changes.
+
+    A new slug must get a real request. A latched streak on the *current*
+    slug still short-circuits that slug (rotation happens on the abort).
+    """
+    try:
+        slug = _current_stale_pin_slug(agent)
+        prev = getattr(agent, "_stale_stream_pin_slug", _STALE_PIN_UNSET)
+        if prev is _STALE_PIN_UNSET:
+            agent._stale_stream_pin_slug = slug
+            return
+        if slug != prev:
+            agent._consecutive_stale_streams = 0
+            agent._stale_stream_pin_slug = slug
+    except Exception:
+        logger.debug("stale streak pin alignment failed", exc_info=True)
+
+
 def _stale_streak(agent) -> int:
     try:
         return int(getattr(agent, "_consecutive_stale_streams", 0) or 0)
@@ -556,12 +612,15 @@ def _stale_streak(agent) -> int:
 
 def _bump_stale_streak(agent) -> None:
     with contextlib.suppress(Exception):
+        _align_stale_streak_to_pin(agent)
         agent._consecutive_stale_streams = _stale_streak(agent) + 1
 
 
 def _reset_stale_streak(agent) -> None:
     with contextlib.suppress(Exception):
+        _align_stale_streak_to_pin(agent)
         agent._consecutive_stale_streams = 0
+        agent._stale_stream_pin_slug = _current_stale_pin_slug(agent)
 
 
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
@@ -605,6 +664,7 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
 def _check_stale_giveup(agent) -> None:
     """Raise immediately when the consecutive-stale streak is past the
     give-up threshold — no network attempt, no stale-timeout wait."""
+    _align_stale_streak_to_pin(agent)
     _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
     if _giveup > 0 and _streak >= _giveup:
@@ -2091,6 +2151,16 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
+
+    try:
+        from agent.sticky_provider_order import note_sticky_attempt
+
+        note_sticky_attempt(agent)
+    except Exception:
+        logger.warning(
+            "sticky_provider_order: failed to note summary attempt",
+            exc_info=True,
+        )
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
@@ -2138,6 +2208,16 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
     # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
     # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
+    # * Summary is its own logical request: bind/TTL before prefs rebuild.
+    try:
+        from agent.sticky_provider_order import begin_sticky_logical_request
+
+        begin_sticky_logical_request(agent)
+    except Exception:
+        logger.warning(
+            "sticky_provider_order: failed to begin logical request for summary",
+            exc_info=True,
+        )
     summary_kwargs = agent._build_api_kwargs(api_messages)
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
@@ -2148,7 +2228,59 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
         return _summary_text(agent, response)
+    # * Same kwargs object is refreshed after a sticky rotation (provider
+    # block only). begin_sticky_logical_request / TTL must not re-run.
+    _attempt.summary_kwargs = summary_kwargs
     return _attempt
+
+
+def _refresh_summary_provider_block(agent, summary_kwargs) -> None:
+    """Rebuild extra_body.provider after a sticky rotation. Does not re-bind."""
+    if not isinstance(summary_kwargs, dict):
+        return
+    extra_body = summary_kwargs.get("extra_body")
+    if not isinstance(extra_body, dict) or "provider" not in extra_body:
+        return
+    extra_body["provider"] = _provider_preferences_for_agent(agent)
+
+
+def _classify_summary_error(agent, exc: Exception):
+    """Classify a summary failure; None on fail-open."""
+    try:
+        from agent.error_classifier import classify_api_error
+
+        return classify_api_error(
+            exc,
+            provider=str(getattr(agent, "provider", "") or ""),
+            model=str(getattr(agent, "model", "") or ""),
+        )
+    except Exception:
+        logger.warning(
+            "sticky_provider_order: failed to classify summary error",
+            exc_info=True,
+        )
+        return None
+
+
+def _try_rotate_summary_and_refresh(agent, exc: Exception, summary_kwargs, classified=None) -> bool:
+    """Rotate on timeout/overloaded/server_error and refresh prefs. False = no retry."""
+    try:
+        from agent.sticky_provider_order import rotate_sticky_on_classified_error
+
+        if classified is None:
+            classified = _classify_summary_error(agent, exc)
+        if classified is None or getattr(classified, "is_empty_or_invalid", False):
+            return False
+        if not rotate_sticky_on_classified_error(agent, classified):
+            return False
+        _refresh_summary_provider_block(agent, summary_kwargs)
+        return True
+    except Exception:
+        logger.warning(
+            "sticky_provider_order: failed to rotate on classified error",
+            exc_info=True,
+        )
+        return False
 
 
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
@@ -2180,11 +2312,44 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
+        # Rotation-worthy classified failures (timeout/overloaded/server_error) retry
+        # on the next slug inside this logical request. Budget is the same
+        # rotate_sticky_on_classified_error cap (≤ len(pool)-1). rate_limit /
+        # empty / invalid do not rotate.
         final_response = _EMPTY_SUMMARY_RESPONSE
-        for retry_count in (0, 1):
-            text = attempt(retry_count)
+        attempt_index = 0
+        empty_retries = 0
+        while True:
+            try:
+                text = attempt(attempt_index)
+            except Exception as e:
+                logger.warning("Failed to get summary response: %s", e)
+                summary_kwargs = getattr(attempt, "summary_kwargs", None)
+                classified = _classify_summary_error(agent, e)
+                from agent.turn_failure_copy import site_copy
+                # * Empty/invalid stays on this slug for the one empty retry.
+                if classified is not None and getattr(classified, "is_empty_or_invalid", False):
+                    if empty_retries < 1:
+                        empty_retries += 1
+                        attempt_index += 1
+                        continue
+                    final_response = site_copy(
+                        "max_iterations_no_summary", limit=agent.max_iterations
+                    )
+                    break
+                if _try_rotate_summary_and_refresh(agent, e, summary_kwargs, classified):
+                    attempt_index += 1
+                    continue
+                final_response = site_copy(
+                    "max_iterations_no_summary", limit=agent.max_iterations
+                )
+                break
             if not text:
-                continue
+                if empty_retries < 1:
+                    empty_retries += 1
+                    attempt_index += 1
+                    continue
+                break
             if "<think>" in text:
                 text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
             if text:
@@ -2195,6 +2360,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
+        # * Build-path failure: rotate so the next request leaves an unhealthy
+        # slug. The attempt loop above already retried rotation-worthy errors.
+        try:
+            from agent.error_classifier import classify_api_error
+            from agent.sticky_provider_order import rotate_sticky_on_classified_error
+            classified = classify_api_error(
+                e,
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+            rotate_sticky_on_classified_error(agent, classified)
+        except Exception:
+            logger.warning(
+                "sticky_provider_order: failed to rotate on classified error",
+                exc_info=True,
+            )
         from agent.turn_failure_copy import site_copy
         final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
@@ -3332,6 +3513,10 @@ class _StreamingCall(StreamingWaitMonitor):
         return self._call_anthropic(request_client)
 
     def _call(self):
+        # * Bounded same-provider micro-retries (default 2 → 3 attempts).
+        # Cache-preserving: rotating here would re-pay prefill. Exhaustion
+        # sets result["error"]; run() re-raises into handle_api_error,
+        # where sticky rotation already happens.
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
         # The one stream_options compatibility retry (#9705) is not a network retry and must not
         # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the

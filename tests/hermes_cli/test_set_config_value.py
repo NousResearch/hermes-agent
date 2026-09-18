@@ -150,6 +150,60 @@ class TestConfigYamlRouting:
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
+    def test_provider_routing_sticky_order_is_recognized(
+        self, _isolated_hermes_home, capsys,
+    ):
+        """Known routing keys must accept sticky_order.enabled without --force."""
+        set_config_value("provider_routing.sticky_order.enabled", "true")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["provider_routing"]["sticky_order"]["enabled"] is True
+
+    def test_provider_routing_models_child_is_recognized(
+        self, _isolated_hermes_home, capsys,
+    ):
+        """Per-model overlay children must stay settable (dotted model ids)."""
+        set_config_value(
+            "provider_routing.models.openai/gpt-6-astra.only",
+            '["openai"]',
+        )
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["provider_routing"]["models"]["openai/gpt-6-astra"]["only"] == [
+            "openai",
+        ]
+
+    @pytest.mark.parametrize("key,suggestion", [
+        ("provider_routing.orderr", "provider_routing.order"),
+        ("provider_routing.stick_order", "provider_routing.sticky_order"),
+        ("provider_routing.require_paramters", "provider_routing.require_parameters"),
+        ("provider_routing.sticky_order.ttl_secnds", "provider_routing.sticky_order.ttl_seconds"),
+        ("provider_routing.order.0.typo", "provider_routing.order"),
+        ("provider_routing.only.0.typo", "provider_routing.only"),
+        ("provider_routing.ignore.0.typo", "provider_routing.ignore"),
+    ])
+    def test_provider_routing_typos_warn_with_suggestion(
+        self, _isolated_hermes_home, capsys, key, suggestion,
+    ):
+        # * Unknown paths under a known section are refused before write
+        # (main #34067 / #112003). Suggestion text still names the canonical key.
+        with pytest.raises(SystemExit):
+            set_config_value(key, "true")
+        err = capsys.readouterr().err
+        assert "not a recognized config key" in err
+        assert suggestion in err
+        assert "nothing was written" in err
+
+    def test_provider_routing_typo_force_skips_notice(
+        self, _isolated_hermes_home, capsys,
+    ):
+        set_config_value("provider_routing.orderr", '["x"]', force=True)
+        assert "not a recognized config key" not in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277
@@ -609,6 +663,9 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "provider_routing.sticky_order.enabled",
+        "provider_routing.models.openai/gpt-6-astra.only",
+        "provider_routing.order.0",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -619,6 +676,15 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        ("provider_routing.orderr", "provider_routing.order"),
+        ("provider_routing.stick_order", "provider_routing.sticky_order"),
+        ("provider_routing.require_paramters", "provider_routing.require_parameters"),
+        ("provider_routing.sticky_order.ttl_secnds", "provider_routing.sticky_order.ttl_seconds"),
+        ("provider_routing.order.typo", "provider_routing.order"),
+        ("provider_routing.order.0.typo", "provider_routing.order"),
+        ("provider_routing.only.0.typo", "provider_routing.only"),
+        ("provider_routing.ignore.0.typo", "provider_routing.ignore"),
+        ("provider_routing.sticky_order.enabled.typo", "provider_routing.sticky_order.enabled"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key

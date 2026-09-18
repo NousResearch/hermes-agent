@@ -33,8 +33,8 @@ import cron.jobs as jobs
 
 # Model a daemon that loaded cron.jobs before these constants existed, then
 # lazy-loads the newer occurrences module from disk during a due scan.
-jobs.__dict__.pop("FIRE_CLAIM_SKEW_SECONDS", None)
-jobs.__dict__.pop("FIRE_CLAIM_TTL_SECONDS", None)
+for name in ("FIRE_CLAIM_SKEW_SECONDS", "FIRE_CLAIM_TTL_SECONDS"):
+    delattr(jobs, name)
 
 from cron.occurrences import completed_occurrence, unclaimed_pending_slot
 
@@ -63,7 +63,7 @@ def test_lazy_cron_stores_import_against_pre_upgrade_sqlite_util(store):
     assert result.returncode == 0, result.stderr
 
 
-def test_occurrences_uses_skew_constant_without_cached_jobs_export():
+def test_occurrences_resolve_fire_claim_constants_without_cached_jobs_exports():
     repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-c", _OCCURRENCES_SKEW_SCRIPT],

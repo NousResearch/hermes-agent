@@ -883,6 +883,22 @@ export default function CronPage() {
     };
   }, [setEnd, t.common.create, loading, selectedProfile]);
 
+  // Rows for the Jobs list: one per job, or a category header followed by that
+  // category's jobs. Headers are rows rather than wrappers, so the job-card
+  // markup below stays in exactly one place.
+  // Declared ABOVE the `loading` early return: a hook after it would change the
+  // hook count between renders (Rules of Hooks) and crash the page.
+  const showsCategoryGroups = groupByCategory && hasCategorisedJobs(jobs);
+  const jobRows = useMemo(() => {
+    if (!showsCategoryGroups) {
+      return jobs.map((job) => ({ kind: "job" as const, job }));
+    }
+    return groupCronJobsByCategory(jobs).flatMap((group) => [
+      { kind: "header" as const, category: group.category, size: group.jobs.length },
+      ...group.jobs.map((job) => ({ kind: "job" as const, job })),
+    ]);
+  }, [jobs, showsCategoryGroups]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -894,20 +910,6 @@ export default function CronPage() {
   const pendingJob = jobDelete.pendingId
     ? jobs.find((j) => getJobKey(j) === jobDelete.pendingId)
     : null;
-
-  // Rows for the Jobs list: one per job, or a category header followed by that
-  // category's jobs. Headers are rows rather than wrappers, so the card markup
-  // below stays in exactly one place.
-  const showsCategoryGroups = groupByCategory && hasCategorisedJobs(jobs);
-  const jobRows = useMemo(() => {
-    if (!showsCategoryGroups) {
-      return jobs.map((job) => ({ kind: "job" as const, job }));
-    }
-    return groupCronJobsByCategory(jobs).flatMap((group) => [
-      { kind: "header" as const, category: group.category, size: group.jobs.length },
-      ...group.jobs.map((job) => ({ kind: "job" as const, job })),
-    ]);
-  }, [jobs, showsCategoryGroups]);
 
   return (
     <div className="flex flex-col gap-6">

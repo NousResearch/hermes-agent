@@ -16,10 +16,7 @@ let activeDisposerTracker: ((dispose: () => void) => void) | null = null
 /** Run a plugin registration while associating its event listeners with its
  * unload disposer list. Runtime plugins are evaluated afresh on every reload,
  * so their host subscriptions must leave with the previous module instance. */
-export function trackGatewayEventDisposers<T>(
-  track: (dispose: () => void) => void,
-  register: () => T
-): T {
+export function trackGatewayEventDisposers<T>(track: (dispose: () => void) => void, register: () => T): T {
   const previous = activeDisposerTracker
   activeDisposerTracker = track
 

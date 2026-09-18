@@ -2087,10 +2087,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
-        still change (reply-fallback strip); ``extra`` carries media fields / message_type."""
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        still change (reply-fallback strip); ``extra`` carries media fields / message_type.
+        ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
+        downloading); resolving it twice would double the read receipt / thread mark."""
+        if ctx is None:
+            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2154,6 +2157,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
+        # non-allowlisted room must not pull media onto the host only to drop it.
+        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        if ctx is None:
+            return
         # Cache locally so downstream tools get a real file path.
         cached_path = None
         if url:
@@ -2167,7 +2175,7 @@ class MatrixAdapter(BasePlatformAdapter):
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, body, source_content, relates_to, message_type=msg_type,
+            room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)

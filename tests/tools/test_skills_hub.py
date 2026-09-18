@@ -254,6 +254,31 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
+    @patch("tools.skills_hub_skillssh.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_sitemap_catalog_retries_failed_shard_and_never_caches_partial(
+        self, _mock_read_cache, mock_write_cache, _mock_sleep,
+    ):
+        """A per-skill sitemap shard that keeps failing is a hole in the catalog, not an
+        empty shard: retry it, and never publish the partial slice to the shared cache."""
+        index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
+                 "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
+        shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
+        calls: List[str] = []
+
+        def fake_get_text(url, **kwargs):
+            calls.append(url)
+            if url.endswith("sitemap.xml"):
+                return index
+            return shard0 if url.endswith("sitemap-skills-0.xml") else None
+
+        with patch("tools.skills_hub_skillssh._get_text", side_effect=fake_get_text):
+            results = self._source()._sitemap_catalog(0)
+
+        assert [m.identifier for m in results] == ["skills-sh/o/r/skill-a"]
+        assert calls.count("https://www.skills.sh/sitemap-skills-1.xml") == SkillSource.CATALOG_PAGE_RETRIES
+        mock_write_cache.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)

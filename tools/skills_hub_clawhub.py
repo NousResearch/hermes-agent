@@ -67,8 +67,6 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     # Wall-clock budget for a full catalog walk: 50k+ skills, sequential
     # (~250 requests each under timeout=30), so unbounded it blocks for minutes.
     CATALOG_WALK_BUDGET_SECONDS = 12
-    # Consecutive failed fetches of one catalog page before the walk gives up as partial.
-    CATALOG_PAGE_RETRIES = 5
     ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
     ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")

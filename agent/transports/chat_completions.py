@@ -496,6 +496,15 @@ class ChatCompletionsTransport(ProviderTransport):
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
                 extra_body.update(part)
+        # Profiles that don't own the reasoning policy leave reasoning emission to the
+        # generic fallback — same logic as the non-profile legacy path above.
+        if (
+            not profile.owns_reasoning_policy(supports_reasoning=params.get("supports_reasoning", False))
+            and params.get("supports_reasoning", False)
+            and reasoning_config is not None
+            and "reasoning" not in extra_body
+        ):
+            extra_body["reasoning"] = reasoning_config
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
                 extra_body.update(v)

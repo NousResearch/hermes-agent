@@ -1322,30 +1322,6 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
-    if isinstance(cfg, dict) and (
-        cfg.get("enabled") is False or cfg.get("effort") == "none"
-    ):
-        # Apply the catalog's mandatory-thinking contract before the route has
-        # had a chance to reject a disable. Keep this cache-only: the request
-        # builder must never block on a capability fetch.
-        provider = str(getattr(agent, "provider", "") or "").strip().lower()
-        if provider in {"nous", "nous-portal", "nousresearch", "openrouter"}:
-            try:
-                from hermes_cli.models_reasoning_caps import (
-                    nous_model_reasoning_capabilities,
-                    openrouter_model_reasoning_capabilities,
-                )
-
-                caps_fn = (
-                    openrouter_model_reasoning_capabilities
-                    if provider == "openrouter"
-                    else nous_model_reasoning_capabilities
-                )
-                caps = caps_fn(agent.model, allow_fetch=False)
-                if caps and caps.get("mandatory"):
-                    return None
-            except Exception:
-                pass
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the
@@ -2434,8 +2410,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        from agent.turn_failure_copy import site_copy
-        final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
+        try:
+            from agent.llm_egress_firewall import EgressBlocked
+            if isinstance(e, EgressBlocked):
+                reasons = ",".join(e.decision.reason_codes) or "policy_denied"
+                final_response = f"⚠️ Summary blocked by egress policy: {reasons}"
+            else:
+                from agent.turn_failure_copy import site_copy
+                final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
+        except Exception:
+            from agent.turn_failure_copy import site_copy
+            final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)

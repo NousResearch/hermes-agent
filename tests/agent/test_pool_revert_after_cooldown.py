@@ -52,12 +52,13 @@ class _LiveAgent:
         return False
 
 
-def _expire_cooldowns(monkeypatch):
-    real = time.time
-    monkeypatch.setattr(cp.time, "time", lambda: real() + EXHAUSTED_TTL_429_SECONDS + 120)
+def _expire_cooldowns(monkeypatch, real=None, windows=1):
+    real = real or time.time
+    monkeypatch.setattr(cp.time, "time", lambda: real() + windows * (EXHAUSTED_TTL_429_SECONDS + 120))
 
 
 def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(monkeypatch):
+    real_time = time.time
     pool = CredentialPool(provider="anthropic", entries=[
         _entry("pref0000", "subscription-oauth", priority=0, auth_type="oauth", token="sk-ant-oat01-PREF"),
         _entry("fall0000", "paid-api-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
@@ -82,6 +83,28 @@ def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(mo
     assert agent._credential_pool_revert_id is None
     # The pool agrees the preferred entry is healthy again (cooldown cleared, not merely elapsed).
     assert next(e for e in pool.entries() if e.id == "pref0000").last_status != cp.STATUS_EXHAUSTED
+
+    # Control (two-session interleaving): a session that started on the FALLBACK because another
+    # session benched the preferred entry, then rotates UP to the preferred entry once its window
+    # reopened, must not be pulled back DOWN when the fallback's own cooldown lifts.
+    pool2 = CredentialPool(provider="anthropic", entries=[
+        _entry("pref0000", "subscription-oauth", priority=0, auth_type="oauth", token="sk-ant-oat01-PREF"),
+        _entry("fall0000", "paid-api-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
+    ])
+    monkeypatch.setattr(cp.time, "time", real_time)
+    pool2.mark_exhausted_and_rotate(  # the OTHER session benches the preferred entry
+        status_code=429, credential_id="pref0000", failure_reason="rate_limit", error_context={"message": "Error"},
+    )
+    late = _LiveAgent(pool2)
+    assert late.api_key == "sk-ant-api03-FALL"
+    _expire_cooldowns(monkeypatch, real_time, 1)  # pref's window reopened; fall benched from now
+    recover_with_credential_pool(late, status_code=429, has_retried_429=False, error_context={"message": "Error"})
+    recovered, _ = recover_with_credential_pool(late, status_code=429, has_retried_429=True, error_context={"message": "Error"})
+    assert recovered and late.api_key == "sk-ant-oat01-PREF"
+    assert getattr(late, "_credential_pool_revert_id", None) is None  # rotated UP: nothing to revert to
+    _expire_cooldowns(monkeypatch, real_time, 2)  # fall's cooldown lifts too
+    assert restore_primary_runtime(late) is False
+    assert late.api_key == "sk-ant-oat01-PREF" and pool2.select().id == "pref0000"
 
 
 def test_auth_bench_does_not_arm_a_revert(monkeypatch):

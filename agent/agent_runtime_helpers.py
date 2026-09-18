@@ -854,16 +854,21 @@ def recover_with_credential_pool(
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
         swapped = agent._swap_credential(next_entry) is not False
+        benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
         if (
             swapped
-            and credential_id
+            and benched is not None
+            and benched.priority < getattr(next_entry, "priority", benched.priority)
             and not getattr(agent, "_credential_pool_revert_id", None)
             and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
         ):
             # A quota bench (429/402) lifts when the window reopens, and a fresh session's
             # select() would go straight back to this entry; arm the per-turn hook so the live
-            # session does too (#114501). Keep the FIRST benched entry across chained rotations
-            # — it is the preferred one. Auth benches are not windows; they stay as they are.
+            # session does too (#114501). Only when the benched entry OUTRANKS the one we rotated
+            # to: a session that was already on the fallback (preferred benched elsewhere) and
+            # rotates UP once the preferred window reopened must not be pulled back down when
+            # the fallback's cooldown lifts. Keep the FIRST benched entry across chained
+            # rotations — it is the preferred one. Auth benches are not windows; they stay.
             agent._credential_pool_revert_id = credential_id
         return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:

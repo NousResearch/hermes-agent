@@ -775,8 +775,17 @@ def _capture_real_kanban_root() -> Path:
         from hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
-    # NOT the sandbox tempdir now sitting in the env.
-    return (Path.home() / ".hermes").resolve()
+    # NOT the sandbox tempdir now sitting in the env. Read the home from the
+    # passwd database (2026-09-18 wave 8): some CI/worker launchers export
+    # HOME=<custom> before pytest, so Path.home() would capture the WRONG
+    # root and silently disarm the write guard for the whole session.
+    try:
+        import pwd
+
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        home = Path.home()
+    return (home / ".hermes").resolve()
 
 
 _REAL_KANBAN_ROOT = _capture_real_kanban_root()

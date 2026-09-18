@@ -1277,7 +1277,21 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     # the last choke a fixture can hit before touching the live board.
     db_file = _main_db_file(conn)
     if db_file:
-        _ensure_test_isolation(Path(db_file))
+        db_path = Path(db_file)
+        # The deny-root is the REAL home (passwd), so a sandbox conn whose
+        # path merely happens to sit under the test's redirected home is NOT
+        # production: pre-filter with the process view before paying the
+        # strict check. A conn ON the production board always passes this.
+        try:
+            from hermes_constants import get_hermes_home
+
+            process_root = Path(get_hermes_home()).expanduser().resolve()
+            if db_path.expanduser().resolve().is_relative_to(process_root):
+                db_file = None  # sandboxed under the process view: not live
+        except Exception:
+            pass
+        if db_file:
+            _ensure_test_isolation(Path(db_file))
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

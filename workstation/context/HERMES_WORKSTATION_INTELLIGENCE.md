@@ -1,5 +1,52 @@
 # Inteligência Centralizada — Hermes Workstation (Hermes Work)
 
+## AEPC-E002 — forma estrutural não é homogeneidade semântica — 2026-09-18
+
+A auditoria da implementação publicada confirmou que a correção principal foi
+bem-sucedida: repetibilidade não é mais um latch global de mutação. O risco
+remanescente é mais sutil. `structural_signature()` abstrai valores escalares
+para reconhecer padrões, enquanto mutações nativas como `browser_type`,
+`browser_click` e `browser_press` ainda não declaram uma família concreta de
+alvo/operação. Assim, ações stateful diferentes podem parecer iguais para o
+compilador apenas porque usam a mesma ferramenta e o mesmo formato de argumentos.
+
+Distinção canônica:
+
+~~~text
+mesma ferramenta + mesma forma de argumentos
+                  !=
+mesma família semântica de operação repetível
+~~~
+
+`REQUIRE_COMPILE` precisa de evidência positiva de homogeneidade: operação
+canônica + rota/provider + família de alvo/contrato estável declarada pelo owner
+ou derivada de forma segura. Repetição estrutural sem essa evidência pode alimentar
+aprendizado e `SUGGEST_COMPILE`, mas não deve bloquear sozinha o progresso
+adaptativo autorizado.
+
+Em Browser nativo isso preserva loops longos em que a página muda entre ações:
+digitar no alvo A, observar, clicar B, observar, digitar C etc. O terceiro
+`browser_type` não é automaticamente fan-out. No sentido oposto, três mutações
+realmente equivalentes da mesma operação/provider/família continuam obrigadas a
+entrar em TaskCompiler/canary.
+
+Não corrigir aumentando threshold, zerando contador após snapshot/navegação ou
+criando exceção geral para `browser_*`. A correção pertence à identidade do
+`CompilationCandidate`.
+
+Também foi detectada dívida terminológica: `successful_occurrences` não pode
+contabilizar `executed_unverified` como sucesso. Ou a métrica passa a se chamar
+`executed_occurrences`, ou sucesso só é incrementado após verificação/acceptance.
+
+Linhagem auditável:
+- baseline pré-AEPC-E001: `c04906aacee568bb6480287717c76afd230cf4a7`;
+- implementação publicada: `9e7292ab7825e5ce1ea294490eec57ba1f286069`;
+- documentação/evidência publicada: `5e1b22527fd40d732ee4fa7a1035e6366953f6b7`;
+- head auditado para AEPC-E002: `c4234200145162eefb60f6070c9f170b4bf79321`;
+- `365794e29d66cd63a6134c5c67ecc1ef603d70a6` permanece apenas como SHA
+  local anterior à publicação/rebase.
+
+
 ## Execução durável e economia de contexto — 2026-09-16
 
 O Task Compiler classifica planos estruturados e `work_execute`, capability de
@@ -51,9 +98,10 @@ ADAPTIVE/DISCOVERY
 ~~~
 
 ALLOW_ADAPTIVE | SUGGEST_COMPILE | REQUIRE_COMPILE | REQUIRE_HUMAN substitui
-o latch binário na implementação 365794e29d. REQUIRE_COMPILE continua obrigatório para
-fan-out mutável homogêneo, mas deve pertencer a uma assinatura/operação concreta
-e não contaminar toda a sessão.
+o latch binário na implementação publicada 9e7292ab7825. REQUIRE_COMPILE continua
+obrigatório para fan-out mutável homogêneo, mas AEPC-E002 reforça que a
+homogeneidade precisa ser semântica e comprovável; uma assinatura estrutural
+sozinha não basta e não pode contaminar toda a sessão.
 
 No Browser nativo, observar/raciocinar/agir/observar é legítimo durante descoberta
 limitada. BrowserTask, TaskRun, lease de mutação, approvals e uncertain-effect

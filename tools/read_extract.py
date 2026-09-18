@@ -306,7 +306,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         "everything. For the gaps that matter, render just that range with "
         f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' /tmp/page` "
         "and inspect each image with the vision_analyze tool, or use the "
-        "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
+        "pdf skill (marker-pdf) for bulk OCR of large "
         "ranges.]\n")
 
 

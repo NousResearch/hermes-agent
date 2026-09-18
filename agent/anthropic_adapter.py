@@ -473,9 +473,9 @@ _OAUTH_SYSTEM_REPLACEMENTS = (
 # The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
 # or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
 # ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
-# dereferences, and the rewritten form does not exist (#48860). A sentence-final ``.`` and a
-# possessive ``'s`` are prose.
-_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@"`-]|\.\w|'(?!s\b))""")
+# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
+# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):

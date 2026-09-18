@@ -134,9 +134,9 @@ def read_workflow_trace(session_id: str, *, db=None, max_messages: int = DEFAULT
             if owner and owner != active_profile:
                 raise PermissionError("workflow trace profile is not the active profile")
         messages = db.get_messages_as_conversation(
-            sid, limit=limit, latest=True, exclude_roles=("tool",)) or []
+            sid, include_ancestors=True, limit=limit + 1, latest=True, exclude_roles=("tool",)) or []
+        truncated = len(messages) > limit
         visible = [m for m in messages if isinstance(m, dict) and m.get("role") != "tool"]
-        truncated = len(visible) >= limit
         messages = visible[-limit:]
         steps = []
         for message in messages:

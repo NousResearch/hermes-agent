@@ -88,9 +88,60 @@ def test_trace_uses_bounded_source_query(tmp_path):
             return []
     db = BoundedDB()
     read_workflow_trace("s1", db=db, max_messages=3)
-    assert db.calls[0][1]["limit"] == 3
+    assert db.calls[0][1]["limit"] == 4
+    assert db.calls[0][1]["include_ancestors"] is True
     assert db.calls[0][1]["latest"] is True
     assert db.calls[0][1]["exclude_roles"] == ("tool",)
+
+
+def test_trace_marks_truncated_only_when_an_extra_row_exists():
+    class BoundedDB:
+        def __init__(self, rows):
+            self.rows = rows
+            self.calls = []
+
+        def get_messages_as_conversation(self, *args, **kwargs):
+            self.calls.append(kwargs)
+            return self.rows
+
+    for count, expected in ((2, False), (3, False), (4, True)):
+        db = BoundedDB([{"role": "assistant", "tool_calls": []} for _ in range(count)])
+        trace = read_workflow_trace("s1", db=db, max_messages=3)
+        assert trace["truncated"] is expected
+        assert trace["message_count"] == min(count, 3)
+        assert db.calls[0]["limit"] == 4
+
+
+def test_focused_learn_prompt_includes_redacted_trace(monkeypatch):
+    import agent.workflow_recording as recording
+
+    monkeypatch.setattr(recording, "read_workflow_trace", lambda session_id: {
+        "session_id": session_id, "steps": [{"role": "assistant", "tools": [{
+            "name": "terminal", "arguments": '{"command": "<string>"}'
+        }]}], "truncated": False,
+    })
+    monkeypatch.setattr(recording, "render_workflow_trace", lambda trace: "# REDACTED TRACE\n- terminal")
+
+    prompt = build_learn_prompt("focus on authentication", session_id="session-42")
+
+    assert "focus on authentication" in prompt
+    assert "# REDACTED TRACE" in prompt
+    assert "terminal" in prompt
+
+
+def test_trace_reads_ancestor_lineage_with_bounded_limit():
+    class LineageDB:
+        def __init__(self):
+            self.kwargs = None
+
+        def get_messages_as_conversation(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return []
+
+    db = LineageDB()
+    read_workflow_trace("s1", db=db, max_messages=2)
+    assert db.kwargs["include_ancestors"] is True
+    assert db.kwargs["limit"] == 3
 
 
 def test_trace_excludes_private_message_text_and_inertly_escapes_metadata(tmp_path):

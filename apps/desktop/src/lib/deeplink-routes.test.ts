@@ -90,4 +90,33 @@ describe('resolveDeepLinkAction', () => {
       params: { time: '08:00' }
     })
   })
+
+  it('routes hermes://bot/<profile> to a name-addressed bot open', () => {
+    expect(resolveDeepLinkAction({ kind: 'bot', name: 'ops', params: {} })).toEqual({
+      type: 'bot-open',
+      profile: 'ops'
+    })
+  })
+
+  it('trims the profile name so encoded whitespace cannot sneak in', () => {
+    expect(resolveDeepLinkAction({ kind: 'bot', name: ' ops ', params: {} })).toEqual({
+      type: 'bot-open',
+      profile: 'ops'
+    })
+  })
+
+  it('accepts the generic open form with a bot query param', () => {
+    expect(resolveDeepLinkAction({ kind: 'open', name: 'bots', params: { bot: 'ops' } })).toEqual({
+      type: 'bot-open',
+      profile: 'ops'
+    })
+  })
+
+  it('ignores a bot link with no profile', () => {
+    expect(resolveDeepLinkAction({ kind: 'bot', name: '', params: {} })).toEqual({ type: 'ignore' })
+    expect(resolveDeepLinkAction({ kind: 'open', name: 'bots', params: {} })).toEqual({ type: 'ignore' })
+    expect(resolveDeepLinkAction({ kind: 'open', name: 'bots', params: { bot: '   ' } })).toEqual({
+      type: 'ignore'
+    })
+  })
 })

@@ -8,6 +8,7 @@ import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { requestBotChatFromDeepLink } from '@/store/bot-deeplink-open'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -340,6 +341,12 @@ export function useDesktopIntegrations({
 
       if (action.type === 'skill-install') {
         void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (action.type === 'bot-open') {
+        requestBotChatFromDeepLink(action.profile)
 
         return
       }

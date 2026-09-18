@@ -152,14 +152,13 @@ def build_learn_prompt(user_request: str, session_id: str | None = None) -> str:
             "workflow reader is the source of what we just did; do not export raw results. "
             "If the trace is useful, include it as `references/workflow-trace.md` in the skill."
         )
-        if not (user_request or "").strip():
-            try:
-                from agent.workflow_recording import read_workflow_trace, render_workflow_trace
-                trace_hint += "\n\nRUNTIME WORKFLOW TRACE:\n" + render_workflow_trace(
-                    read_workflow_trace(session_id)
-                )
-            except Exception:
-                trace_hint += "\n\nThe workflow trace was unavailable; use the current conversation only."
+        try:
+            from agent.workflow_recording import read_workflow_trace, render_workflow_trace
+            trace_hint += "\n\nRUNTIME WORKFLOW TRACE:\n" + render_workflow_trace(
+                read_workflow_trace(session_id)
+            )
+        except Exception:
+            trace_hint += "\n\nThe workflow trace was unavailable; use the current conversation only."
     req = (user_request or "").strip() or (
         "the workflow we just went through in this conversation — review "
         "the steps taken and distill them into a reusable skill"

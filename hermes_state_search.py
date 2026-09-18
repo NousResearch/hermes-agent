@@ -15,7 +15,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    FTS_TRIGRAM_STALE_KEY, MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
@@ -509,12 +509,23 @@ class SessionSearchMixin:
         """True when `optimize_fts_storage()` has work: legacy inline FTS or a v23 trigram still
         carrying ``tool_calls`` (``_db_needs_fts_storage_upgrade``), an interrupted optimize
         (markers/trash), a CJK backfill on this tokenizer-capable host, or an empty external
-        index without markers. False when FTS5 is unavailable."""
+        index without markers, or disabled trigram storage awaiting explicit retirement.
+        False when FTS5 is unavailable."""
         if not self._fts_enabled or self.read_only:
             return False
         with self._read_ctx() as conn:
             return (
                 self._db_needs_fts_storage_upgrade(conn)
+                or (
+                    not getattr(self, "_trigram_enabled", True)
+                    and (
+                        conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                            "AND name = 'messages_fts_trigram' LIMIT 1"
+                        ).fetchone() is not None
+                        or _meta_row(conn, FTS_TRIGRAM_STALE_KEY) is not None
+                    )
+                )
                 or _meta_row(conn, "fts_rebuild_high_water") is not None  # interrupted optimize
                 # CJK work is only offerable when THIS process can tokenize.
                 or (self._fts_cjk_loaded and (
@@ -568,12 +579,14 @@ class SessionSearchMixin:
         return hw
 
     def _ensure_v23_fts_tables(self, failure_message: str) -> None:
-        """Ensure the v23 base + trigram tables under the lock (IF NOT EXISTS, cheap); raise
-        *failure_message* without the base table (the backfill loop would retry forever)."""
+        """Ensure enabled v23 FTS tables; a disabled trigram family stays absent."""
         with self._lock:
             base_ok = self._ensure_fts_schema(self._conn, "messages_fts", FTS_SQL)
-            trigram_ok = self._ensure_fts_schema(self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)
-            self._trigram_available = bool(trigram_ok)
+            self._trigram_available = False
+            if getattr(self, "_trigram_enabled", True):
+                self._trigram_available = bool(
+                    self._ensure_fts_schema(self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)
+                )
             if not base_ok:
                 raise sqlite3.OperationalError(failure_message)
             self._conn.commit()
@@ -616,6 +629,8 @@ class SessionSearchMixin:
             return "backfill_incomplete"
         self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=conn)
         _delete_meta(conn, "fts_optimize_available")
+        if not getattr(self, "_trigram_enabled", True):
+            _delete_meta(conn, FTS_TRIGRAM_STALE_KEY)
         conn.execute("UPDATE schema_version SET version = ? WHERE version < ?", (SCHEMA_VERSION, SCHEMA_VERSION))
         return None
 
@@ -630,6 +645,21 @@ class SessionSearchMixin:
             return {"ok": False, "reason": "fts5_unavailable"}
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
+
+        if not getattr(self, "_trigram_enabled", True):
+            def _retire_trigram(conn):
+                for trigger in (
+                    "messages_fts_trigram_insert",
+                    "messages_fts_trigram_delete",
+                    "messages_fts_trigram_update",
+                ):
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+                conn.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
+                _delete_meta(conn, FTS_TRIGRAM_STALE_KEY)
+
+            self._execute_write(_retire_trigram)
+            self._trigram_available = False
 
         # Heal bookkeeping BEFORE deciding whether to demote again.
         self._repair_optimize_bookkeeping()
@@ -1241,12 +1271,17 @@ class SessionSearchMixin:
 
     def _present_fts_tables(self) -> List[str]:
         """Queryable FTS tables (caller holds ``self._lock``)."""
-        return [tbl for tbl in self._FTS_TABLES if self._fts_table_exists(tbl)]
+        return [
+            tbl for tbl in self._FTS_TABLES
+            if (tbl != "messages_fts_trigram" or getattr(self, "_trigram_enabled", True))
+            and self._fts_table_exists(tbl)
+        ]
 
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 segments into one per index (``'optimize'``). Pure
         maintenance: changes neither results nor ``snippet()`` output, only layout and
-        speed; VACUUM then returns the freed pages. Returns the number optimized. A quarantined
+        speed; VACUUM then returns the freed pages. A trigram family disabled via
+        ``sessions.trigram_fts: false`` is skipped. Returns the number optimized. A quarantined
         handle never issues ``'optimize'``: it rewrites index segments in place and would compound
         structural damage (or a split WAL generation) instead of leaving it diagnosable."""
         self._raise_if_db_corrupt()

@@ -10,6 +10,7 @@ v29/v30 ``cron``/``subagent`` source exclusions are untouched.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -367,22 +368,30 @@ def test_read_only_reenable_waits_for_writable_rebuild(tmp_path):
 
 
 def test_v29_to_v30_migration_respects_false(tmp_path):
-    """The v29→v30 trigram migration must not resurrect a disabled index."""
+    """The v29→v30 open quarantines historical storage non-destructively."""
     path = tmp_path / "state.db"
-    _write_trigram_config(path, False)
-    db = SessionDB(db_path=path)
+    db = _fresh_trigram_db(tmp_path)
     try:
-        assert not _exists(db._conn, "messages_fts_trigram")
+        ids = _seed_mixed_sources(db)
+        historical = _trigram_rowids(db)
+        assert ids["root"] in historical
         db._conn.execute("UPDATE schema_version SET version = 29")
         db._conn.commit()
     finally:
         db.close()
 
+    _write_trigram_config(path, False)
     db2 = SessionDB(db_path=path)
     try:
+        assert db2._conn is not None
         assert db2._trigram_enabled is False
-        assert not _exists(db2._conn, "messages_fts_trigram")
-        assert not _exists(db2._conn, "messages_fts_trigram_src")
+        assert _exists(db2._conn, "messages_fts_trigram")
+        assert _exists(db2._conn, "messages_fts_trigram_src")
+        assert _trigram_rowids(db2) == historical
+        assert db2._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 30
+        assert db2._conn.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'fts_trigram_stale'"
+        ).fetchone() is not None
     finally:
         db2.close()
 
@@ -473,25 +482,75 @@ def test_profiles_isolated_no_cross_leak(tmp_path):
     finally:
         db_b.close()
 
+    db_a_again = SessionDB(db_path=prof_a / "state.db")
+    try:
+        assert db_a_again._trigram_enabled is False
+        assert db_a_again._trigram_available is False
+    finally:
+        db_a_again.close()
+
 
 def test_gate_uses_public_resolver(tmp_path):
-    from hermes_state import _trigram_fts_enabled_from_config
+    from hermes_state_trigram import trigram_fts_enabled_from_config
 
     path = tmp_path / "state.db"
-    assert _trigram_fts_enabled_from_config(path) is True
+    assert trigram_fts_enabled_from_config(path) is True
     _write_trigram_config(path, False)
-    assert _trigram_fts_enabled_from_config(path) is False
+    assert trigram_fts_enabled_from_config(path) is False
     _write_trigram_config(path, True)
-    assert _trigram_fts_enabled_from_config(path) is True
+    assert trigram_fts_enabled_from_config(path) is True
 
 
-def test_stale_docstring_reference_replaced():
-    import inspect
+def test_strict_cache_invalidates_user_and_managed_provenance(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+    from hermes_cli.config_effective import ConfigResolutionError, resolve_effective_config_value
 
-    import hermes_state_search
+    cfg = tmp_path / "config.yaml"
+    _write_trigram_config(tmp_path / "state.db", True)
+    assert resolve_effective_config_value(cfg, "sessions", "trigram_fts", default=True) is True
 
-    src = inspect.getsource(
-        hermes_state_search.SessionSearchMixin.optimize_fts
+    staged = tmp_path / "config.yaml.new"
+    staged.write_text("sessions:\n  trigram_fts: false\n", encoding="utf-8")
+    os.replace(staged, cfg)
+    assert resolve_effective_config_value(cfg, "sessions", "trigram_fts", default=True) is False
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    managed_scope.invalidate_managed_cache()
+    (managed_dir / "config.yaml").write_text("[]\n", encoding="utf-8")
+    assert managed_scope.load_managed_config() == {}  # fail-open cache cannot satisfy strict reads
+    with pytest.raises(ConfigResolutionError):
+        resolve_effective_config_value(cfg, "sessions", "trigram_fts", default=True)
+    (managed_dir / "config.yaml").write_text(
+        "sessions:\n  trigram_fts: true\n", encoding="utf-8"
     )
-    assert "HERMES_DISABLE_FTS_TRIGRAM" not in src
-    assert "sessions.trigram_fts" in src
+    assert resolve_effective_config_value(cfg, "sessions", "trigram_fts", default=True) is True
+
+
+def test_broken_managed_overlay_preserves_existing_quarantine(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    path = tmp_path / "state.db"
+    db = _fresh_trigram_db(tmp_path)
+    db.close()
+    _write_trigram_config(path, False)
+    SessionDB(db_path=path).close()
+    (path.parent / "config.yaml").unlink()
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    managed_scope.invalidate_managed_cache()
+    (managed_dir / "config.yaml").write_text("sessions: [broken\n", encoding="utf-8")
+
+    reopened = SessionDB(db_path=path)
+    try:
+        assert reopened._conn is not None
+        assert reopened._trigram_enabled is False
+        assert reopened._trigram_available is False
+        assert reopened._conn.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'fts_trigram_stale'"
+        ).fetchone() is not None
+    finally:
+        reopened.close()

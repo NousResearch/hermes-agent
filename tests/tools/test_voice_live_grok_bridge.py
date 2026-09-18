@@ -18,7 +18,8 @@ import pytest
 import tools.voice_live_grok as grok_config
 from tools.voice_live_grok_bridge import (
     DEGRADED_DROP_STREAK, EVENT_AUDIO, EVENT_DELEGATION, EVENT_STATE, EVENT_TRANSCRIPT,
-    GrokLiveBridge, build_delegation, realtime_url, session_update_payload)
+    GrokLiveBridge, LEAD_IN_MAX_CHUNKS, build_delegation, realtime_url,
+    session_update_payload)
 from tui_gateway.contracts.prompt_voice_grok import (
     VoiceGrokAudioPayload, VoiceGrokDelegationPayload, VoiceGrokStatePayload,
     VoiceGrokTranscriptPayload)
@@ -325,13 +326,26 @@ def test_explicit_mute_withholds_independently_of_the_gate(credential, harness):
     wait_for(lambda: len(ws.binary_frames()) == 1)
 
 
-def test_send_mic_before_handshake_is_rejected_as_connecting(credential, harness):
+def test_send_mic_before_handshake_parks_in_lead_in_then_drains(credential, harness):
+    """Connect-time audio is buffered (bounded), not dropped, and reaches xAI once
+    the session is established — the wake-word user speaks from the moment the
+    bridge starts, often during xAI's slow opening handshake."""
     events, make = harness
     connector = FakeConnector()
     bridge = make(connect_factory=connector)
     bridge.start()
     wait_for(lambda: connector.sockets)
-    assert bridge.send_mic(b"\x00" * 100)["reason"] == "connecting"
+    assert bridge.send_mic(b"\x00" * 100) == {"accepted": True, "reason": "lead_in"}
+    # bounded: past LEAD_IN_MAX_CHUNKS it degrades to drop-not-queue
+    for _ in range(LEAD_IN_MAX_CHUNKS + 5):
+        bridge.send_mic(b"\x00" * 100)
+    result = bridge.send_mic(b"\x00" * 100)
+    assert result == {"accepted": False, "dropped": True, "reason": "backpressure"}
+    # established: the parked audio drains into the mic queue
+    bridge._established = True  # simulate session.updated without a real socket
+    with bridge._state_lock:
+        drained = list(bridge._lead_in)
+    assert len(drained) == LEAD_IN_MAX_CHUNKS
 
 
 def test_backpressure_drops_never_queues_and_surfaces_degraded(credential, harness):

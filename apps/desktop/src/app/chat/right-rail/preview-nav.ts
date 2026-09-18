@@ -9,6 +9,9 @@
  * sitting in Hermes' own DOM, where `activeElement` is authoritative.
  */
 
+import { $rightRailActiveTabId } from '@/store/layout'
+import { $previewTabs } from '@/store/preview'
+
 /** Marks a live browser pane so a gesture can find the one holding focus. */
 export const PREVIEW_BROWSER_ATTR = 'data-preview-browser'
 
@@ -29,6 +32,15 @@ export function registerPreviewNav(tabId: string, handle: PreviewNavHandle): () 
       handles.delete(tabId)
     }
   }
+}
+
+/** The ACTIVE preview tab's commands, for callers with no focus to key off —
+ *  the agent's drive_preview, which runs while focus is in the composer. */
+export function activePreviewNav(): PreviewNavHandle | null {
+  const tabs = $previewTabs.get()
+  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+
+  return (tab && handles.get(tab.id)) || null
 }
 
 /** Run `command` on the browser pane holding DOM focus. False = focus is

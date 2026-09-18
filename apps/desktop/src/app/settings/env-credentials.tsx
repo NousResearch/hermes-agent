@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -42,8 +43,10 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // credential pages (Providers, Keys) share one source of truth and one set of
 // mutation handlers instead of duplicating the plumbing. An optional `profile`
 // targets another profile's env store (the shared settings "Applies to"
-// scope); undefined/null keeps the app-wide active profile.
-export function useEnvCredentials(profile: null | string = null): UseEnvCredentials {
+// scope); undefined keeps the app-wide active profile. Request-shaped on
+// purpose: the API helpers treat an explicit `null` as "target the
+// primary/default backend", which is never what a settings page means.
+export function useEnvCredentials(profile?: string): UseEnvCredentials {
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
@@ -65,7 +68,14 @@ export function useEnvCredentials(profile: null | string = null): UseEnvCredenti
   useEffect(() => {
     let cancelled = false
 
+    // Everything keyed by var name is dropped together with the reload: the
+    // cached `vars`, plus any in-flight edit or revealed value. Those maps are
+    // keyed by name alone, so leaving a draft behind after the target profile
+    // changed left its Save button live — writing the value into the profile
+    // now being targeted instead of the one it was typed for.
     setVars(null)
+    setEdits({})
+    setRevealed({})
 
     void (async () => {
       try {
@@ -142,7 +152,7 @@ export function useEnvCredentials(profile: null | string = null): UseEnvCredenti
   }
 
   async function handleClear(key: string) {
-    if (!window.confirm(toolsets.removeConfirm(key))) {
+    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
     }
 

@@ -26,6 +26,7 @@ from gateway.run import (
     _record_hygiene_cooldown,
     _reset_hygiene_failure_streak,
     hygiene_compaction_recovered,
+    hygiene_wait_should_extend,
 )
 from gateway.run import GatewayRunner
 from gateway.session_state import PersistentState, SessionState
@@ -370,6 +371,31 @@ class TestHygieneCompactionRecovered:
         assert self._call(
             msg_count=220, new_count=220,
             approx_tokens=50_000, new_tokens=49_900,
+        ) is False
+
+
+class TestHygieneWaitShouldExtend:
+    """Host must not keep waiting after the commit fence is already cancelled."""
+
+    def test_extends_while_idle_and_under_ceiling(self):
+        assert hygiene_wait_should_extend(
+            idle=1.0, timeout=30.0, waited=10.0, ceiling=600.0,
+        ) is True
+
+    def test_stops_when_idle_budget_exhausted(self):
+        assert hygiene_wait_should_extend(
+            idle=30.0, timeout=30.0, waited=10.0, ceiling=600.0,
+        ) is False
+
+    def test_stops_at_ceiling(self):
+        assert hygiene_wait_should_extend(
+            idle=1.0, timeout=30.0, waited=600.0, ceiling=600.0,
+        ) is False
+
+    def test_fence_cancel_stops_even_with_fresh_progress(self):
+        assert hygiene_wait_should_extend(
+            idle=0.0, timeout=30.0, waited=0.1, ceiling=600.0,
+            fence_cancelled=True,
         ) is False
 
 

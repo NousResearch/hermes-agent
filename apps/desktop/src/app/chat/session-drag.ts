@@ -28,9 +28,7 @@
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
-import { findGroup } from '@/components/pane-shell/tree/model'
 import {
-  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -39,20 +37,13 @@ import {
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
-import {
-  $layoutTree,
-  $treeDragging,
-  type DropHint,
-  isMainStripPane,
-  isSessionStripPane,
-  revealTreePane,
-  SESSION_TILE_DRAG
-} from '@/components/pane-shell/tree/store'
+import { $treeDragging, type DropHint, revealTreePane, SESSION_TILE_DRAG } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
+import { tileZoneHost } from './tile-zone-host'
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises
  *  (`data-session-anchor`) and the composer a link drop routes to
@@ -81,29 +72,22 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
 }
 
 /** A session may land in any zone hosting a MAIN tile — another chat stack, a
- *  Browser tile, a page — never the sidebar/terminal zones. Returns the pane a
- *  stack anchors to, plus whether the zone hosts a CHAT surface (only those
- *  offer the link-to-composer center; a preview zone's center stacks). */
-function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
-  const tree = $layoutTree.get()
-  const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
-  const pane = panes.find(isSessionStripPane) ?? panes.find(isMainStripPane)
-
-  return pane ? { chat: panes.some(isSessionStripPane), pane } : null
-}
+ *  Browser tile, a page — never the sidebar/terminal zones. Resolves via the
+ *  shared {@link tileZoneHost} (tile-zone-host.ts) so the eligibility answer
+ *  is byte-identical to what the zone overlay paints. */
 
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
  * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
- * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
- * row and MOVES the existing one when its tab is the drag source.
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
+ * gesture; Esc aborts instantly. A stack/split commits through
+ * `openSessionTile`, which OPENS a new tile from a sidebar row and MOVES the
+ * existing one when its tab is the drag source.
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void }
+  opts?: { onTap?: () => void }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -124,7 +108,6 @@ export function startSessionDrag(
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    double: opts?.double,
     ghost: { label: sessionLabel(payload) },
     onTap: opts?.onTap,
 

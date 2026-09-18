@@ -74,3 +74,38 @@ describe('writeDiffToTerminal sync-marker gating (#66490 main-screen gap)', () =
     expect(out).toContain('frame')
   })
 })
+
+describe('skipKittyKeyboardProtocol', () => {
+  // Ghostty's kitty disambiguate mode strips the Alt modifier from
+  // Backspace (Option+Backspace arrives as bare \x7f instead of CSI-u
+  // \x1b[127;3u), so Ghostty must get only the modifyOtherKeys push.
+  // Mirrors cli.py's _GHOSTTY_EXTENDED_ENTER_KEYS_SEQ exception.
+  it('skips the kitty protocol push for ghostty', async () => {
+    const { env } = await import('../utils/env.js')
+    const { skipKittyKeyboardProtocol } = await import('./terminal.js')
+    const saved = env.terminal
+
+    try {
+      env.terminal = 'ghostty'
+      expect(skipKittyKeyboardProtocol()).toBe(true)
+    } finally {
+      env.terminal = saved
+    }
+  })
+
+  it.each(['iTerm.app', 'kitty', 'WezTerm', 'tmux', 'windows-terminal', 'vscode'])(
+    'keeps the dual push for %s',
+    async terminal => {
+      const { env } = await import('../utils/env.js')
+      const { skipKittyKeyboardProtocol } = await import('./terminal.js')
+      const saved = env.terminal
+
+      try {
+        env.terminal = terminal
+        expect(skipKittyKeyboardProtocol()).toBe(false)
+      } finally {
+        env.terminal = saved
+      }
+    }
+  )
+})

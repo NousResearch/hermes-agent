@@ -11,20 +11,22 @@ import type { DesktopConfigSection, SettingsView } from './types'
 export type CredentialSettingsView = 'settings' | 'tools'
 
 export const APPEARANCE_SETTING_IDS = {
+  appActions: 'appearance.app-actions',
   backdrop: 'appearance.backdrop',
   embeds: 'appearance.embeds',
+  introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',
-  uiScale: 'appearance.ui-scale'
+  uiScale: 'appearance.ui-scale',
+  userBubble: 'appearance.user-bubble'
 } as const
 
 export interface SettingsSearchTarget {
   field?: string
   key?: string
   keysView?: CredentialSettingsView
-  plugin?: string
   providerView?: 'accounts' | 'custom-endpoints' | 'keys'
   setting?: string
   view: SettingsView
@@ -217,10 +219,6 @@ export function settingsSearchTargetQuery(target: SettingsSearchTarget): string 
 
   if (target.key) {
     params.set('key', target.key)
-  }
-
-  if (target.plugin) {
-    params.set('plugin', target.plugin)
   }
 
   return params.toString()

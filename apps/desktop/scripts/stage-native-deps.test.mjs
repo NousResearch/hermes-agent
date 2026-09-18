@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  installGetWindowsNativeBinding,
   stageGetWindows,
   stageGetWindowsInto,
   stageNodePtyInto,
@@ -338,6 +339,48 @@ test.skipIf(process.platform === 'win32')(
   }
 )
 
+// ─── non-ASCII path regression tests ───────────────────────────────
+//
+// Node 24's native fs.cpSync/fs.rmSync mishandle non-ASCII Windows paths
+// (accented user-profile dirs): recursive copies fail or crash, overwrite
+// copies fail with a bogus errno-0 unlink error, and rmSync silently
+// deletes nothing. Staging therefore uses libuv-backed primitives only.
+// This test stages into an accented src/dest tree — twice, so the
+// restage exercises the delete-then-recopy path — to keep it that way.
+
+test('non-ASCII paths: staging into an accented tree works and restages cleanly', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const accented = join(tmp, 'áccentéd ünïcødé-pŕöfílé')
+    const srcRoot = join(accented, 'node-pty')
+    const destRoot = join(accented, 'dest')
+
+    makeFakeNodePty(srcRoot, {
+      prebuildPlatform: process.platform,
+      prebuildArch: process.arch
+    })
+    // Windows prebuilds ship a nested conpty/ payload — cover the
+    // recursive-directory branch on every platform.
+    const conptyDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), 'fake dll')
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), 'fake exe')
+
+    for (let pass = 1; pass <= 2; pass++) {
+      stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+      const stagedPrebuild = join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+      assert.equal(existsSync(join(destRoot, 'package.json')), true, `pass ${pass}: package.json staged`)
+      assert.equal(existsSync(join(destRoot, 'lib', 'index.js')), true, `pass ${pass}: lib staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'pty.node')), true, `pass ${pass}: prebuild staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'conpty', 'conpty.dll')), true, `pass ${pass}: conpty dir staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'conpty', 'OpenConsole.exe')), true, `pass ${pass}: conpty exe staged`)
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('validation rejects a staged binary with the wrong platform magic', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
@@ -460,7 +503,7 @@ test('win32-arm64 staging omits incompatible bindings and keeps the fail-soft JS
   }
 })
 
-test('win32 staging self-heals through the rebuild hook when the binding is missing', () => {
+test('win32 staging self-heals through the native installer when the binding is missing', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
@@ -471,7 +514,7 @@ test('win32 staging self-heals through the rebuild hook when the binding is miss
     makeFakeGetWindows(srcRoot, { bindings: [] })
 
     let calls = 0
-    const rebuild = () => {
+    const install = () => {
       calls += 1
       makeFakeNode(
         join(srcRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'),
@@ -479,7 +522,7 @@ test('win32 staging self-heals through the rebuild hook when the binding is miss
       )
     }
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', rebuild })
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', install })
 
     assert.equal(calls, 1)
     assert.ok(
@@ -490,7 +533,7 @@ test('win32 staging self-heals through the rebuild hook when the binding is miss
   }
 })
 
-test('win32 staging reports the recovery steps when the rebuild hook produces nothing', () => {
+test('win32 staging rejects a successful installer that produces no binding', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
@@ -503,13 +546,67 @@ test('win32 staging reports the recovery steps when the rebuild hook produces no
         stageGetWindowsInto(srcRoot, destRoot, {
           platform: 'win32',
           arch: 'x64',
-          rebuild: () => {}
+          install: () => {}
         }),
-      /npm rebuild get-windows/
+      (error) => {
+        assert.match(error.message, /installer completed without producing a win32-x64 binding/)
+        assert.doesNotMatch(error.message, /npm rebuild/)
+        return true
+      }
     )
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+test('get-windows native install invokes node-pre-gyp directly from the package root', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const installer = join(
+      srcRoot,
+      'node_modules',
+      '@mapbox',
+      'node-pre-gyp',
+      'bin',
+      'node-pre-gyp'
+    )
+    fs.mkdirSync(path.dirname(installer), { recursive: true })
+    fs.writeFileSync(
+      join(srcRoot, 'node_modules', '@mapbox', 'node-pre-gyp', 'package.json'),
+      JSON.stringify({ name: '@mapbox/node-pre-gyp', version: '1.0.11' })
+    )
+    fs.writeFileSync(installer, '')
+
+    const calls = []
+    installGetWindowsNativeBinding(srcRoot, {
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        return { status: 0 }
+      }
+    })
+
+    assert.deepEqual(calls, [
+      {
+        command: process.execPath,
+        args: [fs.realpathSync(installer), 'install', '--fallback-to-build'],
+        options: { cwd: srcRoot, stdio: 'inherit' }
+      }
+    ])
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('get-windows native install surfaces node-pre-gyp failure', () => {
+  assert.throws(
+    () =>
+      installGetWindowsNativeBinding('C:\\fake\\get-windows', {
+        resolveInstaller: () => 'C:\\fake\\node-pre-gyp',
+        spawn: () => ({ status: 1 })
+      }),
+    /native installer exited with 1/
+  )
 })
 
 test('staging refuses a get-windows version the lib/windows.js rewrite was not verified against', () => {

@@ -4,31 +4,13 @@ Provides ``feishu_doc_read`` for reading document content as plain text.
 Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 """
 
-import json
-import logging
-import threading
-
+from tools.feishu_lark import (  # noqa: F401  (set_client/get_client are imported by feishu_comment)
+    _check_feishu,
+    build_request,
+    get_client,
+    raw_body,
+    set_client)
 from tools.registry import registry, tool_error, tool_result
-
-logger = logging.getLogger(__name__)
-
-# Thread-local storage for the lark client injected by feishu_comment handler.
-_local = threading.local()
-
-
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
-
-
-def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
-
-
-# ---------------------------------------------------------------------------
-# feishu_doc_read
-# ---------------------------------------------------------------------------
 
 _RAW_CONTENT_URI = "/open-apis/docx/v1/documents/:document_id/raw_content"
 
@@ -51,88 +33,63 @@ FEISHU_DOC_READ_SCHEMA = {
 }
 
 
-def _check_feishu():
-    # Use ``importlib.util.find_spec`` — it checks whether ``lark_oapi``
-    # is importable without actually executing its ``__init__``.
-    # Executing the real import here costs ~5 seconds (the SDK eagerly
-    # loads websockets, dispatcher, every api/v2 model) and this probe
-    # fires at every ``hermes`` startup during tool-availability
-    # evaluation.  Correctness is preserved because the actual tool
-    # handler still does the real import when invoked.
-    import importlib.util
-    try:
-        return importlib.util.find_spec("lark_oapi") is not None
-    except (ImportError, ValueError):
-        return False
-
-
 def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     doc_token = args.get("doc_token", "").strip()
     if not doc_token:
         return tool_error("doc_token is required")
-
     client = get_client()
     if client is None:
         return tool_error("Feishu client not available (not in a Feishu comment context)")
-
     try:
-        from lark_oapi import AccessTokenType
-        from lark_oapi.core.enum import HttpMethod
-        from lark_oapi.core.model.base_request import BaseRequest
+        request = build_request("GET", _RAW_CONTENT_URI, paths={"document_id": doc_token})
     except ImportError:
         return tool_error("lark_oapi not installed")
 
-    request = (
-        BaseRequest.builder()
-        .http_method(HttpMethod.GET)
-        .uri(_RAW_CONTENT_URI)
-        .token_types({AccessTokenType.TENANT})
-        .paths({"document_id": doc_token})
-        .build()
-    )
-
-    # Tool handlers run synchronously in a worker thread (no running event
-    # loop), so call the blocking lark client directly.
+    # Handlers run synchronously in a worker thread (no event loop): call the blocking client.
     response = client.request(request)
-
     code = getattr(response, "code", None)
     if code != 0:
-        msg = getattr(response, "msg", "unknown error")
-        return tool_error(f"Failed to read document: code={code} msg={msg}")
+        return tool_error(f"Failed to read document: code={code} msg={getattr(response, 'msg', 'unknown error')}")
 
-    raw = getattr(response, "raw", None)
-    if raw and hasattr(raw, "content"):
+    body = raw_body(response)
+    if body is not None:
         try:
-            body = json.loads(raw.content)
-            content = body.get("data", {}).get("content", "")
-            return tool_result(success=True, content=content)
-        except (json.JSONDecodeError, AttributeError):
+            return tool_result(success=True, content=body.get("data", {}).get("content", ""))
+        except AttributeError:
             pass
-
-    # Fallback: try response.data
-    data = getattr(response, "data", None)
+    data = getattr(response, "data", None)  # fallback: the typed response.data
     if data:
-        if isinstance(data, dict):
-            content = data.get("content", "")
-        else:
-            content = getattr(data, "content", str(data))
+        content = data.get("content", "") if isinstance(data, dict) else getattr(data, "content", str(data))
         return tool_result(success=True, content=content)
-
     return tool_error("No content returned from document API")
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
-
 registry.register(
-    name="feishu_doc_read",
-    toolset="feishu_doc",
-    schema=FEISHU_DOC_READ_SCHEMA,
-    handler=_handle_feishu_doc_read,
-    check_fn=_check_feishu,
-    requires_env=[],
-    is_async=False,
-    description="Read Feishu document content",
-    emoji="\U0001f4c4",
-)
+    name="feishu_doc_read", toolset="feishu_doc", schema=FEISHU_DOC_READ_SCHEMA, handler=_handle_feishu_doc_read,
+    check_fn=_check_feishu, requires_env=[], is_async=False, description="Read Feishu document content",
+    emoji="\U0001f4c4")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
+import logging  # noqa: F401,E402
+import threading  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('tools.approval', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

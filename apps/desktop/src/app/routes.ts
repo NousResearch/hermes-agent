@@ -1,8 +1,9 @@
-import { atom } from 'nanostores'
+import { atom, onMount } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -10,6 +11,7 @@ export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
+export const SESSION_IMPORT_ROUTE = '/session-import'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const WEBHOOKS_ROUTE = '/webhooks'
@@ -20,6 +22,7 @@ export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
+  | 'session-import'
   | 'agents'
   | 'artifacts'
   | 'chat'
@@ -38,6 +41,7 @@ export type AppView =
   | 'webhooks'
 
 export type AppRouteId =
+  | 'session-import'
   | 'agents'
   | 'artifacts'
   | 'command-center'
@@ -57,6 +61,7 @@ export interface AppRoute {
 }
 
 export const APP_ROUTES = [
+  { id: 'session-import', path: SESSION_IMPORT_ROUTE, view: 'session-import' },
   { id: 'new', path: NEW_CHAT_ROUTE, view: 'chat' },
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
@@ -87,9 +92,20 @@ export interface RouteContribution {
   path: string
 }
 
-export function contributedRoutes(): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
-  return registry
-    .getArea(ROUTES_AREA)
+/** Bumps whenever the `routes` area mutates. For non-React consumers that
+ *  derive from `contributedRoutes()` outside a render (paneMirror titles):
+ *  hand it to `also` so a plugin route registering after its tile opened
+ *  re-syncs the tab title. Subscribes to the registry only while listened to. */
+export const $routesVersion = atom(0)
+onMount($routesVersion, () => registry.subscribeArea(ROUTES_AREA, () => $routesVersion.set($routesVersion.get() + 1)))
+
+// React consumers must pass their `useContributions(ROUTES_AREA)` snapshot in:
+// with React Compiler enabled, an independently-called `contributedRoutes()`
+// can stay memoized across a late registration the subscription DID deliver.
+export function contributedRoutes(
+  contributions: readonly Contribution[] = registry.getArea(ROUTES_AREA)
+): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
+  return contributions
     .map(c => ({
       key: `${c.source ?? 'core'}:${c.id}`,
       path: (c.data as RouteContribution | undefined)?.path ?? '',
@@ -123,6 +139,7 @@ export interface SidebarNavContribution {
 // While one is open the app's titlebar control clusters must hide so they don't
 // bleed over the overlay (they sit at a higher z-index than the overlay card).
 export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
+  'session-import',
   'agents',
   'command-center',
   'cron',
@@ -134,6 +151,16 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
 
 export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)
+}
+
+/** True when TitlebarControls may hide the app's fixed tool clusters.
+ *  Overlays already own the window (clusters AND titleBar slots unmount).
+ *  Contributed full pages (`extension`) hide the app clusters only while the
+ *  page actually mounts `titleBar.*` chrome — those slots are mount-scoped, so
+ *  a plugin page with no titlebar contribution keeps the app controls.
+ *  First-party workspace pages (skills/messaging/artifacts) keep the clusters. */
+export function hidesFixedTitlebarClusters(view: AppView): boolean {
+  return isOverlayView(view) || view === 'extension'
 }
 
 /** The pathname of a router target. Every classifier below reasons about a
@@ -202,7 +229,7 @@ export function appViewForPath(pathname: string): AppView {
 /** Does `to` land on a full page rendered INSIDE the workspace pane
  *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
  *  they float over whatever the workspace is already showing. */
-function isWorkspacePageRoute(to: string): boolean {
+export function isWorkspacePageRoute(to: string): boolean {
   const view = appViewForPath(to)
 
   return view !== 'chat' && !isOverlayView(view)

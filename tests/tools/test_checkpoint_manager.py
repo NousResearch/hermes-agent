@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
-    _shadow_repo_path,
     _init_store,
     _run_git,
     _git_env,
@@ -80,10 +79,9 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 class TestStorePath:
     def test_store_is_single_shared_path(self, work_dir, checkpoint_base, monkeypatch):
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
-        # All projects resolve to the same store.
-        p1 = _shadow_repo_path(str(work_dir))
-        p2 = _shadow_repo_path(str(work_dir.parent / "other"))
-        assert p1 == p2 == _store_path(checkpoint_base)
+        # All projects resolve to the same store (only refs/indexes are per-project).
+        assert _store_path() == _store_path(checkpoint_base)
+        assert _project_hash(str(work_dir)) != _project_hash(str(work_dir.parent / "other"))
 
     def test_project_hash_identifies_dir_and_expands_tilde(self, fake_home):
         project = fake_home / "project"
@@ -340,6 +338,27 @@ class TestSafeRestore:
         assert "README.md" in result["skipped_user_edits"]
         assert "main.py" in result["restored_files"]
 
+    def test_safe_restore_finds_ledger_under_walked_key(self, mgr, work_dir, tmp_path):
+        base = self._checkpoint(mgr, work_dir)
+
+        # A generic project marker in an ancestor dir (e.g. a stray
+        # package.json in /tmp) makes record_agent_write's marker walk key
+        # the ledger to the ancestor, while restore reads the exact dir's
+        # hash.  Safe restore must still find the ledger, or it silently
+        # degrades to a full restore and overwrites user edits.
+        (tmp_path / "package.json").write_text("{}\n")
+
+        (work_dir / "main.py").write_text("agent version\n")
+        (work_dir / "README.md").write_text("user hand edit\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        assert (work_dir / "README.md").read_text() == "user hand edit\n"
+        assert result["restored_files"] == ["main.py"]
+        assert "README.md" in result["skipped_user_edits"]
+
     def test_safe_restore_skips_file_user_edited_after_agent(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
 
@@ -392,6 +411,170 @@ class TestSafeRestore:
         assert not (work_dir / "agent.txt").exists()
         assert "README.md" in result["skipped_user_edits"]
         assert "agent.txt" in result["restored_files"]
+
+    # -- size-capped files -------------------------------------------------
+    #
+    # ``max_file_size_mb`` keeps generated assets out of a checkpoint
+    # (test_max_file_size_mb_skips_large_files). Safe restore then sees such a
+    # file as "changed since the checkpoint and absent from it" — the same
+    # shape as a file Hermes created — and the delete branch treats absence as
+    # proof of authorship. For a capped file that is wrong: no checkpoint holds
+    # a copy, so deleting it destroys the only one.
+
+    @staticmethod
+    def _capped_mgr(checkpoint_base, monkeypatch, cap_mb=1):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        return CheckpointManager(enabled=True, max_snapshots=50, max_file_size_mb=cap_mb)
+
+    def test_safe_restore_keeps_an_oversize_file_the_cap_excluded(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """The file is in no checkpoint, so deleting it is unrecoverable."""
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        corpus = work_dir / "corpus.jsonl"
+        corpus.write_bytes(b"original\n" + b"x" * (2 * 1024 * 1024))
+        base = self._checkpoint(m, work_dir)
+
+        corpus.write_bytes(b"agent appended\n" + b"y" * (2 * 1024 * 1024))
+        m.record_agent_write(str(corpus))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert corpus.exists(), "safe restore deleted a file no checkpoint holds"
+        assert corpus.read_bytes().startswith(b"agent appended")
+        assert "corpus.jsonl" in result.get("skipped_oversize", [])
+
+    def test_safe_restore_does_not_report_a_kept_file_as_restored(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Misreporting is what made the loss silent — the user was told
+        "Restored" for a path that had just been unlinked."""
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        corpus = work_dir / "corpus.jsonl"
+        corpus.write_bytes(b"o" * (2 * 1024 * 1024))
+        base = self._checkpoint(m, work_dir)
+
+        corpus.write_bytes(b"a" * (2 * 1024 * 1024))
+        m.record_agent_write(str(corpus))
+        (work_dir / "main.py").write_text("agent version\n")
+        m.record_agent_write(str(work_dir / "main.py"))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["restored_files"] == ["main.py"]
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+
+    def test_safe_restore_still_reverts_a_file_that_grew_past_the_cap(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Regression guard for the tempting wrong fix.
+
+        Dropping every oversize path from the restore plan would also strand
+        this one — small enough to be checkpointed, then bloated by the agent.
+        It IS in the checkpoint, so a prior version exists and reverting to it
+        is exactly what the user asked for. The rule has to key on "absent from
+        the checkpoint", not on "large now".
+        """
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        grew = work_dir / "grew.txt"
+        grew.write_text("precious original\n")
+        base = self._checkpoint(m, work_dir)
+
+        grew.write_bytes(b"agent bloated it\n" + b"b" * (2 * 1024 * 1024))
+        m.record_agent_write(str(grew))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert grew.read_text() == "precious original\n"
+        assert "grew.txt" in result["restored_files"]
+        assert "grew.txt" not in result.get("skipped_oversize", [])
+
+    def test_the_cap_boundary_is_the_same_on_both_sides_of_the_round_trip(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """One threshold, checked from both ends.
+
+        The checkpoint decides what to store and safe restore decides what may
+        be deleted, and the safety of the pair rests on the two agreeing. A file
+        at exactly the cap is stored (the test is strictly greater-than), so it
+        must revert; one byte more is excluded, so it must be kept. Were the
+        checkpoint side to drift to ``>=`` while restore kept ``>``, the at-cap
+        file would be stored nowhere and recognised as capped nowhere — the
+        exact gap that deletes it — and this fails.
+        """
+        cap = 1024 * 1024
+        m = self._capped_mgr(checkpoint_base, monkeypatch, cap_mb=1)
+
+        at_cap = work_dir / "at_cap.bin"
+        over_cap = work_dir / "over_cap.bin"
+        at_cap.write_bytes(b"o" * cap)
+        over_cap.write_bytes(b"o" * (cap + 1))
+        base = self._checkpoint(m, work_dir)
+
+        at_cap.write_bytes(b"a" * cap)
+        over_cap.write_bytes(b"a" * (cap + 1))
+        m.record_agent_write(str(at_cap))
+        m.record_agent_write(str(over_cap))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        # Stored, therefore recoverable, therefore reverted.
+        assert at_cap.read_bytes() == b"o" * cap
+        assert "at_cap.bin" in result["restored_files"]
+        assert "at_cap.bin" not in result.get("skipped_oversize", [])
+        # Never stored, therefore unrecoverable, therefore left alone.
+        assert over_cap.read_bytes() == b"a" * (cap + 1)
+        assert "over_cap.bin" in result.get("skipped_oversize", [])
+        assert "over_cap.bin" not in result["restored_files"]
+
+    def test_safe_restore_still_deletes_a_small_agent_created_file(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """The delete branch keeps working for the case it was written for."""
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        base = self._checkpoint(m, work_dir)
+
+        scratch = work_dir / "scratch.txt"
+        scratch.write_text("agent scratch\n")
+        m.record_agent_write(str(scratch))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert not scratch.exists()
+        assert "scratch.txt" in result["restored_files"]
+        assert result["skipped_oversize"] == []
+        assert "failed_deletes" not in result
+
+    def test_safe_restore_does_not_report_a_failed_delete_as_restored(
+        self, mgr, work_dir, monkeypatch,
+    ):
+        """A delete_target whose unlink fails stays on disk — reporting it in
+        restored_files is the same silent misreport the oversize fix closed."""
+        base = self._checkpoint(mgr, work_dir)
+
+        stubborn = work_dir / "stubborn.txt"
+        stubborn.write_text("agent scratch\n")
+        mgr.record_agent_write(str(stubborn))
+
+        import pathlib
+
+        real_unlink = pathlib.Path.unlink
+
+        def failing_unlink(self, *args, **kwargs):
+            if self.name == "stubborn.txt":
+                raise OSError(13, "Permission denied")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", failing_unlink)
+        result = mgr.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert stubborn.exists()
+        assert "stubborn.txt" not in result["restored_files"]
+        assert result["failed_deletes"] == ["stubborn.txt"]
 
     def test_unsafe_restore_overwrites_everything(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
@@ -886,6 +1069,57 @@ class TestPruneCheckpointsOrphanAllowlist:
         assert not (base / ("eeee" * 4)).exists()
         # The one that only went orphan mid-confirmation must survive.
         assert second_repo.exists()
+
+
+class TestGcOnlyAfterStoreMutation:
+    """``git gc`` rewrites the whole pack (tens of seconds on a GB store). A checkpoint never runs
+    it — it rewrites refs and marks the store gc-pending — and the periodic prune runs it only when
+    a ref actually moved. A store over the cap with every ref at its one-snapshot floor used to gc on
+    every checkpoint AND on every daily prune, stalling tool calls and gateway startup."""
+
+    def test_checkpoint_never_gcs_and_hands_the_reclaim_to_prune(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        real_gc = cm._gc_store
+        monkeypatch.setattr(cm, "_gc_store", lambda store, wd: gc_calls.append(store) or real_gc(store, wd))
+        work = tmp_path / "big"
+        work.mkdir()
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB cap
+        m = CheckpointManager(enabled=True, max_snapshots=50, max_total_size_mb=1)
+        store = checkpoint_base / "store"
+
+        assert m.ensure_checkpoint(str(work), "first") is True
+        assert gc_calls == [] and not (store / ".gc-pending").exists()  # at the floor: nothing to drop
+
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))
+        m.new_turn()
+        assert m.ensure_checkpoint(str(work), "second") is True
+        assert gc_calls == []  # the oldest snapshot was dropped, but the repack is not the tool call's
+        assert (store / ".gc-pending").exists()
+
+        prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+        assert len(gc_calls) == 1 and not (store / ".gc-pending").exists()
+
+    def test_prune_gcs_only_when_a_project_was_deleted(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        monkeypatch.setattr(cm, "_gc_store", lambda store, working_dir: gc_calls.append(store))
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 0
+        assert gc_calls == []
+
+        meta_path = checkpoint_base / "store" / "projects" / f"{_project_hash(str(work))}.json"
+        meta = json.loads(meta_path.read_text())
+        meta["last_touch"] = time.time() - 60 * 86400
+        meta_path.write_text(json.dumps(meta))
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 1
+        assert len(gc_calls) == 1
 
 
 class TestMaybeAutoPruneCheckpoints:

@@ -2,9 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $gatewayState } from '@/store/session'
 
 // Decode mechanics live in the shared <DecodeText> primitive
@@ -33,10 +35,6 @@ function forcedPreview(): boolean {
   } catch {
     return false
   }
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 }
 
 export function GatewayConnectingOverlay() {
@@ -135,6 +133,15 @@ export function GatewayConnectingOverlay() {
     return null
   }
 
+  // The guided first launch has its own opening (the film, then the typed
+  // greeting in a small window). "Connecting…" over it, then "Connected to
+  // localhost", is the app's boot narrating itself in the middle of the
+  // guide's; the guide's surface stays, this one yields. Boot progress still
+  // gates the transcript underneath — nothing paints early.
+  if (!previewing && guidedOnboardingActive()) {
+    return null
+  }
+
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
 
@@ -144,6 +151,10 @@ export function GatewayConnectingOverlay() {
         'fixed inset-0 z-(--z-connecting) grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app while booting — must stay filled under window
+      // glass or the shell shows through. Contract: `[data-glass-opaque]`
+      // in styles.css.
+      data-glass-opaque=""
     >
       <DecodeText
         active={phase === 'live' && (previewing || connecting)}

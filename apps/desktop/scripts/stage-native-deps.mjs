@@ -14,12 +14,14 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
-  cpSync,
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
-  rmSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -31,6 +33,68 @@ const require = createRequire(import.meta.url)
 
 function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
+}
+
+// ─── libuv-safe fs primitives ────────────────────────────────────────
+//
+// Node's native (non-libuv) rewrite of fs.cpSync/fs.rmSync mishandles
+// non-ASCII Windows paths (observed on v24.11.1 with an accented Windows
+// user name, i.e. a default %LOCALAPPDATA%\hermes home): a recursive
+// cpSync fails with EIO "Access is denied" or hard-crashes the process,
+// an overwriting cpSync fails with a bogus errno-0 unlink error, and
+// rmSync silently deletes nothing — leaving a half-staged tree that
+// breaks every retry. Fixed upstream (nodejs/node#61878 → v24.15.0;
+// nodejs/node#56049 → v24.13.1), but the installer builds on whatever
+// Node the user already has, so staging sticks to libuv-backed
+// primitives (copyFileSync/unlinkSync/rmdirSync/readdirSync), which
+// handle those paths correctly on every affected version.
+
+/** Recursively copy a directory without fs.cpSync. */
+function copyDirSync(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = join(srcDir, entry.name)
+    const dest = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSync(src, dest)
+    } else {
+      copyFileSync(src, dest)
+    }
+  }
+}
+
+/**
+ * Recursively delete a path without fs.rmSync — missing paths are fine,
+ * a plain file or symlink at the path is unlinked (rm -rf semantics).
+ * Verifies the tree is actually gone afterwards: a silent no-op here
+ * surfaces later as an inexplicable staging failure, so fail loudly.
+ *
+ * Also used by before-pack.mjs as the fallback when the native rmSync
+ * silently leaves the stale unpacked dir behind.
+ */
+export function removeDirSync(dir) {
+  let stats
+  try {
+    stats = lstatSync(dir)
+  } catch {
+    return
+  }
+  if (!stats.isDirectory()) {
+    unlinkSync(dir)
+    return
+  }
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      removeDirSync(full)
+    } else {
+      unlinkSync(full)
+    }
+  }
+  rmdirSync(dir)
+  if (existsSync(dir)) {
+    throw new Error(`[stage-native-deps] failed to remove ${dir}`)
+  }
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -74,7 +138,7 @@ function copyGlobByExt(srcDir, destDir, extensions) {
     }
     if (extensions.some((ext) => entry.name.endsWith(ext))) {
       mkdirSync(destDir, { recursive: true })
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
 }
@@ -96,12 +160,12 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirSync(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
       const destFile = join(destDir, entry.name)
-      cpSync(join(srcDir, entry.name), destFile)
+      copyFileSync(join(srcDir, entry.name), destFile)
       if (entry.name === 'spawn-helper') {
         makeExecutable(destFile)
       }
@@ -240,12 +304,12 @@ function validateStagedBinaries(destRoot, targetPlatform) {
 export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
   const hostMatch = platform === process.platform && arch === process.arch
 
-  rmSync(destRoot, { recursive: true, force: true })
+  removeDirSync(destRoot)
   mkdirSync(destRoot, { recursive: true })
 
   // package.json — needed so `require('node-pty')` resolves the package
   // (reads "main") rather than treating it as a directory with no entry.
-  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
@@ -261,16 +325,16 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyFileSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
         const destFile = join(destPrebuild, entry.name)
-        cpSync(join(prebuildDir, entry.name), destFile)
+        copyFileSync(join(prebuildDir, entry.name), destFile)
         makeExecutable(destFile)
       }
     }
@@ -437,7 +501,7 @@ const GET_WINDOWS_VERSION = '9.3.0'
 export function stageGetWindowsInto(
   srcRoot,
   destRoot,
-  { platform = process.platform, arch = process.arch, rebuild } = {}
+  { platform = process.platform, arch = process.arch, install } = {}
 ) {
   // The STAGED_WINDOWS_JS rewrite mirrors this exact version's export surface.
   // A version bump must fail the build here until the rewrite is re-verified —
@@ -451,11 +515,11 @@ export function stageGetWindowsInto(
     )
   }
 
-  rmSync(destRoot, { recursive: true, force: true })
+  removeDirSync(destRoot)
   mkdirSync(destRoot, { recursive: true })
 
-  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
-  cpSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
 
   // lib/*.js only — NOT copyGlobByExt, which recurses into lib/binding and
   // stages empty dirs for every prebuilt slot (including the darwin one the
@@ -463,7 +527,7 @@ export function stageGetWindowsInto(
   mkdirSync(join(destRoot, 'lib'), { recursive: true })
   for (const entry of readdirSync(join(srcRoot, 'lib'), { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith('.js')) {
-      cpSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
+      copyFileSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
     }
   }
 
@@ -474,7 +538,7 @@ export function stageGetWindowsInto(
     if (!existsSync(helper)) {
       throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
     }
-    cpSync(helper, join(destRoot, 'main'))
+    copyFileSync(helper, join(destRoot, 'main'))
     makeExecutable(join(destRoot, 'main'))
   }
 
@@ -495,6 +559,7 @@ export function stageGetWindowsInto(
           )
         : []
     let bindingDirs = scanBindingDirs()
+    let installAttempted = false
     if (bindingDirs.length === 0 && arch === 'arm64') {
       // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only.
       // The staged windows.js deliberately fails soft when binding/ is absent,
@@ -503,30 +568,31 @@ export function stageGetWindowsInto(
         '[stage-native-deps] get-windows has no win32-arm64 prebuilt binding; ' +
           'staging the fail-soft JS surface without native window enumeration.'
       )
-    } else if (bindingDirs.length === 0 && typeof rebuild === 'function') {
+    } else if (bindingDirs.length === 0 && typeof install === 'function') {
       // A plain `npm install` won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while
       // get-windows was missing from allowScripts stays bricked even after
-      // the allowlist is fixed. `npm rebuild` re-runs it.
+      // the allowlist is fixed. Invoke node-pre-gyp directly: npm treats this
+      // optional dependency's failed lifecycle as non-fatal and can report a
+      // successful rebuild without producing the Windows binding.
       console.log(
-        '[stage-native-deps] get-windows has no win32 binding; running `npm rebuild get-windows`...'
+        '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
-      rebuild()
+      installAttempted = true
+      install()
       bindingDirs = scanBindingDirs()
     }
     if (bindingDirs.length === 0 && arch !== 'arm64') {
-      throw new Error(
-        `[stage-native-deps] get-windows has no win32-${arch} prebuilt binding under lib/binding. ` +
-          'Recover from the checkout root with:\n' +
-          '  npm install-scripts approve get-windows\n' +
-          '  npm rebuild get-windows'
-      )
+      const reason = installAttempted
+        ? `native installer completed without producing a win32-${arch} binding under lib/binding`
+        : `has no win32-${arch} prebuilt binding under lib/binding`
+      throw new Error(`[stage-native-deps] get-windows ${reason}`)
     }
     for (const dir of bindingDirs) {
       const dest = join(destRoot, 'lib', 'binding', dir)
       mkdirSync(dest, { recursive: true })
       const destFile = join(dest, 'node-get-windows.node')
-      cpSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
+      copyFileSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
       const classified = classifyNativeBinary(destFile)
       if (classified !== platform) {
         throw new Error(
@@ -542,15 +608,35 @@ export function stageGetWindowsInto(
   return destRoot
 }
 
-function rebuildGetWindowsViaNpm() {
-  const result = spawnSync('npm', ['rebuild', 'get-windows'], {
-    cwd: resolve(projectRoot, '..', '..'),
-    stdio: 'inherit',
-    // npm resolves to npm.cmd on Windows, which needs a shell.
-    shell: process.platform === 'win32'
+export function installGetWindowsNativeBinding(
+  srcRoot,
+  { resolveInstaller, spawn = spawnSync } = {}
+) {
+  let installerPath
+  try {
+    const resolveNodePreGyp =
+      resolveInstaller ??
+      (() =>
+        require.resolve('@mapbox/node-pre-gyp/bin/node-pre-gyp', {
+          paths: [srcRoot]
+        }))
+    installerPath = resolveNodePreGyp()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`[stage-native-deps] cannot resolve get-windows native installer: ${detail}`)
+  }
+
+  const result = spawn(process.execPath, [installerPath, 'install', '--fallback-to-build'], {
+    cwd: srcRoot,
+    stdio: 'inherit'
   })
+  if (result.error) {
+    throw new Error(
+      `[stage-native-deps] get-windows native installer could not start: ${result.error.message}`
+    )
+  }
   if (result.status !== 0) {
-    console.warn(`[stage-native-deps] npm rebuild get-windows exited with ${result.status}`)
+    throw new Error(`[stage-native-deps] get-windows native installer exited with ${result.status}`)
   }
 }
 
@@ -585,10 +671,12 @@ export function stageGetWindows(
   }
 
   // Only a win32 host can produce the win32 binding, so a cross-platform pack
-  // has nothing to gain from the rebuild.
-  const rebuild =
-    platform === 'win32' && process.platform === 'win32' ? rebuildGetWindowsViaNpm : undefined
-  return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, rebuild })
+  // has nothing to gain from the native installer.
+  const install =
+    platform === 'win32' && process.platform === 'win32'
+      ? () => installGetWindowsNativeBinding(srcRoot)
+      : undefined
+  return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, install })
 }
 
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]

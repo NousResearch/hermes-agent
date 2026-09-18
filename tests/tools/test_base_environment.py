@@ -6,11 +6,17 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+import pytest
+
+import tools.terminal_tool_sudo as terminal_tool_sudo
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
     """Concrete subclass for testing base class methods."""
+
+    _sudo_nopasswd_probe_supported = True
 
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -20,6 +26,39 @@ class _TestableEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
+
+
+def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: True)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt should not run for NOPASSWD")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    assert env._prepare_command("sudo true") == ("sudo true", None)
+
+
+@pytest.mark.parametrize(
+    ("supported", "returncode", "expected", "probed"),
+    [(True, 0, True, True), (True, 1, False, True), (False, 0, False, False)],
+)
+def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
+    monkeypatch, supported, returncode, expected, probed
+):
+    env = _TestableEnv()
+    env._sudo_nopasswd_probe_supported = supported
+    run = MagicMock(return_value=object())
+    monkeypatch.setattr(env, "_run_bash", run)
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": returncode}))
+
+    assert env._sudo_nopasswd_works() is expected
+    assert run.called is probed
+    if probed:
+        assert run.call_args.args[0] == "sudo -n true"
 
 
 class TestBoundedOutputCollector:
@@ -405,3 +444,68 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestSanitizeTaskIdForPath:
+    """sanitize_task_id_for_path must yield mountable, collision-free segments.
+
+    A raw task id like ``session:agent:main:telegram:dm:12345`` used as a
+    sandbox directory name made docker -v split the bind-mount on the embedded
+    colons and the daemon rejected it with "invalid mode" / exit 125 (#92414).
+    The helper is shared by every backend that builds host paths from task_id
+    (docker persistent sandboxes, singularity overlays), fixing the class once.
+    """
+
+    def test_docker_unsafe_characters_are_replaced(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
+        assert ":" not in out
+        assert "/" not in out and "\\" not in out
+
+    def test_safe_ids_pass_through_verbatim(self):
+        """Existing sandboxes keep resolving to their current directory."""
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        for value in ("default", "task-01.abc_def", "astropy__astropy-12907"):
+            assert sanitize_task_id_for_path(value) == value
+
+    def test_deterministic_and_collision_free_for_distinct_inputs(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("a:b") == sanitize_task_id_for_path("a:b")
+        # substitution alone is not injective — the digest must disambiguate
+        assert sanitize_task_id_for_path("a:b") != sanitize_task_id_for_path("a_b")
+        assert sanitize_task_id_for_path("!!!") != sanitize_task_id_for_path("@@@")
+
+    def test_empty_and_traversal_inputs_are_neutralized(self):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("") == "default"
+        for value in (".", "..", "../../etc", "..\\..\\escape"):
+            out = sanitize_task_id_for_path(value)
+            assert out not in {".", ".."}
+            assert "/" not in out and "\\" not in out
+
+    def test_oversized_input_truncates_with_unique_digest(self):
+        from tools.environments.path_utils import (
+            _SANDBOX_DIR_MAX_LEN,
+            sanitize_task_id_for_path,
+        )
+
+        long_a = "a" * 300 + ":1"
+        long_b = "a" * 300 + ":2"
+        out_a = sanitize_task_id_for_path(long_a)
+        out_b = sanitize_task_id_for_path(long_b)
+        assert len(out_a) <= _SANDBOX_DIR_MAX_LEN
+        assert ":" not in out_a
+        assert out_a != out_b
+
+    def test_sanitized_dir_is_creatable(self, tmp_path):
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        target = tmp_path / "docker" / sanitize_task_id_for_path(
+            "session:agent:main:telegram:dm:12345"
+        )
+        target.mkdir(parents=True)
+        assert target.is_dir()

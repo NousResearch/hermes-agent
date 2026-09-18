@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -18,7 +19,6 @@ import {
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
-  fmtK,
   formatToolCall,
   parseToolTrailResultLine,
   pick,
@@ -332,7 +332,16 @@ function SubagentAccordion({
         ? 'warn'
         : 'dim'
 
-  const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
+  // `[6a66 3/9]` when the gateway tags the batch; `[3/9]` on older gateways.
+  const batchTag = item.delegationId?.split('_').at(-1)?.slice(0, 4)
+
+  const prefix =
+    item.taskCount > 1
+      ? `[${batchTag ? `${batchTag} ` : ''}${item.index + 1}/${item.taskCount}] `
+      : batchTag
+        ? `[${batchTag}] `
+        : ''
+
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
@@ -925,11 +934,12 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
+  const thinkingTokensLabel = tokenCount > 0 ? `~${compactNumber(tokenCount)} tokens` : null
 
-  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+  const toolTokensLabel =
+    toolTokens !== undefined && toolTokens > 0 ? `~${compactNumber(toolTokens)} tokens` : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${compactNumber(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 

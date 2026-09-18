@@ -12,17 +12,9 @@ vi.mock('@/hermes', () => ({
 
 import { beginCronJobsRequest } from '@/store/cron'
 
+import { deferred } from '../../test/deferred'
+
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(res => {
-    resolve = res
-  })
-
-  return { promise, resolve }
-}
 
 describe('triggerAndRefreshCronJobs', () => {
   beforeEach(() => {

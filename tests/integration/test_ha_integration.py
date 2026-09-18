@@ -164,12 +164,8 @@ class TestToolRest:
     async def test_list_entities_returns_all(self, monkeypatch):
         """_async_list_entities returns all entities from the fake server."""
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             result = await _async_list_entities()
 
@@ -182,12 +178,8 @@ class TestToolRest:
     async def test_list_entities_domain_filter(self, monkeypatch):
         """Domain filter is applied after fetching from server."""
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             result = await _async_list_entities(domain="light")
 
@@ -199,12 +191,8 @@ class TestToolRest:
     async def test_get_state_single_entity(self, monkeypatch):
         """_async_get_state returns full entity details."""
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             result = await _async_get_state("light.bedroom")
 
@@ -219,12 +207,8 @@ class TestToolRest:
         import aiohttp as _aiohttp
 
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             with pytest.raises(_aiohttp.ClientResponseError) as exc_info:
                 await _async_get_state("light.nonexistent")
@@ -234,12 +218,8 @@ class TestToolRest:
     async def test_call_service_turn_on(self, monkeypatch):
         """_async_call_service sends correct payload and server records it."""
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             result = await _async_call_service(
                 domain="light",
@@ -311,12 +291,8 @@ class TestAuthAndErrors:
         import aiohttp as _aiohttp
 
         async with FakeHAServer() as server:
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", "bad-token",
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token="bad-token": (url, token))
 
             with pytest.raises(_aiohttp.ClientResponseError) as exc_info:
                 await _async_list_entities()
@@ -329,12 +305,8 @@ class TestAuthAndErrors:
 
         async with FakeHAServer() as server:
             server.force_500 = True
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_URL", server.url,
-            )
-            monkeypatch.setattr(
-                "tools.homeassistant_tool._HASS_TOKEN", server.token,
-            )
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda url=server.url, token=server.token: (url, token))
 
             with pytest.raises(_aiohttp.ClientResponseError) as exc_info:
                 await _async_list_entities()

@@ -100,11 +100,13 @@ vi.mock('@/store/session-color', () => ({
 }))
 vi.mock('@/store/session-states', () => ({
   $sessionTiles: atom<unknown[]>([]),
+  closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
+  isBrowserWindow: () => false,
   isSecondaryWindow: () => false,
   openSessionInNewWindow: vi.fn(),
   openSessionInTerminal: vi.fn()
@@ -247,12 +249,19 @@ describe('SessionActionsMenu', () => {
     expect(await screen.queryByRole('dialog')).toBeNull()
     expect(onDelete).not.toHaveBeenCalled()
 
-    // Re-open and confirm with Enter: the delete call fires.
+    // Re-open and confirm with Enter at wherever focus actually is. Firing on
+    // the dialog node would pass even when the menu leaves focus on the row
+    // trigger — where Enter re-activates the row instead of confirming.
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.click(trigger)
     fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
-    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Enter' })
+
+    const reopened = await screen.findByRole('dialog')
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(reopened.contains(document.activeElement)).toBe(true))
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
 
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)

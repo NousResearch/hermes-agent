@@ -13,7 +13,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, MutableMapping
 
@@ -52,17 +54,18 @@ def take_turn_report_path(environ: MutableMapping[str, str] = os.environ) -> str
     return environ.pop(TURN_REPORT_FILE_ENV, None) or None
 
 
-def write_turn_report(path: str | None, *, exit_code: int, error: str = "") -> None:
-    """Atomically record ``{pid, exit_code, error}`` at *path*; a no-op without a path. Never raises:
-    the report is the spawner's convenience, the turn itself is already persisted."""
+def write_turn_report(path: str | None, *, exit_code: int, error: str = "", reply: str = "") -> None:
+    """Atomically record ``{pid, exit_code, error, reply}`` at *path*; a no-op without a path. Never
+    raises: the report is the spawner's convenience, the turn itself is already persisted. ``reply``
+    is what the run will print — a spawner booking a lingering child from its report relays it."""
     if not path:
         return
-    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or "")}
+    from utils import atomic_json_write
+
+    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or "")}
+    # 0600 from creation: the record now carries the turn's answer, like the 0600 query file beside it.
     with contextlib.suppress(Exception):
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(record, fh)
-        os.replace(tmp, path)
+        atomic_json_write(path, record, indent=None, mode=0o600)
 
 
 def read_turn_report(path: str, pid: int) -> dict | None:
@@ -75,6 +78,61 @@ def read_turn_report(path: str, pid: int) -> dict | None:
     if not isinstance(record, dict) or record.get("pid") != pid:
         return None
     return record
+
+
+# After the child reports its turn, a child with nothing to linger for exits at once; a spawner
+# that needs only the outcome gives it that long so its real exit code and stream tails are
+# booked instead of the report's summary.
+REPORTED_TURN_EXIT_GRACE_SECONDS = 2.0
+
+
+def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path: str, timeout: float,
+                      exit_grace: float | None = REPORTED_TURN_EXIT_GRACE_SECONDS) -> subprocess.CompletedProcess:
+    """Run one ``hermes chat -Q`` delivery child; *timeout* bounds the TURN, not the process.
+
+    The child records its turn at *report_path* (``write_turn_report``) the moment the turn ends,
+    then runs the one-shot exit linger for nested ``notify_on_complete`` replies — bounded by
+    ``terminal.oneshot_completion_wait_seconds``, whose default equals the delivery caps, so
+    waiting for process exit booked every delivered turn that left a reply pending as a timeout
+    and killed the linger (#113608, #114980). A child that exits is booked from its real exit
+    code and streams. A child still lingering once its report exists is booked from the report
+    and left running (a daemon thread drains and reaps it): after *exit_grace* seconds for a
+    spawner that needs only the outcome, or at the cap when *exit_grace* is None, for a spawner
+    that relays the printed answer — a teammate's reply during the linger may still become it.
+    Only a turn that never ends is killed, as ``subprocess.TimeoutExpired``.
+    """
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", env={**env, TURN_REPORT_FILE_ENV: report_path},
+        creationflags=windows_hide_flags())
+    streams: dict = {}
+
+    def _drain() -> None:
+        streams["out"], streams["err"] = proc.communicate()
+
+    drain = threading.Thread(target=_drain, name=f"quiet-turn-drain-{proc.pid}", daemon=True)
+    drain.start()
+    deadline = time.monotonic() + timeout
+    report = None
+    while True:
+        drain.join(timeout=exit_grace if report is not None and exit_grace is not None else 0.25)
+        if not drain.is_alive():
+            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
+        if report is not None and exit_grace is not None:
+            break
+        # Re-read while waiting for the cap: a follow-up turn rewrites the report with its answer.
+        report = read_turn_report(report_path, proc.pid) or report
+        if time.monotonic() >= deadline:
+            if report is not None:
+                break
+            proc.kill()
+            drain.join(timeout=5.0)
+            raise subprocess.TimeoutExpired(argv, timeout)
+    # Turn over, child still lingering for a nested reply: not this spawner's wait.
+    return subprocess.CompletedProcess(
+        argv, int(report["exit_code"]), report.get("reply") or "", report.get("error") or "")
 
 
 @contextlib.contextmanager

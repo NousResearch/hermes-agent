@@ -4,21 +4,29 @@ The Desktop's relay door on each connected gateway. Contracts:
 - roster.sync persists validated rows and reports the accepted count;
 - outbox.drain returns queued envelopes exactly once;
 - deliver validates the target profile against THIS install and runs the
-  one-turn Bot Chat transport (subprocess is faked here — the argv contract
-  is what's pinned);
+  one-turn Bot Chat transport (the turn runner is faked here — the argv
+  contract is what's pinned; the runner itself is pinned below with real
+  children: its cap bounds the turn, not the exit linger, #114980);
 - reply writes the waiter's file and rejects malformed envelope ids.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
+import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 import tui_gateway.server as srv
 from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
+from tui_gateway import methods_bot_relay
 
 
 @pytest.fixture
@@ -76,17 +84,16 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
         calls["kwargs"] = kwargs
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _result(
         srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
     )
     assert out["reply"] == "pong from ops"
-    # Decoding is pinned (#93590 sibling defect): without encoding= the
-    # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on
-    # Windows — mangling non-ASCII replies; errors="replace" keeps a bad
-    # byte from raising instead of delivering.
-    assert calls["kwargs"]["encoding"] == "utf-8"
-    assert calls["kwargs"]["errors"] == "replace"
+    # The cap bounds the turn; the relay wants the printed answer, so a reported child is
+    # booked only at the cap (exit_grace=None), never early like the cron lane (#114980).
+    assert calls["kwargs"]["timeout"] == bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS
+    assert calls["kwargs"]["exit_grace"] is None
+    assert calls["kwargs"]["report_path"].endswith(".turn.json")
     argv = calls["argv"]
     # argv[0] may be a resolved venv path (#93590) — match by basename.
     assert argv[1:3] == ["-p", "ops"]
@@ -118,7 +125,7 @@ def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch)
         returncode, stderr = 0, ""
         stdout = " *NO_REPLY* "
 
-    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: _Proc())
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", lambda *_a, **_k: _Proc())
     assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
 
     _Proc.stdout = "The NO_REPLY marker means do not answer."
@@ -147,7 +154,7 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
             spawned.append(argv)
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     monkeypatch.setitem(
         srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
     )
@@ -200,7 +207,7 @@ def test_deliver_hands_off_to_a_bot_chat_owned_by_another_process(home, monkeypa
             spawned.append(argv)
         raise AssertionError("the CLI transport collides with the live owner")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
     monkeypatch.setattr(srv, "_sessions", {})  # THIS process hosts nothing for ops
     try:
@@ -275,7 +282,7 @@ def fake_runs(monkeypatch):
 
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     return calls, outcomes
 
 
@@ -385,3 +392,90 @@ def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, su
     assert methods_bot_relay._relay_root() == writer_root
     drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in drained["envelopes"]] == [env["id"]]
+
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _child_argv(monkeypatch, body: str) -> dict:
+    """Stand in a Python child for the ``hermes`` transport; it imports ``hermes_cli`` from this checkout."""
+    argv = [sys.executable, "-c", textwrap.dedent(body)]
+    monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: argv)
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p)}
+
+
+def _spy_popen():
+    procs, real_popen = [], subprocess.Popen
+
+    def spy(*args, **kwargs):
+        procs.append(real_popen(*args, **kwargs))
+        return procs[-1]
+
+    return procs, spy
+
+
+def test_reported_turn_still_lingering_at_the_cap_is_booked_from_its_latest_report_not_killed(tmp_path, monkeypatch):
+    """#114980: the cap bounds the TURN. A child that reported its turn and then lingers for a
+    nested notify_on_complete reply (bounded by oneshot_completion_wait_seconds, default == the
+    cap) is booked at the cap from its report — the answer a follow-up turn last wrote there,
+    exit code 0, never delivery_timeout — and is NOT killed, so its own handoff survives."""
+    env = _child_argv(monkeypatch, """
+        import os, time
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        path = os.environ.pop(TURN_REPORT_FILE_ENV)
+        write_turn_report(path, exit_code=0, reply="asking the teammate")
+        time.sleep(0.5)
+        write_turn_report(path, exit_code=0, reply="teammate says: done")
+        time.sleep(30)
+        """)
+    procs, spy = _spy_popen()
+    tmp = tmp_path / "dm.txt"
+    tmp.write_text("hi", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        with mock.patch.object(subprocess, "Popen", side_effect=spy):
+            result = methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=2)
+        elapsed = time.monotonic() - started
+        assert (result.returncode, result.stdout, result.stderr) == (0, "teammate says: done", "")
+        assert 2 <= elapsed < 8, elapsed
+        assert procs[0].poll() is None, "the lingering child must survive the booking"
+        assert not (tmp_path / "dm.txt.turn.json").exists(), "the report is the runner's to clean up"
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+def test_child_that_exits_under_the_cap_is_booked_from_its_streams(tmp_path, monkeypatch):
+    """Today's contract when the whole run fits: ``-Q`` prints after the linger, and a teammate's
+    reply may have become that answer — so the printed streams and real exit code win over the
+    report. Decoding is pinned (#93590 sibling defect): without encoding= the child's UTF-8 output
+    is decoded with the locale codec — cp1252/GBK on Windows — mangling non-ASCII replies."""
+    env = _child_argv(monkeypatch, """
+        import os, sys
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0, reply="interim")
+        print("final: ünïcode")
+        print("session_id: s-1", file=sys.stderr)
+        sys.exit(3)
+        """)
+    procs, spy = _spy_popen()
+    tmp = tmp_path / "dm.txt"
+    tmp.write_text("hi", encoding="utf-8")
+    env["PYTHONIOENCODING"] = "utf-8"  # the real child writes UTF-8 whatever the console codec
+    with mock.patch.object(subprocess, "Popen", side_effect=spy) as popen:
+        result = methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=10)
+    assert (result.returncode, result.stdout, result.stderr) == (3, "final: ünïcode\n", "session_id: s-1\n")
+    assert popen.call_args.kwargs["encoding"] == "utf-8" and popen.call_args.kwargs["errors"] == "replace"
+
+
+def test_turn_that_never_ends_is_still_a_delivery_timeout(tmp_path, monkeypatch):
+    """Control: with no turn report the cap stays the guard it always was."""
+    env = _child_argv(monkeypatch, "import time; time.sleep(30)")
+    tmp = tmp_path / "dm.txt"
+    tmp.write_text("hi", encoding="utf-8")
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=1)
+    assert time.monotonic() - started < 8
+

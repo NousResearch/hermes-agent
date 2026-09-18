@@ -554,6 +554,9 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
             "fit_detail": (f"even the most compact build ({smallest.quant}, {_human_gb(smallest_total)}) "
                            "exceeds GPU + system memory"),
         })
+        if budget.total_device_bytes == 0 and not budget.uma:
+            row["fit_summary"] = "GPU memory is not known yet"
+            row["fit_detail"] = "Install or repair the selected local engine to detect GPU memory before choosing a model"
         return row
 
     variant = choice.variant
@@ -737,41 +740,51 @@ def _quickstart_target(body: QuickstartBody, budget):
 
 @router.post("/api/local-models/quickstart")
 async def local_models_quickstart(body: QuickstartBody):
-    """One job: install the runtime (if missing), download this machine's build of the recommended model (if
-    missing), make it the default. Each leg uses the same code as the individual setup routes.
-    Preflight rejects (no automatic recommendation or no servable choice) fail the POST
-    synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
-    entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
+    """Install the selected engine before pricing an accelerator whose capacity is unknown."""
+    explicit_entry = _entry_or_404(body.model_id) if body.model_id else None
     tag, backend = _runtime_target()
-    need_runtime = not binaries.installed_tags()
+    install_dir = binaries.runtimes_root() / tag / backend
+    need_runtime = not binaries.manifest_verified(install_dir / "manifest.json")
     if need_runtime:
         _resolve_assets_or_400(tag, backend)
-    need_download = variant.model_id not in bootstrap.staged_model_ids()
+    deferred = need_runtime and backend in ("vulkan", "hip")
+    entry, variant = (explicit_entry, None) if deferred else _quickstart_target(
+        body, hardware.probe_budget(planning=True, install_dir=install_dir))
+    need_download = None if deferred else variant.model_id not in bootstrap.staged_model_ids()
     download_plan = _download_plan(entry, variant) if need_download else []
-    download_bytes = sum(p[2] for p in download_plan)
+    download_bytes = None if deferred else sum(p[2] for p in download_plan)
     if not _QUICKSTART_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Setup is already running")
-    job = _job("quickstart", entry.display_name, model_id=entry.id)
+    job = _job("quickstart", entry.display_name if entry else "Detecting local hardware",
+               model_id=entry.id if entry else None)
     job["total_bytes"] = download_bytes or None
 
     def _run():
         if need_runtime:
             _step(job, "installing-runtime", "Installing the local engine")
             binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
-        if need_download:
-            # The runtime leg repurposed the byte counters for its own stages — reset them to the model plan.
+        selected_entry, selected_variant = (entry, variant)
+        plan = download_plan
+        if deferred:
+            selected_entry, selected_variant = _quickstart_target(
+                body, hardware.probe_budget(planning=True, install_dir=install_dir))
+            job["model_id"] = selected_entry.id
+            job["target"] = selected_entry.display_name
+            plan = (_download_plan(selected_entry, selected_variant)
+                    if selected_variant.model_id not in bootstrap.staged_model_ids() else [])
+        if plan:
             job["done_bytes"] = 0
-            job["total_bytes"] = download_bytes
-            _run_download_plan(job, download_plan, entry.display_name)
-        # Activate: same sequence as /activate's job body.
-        _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
+            job["total_bytes"] = sum(p[2] for p in plan)
+            _run_download_plan(job, plan, selected_entry.display_name)
+        _ensure_server(job, _set_runtime_enabled(True), selected_variant.model_id,
                        fail_detail="The local server could not start — open Local Models for details",
                        skip_msg="quickstart rescan check skipped")
-        _assign_default(job, variant.model_id)
-        _finish(job, f"{entry.display_name} is ready — new chats use it")
+        _assign_default(job, selected_variant.model_id)
+        _finish(job, f"{selected_entry.display_name} is ready — new chats use it")
 
     _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s", on_exit=_QUICKSTART_LOCK.release)
-    return {"job_id": job["job_id"], "model_id": entry.id, "display_name": entry.display_name,
+    return {"job_id": job["job_id"], "model_id": entry.id if entry else None,
+            "display_name": entry.display_name if entry else None,
             "needs_runtime": need_runtime, "needs_download": need_download, "download_bytes": download_bytes}
 
 

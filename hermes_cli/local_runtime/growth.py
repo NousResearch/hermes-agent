@@ -96,7 +96,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     except Exception:  # noqa: BLE001
         server_idle = False
 
-    budget = probe_budget(planning=True)
+    budget = probe_budget(planning=True, install_dir=sup.install_dir)
     decision = growth_decision(
         # Capacity budget, not live-free: growth executes via a server bounce, so the grown
         # instance loads onto a freed card. Live-free is distorted by the very model being grown

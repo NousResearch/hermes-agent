@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import suppress
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -26,19 +27,34 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 def _detect_gpu_vendor() -> str | None:
     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
     probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
-    vulkan/cpu); anything else defers to select_backend's fallback ladder."""
+    vulkan/cpu); PCI display vendors cover AMD/Intel without requiring a Vulkan SDK."""
     from hermes_cli.local_runtime.hardware import _nvidia_smi_path
 
     smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    with suppress(OSError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
-    return None
+    if smi is not None:
+        with suppress(OSError, subprocess.TimeoutExpired):
+            out = subprocess.run(
+                [smi, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return "nvidia " + out.stdout.strip().splitlines()[0]
+    vendors = set()
+    if os.name == "nt":
+        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        with suppress(OSError, subprocess.TimeoutExpired):
+            out = subprocess.run(
+                [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty PNPDeviceID"],
+                capture_output=True, text=True, errors="replace", timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if out.returncode == 0:
+                vendors = set(re.findall(r"PCI\\VEN_([0-9A-F]{4})&", out.stdout.upper()))
+    else:
+        for vendor_file in Path("/sys/class/drm").glob("card[0-9]*/device/vendor"):
+            with suppress(OSError):
+                vendors.add(vendor_file.read_text().strip().removeprefix("0x").upper())
+    return next((name for vendor, name in (("10DE", "nvidia"), ("1002", "amd"), ("8086", "intel"))
+                 if vendor in vendors), None)
 
 
 def models_dir() -> Path:
@@ -142,7 +158,7 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, install_dir: Path | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -157,7 +173,8 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        budget = probe_budget(planning=True, install_dir=install_dir) if install_dir is not None else probe_budget(planning=True)
+        for entry in generate_presets(mdir, budget, preset_path):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -233,7 +250,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
-        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", install_dir)
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),

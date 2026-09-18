@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_cli.local_runtime.devices import probe_devices as _accelerator_devices
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ def _engine_device_info() -> "tuple[int, int, str, str] | None":
 def _engine_device_pool() -> "tuple[int, bool | None] | None":
     """Allocator total from an accelerated runtime, without an integrated verdict."""
     info = _engine_device_info()
-    return (info[0], None) if info is not None else None
+    return (info[0], None) if info is not None and info[2].lower() == "cuda" else None
 
 
 def _device_pool_view() -> "tuple[int, bool | None] | None":
@@ -268,7 +269,31 @@ def _uma_budget(base: int, total: int) -> HardwareBudget:
                           ram_available_bytes=0, uma=True)
 
 
-def probe_budget(*, planning: bool = False) -> HardwareBudget:
+def _configured_install_dir() -> Path:
+    from hermes_cli.config import load_config
+    from hermes_cli.local_runtime.binaries import default_tag, installed_tags, runtimes_root, select_backend
+    from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
+
+    from hermes_cli.local_runtime.recovery import read_state, recorded_process
+
+    state = read_state()
+    if recorded_process(state) is not None:
+        with suppress(ValueError):
+            relative = Path(state["executable"]).relative_to(runtimes_root())
+            if len(relative.parts) >= 3:
+                return runtimes_root() / relative.parts[0] / relative.parts[1]
+    section = load_config().get("local_runtime") or {}
+    backend = section.get("backend", "auto")
+    if backend == "auto":
+        backend = select_backend(_detect_gpu_vendor())
+    tags = installed_tags()
+    requested = section.get("tag") or default_tag()
+    tag = requested if requested in tags else next(iter(tags), requested)
+    directory = runtimes_root() / tag / backend
+    return directory
+
+
+def probe_budget(*, planning: bool = False, install_dir: Path | None = None) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
     ``planning=False``: LIVE budget (free VRAM now) for launch-time fit and growth re-grants.
@@ -277,17 +302,25 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
-    nvidia_vram = _nvidia_vram()
-    vram = nvidia_vram
-    engine_info = _engine_device_info() if vram is None else None
-    if engine_info is not None and engine_info[2].lower() in ("vulkan", "hip"):
-        # llama.cpp is allocator truth for discrete AMD/Intel devices. WMI AdapterRAM is a
-        # legacy 32-bit field and cannot represent modern cards accurately.
-        vram = engine_info[0], engine_info[1]
-        unified = None
-    else:
-        # Preserve NVIDIA's no-smi path: the CUDA driver can still identify UMA.
-        unified = _unified_pool_bytes(nvidia_vram[0] if nvidia_vram else 0, ram_total)
+    install_dir = install_dir if install_dir is not None else _configured_install_dir()
+    backend = install_dir.name if install_dir is not None else None
+    if backend in ("cpu", "metal"):
+        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+    if backend in ("vulkan", "hip"):
+        devices = _accelerator_devices(install_dir)
+        if not devices:
+            return HardwareBudget(0, 0, ram_total if planning else ram_avail)
+        device = max(devices, key=lambda d: (d["type"] == 1, d["total"]))
+        if device["type"] == 2:
+            budget = _uma_budget(ram_total if planning else ram_avail, ram_total)
+            budget.device = device["name"]
+            return budget
+        total, free = device["total"], device["free"]
+        margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
+        return HardwareBudget(max(0, (total if planning else free) - margin), total,
+                              ram_total if planning else ram_avail, device=device["name"])
+    vram = _nvidia_vram()
+    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi

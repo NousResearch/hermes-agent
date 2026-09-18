@@ -71,6 +71,7 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    device: str | None = None
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:

@@ -20,6 +20,11 @@ import pytest
 
 import hermes_cli.local_runtime.hardware as hw
 
+@pytest.fixture(autouse=True)
+def cuda_runtime(monkeypatch):
+    monkeypatch.setattr(hw, "_configured_install_dir", lambda: Path("cuda"))
+
+
 GIB = 1 << 30
 
 # Representative unified-memory device shape: a 48 GiB box whose smi
@@ -183,11 +188,11 @@ def test_vulkan_device_is_budgeted_as_discrete_vram(monkeypatch):
     total, free = 16368 << 20, 7347 << 20
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
-    monkeypatch.setattr(hw, "_engine_device_info", lambda: (
-        total, free, "Vulkan", "AMD Radeon RX 6800 XT"))
+    monkeypatch.setattr(hw, "_accelerator_devices", lambda path: [{
+        "total": total, "free": free, "name": "Vulkan0", "type": 1}])
 
-    planning = hw.probe_budget(planning=True)
-    live = hw.probe_budget(planning=False)
+    planning = hw.probe_budget(planning=True, install_dir=Path("vulkan"))
+    live = hw.probe_budget(planning=False, install_dir=Path("vulkan"))
 
     assert planning.uma is False
     assert planning.total_device_bytes == total

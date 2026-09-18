@@ -22,6 +22,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
 
+    def unexpected_install(*args, **kwargs):
+        raise AssertionError("test must stub runtime installation")
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed", unexpected_install)
     test_client = TestClient(web_server.app)
     test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
     return test_client
@@ -55,6 +58,7 @@ def test_quickstart_without_recommendation_requires_explicit_choice(client, monk
     monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: budget)
     monkeypatch.setattr(lm.catalog, "refresh_catalog_soon", lambda: None)
     monkeypatch.setattr(lm.binaries, "installed_tags", lambda: [lm.binaries.default_tag()])
+    monkeypatch.setattr(lm.binaries, "manifest_verified", lambda path: True)
     monkeypatch.setattr(lm.bootstrap, "staged_model_ids", lambda: set())
     config = lm.config_mod.load_config()
     config.setdefault("local_runtime", {})["backend"] = "cpu"
@@ -113,6 +117,7 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     with guidance, not a doomed background job."""
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.manifest_verified", lambda path: True)
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 409
     assert "Local Models" in r.json()["detail"]
@@ -200,6 +205,7 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.manifest_verified", lambda path: True)
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
         lambda tag, backend, progress=None: calls.append("install"))
@@ -237,7 +243,7 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
 
 
 @pytest.fixture
-def quickstart_ready(monkeypatch):
+def quickstart_ready(monkeypatch, capable_hardware):
     """Preflight passes without hardware or network: the runtime reads as
     installed and every entry's first variant is servable, so the POST
     reaches the single-flight lock instead of 409ing at fit/engine
@@ -246,6 +252,7 @@ def quickstart_ready(monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.manifest_verified", lambda path: True)
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],
@@ -269,6 +276,51 @@ def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
         assert "already running" in r.json()["detail"].lower()
     finally:
         lm._QUICKSTART_LOCK.release()
+
+
+@pytest.mark.parametrize("cpu_already_installed", [False, True])
+def test_quickstart_prices_after_selected_accelerator_is_installed(client, monkeypatch, cpu_already_installed):
+    import hermes_cli.web_routers.local_models as lm
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    config = lm.config_mod.load_config()
+    config["local_runtime"]["backend"] = "vulkan"
+    lm.config_mod.save_config(config)
+    runtime = lm.binaries.runtimes_root() / lm.binaries.default_tag()
+    if cpu_already_installed:
+        (runtime / "cpu").mkdir(parents=True)
+        (runtime / "cpu/manifest.json").write_text('{"verified_version":"test"}')
+    calls = []
+    installed = [False]
+    entry = lm.catalog.catalog_by_id()["qwen3.8-27b"]
+    budget = HardwareBudget(14 << 30, 16 << 30, 64 << 30, device="Vulkan0")
+    expected = lm.catalog.select_variant(entry, budget).variant.model_id
+    original = lm._quickstart_target
+
+    def price(body, actual_budget):
+        assert installed[0], "cannot choose model quantization before the accelerator probe"
+        calls.append("price")
+        return original(body, actual_budget)
+
+    def install(tag, backend, progress=None):
+        assert backend == "vulkan"
+        calls.append("install")
+        installed[0] = True
+        return runtime / backend
+
+    monkeypatch.setattr(lm, "_quickstart_target", price)
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: budget if installed[0] else HardwareBudget(0, 0, 64 << 30))
+    monkeypatch.setattr(lm.binaries, "ensure_runtime_installed", install)
+    monkeypatch.setattr(lm, "_run_download_plan", lambda *args: calls.append("download"))
+    monkeypatch.setattr(lm, "_ensure_server", lambda *args, **kw: calls.append("server"))
+    monkeypatch.setattr(lm, "_assign_default", lambda job, model_id: calls.append(("assign", model_id)))
+    response = client.post("/api/local-models/quickstart", json={"model_id": entry.id})
+    assert response.status_code == 200, response.text
+    job = _wait_job(client, response.json()["job_id"])
+    assert job["status"] == "done", job.get("error")
+    assert job["target"] == entry.display_name
+    assert response.json()["download_bytes"] is None
+    assert calls == ["install", "price", "download", "server", ("assign", expected)]
 
 
 def test_assign_default_reaches_model_assignment(monkeypatch):

@@ -3071,6 +3071,7 @@ export const zh = defineLocale({
 
   composer: {
     message: '消息',
+    draftRestored: '已恢复草稿',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',

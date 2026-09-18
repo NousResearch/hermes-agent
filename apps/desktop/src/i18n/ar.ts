@@ -2095,6 +2095,7 @@ export const ar = defineLocale({
   },
   composer: {
     message: 'الرسالة',
+    draftRestored: 'تمت استعادة المسودة',
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -222,6 +223,7 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     cleanup()
     mainComposerScope.clear()
     clearSessionDraft('session-nav')
+    clearNotifications()
   })
 
   it('stashes the unsent draft on unmount and restores it on remount', () => {
@@ -249,6 +251,18 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
 
     remount.unmount()
+  })
+
+  it('shows subtle feedback when a saved draft is restored', () => {
+    stashSessionDraft('session-nav', 'unsent thought', [])
+
+    render(
+      <ProbeHarness activeQueueSessionKey="session-nav" onLayoutSnapshot={() => undefined} sessionId="session-nav" />
+    )
+
+    expect($notifications.get()).toEqual([
+      expect.objectContaining({ kind: 'info', message: 'Draft restored', placement: 'bottom-right' })
+    ])
   })
 })
 

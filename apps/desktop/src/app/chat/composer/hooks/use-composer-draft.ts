@@ -11,6 +11,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
+import { translateNow } from '@/i18n'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
@@ -24,6 +25,7 @@ import {
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
+import { notify } from '@/store/notifications'
 
 import {
   cloneAttachments,
@@ -457,6 +459,10 @@ export function useComposerDraft({
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments)
+
+    if (paneVisible && text.trim()) {
+      notify({ durationMs: 2_000, kind: 'info', message: translateNow('composer.draftRestored') })
+    }
 
     return () => {
       const latestText = syncDraftFromEditor()

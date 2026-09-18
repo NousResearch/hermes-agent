@@ -1961,13 +1961,29 @@ def test_empty_dict_default_sections_are_open_containers():
     assert suggestion == "compression.model_thresholds"
 
 
+class TestGatewayPlatformsRedirect:
+    """#115212: ``gateway.platforms.<p>.<field>`` is a silent no-op — the gateway loader
+    reads the top-level ``platforms.<p>.<field>`` block. Redirect the write so the runtime
+    actually observes the value, instead of writing a phantom key."""
+
+    def test_gateway_platforms_prefix_is_redirected_to_top_level(self):
+        from hermes_cli.config import _redirect_platform_display_key
+        key, note = _redirect_platform_display_key("gateway.platforms.telegram.enabled")
+        assert key == "platforms.telegram.enabled"
+        assert note is not None
+
+    def test_gateway_platforms_validates_after_redirect(self):
+        from hermes_cli.config import _validate_config_key
+        is_known, suggestion = _validate_config_key("platforms.telegram.enabled")
+        assert is_known is True
+        assert suggestion is None
+
+
 class TestSaveConfigExplicitPathAuthority:
     """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
     must come from the fail-closed read, not from a second cached read that can yield ``{}``."""
 
     def test_save_config_on_intact_file_preserves_explicit_defaults(self, tmp_path):
-        # The intact case: an explicit user-set key survives even when its value equals the
-        # schema default, because the raw read supplies the preserve set (#113301's 32→32 row).
         config_path = tmp_path / "config.yaml"
         config_path.write_text("model:\n  provider: test/p\nskills:\n  write_approval: true\n", encoding="utf-8")
 

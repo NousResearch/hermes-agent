@@ -1122,6 +1122,37 @@ class TestGcOnlyAfterStoreMutation:
         assert len(gc_calls) == 1
 
 
+class TestPruneSweepsTmpPackDebris:
+    """A ``git gc`` killed by the store timeout strands ``tmp_pack_*`` files in
+    ``objects/pack/``; ``gc.auto=0`` means git itself never reclaims them and the gc
+    only runs when a ref moved — so the prune sweeps the debris unconditionally (#115410)."""
+
+    def test_sweeps_debris_even_when_no_ref_moved(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        pack = checkpoint_base / "store" / "objects" / "pack"
+        pack.mkdir(parents=True, exist_ok=True)
+        debris = pack / "tmp_pack_killedGc"
+        debris.write_bytes(b"x" * 512)
+        stamp = time.time() - 11 * 60  # past the sweep's 10-minute age floor
+        os.utime(debris, (stamp, stamp))
+        fresh = pack / "tmp_pack_inFlight"
+        fresh.write_bytes(b"y")
+
+        result = prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+
+        assert result["deleted_stale"] == 0  # no ref moved: the expensive gc never ran…
+        assert not debris.exists()           # …but the debris is still swept
+        assert fresh.exists()                # a pack possibly being written NOW is spared
+        assert result["bytes_freed"] >= 512
+
+
 class TestMaybeAutoPruneCheckpoints:
     def test_prunes_once_then_skips_within_interval(self, tmp_path):
         base = tmp_path / "checkpoints"

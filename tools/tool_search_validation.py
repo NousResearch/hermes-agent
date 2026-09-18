@@ -212,12 +212,8 @@ def not_deferrable_error(name: str) -> str:
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
     the second group 'call it directly' is the opposite of what they must do."""
-    try:
-        from toolsets import _HERMES_CORE_TOOLS
-        core = frozenset(_HERMES_CORE_TOOLS)
-    except Exception:
-        core = frozenset()
-    if name in core or _registry_entry(name) is not None:
+    from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+    if name in _core_tool_names() or _registry_entry(name) is not None:
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

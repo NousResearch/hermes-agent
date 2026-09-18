@@ -210,7 +210,9 @@ matters.
   project directory is the board-level workspace default every new task
   inherits (git repo → preserved worktree, plain dir → preserved
   directory); each task can still override it at creation time. Clearing
-  the field reverts new tasks to disposable scratch workspaces.
+  the field reverts new tasks to disposable scratch workspaces — unless a
+  Project is bound, in which case the Project's primary folder is used;
+  unbind the project first to fall back to scratch.
 - **Project** (in both modals) — binds the board to a Hermes Project
   (the board's `project_id`).
   Tasks created on a bound board inherit the Project; picking a project

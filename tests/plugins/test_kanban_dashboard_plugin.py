@@ -878,29 +878,17 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
 
 def test_dashboard_board_project_binding_is_exposed_in_ui():
-    """The board create/settings dialogs and the board switcher expose the
-    board<->project binding the REST API already supports (POST/PATCH
-    ``project_id``; ``""`` clears it).
-
-    The bundle has no build step, so the wiring is pinned textually like
-    the dependency-select regression above: both dialogs load the live
-    list from GET /projects and drive React state through the shared
-    ``selectChangeHandler``; create sends ``project_id`` only when a
-    project was picked; settings sends it whenever the selector rendered
-    (``""`` clears) and omits it when the projects store is unreachable so
-    saving unrelated settings never wipes a binding; the switcher shows the
-    bound project as a badge whose unbind action PATCHes ``project_id: ""``.
+    """The board switcher's unbind action clears the binding through the
+    same REST contract the API tests pin (PATCH ``project_id: ""``); the
+    create/settings payload shapes themselves are covered behaviourally in
+    ``test_kanban_board_project_api.py``. The bundle has no build step, so
+    only the UI-side seam is pinned here.
     """
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     ).read_text(encoding="utf-8")
 
-    assert "`${API}/projects`" in bundle
-    assert bundle.count("selectChangeHandler(setProjectId)") == 2
-    assert "project_id: (projects.length && projectId) || undefined," in bundle
-    assert "const boundProject = projects.length ? projectId : undefined;" in bundle
-    assert "project_id: boundProject," in bundle
     assert "hermes-kanban-board-project-unbind" in bundle
     assert 'updateBoard(board, { project_id: "" })' in bundle
 

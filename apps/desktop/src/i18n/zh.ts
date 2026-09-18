@@ -1268,6 +1268,8 @@ export const zh = defineLocale({
       currentPill: '当前',
       primaryPill: '主连接',
       managedPill: '应用管理',
+      enableLocal: '启用',
+      disableLocal: '禁用',
       addConnection: '添加连接',
       editConnection: '编辑',
       removeConnection: '移除',

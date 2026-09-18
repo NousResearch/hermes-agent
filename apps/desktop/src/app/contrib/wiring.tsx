@@ -67,6 +67,7 @@ import {
 } from '@/store/profile'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
+import { $zoomPercent } from '@/store/zoom'
 import {
   $activeSessionId,
   $connection,
@@ -1260,7 +1261,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
-  const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  useStore($zoomPercent)
+  const zoomFactor = window.hermesDesktop?.zoom?.factor?.() ?? 1
+  const controlsPos = titlebarControlsPosition(
+    connection?.windowButtonPosition,
+    Boolean(connection?.isFullscreen),
+    zoomFactor
+  )
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
   const measuredOverlayWidth = useWindowControlsOverlayWidth()

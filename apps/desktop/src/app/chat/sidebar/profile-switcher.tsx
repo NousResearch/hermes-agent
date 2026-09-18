@@ -47,7 +47,7 @@ import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { connectionsVisibleForActiveSource, sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
@@ -178,11 +178,15 @@ export function ProfileRail() {
   useFleetRoster(multipleConnections)
 
   const connections = registry?.connections
+  const visibleConnections = useMemo(
+    () => connectionsVisibleForActiveSource(connections ?? [], activeConnectionId),
+    [activeConnectionId, connections]
+  )
 
   const restGroups = useMemo(
     () =>
-      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
-    [activeConnectionId, connections, multipleConnections, order, roster]
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: visibleConnections, order, roster }) : [],
+    [activeConnectionId, multipleConnections, order, roster, visibleConnections]
   )
 
   // Fleet mode needs something to show beside the active gateway. Two
@@ -199,7 +203,7 @@ export function ProfileRail() {
 
   const fleetSequence = useMemo(() => {
     const byId = new Map(restGroups.map(group => [group.connectionId, group]))
-    const ordered = sortConnectionsForDisplay(connections ?? [])
+    const ordered = sortConnectionsForDisplay(visibleConnections)
     const sequence: Array<{ kind: 'active' } | { group: FleetGroup; kind: 'rest' }> = []
     let activePlaced = false
 
@@ -223,7 +227,7 @@ export function ProfileRail() {
     }
 
     return sequence
-  }, [activeConnectionId, connections, restGroups])
+  }, [activeConnectionId, restGroups, visibleConnections])
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.

@@ -163,6 +163,13 @@ const roster: DesktopAgentRoster = {
       handle: 'scout'
     },
     {
+      connectionId: 'gateway-b',
+      connectionKind: 'ssh',
+      connectionLabel: 'Gateway B',
+      profile: 'builder',
+      handle: 'builder'
+    },
+    {
       connectionId: 'local',
       connectionKind: 'local',
       connectionLabel: 'This device',
@@ -319,7 +326,7 @@ describe('ProfileRail fleet mode', () => {
     expect(screen.getByRole('button', { name: 'Manage gateways…' })).toBeTruthy()
   })
 
-  it('lays every other gateway on the strip as an at-rest group, in switcher order', async () => {
+  it('lays every other visible gateway on the strip as an at-rest group, in switcher order', async () => {
     armFleet()
     const container = await renderFleet()
 
@@ -330,11 +337,9 @@ describe('ProfileRail fleet mode', () => {
       node.getAttribute('data-active') === 'true'
     ])
 
-    // Registry order for the whole strip — This device first (switcher
-    // order), then by label — with the active gateway (Gateway A) in ITS slot,
-    // never pulled to the front.
+    // When a remote gateway is active, This device stays in the registry for
+    // routing but is omitted from the picker rail.
     expect(groups).toEqual([
-      ['local', false],
       ['gateway-a', true],
       ['gateway-b', false]
     ])
@@ -344,11 +349,8 @@ describe('ProfileRail fleet mode', () => {
       node.getAttribute('data-connection-id')
     )
 
-    expect(dividers).toEqual(['local', 'gateway-a', 'gateway-b'])
-
-    const local = screen.getByRole('group', { name: 'Profiles on This device' })
-    expect(within(local).getByRole('button', { name: 'default · This device' })).toBeTruthy()
-    expect(within(local).getByRole('button', { name: 'builder · This device' })).toBeTruthy()
+    expect(dividers).toEqual(['gateway-a', 'gateway-b'])
+    expect(screen.queryByRole('group', { name: 'Profiles on This device' })).toBeNull()
 
     // The active gateway's own squares are unchanged and unqualified.
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
@@ -357,6 +359,15 @@ describe('ProfileRail fleet mode', () => {
     // Fleet pill: "all on this gateway" replaces the default↔all toggle.
     expect(screen.getByRole('button', { name: 'All profiles on this gateway' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
+  })
+
+  it('hides the local source from the fleet rail while a remote source is active', async () => {
+    armFleet()
+    const container = await renderFleet()
+
+    expect(container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="local"]')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Profiles on This device' })).toBeNull()
+    expect(screen.getByRole('group', { name: 'Profiles on Gateway B' })).toBeTruthy()
   })
 
   it('marks an unreachable gateway but never hides it', async () => {
@@ -380,10 +391,10 @@ describe('ProfileRail fleet mode', () => {
     let settle: () => void = () => undefined
     selectConnection.mockImplementationOnce(() => new Promise<void>(resolve => (settle = resolve)))
 
-    const builder = screen.getByRole('button', { name: 'builder · This device' })
+    const builder = screen.getByRole('button', { name: 'builder · Gateway B' })
     fireEvent.click(builder)
 
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'builder' })
+    expect(selectConnection).toHaveBeenCalledWith('gateway-b', { profile: 'builder' })
     expect(selectProfile).not.toHaveBeenCalled()
     // The dial spinner sits on the clicked square, not in the statusbar.
     expect(builder.getAttribute('aria-busy')).toBe('true')
@@ -400,9 +411,9 @@ describe('ProfileRail fleet mode', () => {
     armFleet()
     await renderFleet()
 
-    fireEvent.click(screen.getByRole('button', { name: 'default · This device' }))
+    fireEvent.click(screen.getByRole('button', { name: 'default · Gateway B' }))
 
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'default' })
+    expect(selectConnection).toHaveBeenCalledWith('gateway-b', { profile: 'default' })
   })
 
   it('keeps the active gateway click on the plain profile path', async () => {
@@ -444,7 +455,7 @@ describe('ProfileRail fleet mode', () => {
       { is_default: true, name: 'default' },
       ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
     ])
-    // 11 named on Gateway A + local (default, builder) + gateway-b (default) = 14 > 13.
+    // 11 named on Gateway A + gateway-b (default, builder) = 14 > 13.
     const container = await renderFleet()
 
     expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()

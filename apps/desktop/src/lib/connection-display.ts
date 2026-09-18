@@ -22,6 +22,21 @@ export function sortConnectionsForDisplay<T extends Pick<DesktopRegistryConnecti
   })
 }
 
+/**
+ * The local registry entry remains persisted and routable, but is not a useful
+ * alternate source while a remote source is active. Keep it out of picker
+ * chrome without changing the registry or cross-source session ownership.
+ */
+export function connectionsVisibleForActiveSource<
+  T extends Pick<DesktopRegistryConnection, 'id' | 'kind' | 'label'>
+>(connections: readonly T[], activeConnectionId: null | string): T[] {
+  const active = connections.find(connection => connection.id === activeConnectionId)
+
+  return active && active.kind !== 'local'
+    ? connections.filter(connection => connection.kind !== 'local')
+    : [...connections]
+}
+
 function normalizeSearchText(value: string): string {
   return value.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase()
 }

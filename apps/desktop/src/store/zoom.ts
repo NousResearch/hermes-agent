@@ -10,9 +10,9 @@
 
 import { atom } from 'nanostores'
 
-// Mirror DEFAULT_ZOOM_LEVEL (90%) so Appearance doesn't flash 100% before
+// Mirror DEFAULT_ZOOM_LEVEL (125%) so Appearance doesn't flash 100% before
 // the main-process zoom.get() resolves. Keep in sync with electron/zoom.ts.
-export const $zoomPercent = atom<number>(90)
+export const $zoomPercent = atom<number>(125)
 
 export function setZoomPercent(percent: number): void {
   window.hermesDesktop?.zoom?.setPercent(percent)

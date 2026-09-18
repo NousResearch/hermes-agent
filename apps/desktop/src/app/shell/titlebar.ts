@@ -1,6 +1,10 @@
 import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
+/** No dead band between native window controls and the equal-height tab row. */
+export const TITLEBAR_TABS_GAP = 0
+/** Keep the below-controls tab row aligned with the titlebar control band. */
+export const TITLEBAR_TABS_HEIGHT = TITLEBAR_HEIGHT
 /** Permanent native drag target beside a top-edge tab strip. */
 export const TITLEBAR_DRAG_HANDLE_WIDTH = 48
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -92,9 +96,11 @@ export const titlebarHeaderShadowClass =
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
-  isFullscreen = false
+  isFullscreen = false,
+  zoomFactor = 1
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
+  const scale = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1
 
   // No left-side native controls to dodge:
   //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.
@@ -105,7 +111,10 @@ export function titlebarControlsPosition(
   }
 
   return {
-    left: (windowButtonPosition?.x ?? TITLEBAR_FALLBACK_WINDOW_BUTTON_X) + TITLEBAR_CONTROL_OFFSET_X,
+    // Native traffic lights use physical window pixels while this cluster is
+    // laid out in Chromium CSS pixels. Divide the complete physical offset by
+    // the zoom factor so the gap does not grow when UI Scale increases.
+    left: ((windowButtonPosition?.x ?? TITLEBAR_FALLBACK_WINDOW_BUTTON_X) + TITLEBAR_CONTROL_OFFSET_X) / scale,
     top
   }
 }

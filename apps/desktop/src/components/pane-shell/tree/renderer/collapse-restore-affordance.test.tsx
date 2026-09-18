@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP, TITLEBAR_TABS_HEIGHT } from '@/app/shell/titlebar'
 import { registry } from '@/contrib/registry'
 
 import { group, type GroupNode, split } from '../model'
@@ -61,13 +62,21 @@ function registerPane(id: string, data: Record<string, unknown>, title = id) {
   disposers.push(registry.register({ area: 'panes', data, id, render: () => null, title }))
 }
 
-function LiveTreeGroup({ index = 0, parentAxis }: { index?: number; parentAxis: 'column' | 'row' }) {
+function LiveTreeGroup({
+  index = 0,
+  parentAxis,
+  topEdge = false
+}: {
+  index?: number
+  parentAxis: 'column' | 'row'
+  topEdge?: boolean
+}) {
   useStore($layoutTree)
 
   const node = $layoutTree.get()!
   const zone = (node.type === 'split' ? node.children[index] : node) as GroupNode
 
-  return <TreeGroup node={zone} parentAxis={parentAxis} />
+  return <TreeGroup node={zone} parentAxis={parentAxis} topEdge={topEdge} />
 }
 
 const tablist = () => globalThis.document.querySelector('[role="tablist"]')
@@ -100,6 +109,36 @@ describe('Sessions/Bots strip — #91223', () => {
         group(['workspace'], { active: 'workspace', id: 'g-main' })
       ])
     )
+  })
+
+  it('keeps standing sidebar tabs below the titlebar across window widths', () => {
+    const left = document.createElement('div')
+    const right = document.createElement('div')
+    left.dataset.titlebarCluster = 'left'
+    right.dataset.titlebarCluster = 'right'
+    left.getBoundingClientRect = () => ({ left: 0, right: 70 }) as DOMRect
+    right.getBoundingClientRect = () => ({ left: 1000, right: 1100 }) as DOMRect
+    document.body.append(left, right)
+
+    try {
+      const { container } = render(<LiveTreeGroup parentAxis="row" topEdge />)
+      const zone = container.querySelector<HTMLElement>('[data-tree-group]')!
+      const header = container.querySelector<HTMLElement>('[data-panel-header]')!
+      let width = 237
+      zone.getBoundingClientRect = () => ({ left: 0, right: width, width }) as DOMRect
+
+      for (width of [237, 500, 237]) {
+        act(() => window.dispatchEvent(new Event('resize')))
+        expect(header.style.height).toBe(`${TITLEBAR_HEIGHT + TITLEBAR_TABS_HEIGHT + TITLEBAR_TABS_GAP}px`)
+        expect(container.querySelector('[data-zone-tabstrip]')?.getAttribute('style')).toContain(
+          `height: ${TITLEBAR_TABS_HEIGHT}px`
+        )
+        expect(container.querySelector('[data-zone-tabstrip]')?.classList.contains('absolute')).toBe(true)
+      }
+    } finally {
+      left.remove()
+      right.remove()
+    }
   })
 
   it('double-clicking the Sessions tab leaves the strip and both chips', () => {

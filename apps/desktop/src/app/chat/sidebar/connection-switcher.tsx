@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
   connectionMatchesQuery,
+  connectionsVisibleForActiveSource,
   connectionTooltip,
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
@@ -78,7 +79,11 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const connections = useMemo(() => sortConnectionsForDisplay(registry?.connections ?? []), [registry?.connections])
 
   const activeConnection = connections.find(connection => connection.id === activeConnectionId)
-  const searchable = connections.length >= CONNECTION_SEARCH_THRESHOLD
+  const visibleConnections = useMemo(
+    () => connectionsVisibleForActiveSource(connections, activeConnectionId),
+    [activeConnectionId, connections]
+  )
+  const searchable = visibleConnections.length >= CONNECTION_SEARCH_THRESHOLD
 
   const kindLabels: Record<DesktopRegistryConnection['kind'], string> = {
     cloud: t.settings.connections.kindCloud,
@@ -88,8 +93,10 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   }
 
   const displayedConnections = searchable
-    ? connections.filter(connection => connectionMatchesQuery(connection, searchQuery, [kindLabels[connection.kind]]))
-    : connections
+    ? visibleConnections.filter(connection =>
+        connectionMatchesQuery(connection, searchQuery, [kindLabels[connection.kind]])
+      )
+    : visibleConnections
 
   useEffect(() => {
     if (!menuOpen || !searchable || searchQuery) {

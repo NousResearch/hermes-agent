@@ -12,26 +12,24 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import {
+  TITLEBAR_DRAG_HANDLE_WIDTH,
+  TITLEBAR_HEIGHT,
+  TITLEBAR_TABS_GAP,
+  TITLEBAR_TABS_HEIGHT
+} from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
-import {
-  PANE_TAB_STRIP_LINE_LEFT,
-  PANE_TAB_STRIP_LINE_RIGHT,
-  PaneStripGlyph,
-  PaneTab,
-  paneTabCloseItems,
-  PaneTabLabel,
-  PaneTabStrip
-} from '@/components/ui/pane-tab'
+import { PaneStripGlyph, PaneTab, paneTabCloseItems, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
+import { $zoomPercent } from '@/store/zoom'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -85,7 +83,7 @@ import {
 } from '../tab-selection'
 
 import { startPaneDrag } from './drag-session'
-import { usePanelTitlebar } from './panel-titlebar'
+import { usePanelTitlebar, zoomAdjustedGapCss } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
@@ -239,7 +237,6 @@ export function TreeGroup({
   // The scrolling tab list inside the header (the strip also holds the
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
-  const measuredBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
   // STATE, not a ref: the menu items (incl. Close's visibility) are JSX
@@ -265,6 +262,7 @@ export function TreeGroup({
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
+  useStore($zoomPercent)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
   // the one holding it, so this subscription is quiet during normal use.
   const tabSelection = useStore($tabSelection)
@@ -283,6 +281,14 @@ export function TreeGroup({
     Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
+
+  // Standing sidebars keep their tabs on the same row as their content grows
+  // or the window changes width. Otherwise the width probe moves the entire
+  // Sessions/Bots strip between rows during a sash or window resize.
+  const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
+  const tabsBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized), sidebarGroup)
+  const tabsInTitlebar = topEdge && !tabsBelowControls
+  const titlebarTabsGap = zoomAdjustedGapCss(TITLEBAR_TABS_GAP, window.hermesDesktop?.zoom?.factor?.() ?? 1)
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
 
   const activeId = shown.includes(node.active)
@@ -291,9 +297,6 @@ export function TreeGroup({
 
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
-  const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls)
-  const tabsInTitlebar = topEdge && !tabsBelowControls
   const pageHeader = paneChrome(active).headerContent
 
   // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
@@ -471,11 +474,8 @@ export function TreeGroup({
       {verticalCollapse && (
         <ZoneMenu {...zoneMenu}>
           <div
-            className={cn(
-              'flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
-              // Strip line faces the content the zone collapsed away from.
-              railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
-            )}
+            className="flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)"
+            data-glass-sidebar-rail=""
             onClick={() => restoreTreePane(activeId)}
             title={t.zones.restore}
           >
@@ -517,7 +517,14 @@ export function TreeGroup({
         <div
           className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined}
+          style={
+            topEdge
+              ? {
+                  height:
+                    TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? TITLEBAR_TABS_HEIGHT + titlebarTabsGap : 0)
+                }
+              : undefined
+          }
         >
           {topEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
@@ -526,9 +533,10 @@ export function TreeGroup({
             <div
               className={cn(
                 'flex min-w-0 flex-1 items-stretch overflow-hidden',
-                tabsBelowControls && 'absolute inset-x-0 bottom-0 h-7'
+                tabsBelowControls && 'absolute inset-x-0 bottom-0'
               )}
               data-panel-page-header=""
+              style={{ height: tabsBelowControls ? TITLEBAR_TABS_HEIGHT : undefined }}
             >
               <PaneTab active>{pageHeader()}</PaneTab>
             </div>
@@ -552,7 +560,13 @@ export function TreeGroup({
                   }
                 }}
                 ref={stripRef}
-                style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
+                style={
+                  {
+                    cursor: 'grab',
+                    height: tabsBelowControls ? TITLEBAR_TABS_HEIGHT : undefined,
+                    WebkitAppRegion: dragging ? 'no-drag' : undefined
+                  } as CSSProperties
+                }
                 titlebar={tabsInTitlebar}
                 trailing={
                   <>
@@ -807,7 +821,11 @@ export function TreeGroup({
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
-              top: topEdge ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) : headerVisible ? 28 : 0,
+              top: topEdge
+                ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? TITLEBAR_TABS_HEIGHT + titlebarTabsGap : 0)
+                : headerVisible
+                  ? 28
+                  : 0,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'

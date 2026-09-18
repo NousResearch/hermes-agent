@@ -701,7 +701,9 @@ export function AppContextMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        className="w-56"
+        // The app-wide fallback uses the same over-modal content layer as the
+        // shared context-menu primitive, so it clears fixed titlebar clusters.
+        className="z-(--z-over-modal-content) w-56"
         onCloseAutoFocus={event => event.preventDefault()}
         portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
         side="bottom"

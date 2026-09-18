@@ -21,11 +21,12 @@ def skills_home(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
         "---\nname: demo-dedup-skill\ndescription: Demo skill for dedup tests.\n---\n"
-        "# Demo\n\nStep one: run the demo procedure fully.\n"
+        "# Demo\n\nStep one: run the demo procedure fully.\n",
+        encoding="utf-8",
     )
     refs = d / "references"
     refs.mkdir()
-    (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n")
+    (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     reset_skill_view_dedup()
     return home
@@ -57,7 +58,7 @@ class TestSkillViewDedup:
         _view("demo-dedup-skill")
         md = skills_home / "skills" / "demo-dedup-skill" / "SKILL.md"
         time.sleep(0.01)
-        md.write_text(md.read_text() + "\nStep two: new instruction.\n")
+        md.write_text(md.read_text(encoding="utf-8") + "\nStep two: new instruction.\n", encoding="utf-8")
         r2 = _view("demo-dedup-skill")
         assert "Step two" in r2.get("content", "")
         assert r2.get("dedup") is None

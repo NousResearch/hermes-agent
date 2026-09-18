@@ -567,9 +567,11 @@ class TestTaskStore:
             return original_redact(reply)
 
         monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
-        thread = threading.Thread(
-            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)))
-        )
+        def finalize_reply():
+            state, reply, _out_of_band, _defer = adapter._await_reply(pending)
+            result.append(adapter._finalize_task(pending, state, reply))
+
+        thread = threading.Thread(target=finalize_reply)
         thread.start()
         assert finalizing.wait(timeout=1)
         try:
@@ -582,7 +584,7 @@ class TestTaskStore:
         assert result == [(protocol.STATE_COMPLETED, "reply")]
         assert adapter.tasks.get("t-live")["state"] == protocol.STATE_COMPLETED
 
-    def test_stream_disconnect_releases_active_request(self, monkeypatch):
+    def test_stream_disconnect_preserves_active_task_for_late_completion(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
         rec = adapter.tasks.create("t-live", "c1", "peer")
         adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
@@ -612,10 +614,11 @@ class TestTaskStore:
         adapter._rpc_message_stream(Handler(), 1, {}, "peer")
 
         stored = adapter.tasks.get("t-live")
-        assert stored["state"] == protocol.STATE_FAILED
-        assert stored["reply"] == "[client disconnected]"
-        assert "t-live" not in adapter._pending
-        assert "t-live" not in adapter._active_tasks
+        assert stored is not None
+        assert stored["state"] == protocol.STATE_WORKING
+        assert stored["reply"] == ""
+        assert "t-live" in adapter._pending
+        assert "t-live" in adapter._active_tasks
 
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()

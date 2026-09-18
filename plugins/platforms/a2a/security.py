@@ -139,7 +139,18 @@ PRIVACY_PREFIX = (
     "colleague's request.]\n\n"
 )
 
-# PII the canonical secret redactor deliberately leaves alone; a peer is a third party.
+# A2A also retains these credential-shaped patterns for compatibility with
+# peers/tests that use short synthetic tokens; the shared redactor is the
+# authoritative superset for production egress.
+_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "sk-[redacted]"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}"), "sk-ant-[redacted]"),
+    (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "ghp_[redacted]"),
+    (re.compile(r"xox[bap]-[A-Za-z0-9\-]{10,}"), "xox-[redacted]"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AKIA[redacted]"),
+    (re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "[redacted-jwt]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}"), "Bearer [redacted]"),
+)
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 
@@ -157,13 +168,21 @@ def wrap_inbound(peer: str, text: str) -> str:
 
 
 def redact_outbound(text: str) -> str:
-    """Scrub credentials (the shared egress scrub — every pattern ``agent/redact.py`` knows, fail-closed)
-    and e-mail addresses before text ships to a remote peer."""
+    """Scrub shared and A2A-specific credential-shaped strings before peer egress."""
     if not text:
         return text
     from agent.redact import redact_for_egress
 
-    return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
+    out = redact_for_egress(text)
+    for pat, replacement in _REDACTION_PATTERNS:
+        out = pat.sub(replacement, out)
+    return _EMAIL_RE.sub("[redacted-email]", out)
+
+
+def _audit_path():
+    """Return the profile-scoped audit path (kept patchable for test isolation)."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "a2a_audit.jsonl"
 
 
 # Blocked even in localhost-only mode — a remote peer must not make us probe internal services
@@ -198,13 +217,17 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
     return True
 
 
-def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
+def audit(
+    direction: str, peer: str, task_id: str, summary: str, context_id: Optional[str] = None
+) -> None:
     """Append an audit record (direction: inbound | outbound | push). Never raises."""
     try:
-        from hermes_constants import get_hermes_home
+        path = _audit_path()
         rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
-        get_hermes_home().mkdir(parents=True, exist_ok=True)
-        with (get_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
+        if context_id:
+            rec["context_id"] = context_id
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)

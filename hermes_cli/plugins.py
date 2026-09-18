@@ -28,6 +28,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
+from agent.plugin_agent_context import AgentContext
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
@@ -234,6 +235,12 @@ class PluginContext:
     def plugin_id(self) -> str:
         """Return the effective registry id used for this plugin's namespaces."""
         return manifest_key(self.manifest)
+
+    def agent_context(self) -> AgentContext | None:
+        """Return immutable attribution for the current agent turn, or ``None`` when unbound."""
+        from agent.plugin_agent_context import get_agent_context
+
+        return get_agent_context()
 
     def has_plugin(self, plugin_id: str) -> bool:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory

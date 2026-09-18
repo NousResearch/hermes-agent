@@ -130,7 +130,27 @@ class TurnFacadeMixin:
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+            from agent.plugin_agent_context import AgentContext, bind_agent_context
+            from run_agent import _session_source_for_agent
+
+            platform = str(getattr(self, "platform", None) or "")
+            # Delegated children execute inside a copy of the parent's gateway ContextVars. Their
+            # own host identity is nevertheless subagent, not the inherited parent source.
+            source = platform if platform == "subagent" else _session_source_for_agent(platform)
+            plugin_agent_context = AgentContext(
+                session_id=task_context["session_id"],
+                task_id=effective_task_id,
+                turn_id=relay_turn_id,
+                platform=platform,
+                source=source,
+                parent_session_id=(str(getattr(self, "_parent_session_id", None) or "") or None),
+            )
+            with (
+                bind_agent_context(plugin_agent_context),
+                bind_subagent_parent(self),
+                scoped_runtime_main({}),
+                track_in_interrupt_scope(self),
+            ):
                 try:
                     if lease is not None:
                         lease.start()

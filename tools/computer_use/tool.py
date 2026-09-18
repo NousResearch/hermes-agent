@@ -19,7 +19,7 @@ import uuid
 from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
@@ -231,6 +231,39 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
+@contextlib.contextmanager
+def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
+    """Lease a live backend until dispatch completes; never retry an action.
+
+    Lookup is not admission: a target/mode switch or release can retire the
+    backend both before lock lookup and while this caller waits for its lock.
+    Revalidate the pair AFTER acquiring the call lock. Teardown uses that same
+    lock, so it cannot stop an admitted backend until the caller has finished.
+    Never wait for a call lock while holding the global cache lock.
+    """
+    from tools.computer_use.cua_backend_driver import computer_use_selection_identity
+
+    sid = _scoped_sid(session_id)
+    while True:
+        backend = _get_backend(session_id=session_id)
+        with _backend_lock:
+            if _backends.get(sid) is not backend:
+                continue
+            call_lock = _backend_call_locks[sid]
+        with call_lock:
+            with _backend_lock:
+                if (_backends.get(sid) is not backend
+                        or _backend_call_locks.get(sid) is not call_lock):
+                    continue
+                # A queued call can outlive a config change even if no other
+                # caller has replaced the cached backend yet.
+                if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
+                        or _backend_selection_identities.get(sid) != computer_use_selection_identity()):
+                    continue
+            yield backend
+            return
+
+
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
@@ -311,19 +344,16 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         if (err := _request_approval(scope, args)) is not None:
             return err
     try:
-        backend = _get_backend(session_id=session_id)
+        with _backend_for_call(session_id) as backend:
+            try:
+                return _dispatch(backend, action, args, session_id=session_id or None)
+            except Exception as e:
+                logger.exception("computer_use %s failed", action)
+                return json.dumps({"error": f"{action} failed: {e}"})
     except Exception as e:
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})
-    try:
-        with _backend_lock:
-            call_lock = _backend_call_locks.setdefault(_scoped_sid(session_id), threading.RLock())
-        with call_lock:
-            return _dispatch(backend, action, args, session_id=session_id or None)
-    except Exception as e:
-        logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,

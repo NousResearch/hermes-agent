@@ -138,8 +138,11 @@ def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
 
 def _cua_driver_install_ready() -> bool:
     """Return whether an existing driver needs no install-time repair."""
-    return bool(_cua_driver_contract_status().get("ready")) and (
-        sys.platform != "win32" or _cua_driver_autostart_registered_windows())
+    from tools.computer_use.cua_backend_driver import resolved_cua_driver_platform
+    binary = _resolved_cua_driver_cmd()
+    return bool(_cua_driver_contract_status(binary).get("ready")) and (
+        (sys.platform != "win32" and resolved_cua_driver_platform(binary) != "windows")
+        or _cua_driver_autostart_registered_windows())
 
 
 def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = True):
@@ -270,12 +273,18 @@ def _install_wsl_windows_driver(*, upgrade: bool, unattended: bool) -> bool:
     if override and (not contract.get("ready") or upgrade):
         return _fail(computer_use_target_error() or "    A custom Windows driver is selected.",
                      "    Update that binary manually, or unset HERMES_CUA_DRIVER_CMD to use the official install.")
+    if unattended:
+        # Probing is safe; installing/elevating across the OS boundary is not
+        # an unattended repair, even when the executable itself is compatible.
+        if contract.get("ready") and _cua_driver_autostart_registered_windows():
+            return True
+        return _fail("    Windows-host setup requires an explicit computer-use install command.",
+                     "    Run: hermes computer-use install")
     if contract.get("ready") and not upgrade:
+        if not _repair_cua_driver_autostart_windows(binary, verbose=False):
+            return _fail("    Windows-host cua-driver is compatible, but autostart repair failed.")
         _print_success(f"    Windows-host cua-driver is ready: {binary}")
         return True
-    if unattended:
-        _print_info("    Windows-host installation from WSL requires an explicit computer-use install command.")
-        return bool(contract.get("ready"))
     powershell = shutil.which("powershell.exe")
     if not powershell:
         return _fail("    Windows PowerShell is unavailable through WSL interop.",
@@ -295,11 +304,16 @@ def _install_wsl_windows_driver(*, upgrade: bool, unattended: bool) -> bool:
     if result.returncode != 0:
         _print_output_tail(result)
         return _fail("    Windows-host installer failed; no Linux fallback was attempted.")
-    contract = _cua_driver_contract_status()
-    if not contract.get("ready"):
+    from tools.computer_use.cua_backend_driver import _cached_wsl_windows_install_paths
+    _cached_wsl_windows_install_paths.cache_clear()
+    binary = _resolved_cua_driver_cmd()
+    contract = _cua_driver_contract_status(binary)
+    if not binary or not contract.get("ready"):
         return _fail("    Windows installer exited, but the selected driver is not ready.",
                      str(contract.get("reason") or computer_use_target_error() or "Run hermes computer-use doctor."))
-    _print_success("    Windows-host cua-driver installed and runtime contract verified.")
+    if not _repair_cua_driver_autostart_windows(binary, verbose=False):
+        return _fail("    Windows-host driver installed, but autostart registration is not ready.")
+    _print_success("    Windows-host cua-driver installed; runtime contract and autostart verified.")
     return True
 
 
@@ -555,9 +569,14 @@ def _ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _windows_host_accessible() -> bool:
+    from hermes_constants import is_wsl
+    return sys.platform == "win32" or (sys.platform == "linux" and is_wsl())
+
+
 def _cua_driver_autostart_registered_windows() -> bool:
-    """Return whether the Windows cua-driver scheduled task is registered."""
-    if sys.platform != "win32":
+    """Probe the Windows host task, including when Python runs in WSL."""
+    if not _windows_host_accessible():
         return False
     try:
         return subprocess.run(["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
@@ -572,12 +591,28 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     Older install.ps1 builds interpolated the binary path into a PowerShell command string, which
     split at the first space. If the scheduled task is missing, retry via Start-Process's
     structured ``-FilePath`` / ``-ArgumentList`` parameters instead."""
-    if sys.platform != "win32" or _cua_driver_autostart_registered_windows():
+    if not _windows_host_accessible() or _cua_driver_autostart_registered_windows():
         return True
     binary = shutil.which(driver_cmd)
     if not binary:
         return False
-    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
+    if sys.platform != "win32":
+        # PowerShell needs a Windows path, not /mnt/c/... or a POSIX symlink.
+        # wslpath honors the configured automount root; never guess a drive.
+        wslpath, ps = shutil.which("wslpath"), shutil.which("powershell.exe")
+        if not wslpath or not ps:
+            return _fail("    WSL autostart repair requires wslpath and powershell.exe.")
+        try:
+            converted = _run_text([wslpath, "-w", os.path.realpath(binary)], timeout=3,
+                                  stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _fail(f"    Could not translate the Windows driver path: {exc}")
+        binary = (converted.stdout or "").strip()
+        if (converted.returncode != 0 or not binary or re.search(r"[\x00-\x1f]", binary)
+                or not (re.match(r"^[A-Za-z]:[\\/]", binary) or binary.startswith("\\\\"))):
+            return _fail("    wslpath did not return an absolute Windows driver path.")
+    else:
+        ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
     ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
               "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
               "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
@@ -590,7 +625,7 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
         return _fail("    cua-driver autostart registration timed out.")
     except Exception as exc:
         return _fail(f"    cua-driver autostart registration failed: {exc}")
-    if result.returncode == 0:
+    if result.returncode == 0 and _cua_driver_autostart_registered_windows():
         return True
     _print_warning("    cua-driver autostart registration failed.")
     _print_output_tail(result)

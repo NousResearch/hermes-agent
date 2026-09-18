@@ -112,8 +112,12 @@ def _wsl_windows_path_to_posix(path: str) -> str:
             pass
     return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
 
+class _WslDiscoveryUnavailable(RuntimeError):
+    """A transient or incomplete Windows install-location probe."""
+
+
 @functools.lru_cache(maxsize=1)
-def _wsl_windows_install_paths() -> List[str]:
+def _cached_wsl_windows_install_paths() -> Tuple[str, ...]:
     """Official Windows install paths for the current Windows user, translated into WSL paths.
 
     The PowerShell program is fixed and noninteractive; output is JSON and every returned value is
@@ -121,7 +125,7 @@ def _wsl_windows_install_paths() -> List[str]:
     """
     powershell = shutil.which("powershell.exe")
     if not powershell:
-        return []
+        raise _WslDiscoveryUnavailable("PowerShell is unavailable through WSL interop")
     script = ("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
               "@{LocalAppData=[Environment]::GetFolderPath('LocalApplicationData');"
               "UserProfile=[Environment]::GetFolderPath('UserProfile')}|ConvertTo-Json -Compress")
@@ -131,8 +135,8 @@ def _wsl_windows_install_paths() -> List[str]:
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5.0,
             encoding="utf-8", errors="replace", env=_cb().sanitized_cua_driver_env())
         data = json.loads((proc.stdout or "").lstrip("\ufeff").strip()) if proc.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        return []
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        raise _WslDiscoveryUnavailable("Windows install-location probe failed") from exc
 
     def clean(key: str) -> Optional[str]:
         value = data.get(key) if isinstance(data, dict) else None
@@ -141,11 +145,21 @@ def _wsl_windows_install_paths() -> List[str]:
         return value.rstrip("\\/")
 
     local, profile = clean("LocalAppData"), clean("UserProfile")
-    windows_paths = ([str(PureWindowsPath(local) / "Programs" / "Cua" / "cua-driver" / "bin" / "cua-driver.exe")]
-                     if local else [])
-    if profile:
-        windows_paths.append(str(PureWindowsPath(profile) / ".local" / "bin" / "cua-driver.exe"))
-    return [_wsl_windows_path_to_posix(path) for path in windows_paths]
+    if not local or not profile:
+        raise _WslDiscoveryUnavailable("Windows install-location probe returned incomplete paths")
+    windows_paths = [
+        str(PureWindowsPath(local) / "Programs" / "Cua" / "cua-driver" / "bin" / "cua-driver.exe"),
+        str(PureWindowsPath(profile) / ".local" / "bin" / "cua-driver.exe"),
+    ]
+    return tuple(_wsl_windows_path_to_posix(path) for path in windows_paths)
+
+
+def _wsl_windows_install_paths() -> List[str]:
+    """Cache successful discovery only; a failed interop probe remains retryable."""
+    try:
+        return list(_cached_wsl_windows_install_paths())
+    except _WslDiscoveryUnavailable:
+        return []
 
 def _candidate_cua_driver_commands(override: Optional[str] = None, *, target: Optional[str] = None,
                                    runtime_host: Optional[Tuple[str, bool]] = None) -> List[str]:

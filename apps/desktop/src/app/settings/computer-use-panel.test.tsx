@@ -178,6 +178,12 @@ describe('ComputerUsePanel WSL target selection', () => {
     expect(await screen.findByText(/Effective driver: Windows/)).toBeTruthy()
     expect(screen.getByText(/\/mnt\/c\/Users\/Alice\/cua-driver\.exe/)).toBeTruthy()
     expect(screen.getByText(/forces Linux while config selects Windows/)).toBeTruthy()
-    expect(screen.getByText(/through WSL/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Automatic' }).getAttribute('aria-pressed')).toBe('true')
   })
+})
+
+it.each(['macos', 'darwin'])('formats the effective macOS driver platform %s', async driverPlatform => {
+  getComputerUseStatus.mockResolvedValue(status({ platform: 'darwin', is_wsl: false, driver_platform: driverPlatform }))
+  render(<ComputerUsePanel />)
+  expect(await screen.findByText('Effective driver: macOS')).toBeTruthy()
 })

@@ -21,6 +21,8 @@ interface ComputerUsePanelProps {
   /** Re-read the parent toolset list after a permission/install change so the
    *  "Configured / Needs keys" pill stays in sync. */
   onConfiguredChange?: () => void
+  /** Invalidate the sibling provider matrix after a target write succeeds. */
+  onTargetChange?: () => void
   /** The exact Capabilities (connection, profile) scope this panel edits. */
   profile?: ProfileScope
 }
@@ -41,7 +43,7 @@ function platformLabel(platform: string): string {
     return 'Linux'
   }
 
-  if (platform === 'darwin') {
+  if (platform === 'darwin' || platform === 'macos') {
     return 'macOS'
   }
 
@@ -86,7 +88,7 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  * Binary install/upgrade stays in the cua-driver provider's post-setup runner
  * below this card (the generic ToolsetConfigPanel).
  */
-export function ComputerUsePanel({ onConfiguredChange, profile }: ComputerUsePanelProps) {
+export function ComputerUsePanel({ onConfiguredChange, onTargetChange, profile }: ComputerUsePanelProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<ComputerUseStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -152,8 +154,9 @@ export function ComputerUsePanel({ onConfiguredChange, profile }: ComputerUsePan
           return
         }
 
-        await refresh()
+        onTargetChange?.()
         onConfiguredChange?.()
+        await refresh()
       } catch (err) {
         if (activeRef.current && scopeGeneration === scopeGenerationRef.current) {
           notifyError(err, 'Could not save Computer Use target')
@@ -164,7 +167,7 @@ export function ComputerUsePanel({ onConfiguredChange, profile }: ComputerUsePan
         }
       }
     },
-    [onConfiguredChange, profile, refresh, status?.target]
+    [onConfiguredChange, onTargetChange, profile, refresh, status?.target]
   )
 
   const grant = useCallback(async () => {

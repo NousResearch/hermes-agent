@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -95,7 +96,7 @@ def test_wsl_windows_install_discovery_is_fixed_sanitized_and_cached(monkeypatch
     monkeypatch.setattr(driver.subprocess, "run", run)
     monkeypatch.setattr(driver, "_wsl_windows_path_to_posix", lambda path: "converted:" + path)
     monkeypatch.setattr(driver, "_cb", lambda: SimpleNamespace(sanitized_cua_driver_env=lambda: {"PATH": "safe"}))
-    driver._wsl_windows_install_paths.cache_clear()
+    driver._cached_wsl_windows_install_paths.cache_clear()
 
     paths = driver._wsl_windows_install_paths()
     assert paths == [
@@ -109,7 +110,7 @@ def test_wsl_windows_install_discovery_is_fixed_sanitized_and_cached(monkeypatch
     assert argv[4] == "-Command" and "GetFolderPath" in argv[5]
     assert kwargs["timeout"] == 5.0 and kwargs["stdin"] is driver.subprocess.DEVNULL
     assert kwargs["env"] == {"PATH": "safe"}
-    driver._wsl_windows_install_paths.cache_clear()
+    driver._cached_wsl_windows_install_paths.cache_clear()
 
 
 def test_auto_preserves_regular_linux_resolution(monkeypatch):
@@ -188,3 +189,44 @@ def test_embedded_daemon_uses_named_pipe_for_windows_exe_path_symlink(tmp_path):
 
     daemon = _EmbeddedCuaDaemon(str(link), "unrestricted")
     assert daemon.socket_path.startswith(r"\\.\pipe\hermes-cua-")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "missing-powershell", "bad-json", "nonzero", "incomplete"])
+def test_failed_windows_discovery_recovers_without_restart(monkeypatch, failure):
+    from tools.computer_use import cua_backend_driver as driver
+
+    available = [failure != "missing-powershell"]
+    monkeypatch.setattr(driver.shutil, "which", lambda name: "powershell.exe" if available[0] else None)
+    monkeypatch.setattr(driver, "_wsl_windows_path_to_posix", lambda path: "converted:" + path)
+    monkeypatch.setattr(driver, "_cb", lambda: SimpleNamespace(sanitized_cua_driver_env=lambda: {}))
+    success = SimpleNamespace(returncode=0, stdout='{"LocalAppData":"C:/Users/A/AppData/Local","UserProfile":"C:/Users/A"}')
+    first = {
+        "timeout": subprocess.TimeoutExpired("powershell.exe", 5),
+        "bad-json": SimpleNamespace(returncode=0, stdout="not JSON"),
+        "nonzero": SimpleNamespace(returncode=1, stdout="{}"),
+        "incomplete": SimpleNamespace(returncode=0, stdout='{"UserProfile":"C:/Users/A"}'),
+    }.get(failure)
+    run = MagicMock(side_effect=[first, success] if first is not None else [success])
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    driver._cached_wsl_windows_install_paths.cache_clear()
+    try:
+        assert driver._wsl_windows_install_paths() == []
+        available[0] = True
+        paths = driver._wsl_windows_install_paths()
+        assert len(paths) == 2
+        calls = run.call_count
+        assert driver._wsl_windows_install_paths() == paths
+        assert run.call_count == calls
+    finally:
+        driver._cached_wsl_windows_install_paths.cache_clear()
+
+
+def test_auto_does_not_probe_windows_installation_or_change_existing_precedence(monkeypatch):
+    from tools.computer_use import cua_backend_driver as driver
+
+    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    monkeypatch.setattr(driver.shutil, "which", lambda name: "/usr/bin/cua-driver" if name == "cua-driver" else None)
+    monkeypatch.setattr(driver, "_wsl_windows_install_paths", MagicMock(side_effect=AssertionError("auto must preserve resolution")))
+    with _target_config("auto"):
+        assert driver._resolve_cua_driver_selection(runtime_host=("linux", True))[:3] == (
+            "auto", "linux", "/usr/bin/cua-driver")

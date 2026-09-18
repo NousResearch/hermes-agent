@@ -1608,7 +1608,7 @@ class TestWindowsAutostartRepair:
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs))
             if cmd[0] == "schtasks.exe":
-                return SimpleNamespace(returncode=1)
+                return SimpleNamespace(returncode=0 if len(calls) > 1 else 1)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with patch.object(tools_config.shutil, "which", side_effect=fake_which), \

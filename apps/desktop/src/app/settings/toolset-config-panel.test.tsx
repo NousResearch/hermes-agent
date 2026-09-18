@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
@@ -205,7 +205,12 @@ describe('ToolsetConfigPanel', () => {
     const voiceInput = screen.getByDisplayValue('alloy')
     fireEvent.change(voiceInput, { target: { value: 'marin' } })
     await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
-    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
+
+    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<
+      string,
+      Record<string, Record<string, string>>
+    >
+
     expect(saved.tts.openai.voice).toBe('marin')
     // Unscoped panel (no Capabilities override) → profile rides as undefined,
     // preserving the active-profile default. A scoped panel forwards its scope.
@@ -238,10 +243,12 @@ describe('ToolsetConfigPanel', () => {
 
     fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
     await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+
     const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
       Record<string, Record<string, Record<string, string>>>,
       unknown
     ]
+
     expect(saved.tts.openai.voice).toBe('marin')
     expect(forwarded).toEqual(scope)
   })
@@ -1091,4 +1098,51 @@ describe('ToolsetConfigPanel', () => {
       expect(screen.queryByRole('button', { name: 'Use for Search' })).toBeNull()
     })
   })
+})
+
+it('discards an older provider response after a same-scope target refresh', async () => {
+  let resolveOld!: (value: ToolsetConfig) => void
+
+  const old = new Promise<ToolsetConfig>(resolve => {
+    resolveOld = resolve
+  })
+
+  const ready = config({
+    name: 'computer_use',
+    providers: [
+      {
+        name: 'cua-driver',
+        badge: 'local',
+        tag: 'Desktop control',
+        env_vars: [],
+        post_setup: 'cua_driver',
+        requires_nous_auth: false,
+        is_active: true,
+        status: 'ready'
+      }
+    ]
+  })
+
+  const missing = {
+    ...ready,
+    providers: ready.providers.map(provider => ({ ...provider, status: 'needs_setup' as const }))
+  }
+
+  getToolsetConfig.mockReturnValueOnce(old).mockResolvedValueOnce(missing)
+
+  const { rerender } = render(<ToolsetConfigPanel refreshKey={0} toolset="computer_use" />)
+  await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledTimes(1))
+  // Keep the router/provider wrappers and component identity across rerenders.
+  rerender(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ToolsetConfigPanel refreshKey={1} toolset="computer_use" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
+  expect(await screen.findByRole('button', { name: 'Run setup' })).toBeTruthy()
+  await act(async () => resolveOld(ready))
+  expect(getToolsetConfig).toHaveBeenCalledTimes(2)
+  expect(screen.queryByText('Installed')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Run setup' })).toBeTruthy()
 })

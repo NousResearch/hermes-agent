@@ -1,4 +1,5 @@
 .DS_Store
+.codebase-memory/
 /venv/
 /venv.old/
 /venv.stale.runtime-*/

@@ -147,6 +147,13 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_tells_child_kanban_mutation_is_not_its_job(self):
+        """t_df72a8c6 item 4: subagents burned their last tool calls hunting for a way to complete
+        their parent's Kanban task. One sentence up front should preempt that hunt."""
+        prompt = _build_child_system_prompt("Research something")
+        self.assertIn("Kanban", prompt)
+        self.assertIn("parent", prompt.lower())
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

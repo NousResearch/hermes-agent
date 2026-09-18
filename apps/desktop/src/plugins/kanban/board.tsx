@@ -468,7 +468,7 @@ function Column({
               <div className="flex flex-col gap-2" key={assignee}>
                 <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
                   {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
-                  {assignee}
+                  {assignee === UNASSIGNED_LANE ? k.unassigned : assignee}
                   <span className="tabular-nums">{tasks.length}</span>
                 </div>
                 {tasks.map(task => (
@@ -863,7 +863,34 @@ function Intro() {
   )
 }
 
-const UNASSIGNED_LANE = 'unassigned'
+/** Sentinel for "assignee IS NULL", used both as the Running column's lane key and as the
+ *  ASSIGNEE filter's selected value. Deliberately NOT a bare `'unassigned'`: profile names match
+ *  `[a-z0-9][a-z0-9_-]{0,63}` (hermes_cli/profiles.py `validate_profile_name`), so a leading `:`
+ *  cannot collide with any legally-created profile — a profile literally named `unassigned` used to
+ *  be indistinguishable from "no assignee" in both surfaces. Scope of that guarantee: assignee
+ *  strings are NOT validated against the profile registry on write (kanban_db `_canonical_assignee`
+ *  only lowercases and strips), so a direct CLI/API caller can still store an arbitrary string; the
+ *  `:` prefix removes the collision for every profile-driven and UI-driven path, not for a caller
+ *  writing a deliberately colliding value. Never rendered directly; `k.unassigned` is the label. */
+export const UNASSIGNED_LANE = ':unassigned'
+
+/** Pure predicate behind the board's client-side filters — extracted for testability
+ *  (root AGENTS.md: don't test source shape, test the behavior). `assignee ===
+ *  UNASSIGNED_LANE` is a sentinel meaning "assignee IS NULL", distinct from `''`
+ *  ("all profiles", no assignee filter applied). */
+export function matchesBoardFilters(
+  task: KanbanTask,
+  filters: { assignee: string; search: string; tenant: string }
+): boolean {
+  const q = filters.search.trim().toLowerCase()
+
+  return (
+    (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
+    (!filters.tenant || task.tenant === filters.tenant) &&
+    (!filters.assignee ||
+      (filters.assignee === UNASSIGNED_LANE ? !task.assignee : task.assignee === filters.assignee))
+  )
+}
 
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
@@ -906,6 +933,10 @@ function FilterMenu({
         <DropdownMenuItem onSelect={() => onAssignee('')}>
           {k.allProfiles}
           {check(!assignee)}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onAssignee(UNASSIGNED_LANE)}>
+          {k.unassigned}
+          {check(assignee === UNASSIGNED_LANE)}
         </DropdownMenuItem>
         {board.assignees.map(name => (
           <DropdownMenuItem key={name} onSelect={() => onAssignee(name)}>
@@ -1174,12 +1205,7 @@ export function KanbanBoardPage() {
       return null
     }
 
-    const q = search.trim().toLowerCase()
-
-    const keep = (task: KanbanTask) =>
-      (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
-      (!tenant || task.tenant === tenant) &&
-      (!assignee || task.assignee === assignee)
+    const keep = (task: KanbanTask) => matchesBoardFilters(task, { assignee, search, tenant })
 
     return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(keep) })) }
   }, [board, search, tenant, assignee])

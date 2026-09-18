@@ -31,18 +31,20 @@ export const SCAFFOLD_GLYPH_CLASS = 'grid size-3.5 shrink-0 place-items-center'
  * (meta, diff counts); `trailing` reserves a right-side slot for a live timer.
  */
 export function ScaffoldRow({
+  action,
   children,
   onToggle,
   open = false,
   trailing
 }: {
+  action?: ReactNode
   children: ReactNode
   onToggle?: () => void
   open?: boolean
   trailing?: ReactNode
 }) {
   return (
-    <DisclosureRow onToggle={onToggle} open={open} trailing={trailing}>
+    <DisclosureRow action={action} onToggle={onToggle} open={open} trailing={trailing}>
       <span className="flex min-w-0 items-center gap-1.5">{children}</span>
     </DisclosureRow>
   )

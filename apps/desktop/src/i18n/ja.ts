@@ -3344,6 +3344,7 @@ export const ja = defineLocale({
       thought: '思考済み',
       thoughtBriefly: '少し思考',
       thoughtFor: duration => `${duration} 思考`,
+      copyThought: '思考をコピー',
       turnDuration: duration => `このターンの所要時間: ${duration}`,
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,

@@ -4087,6 +4087,7 @@ export const zh = defineLocale({
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
+      copyThought: '复制思考',
       turnDuration: duration => `本轮耗时 ${duration}`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

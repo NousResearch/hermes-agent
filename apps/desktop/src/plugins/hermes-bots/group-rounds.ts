@@ -5,7 +5,7 @@
  */
 import { host } from '@hermes/plugin-sdk'
 
-import { botFriendlyNames, botHandle, mentionNameForms } from './data'
+import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -80,6 +80,14 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
       }
     }
 
+    // A same-named Connections twin gets `@<name>-<device>` from the registry,
+    // but the room's own-source member keeps its bare name and so loses every
+    // shared form to the twin (Map last-wins). `@<name>-local` is its
+    // always-available unambiguous address.
+    if (!member.remoteSource) {
+      forms.add(`${member.name.toLowerCase()}-local`)
+    }
+
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
@@ -111,6 +119,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     everyone,
     mentioned
   }
+}
+
+/** The `@tag` "Reply to" seeds for one member: its friendly tag when that
+ *  routes to this member alone, else the first owner-qualified form that does
+ *  (`@<name>-<device>` for a Connections twin, `@<name>-local` for the room's
+ *  own-source twin — see #89883). A bare `{ name }` of a member who left the
+ *  room resolves to nothing and keeps its friendly tag. */
+export function groupReplyMentionTag(member: GroupMember, members: GroupMember[]): string {
+  const key = groupMemberKey(member)
+
+  const candidates = [botMentionTag(member), botHandle(member.name, member), `${member.name}-local`]
+    .map(tag => String(tag || '').trim())
+    .filter(Boolean)
+
+  return (
+    candidates.find(tag => {
+      const { mentioned } = parseGroupChatMentions(`@${tag}`, members)
+
+      return mentioned.size === 1 && mentioned.has(key)
+    }) ||
+    candidates[0] ||
+    ''
+  )
 }
 
 /** Members that should take a turn this round: everyone when no member is
@@ -166,13 +197,23 @@ export function rotateGroupSpeakers(members: GroupMember[], round: number) {
 /** #93129: classify a USER room message's effect on member holds. Only user
  *  sends ever reach this (bot replies are appended by the round loop, never
  *  through sendToGroupChat), so a bot saying "stopped working on it" can
- *  never set a hold. Conservative on purpose: any standalone stop/halt/pause
- *  word next to a mention holds those members — "don't stop @x" therefore
- *  also holds, which errs toward the bot staying quiet until re-addressed
- *  (a wrongly-held bot is one mention away from release; a wrongly-running
- *  one keeps doing work it was told to stop). A non-stop direct mention
- *  releases the mentioned members — the user addressing a bot directly
- *  overrides its hold. */
+ *  never set a hold. Conservative on purpose: a standalone stop/halt/pause
+ *  word NEXT TO a mention (within two words, #103893) holds those members —
+ *  "don't stop @x" therefore also holds, which errs toward the bot staying
+ *  quiet until re-addressed (a wrongly-held bot is one mention away from
+ *  release; a wrongly-running one keeps doing work it was told to stop).
+ *  A stop word far from every mention is ambiguous — "@x go, das ist halt
+ *  ein Test" and "@x mach mal Pause" are prose that addresses the bot, so
+ *  non-English rooms whose everyday vocabulary overlaps the keyword list
+ *  are not silently held — but "@x please just stop now" is a genuine stop,
+ *  so the message is NEUTRAL: it neither holds nor releases. A missed hold
+ *  is one adjacent "stop @x" away from repair; re-dispatching a bot the user
+ *  just told to stop is the one flip this classifier must never make.
+ *  A non-stop direct mention releases the mentioned members — the user
+ *  addressing a bot directly overrides its hold — and
+ *  addressing the whole room (@all / @everyone) without a stop word is the
+ *  same intent for every member (#97740): "@all <task>" wakes a stopped
+ *  room without the user having to know the literal "resume" incantation. */
 export function classifyGroupHoldDirective(
   text: string,
   mentionedKeys: Iterable<string> | null | undefined,
@@ -180,10 +221,9 @@ export function classifyGroupHoldDirective(
 ) {
   const value = String(text || '')
   const mentioned = [...(mentionedKeys || [])]
-  const stop = /\b(stop|halt|pause)\b/i.test(value)
-  const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
+  const stop = stopWordPlacement(value)
 
-  if (stop) {
+  if (stop === 'adjacent') {
     // "@all stop" holds every member — symmetric with "@all resume".
     return {
       hold: mentioned,
@@ -193,21 +233,42 @@ export function classifyGroupHoldDirective(
     }
   }
 
-  if (resume) {
-    return {
-      hold: [],
-      holdAll: false,
-      release: mentioned,
-      releaseAll: Boolean(everyone)
-    }
-  }
-
   return {
     hold: [],
     holdAll: false,
-    release: mentioned,
-    releaseAll: false
+    release: stop === 'distant' ? [] : mentioned,
+    releaseAll: stop === null && Boolean(everyone)
   }
+}
+
+/** #103893: where the stop/halt/pause tokens sit relative to the @tokens —
+ *  `adjacent` when one is within two words of ANY mention, `distant` when
+ *  the message carries a stop word but none that close, null without one.
+ *  Proximity is measured against the raw @tokens,
+ *  not the resolved member keys the caller passes (those are roster keys
+ *  such as `<connectionId>::<name>`, and a mention resolves through titles
+ *  and friendly names too, so the @token text rarely equals the key). The
+ *  ≤2 window is fitted to observed directive/filler pairs ("@x please
+ *  halt" = 2, "@x go, das ist halt ein Test" = 4); widen only with measured
+ *  cases, never by guessing. */
+function stopWordPlacement(value: string): 'adjacent' | 'distant' | null {
+  const tokens = value.toLowerCase().match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+  const mentionAt: number[] = []
+  const stopAt: number[] = []
+
+  tokens.forEach((token, index) => {
+    if (token.startsWith('@')) {
+      mentionAt.push(index)
+    } else if (token === 'stop' || token === 'halt' || token === 'pause') {
+      stopAt.push(index)
+    }
+  })
+
+  if (stopAt.some(stop => mentionAt.some(mention => Math.abs(stop - mention) <= 2))) {
+    return 'adjacent'
+  }
+
+  return stopAt.length ? 'distant' : null
 }
 
 /** What `parseGroupChatMentions` reports for one room message. */

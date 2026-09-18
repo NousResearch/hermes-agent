@@ -416,7 +416,10 @@ class TestCombinedCancelEvent:
         ), patch.object(sched, "_run_one_job_body", return_value=True) as body:
             assert sched.run_one_job(job, cancel_event=external) is True
 
-        combined = body.call_args.kwargs["fire_claim_lost"]
+        kwargs = body.call_args.kwargs
+        assert kwargs["transport_cancel"] is external
+        # What run_job receives: the ownership handle built from the two forwarded sources.
+        combined = sched._FireOwnership(job, kwargs["claim_lost"], kwargs["transport_cancel"]).cancel_event
         assert combined.is_set() is False
         external.set()
         assert combined.is_set() is True

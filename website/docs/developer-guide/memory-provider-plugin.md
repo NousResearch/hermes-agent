@@ -98,6 +98,40 @@ class MyMemoryProvider(MemoryProvider):
     # ... implement remaining methods
 ```
 
+### Initialization context
+
+`AIAgent` passes session context through `MemoryManager.initialize_all()` to
+`initialize(session_id, **kwargs)`. Accept `**kwargs` and tolerate missing optional
+fields; callers may initialize a provider without an agent or a session database.
+
+| Keyword | Meaning |
+|---|---|
+| `hermes_home` | Active profile's storage directory. |
+| `platform` | Session surface, such as `cli`, `gui`, `acp`, or `telegram`. |
+| `session_title` | Stored session title, when available. A display label is not necessarily a user-selected identity. |
+| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. Shared constants live in `hermes_state_common.py`. |
+| `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
+| `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
+| `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
+| `agent_identity` | Active profile name, when available. |
+| `agent_workspace`, `agent_context` | Runtime agent scope (`hermes` and `primary` for the main agent). |
+
+Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
+or gateway backend can serve several sessions. If `cwd` is absent and directory
+routing is needed, `agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd
+context, then scoped `terminal.cwd` (carried internally as `TERMINAL_CWD`), then
+the launch directory. Construction-time workspace metadata does not require
+changing the process cwd or rebuilding an existing conversation's system prompt.
+
+Desktop/TUI workspace changes synchronize the live agent's `session_cwd` through
+`tui_gateway/session_workdir.py::_register_session_cwd`, including when a deferred
+agent is attached after a workspace move. This lets a first or restarted Codex
+app-server session use the current workspace instead of its construction-time
+cwd. It does not move an already-running Codex thread, reinitialize memory
+providers, change an existing Honcho session identity, or invalidate the cached
+system prompt. Provider initialization still receives the construction-time
+workspace; absent or empty cwd remains unpinned.
+
 ## Required Methods
 
 ### Core Lifecycle
@@ -207,6 +241,23 @@ digest) and upsert, so retries and overlaps deduplicate instead of
 accumulating duplicate archives.
 
 Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
+
+## Setup UX — what a standalone provider keeps
+
+Every setup surface Hermes gives a bundled provider is driven by files in the provider's
+own directory, so a provider installed from the plugin catalog keeps all of them:
+
+| Surface | What the provider ships |
+|---|---|
+| Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
+| `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
+| `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
+| Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
+
+Your provider's name, `memory.<name>` config section, data directory and tool names are the
+contract with existing users. A provider that moves out of core keeps all four; Hermes then
+installs the catalog plugin automatically for anyone whose `memory.provider` still names it
+(on `hermes update`, and once at agent start when `security.allow_lazy_installs` is on).
 
 ## Config Schema
 

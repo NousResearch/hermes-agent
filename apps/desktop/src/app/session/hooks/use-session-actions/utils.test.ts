@@ -1264,6 +1264,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply

@@ -208,6 +208,32 @@ class TestBrowseShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_derived_metadata_is_strictly_redacted_but_explicit_messages_are_not(self, db):
+        secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        db.create_session("s_secret", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (f"Deploy credentials {secret}", "s_secret"),
+        )
+        db.append_message(
+            "s_secret", role="user", content=f"deployneedle uses {secret}"
+        )
+        db._conn.commit()
+
+        discovered = json.loads(session_search(query="deployneedle", db=db))["results"][0]
+        browsed = next(
+            row for row in json.loads(session_search(db=db))["results"]
+            if row["session_id"] == "s_secret"
+        )
+        read = json.loads(session_search(session_id="s_secret", db=db))
+
+        assert secret not in discovered["title"]
+        assert secret not in discovered["snippet"]
+        assert secret not in browsed["title"]
+        assert secret not in browsed["preview"]
+        assert secret not in read["session_meta"]["title"]
+        assert secret in read["messages"][0]["content"]
+
 
 # =========================================================================
 # Discovery shape (with query)

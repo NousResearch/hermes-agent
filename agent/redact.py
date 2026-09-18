@@ -951,6 +951,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     return text
 
 
+def redact_derived_text(text: object) -> str:
+    """Strictly scrub model-visible text derived from stored conversation data.
+
+    Derived summaries and search metadata can re-enter unrelated prompts, so
+    the user's ordinary redaction opt-out must not expose secrets through them.
+    """
+    return redact_sensitive_text(
+        "" if text is None else str(text),
+        force=True,
+        redact_url_credentials=True,
+    )
+
+
 # Commands whose stdout is an env-var dump: terminal redaction runs the
 # ENV-assignment pass (code_file=False) for these so opaque tokens with no vendor
 # prefix are masked; everything else uses code_file=True (``MAX_TOKENS=100``).

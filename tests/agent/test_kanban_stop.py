@@ -98,9 +98,78 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+# ── Regression: valid review handoff is terminal for the originating run ──
+# Repro of the exit-guard race (task t_170fcd74): an implementation run calls
+# kanban_request_review, the tool returns status=review and the run row ends
+# with outcome=review_requested; the dispatcher then claims the review as a NEW
+# run. The outgoing session must NOT be nudged toward kanban_complete/block —
+# doing so risks the stale worker falsely completing/blocking the newer run.
 
 
+@pytest.mark.parametrize("review_tool", ["kanban_request_review", "kanban_request_changes"])
+def test_no_nudge_after_review_handoff(clear_kanban_env, review_tool):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_170fcd74")
+    messages = [
+        {"role": "user", "content": "work kanban task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "r1",
+                    "type": "function",
+                    "function": {"name": review_tool, "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": review_tool,
+            "tool_call_id": "r1",
+            "content": "status=review",
+        },
+    ]
+    # The originating run reached a terminal board state — no further nudge.
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages, attempts=0) is None
 
+
+def test_review_handoff_terminal_even_from_tool_result_only(clear_kanban_env):
+    # Defensive: even if only the tool-result row is present (assistant
+    # tool_calls elided from replayed history), the terminal state is honored.
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_170fcd74")
+    messages = [
+        {
+            "role": "tool",
+            "name": "kanban_request_review",
+            "tool_call_id": "r1",
+            "content": "status=review",
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_still_nudges_on_nonterminal_review_tools(clear_kanban_env):
+    # Guard against over-broad matching: heartbeat/comment/show are NOT terminal.
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_170fcd74")
+    for tool in ("kanban_heartbeat", "kanban_comment", "kanban_show"):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Let me note progress.",
+                "tool_calls": [
+                    {
+                        "id": "1",
+                        "type": "function",
+                        "function": {"name": tool, "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "name": tool, "tool_call_id": "1", "content": "ok"},
+        ]
+        assert session_called_kanban_terminal(messages) is False, tool
+        assert build_kanban_stop_nudge(messages=messages, attempts=0) is not None, tool
 
 # ── Integration: agent nudge + dispatcher bounded retry ──────────────
 # These tests verify the two layers compose correctly: the agent-side

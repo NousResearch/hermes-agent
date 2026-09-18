@@ -580,8 +580,10 @@ def _scan_gateway_pids(
         hermes_home_assignments,
     )
     current_home = str(get_hermes_home().resolve())
-    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status).
-    current_home_lc = current_home.lower().replace("\\", "/")
+    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
+    # trailing separator: the assignments parser strips one, so the systemd ``Environment=``
+    # spelling (``HERMES_HOME=/root/.hermes/``) compares equal to the resolved home.
+    current_home_lc = current_home.lower().replace("\\", "/").rstrip("/")
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
     current_profile_name_lc = current_profile_name.lower()

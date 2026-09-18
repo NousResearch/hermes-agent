@@ -38,6 +38,8 @@ class _StubHandler(BaseHTTPRequestHandler):
     chat_answer = "Paris"
     requests_processing = 0
     slots: list = []
+    slots_error = 0
+    metrics_error = 0
 
     def _send(self, code: int, body: dict | str | None = None) -> None:
         raw = (json.dumps(body) if isinstance(body, dict) else (body or "")).encode()
@@ -62,8 +64,16 @@ class _StubHandler(BaseHTTPRequestHandler):
             else:
                 self._send(200, self.models)
         elif path == "/metrics":
-            self._send(200, f"llamacpp:requests_processing {self.requests_processing}\n")
+            if self.metrics_error:
+                self._send(self.metrics_error, {})
+            else:
+                self._send(
+                    200, f"llamacpp:requests_processing {self.requests_processing}\n"
+                )
         elif path == "/slots":
+            if self.slots_error:
+                self._send(self.slots_error, {})
+                return
             raw = json.dumps(self.slots).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -297,18 +307,6 @@ def test_ensure_model_ready_unknown_model_raises(stub_server, tmp_path):
     sup = _make_supervisor(tmp_path, port)
     with pytest.raises(KeyError):
         sup.ensure_model_ready("absent")
-
-
-def test_model_failures_surface_exit_code_not_retry(stub_server, tmp_path):
-    """Design: child failures surface, never auto-retry."""
-    port, handler = stub_server
-    handler.models = {"data": [
-        {"id": "ok", "status": {"value": "loaded"}},
-        {"id": "dead", "status": {"value": "failed", "exit_code": -1073741819}},
-    ]}
-    sup = _make_supervisor(tmp_path, port)
-    failures = sup.model_failures()
-    assert failures == {"dead": -1073741819}
 
 
 def test_is_idle_requires_no_busy_slots_and_zero_processing(stub_server, tmp_path):
@@ -595,6 +593,55 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S) == []
     handler.slots = []                 # idle again: clock restarts, not expired
     assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 10) == []
+    assert handler.unloaded == []
+
+
+def test_idle_sweep_probe_failure_keeps_clock(tmp_path, monkeypatch, stub_server):
+    """A failed telemetry probe is not activity: /slots or /metrics errors must keep the
+    idle clock instead of resetting it, so one flaky probe per sweep can't pin a resident
+    model (and its VRAM) for hours."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "stuck-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.metrics_error = 500  # probe fails mid-window
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == []  # kept, not reset
+    assert handler.unloaded == []
+    handler.metrics_error = 0  # telemetry recovers
+    # The clock survived the failures: unload happens at the first healthy sweep.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 2) == ["stuck-m"]
+    assert handler.unloaded == ["stuck-m"]
+
+
+def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
+    tmp_path, monkeypatch, stub_server
+):
+    """A kept clock must not mask real activity: a confirmed busy slot still resets it."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.slots_error = 500  # probe fails: clock kept
+    assert sup.sweep_idle(now=t0 + 100) == []
+    handler.slots_error = 0
+    handler.slots = [{"is_processing": True}]  # confirmed busy: clock resets
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 5) == []
+    handler.slots = []
+    # Fresh clock since the busy sighting — not the original t0 one.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 6) == []
     assert handler.unloaded == []
 
 

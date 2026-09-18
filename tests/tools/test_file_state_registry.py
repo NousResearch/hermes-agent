@@ -25,6 +25,7 @@ import unittest
 
 from tools import file_state
 from tools.file_tools import (
+    clear_file_ops_cache,
     read_file_tool,
     write_file_tool,
     patch_tool,
@@ -123,6 +124,54 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         ta.join(timeout=3.0)
         tb.join(timeout=3.0)
 
+    def test_lock_path_state_is_released_after_last_waiter(self):
+        p = self._mk()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+
+        def first() -> None:
+            with file_state.lock_path(p):
+                first_entered.set()
+                release_first.wait(timeout=2.0)
+
+        def second() -> None:
+            first_entered.wait(timeout=2.0)
+            with file_state.lock_path(p):
+                second_entered.set()
+
+        ta = threading.Thread(target=first)
+        tb = threading.Thread(target=second)
+        ta.start()
+        tb.start()
+        self.assertTrue(first_entered.wait(timeout=2.0))
+        time.sleep(0.02)
+        self.assertFalse(second_entered.is_set())
+        release_first.set()
+        ta.join(timeout=3.0)
+        tb.join(timeout=3.0)
+
+        registry = file_state.get_registry()
+        self.assertTrue(second_entered.is_set())
+        self.assertNotIn(p, registry._path_locks)
+        self.assertNotIn(p, registry._path_lock_users)
+
+    def test_clear_file_ops_cache_releases_task_state(self):
+        p = self._mk()
+        task_id = "finished-task"
+        file_state.record_read(task_id, p)
+
+        from tools import file_tools_read_tracking as rt
+
+        rt._read_tracker[task_id] = {"dedup": {}}
+        rt._patch_failure_tracker[task_id] = {p: 2}
+
+        clear_file_ops_cache(task_id)
+
+        self.assertEqual(file_state.known_reads(task_id), [])
+        self.assertNotIn(task_id, rt._read_tracker)
+        self.assertNotIn(task_id, rt._patch_failure_tracker)
+
 
     def test_kill_switch_env_var(self):
         p = self._mk()
@@ -162,20 +211,23 @@ class FileToolsIntegrationTests(unittest.TestCase):
             f.write(content)
         return p
 
-    def test_sibling_agent_write_surfaces_warning_through_handler(self):
+    def test_sibling_agent_write_refuses_stale_overwrite_through_handler(self):
         p = self._write_seed("shared.txt")
         r = json.loads(read_file_tool(path=p, task_id="agentA"))
         self.assertNotIn("error", r)
 
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentB")))
         w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentB"))
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
-        # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        err = w_a.get("error", "")
+        self.assertTrue(w_a.get("stale_write_blocked"), f"expected stale write refusal, got: {w_a}")
+        # The cross-agent message names the sibling task_id; B's write survives.
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
+        with open(p) as f:
+            self.assertEqual(f.read(), "B wrote\n")
 
 
     def test_net_new_file_no_warning(self):

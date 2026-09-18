@@ -32,7 +32,8 @@ def hermes_home(monkeypatch, tmp_path):
     # returns the stale cwd from this test's ops and breaks tests like
     # test_resolve_path that rely on TERMINAL_CWD env var.
     try:
-        from tools.file_tools import clear_file_ops_cache, _read_tracker_lock, _read_tracker
+        from tools.file_tools import clear_file_ops_cache
+        from tools.file_tools_read_tracking import _read_tracker_lock, _read_tracker
         clear_file_ops_cache()
         with _read_tracker_lock:
             _read_tracker.clear()
@@ -118,10 +119,12 @@ class TestWriteFileCRLFPreservation:
         """The agent typically sends bare-LF content; if the file existed
         with CRLF, the write should convert to CRLF rather than silently
         flipping the endings."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "config.bat"
         target.write_bytes(b"@echo off\r\nset X=1\r\n")
+        # write_file refuses to overwrite an existing file the task never read.
+        assert "error" not in json.loads(read_file_tool(str(target), task_id="crlf_write_1"))
 
         result = _handle_write_file(
             {
@@ -142,10 +145,11 @@ class TestWriteFileCRLFPreservation:
 
     def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "lf.txt"
         target.write_bytes(b"line1\nline2\n")
+        assert "error" not in json.loads(read_file_tool(str(target), task_id="crlf_write_3"))
 
         result = _handle_write_file(
             {"path": str(target), "content": "X\nY\nZ\n"},

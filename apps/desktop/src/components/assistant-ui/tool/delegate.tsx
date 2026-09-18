@@ -7,6 +7,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS } from '@/components/chat/scaffold-row'
+import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
@@ -86,7 +87,10 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true }) : undefined
 
   return (
-    <div className="grid min-w-0 max-w-full gap-0.5" data-conversation-scaffold="">
+    <div
+      className="grid min-w-0 max-w-full gap-0.5 rounded-xl border border-(--ui-stroke-tertiary) px-3 py-2"
+      data-conversation-scaffold=""
+    >
       <div className="flex min-w-0 max-w-full items-center gap-1.5">
         <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(row.status, statusLabel)}</span>
         <button
@@ -103,6 +107,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
         </button>
         {meta.length > 0 && <span className={SCAFFOLD_META_CLASS}>{meta.join(' · ')}</span>}
         {live && <ActivityTimerText className={cn(SCAFFOLD_META_CLASS, 'ml-auto')} seconds={elapsed} />}
+        <Codicon className="ml-auto shrink-0 text-(--conversation-scaffold-text)" name="agent" size="0.625rem" />
       </div>
       {activity.length > 0 && (
         <div className="min-w-0 max-w-full pl-5">

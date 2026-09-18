@@ -2069,6 +2069,57 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
 
     @pytest.mark.asyncio
+    async def test_secondary_channel_ptag_reaches_installed_gateway_handler(self):
+        adapter = _make_adapter()
+        adapter.set_owner_profile("reviewer")
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        adapter._resolve_user_name = AsyncMock(return_value="Operator")
+        adapter.send_reaction = AsyncMock()
+        adapter._message_handler = AsyncMock()
+        adapter._channel_names = {CHANNEL: "agent-bus"}
+        adapter._channel_meta = {
+            CHANNEL: {
+                "channel_id": CHANNEL,
+                "name": "agent-bus",
+                "description": "Agent bus.",
+            },
+        }
+        state = adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+
+        await adapter._handle_event(
+            CHANNEL,
+            state,
+            _tagged_event("reviewer-task", CHANNEL, content="finish review", p=SELF_PUBKEY),
+        )
+
+        assert [event.message_id for event in captured] == ["reviewer-task"]
+        assert captured[0].source.profile == "reviewer"
+        assert captured[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_channel_ptag_from_unlisted_author_stops_at_adapter_allowlist(self, caplog):
+        adapter = _make_adapter()
+        adapter._allowed_pubkeys = {AGENT_PUBKEY}
+        adapter._dispatch_message = AsyncMock()
+        state = adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+        with caplog.at_level("INFO", logger=_buzz_mod.__name__):
+            await adapter._handle_event(
+                CHANNEL,
+                state,
+                _tagged_event("blocked-reviewer-task", CHANNEL, content="finish review", p=SELF_PUBKEY),
+            )
+
+        adapter._dispatch_message.assert_not_awaited()
+        assert "Buzz: ignoring message from unauthorized pubkey" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_missing_metadata_never_latches_group_as_dm(self, adapter):
         adapter._channel_meta.pop(CHANNEL)
         await self._poll_with(

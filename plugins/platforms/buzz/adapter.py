@@ -1534,7 +1534,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
                 await self.send_reaction(channel_id, event_id, "👀")
-            logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
+            logger.info("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
         dispatch_text = self._strip_mention(content)

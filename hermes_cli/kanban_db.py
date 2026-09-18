@@ -4434,6 +4434,7 @@ _PLUGIN_COMPAT_LAZY = {
     'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS': ('hermes_cli.kanban_db_dispatch', 'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS'),
     'KanbanDbCorruptError': ('hermes_cli.kanban_db_connect', 'KanbanDbCorruptError'),
     'MEMORY_GUARD_MB_PER_WORKER': ('hermes_cli.kanban_db_dispatch', 'MEMORY_GUARD_MB_PER_WORKER'),
+    '_NOTIFY_DELIVERY_MODES': ('hermes_cli.kanban_db_notify', '_NOTIFY_DELIVERY_MODES'),
     'RepairResult': ('hermes_cli.kanban_db_connect', 'RepairResult'),
     'add_notify_sub': ('hermes_cli.kanban_db_notify', 'add_notify_sub'),
     'advance_notify_cursor': ('hermes_cli.kanban_db_notify', 'advance_notify_cursor'),

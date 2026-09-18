@@ -159,6 +159,35 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
+def _scan_json_stack(raw: str) -> list[str] | None:
+    """Open brace/bracket stack of a JSON prefix, ignoring delimiters inside string
+    values (``{"code": "}"}`` keeps one open brace, not a balanced document). ``None``
+    when the text ends inside an unterminated string — the caller must close the open
+    quote before closing any brackets.
+    """
+    stack: list[str] = []
+    in_string = False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            expected = "{" if ch == "}" else "["
+            if stack and stack[-1] == expected:
+                stack.pop()
+        i += 1
+    return None if in_string else stack
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
     control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
@@ -182,10 +211,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
-    fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
-    fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))
-    fixed += ']' * max(0, fixed.count('[') - fixed.count(']'))
+    # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
+    # (bounded). Bracket counting is string-aware: delimiters inside string values
+    # ({"code": "}"}) are not structure, and the closers are appended in stack order —
+    # {"items": [{"n": 1}, {"n": 2 needs "}]}", not "}}".
+    fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
+    stack = _scan_json_stack(fixed)
+    if stack:
+        fixed += "".join("}" if ch == "{" else "]" for ch in reversed(stack))
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))
@@ -198,7 +231,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
         return fixed
 
-    # Pass 4: escape control chars inside strings (strict=False alone fails when other
+    # Pass 5: escape control chars inside strings (strict=False alone fails when other
     # malformations are present too), then retry.
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):

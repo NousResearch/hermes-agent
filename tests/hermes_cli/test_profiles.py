@@ -859,6 +859,37 @@ class TestListProfiles:
         assert profiles._count_skills(profile_env / ".hermes") == 3
         assert [p.name for p in list_profiles()] == ["default"]
 
+    def test_soul_only_dir_does_not_hide_sibling_profiles(self, profile_env):
+        """A leftover rename dir with SOUL.md but no config.yaml is still an identity
+        marker (#115365). It must not abort enumeration of healthy siblings."""
+        create_profile("alpha", no_alias=True)
+        create_profile("zeta", no_alias=True)
+        stale = _get_profiles_root() / "orphan"
+        stale.mkdir(parents=True)
+        (stale / "SOUL.md").write_text("# leftover from a rename\n", encoding="utf-8")
+        names = [p.name for p in list_profiles()]
+        assert "alpha" in names
+        assert "zeta" in names
+        orphan = next(p for p in list_profiles() if p.name == "orphan")
+        assert orphan.model is None
+        assert not (orphan.path / "config.yaml").exists()
+
+    def test_one_profile_probe_error_does_not_drop_siblings(self, profile_env, monkeypatch):
+        """A raise while building one ProfileInfo must not hide the rest of the list."""
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+        real = profiles._check_gateway_running
+
+        def boom(profile_dir):
+            if Path(profile_dir).name == "alpha":
+                raise OSError("stale pid probe")
+            return real(profile_dir)
+
+        monkeypatch.setattr(profiles, "_check_gateway_running", boom)
+        names = [p.name for p in list_profiles()]
+        assert "beta" in names
+        assert "default" in names
+
 
 # ===================================================================
 # TestActiveProfile

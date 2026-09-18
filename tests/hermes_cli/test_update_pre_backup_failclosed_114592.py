@@ -21,10 +21,12 @@ B. ``_cmd_update_impl`` gates the destructive apply on the failure signal.
    - When backup succeeds, the existing happy path is unchanged (no
      regression on the normal ``mode="quick"`` flow).
 
-C. ``_ensure_default_soul_md`` verifies the produced SOUL.md is a regular
-   file. A symlink (loop or otherwise) left behind on disk by a prior run
-   is replaced with a regular text file when the path is the legacy
-   template, and never written as a symlink by us.
+C. ``_ensure_default_soul_md`` only replaces a *cyclic* SOUL.md symlink.
+   Resolving and dangling links are left untouched so operator wiring
+   survives the first-boot seed (#114601 review feedback — alt-glitch
+   triage + KeyArgo's three-row Linux verification). A cyclic link is
+   replaced atomically via tempfile + os.replace so concurrent boot
+   attempts cannot race on one shared path.
 
 Only paths/env are monkeypatched; every behavior under test uses the real
 ``hermes_cli.update_cmd_maint`` / ``hermes_cli.config`` modules against a
@@ -175,42 +177,97 @@ def test_cmd_update_impl_refuses_to_apply_when_backup_raises(monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# C. _ensure_default_soul_md verifies its output is a regular file
+# C. _ensure_default_soul_md only replaces a CYCLIC SOUL.md symlink
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_default_soul_md_replaces_symlink_with_regular_file(tmp_path, monkeypatch):
-    """If SOUL.md exists and is a symlink (including a self-loop like
-    ``SOUL.md -> SOUL.md``), ``_ensure_default_soul_md`` must replace it
-    with a regular text file the gateway can read on next boot. The
-    prior behavior — write_text raises ``OSError(ELOOP)`` mid-call —
-    propagates as ``HomeInitializationError`` and kills every gateway
-    spawn with exit 75 (#114592). The contract is: the symlink is
-    unlinked first, then the default content is written as a regular
-    file. ``is_legacy_template_soul`` cannot read a broken symlink loop,
-    so the function must short-circuit on ``is_symlink`` before the
-    read_text attempt."""
+def test_ensure_default_soul_md_replaces_cyclic_symlink_with_regular_file(tmp_path):
+    """If SOUL.md is a self-referential symlink (``SOUL.md -> SOUL.md``),
+    ``_ensure_default_soul_md`` must replace it with a regular text file
+    the gateway can read on next boot. The prior pre-narrow behavior
+    wrote through the loop and raised ``OSError(ELOOP)`` mid-call, which
+    propagated as ``HomeInitializationError`` and killed every gateway
+    spawn with exit 75 (#114592). The fix is scoped to ELOOP: stat() on
+    a cyclic chain raises ``OSError(errno.ELOOP)`` and only that branch
+    atomically seeds ``DEFAULT_SOUL_MD`` via tempfile + ``os.replace``.
+    """
     import hermes_cli.config as cfg
 
     soul_path = tmp_path / "SOUL.md"
-    # Self-referential symlink: ``SOUL.md -> SOUL.md``. read_text() raises
-    # ``OSError(ELOOP)`` after the symlink-resolution cap.
     os.symlink(str(soul_path), str(soul_path))
 
-    # Sanity: the loop is real (lstat sees a symlink; read_text would ELOOP).
     assert soul_path.is_symlink()
 
-    # Must NOT raise (gateway boot would re-trigger the same exit-75 loop).
     cfg._ensure_default_soul_md(tmp_path)
 
-    # The symlink MUST be replaced with a regular file containing the
-    # default content.
     assert not soul_path.is_symlink(), (
-        "_ensure_default_soul_md left a symlink in place; gateway boot "
-        "would re-trigger the ELOOP exit-75 from #114592"
+        "_ensure_default_soul_md left a cyclic link in place; gateway "
+        "boot would re-trigger the ELOOP exit-75 from #114592"
     )
     assert soul_path.is_file(), "SOUL.md must be a regular file after _ensure_default_soul_md"
     assert soul_path.read_text(encoding="utf-8") == cfg.DEFAULT_SOUL_MD
+
+    # The atomic seed must not leave a tempfile next to SOUL.md.
+    stragglers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".SOUL.md.")]
+    assert not stragglers, (
+        f"atomic seed left tempfile(s) in {tmp_path}: {stragglers!r}"
+    )
+
+
+def test_ensure_default_soul_md_preserves_resolving_link_to_custom_content(tmp_path):
+    """A resolving ``SOUL.md -> /elsewhere/real-soul.md`` link keeps its
+    custom content intact — operator wiring must survive a first boot.
+    This is the row KeyArgo verified on Linux against the prior head:
+    the unconditional ``is_symlink() -> unlink()`` clobbered the link
+    and overwrote the target's identity. The narrowed fix only replaces
+    a link that ``stat()`` cannot resolve (ELOOP); a resolving link
+    stat()s cleanly and falls through to the read/compare branch.
+    """
+    import hermes_cli.config as cfg
+
+    target = tmp_path / "real-soul.md"
+    custom = "# operator identity\ndo not touch\n"
+    target.write_text(custom, encoding="utf-8")
+
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.symlink_to(target)
+
+    cfg._ensure_default_soul_md(tmp_path)
+
+    assert soul_path.is_symlink(), (
+        "resolving SOUL.md link must be preserved (operator wiring); "
+        "KeyArgo's three-row verification (#114601 review) confirms main "
+        "treats this case as untouched"
+    )
+    assert soul_path.resolve() == target.resolve()
+    assert soul_path.read_text(encoding="utf-8") == custom
+    assert target.read_text(encoding="utf-8") == custom
+
+
+def test_ensure_default_soul_md_preserves_dangling_link_and_writes_through_it(tmp_path):
+    """A dangling ``SOUL.md -> /elsewhere/missing.md`` link is left in
+    place; the default seed is written THROUGH the link so the target
+    becomes the identity file. This matches main's pre-#114592 behaviour
+    (KeyArgo row 3): a dangling link is operator wiring that we must
+    not delete, and the existing read/compare path handles the write
+    transparently because ``read_text`` / ``write_text`` follow the link.
+    """
+    import hermes_cli.config as cfg
+
+    target = tmp_path / "missing-target.md"
+    assert not target.exists()
+
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.symlink_to(target)
+
+    cfg._ensure_default_soul_md(tmp_path)
+
+    assert soul_path.is_symlink(), (
+        "dangling SOUL.md link must be preserved; main behaviour writes "
+        "through the link and lets the target become the identity file"
+    )
+    assert target.exists(), "the default seed must be written through the dangling link"
+    assert target.read_text(encoding="utf-8") == cfg.DEFAULT_SOUL_MD
 
 
 def test_ensure_default_soul_md_writes_regular_file_when_missing(tmp_path):

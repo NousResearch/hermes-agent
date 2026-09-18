@@ -3,6 +3,7 @@ validation, migration, and the ``hermes config`` command."""
 
 import copy
 import difflib
+import errno
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -634,19 +636,45 @@ def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched.
 
-    A symlink (loop or otherwise) is replaced with a regular file before any
-    content read: ``read_text`` on ``SOUL.md -> SOUL.md`` raises ``ELOOP`` and
-    ``write_text`` to the same path raises ``ELOOP`` too. The pre-existing code
-    caught both as ``OSError`` and silently returned — which left a broken
-    symlink in place and bricked every gateway spawn on next boot (#114592:
-    launchd relaunch storm, exit 75, ~350MB of gateway.error.log).
+    A cyclic symlink (e.g. ``SOUL.md -> SOUL.md``) is replaced with a regular
+    file in place of the link; resolving and dangling links are left alone.
+    ``stat()`` on a cyclic chain raises ``OSError(ELOOP)``; that is the only
+    shape this branch handles. Resolving links keep the link and write through
+    it (main behaviour); dangling links also keep the link (main behaviour).
+    See #114592 — the brick that motivated this narrow fix; alt-glitch triage
+    pointed out that the prior unconditional ``unlink()`` would also clobber
+    resolving links, and KeyArgo verified three rows on Linux: cyclic replaced,
+    resolving preserved, dangling preserved.
     """
     soul_path = home / "SOUL.md"
     if soul_path.is_symlink():
-        # A symlink at this path is never the user's customization (a regular
-        # file is the only form ``_secure_file`` produces). Unlink the link
-        # so the subsequent write_text lands on a regular inode.
-        soul_path.unlink()
+        try:
+            soul_path.stat()
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                # Cyclic chain: ``stat`` (and any subsequent read/write) refuses to follow it.
+                # Seed the default IN PLACE OF the link via a unique tempfile + ``os.replace`` so
+                # concurrent boot attempts cannot race on one shared path. If the seed cannot be
+                # committed (read-only home, etc.) the link is left alone rather than killing
+                # home initialization.
+                try:
+                    fd, tmp_name = tempfile.mkstemp(
+                        prefix=".SOUL.md.", suffix=".seed", dir=str(home)
+                    )
+                except OSError:
+                    return
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write(DEFAULT_SOUL_MD)
+                    os.replace(tmp_name, soul_path)
+                except OSError:
+                    with suppress(FileNotFoundError):
+                        os.unlink(tmp_name)
+                    return
+                _secure_file(soul_path)
+                return
+            # Any other stat failure (e.g. EACCES on a stale link target) — fall through to the
+            # read/compare path; main behaviour for that edge case is "leave it alone".
     if soul_path.exists():
         try:
             existing = soul_path.read_text(encoding="utf-8")

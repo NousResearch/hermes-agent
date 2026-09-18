@@ -19,6 +19,7 @@ const copy = en.settings.screenshot
 
 function deferred<T>() {
   let resolve!: (value: T) => void
+
   const promise = new Promise<T>(yes => {
     resolve = yes
   })
@@ -29,15 +30,18 @@ function deferred<T>() {
 function installBridge() {
   let onStatus: (status: ScreenshotStatus) => void = () => {}
   const unsubscribe = vi.fn()
+
   const api = {
     getSettings: vi.fn<() => Promise<ScreenshotStatus>>(),
     setEnabled: vi.fn<(enabled: boolean) => Promise<ScreenshotStatus>>(),
     openPermissionSettings: vi.fn<(kind: 'input' | 'screen') => Promise<void>>().mockResolvedValue(undefined),
     onStatus: vi.fn((callback: (status: ScreenshotStatus) => void) => {
       onStatus = callback
+
       return unsubscribe
     })
   }
+
   vi.stubGlobal('hermesDesktop', { screenshot: api })
 
   return { api, emit: (status: ScreenshotStatus) => onStatus(status), unsubscribe }
@@ -161,6 +165,7 @@ describe('ScreenshotSettings', () => {
   it('provides every screenshot message in each locale', () => {
     for (const locale of [en, ja, zh, zhHant, ar, ru]) {
       expect(Object.keys(locale.settings.screenshot).sort()).toEqual(Object.keys(copy).sort())
+
       for (const text of Object.values(locale.settings.screenshot)) {
         expect(typeof text).toBe('string')
         expect(text.trim()).not.toBe('')

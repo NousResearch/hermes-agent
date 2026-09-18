@@ -3,8 +3,20 @@ import { describe, expect, it } from 'vitest'
 import { buildMcpSuggestionIndex, matchSuggestions } from './mcp'
 
 it('does not send local-app or non-OAuth catalog suggestions through the hosted OAuth-only composer flow', () => {
-  const hosted = { name: 'hosted', url: 'https://mcp.example.test', auth_type: 'oauth', transport: 'http', suggest: { keywords: ['hosted'], hosts: [] } }
-  const editor = { ...hosted, name: 'editor', url: 'http://127.0.0.1:8000/mcp', auth_type: 'none', suggest: { ...hosted.suggest, requires_app: true } }
+  const hosted = {
+    name: 'hosted',
+    url: 'https://mcp.example.test',
+    auth_type: 'oauth',
+    transport: 'http',
+    suggest: { keywords: ['hosted'], hosts: [] }
+  }
+  const editor = {
+    ...hosted,
+    name: 'editor',
+    url: 'http://127.0.0.1:8000/mcp',
+    auth_type: 'none',
+    suggest: { ...hosted.suggest, requires_app: true }
+  }
   const key = { ...hosted, name: 'key', auth_type: 'api_key' }
   const stdio = { ...hosted, name: 'stdio', url: null, transport: 'stdio' }
   expect(buildMcpSuggestionIndex([hosted, editor, key, stdio]).map(row => row.server)).toEqual([hosted.name])

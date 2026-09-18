@@ -83,6 +83,28 @@ function headings(): string[] {
   );
 }
 
+function headerFor(category: string): HTMLElement | undefined {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('[data-testid="cron-category-header"]'),
+  ).find((el) => (el.textContent ?? "").includes(category));
+}
+
+async function click(el: HTMLElement): Promise<void> {
+  await act(async () => {
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+/** Flip the Ungrouped | By category control to the grouped view. */
+async function switchToGrouped(): Promise<void> {
+  const toggle = Array.from(container.querySelectorAll("button")).find((b) =>
+    (b.textContent ?? "").includes("By category"),
+  );
+  expect(toggle).toBeTruthy();
+  expect(headings()).toHaveLength(0); // ungrouped to start with
+  await click(toggle!);
+}
+
 describe("CronPage category grouping", () => {
   it("renders the job list without crashing", async () => {
     const text = await renderCronPage();
@@ -92,18 +114,7 @@ describe("CronPage category grouping", () => {
 
   it("offers the grouping toggle once a job carries a label, and renders headings when switched on", async () => {
     await renderCronPage();
-
-    const groupToggle = Array.from(container.querySelectorAll("button")).find((b) =>
-      (b.textContent ?? "").includes("By category"),
-    );
-    expect(groupToggle).toBeTruthy();
-
-    // Ungrouped to start with: no category headings.
-    expect(headings()).toHaveLength(0);
-
-    await act(async () => {
-      groupToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    await switchToGrouped();
 
     const rendered = headings();
     expect(rendered.length).toBe(3);
@@ -112,5 +123,25 @@ describe("CronPage category grouping", () => {
     expect(rendered[1]).toContain("Family");
     expect(rendered[2]).toContain("Uncategorised");
     expect(rendered[2]).toContain("(1)");
+  });
+
+  it("folds a category away when its header is clicked, and unfolds it again", async () => {
+    await renderCronPage();
+    await switchToGrouped();
+
+    const family = headerFor("Family");
+    expect(family?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("piano-practice");
+
+    await click(family!);
+    expect(headerFor("Family")?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain("piano-practice");
+    // other groups are untouched, and the header stays visible with its count
+    expect(container.textContent).toContain("restic-full");
+    expect(headerFor("Family")?.textContent).toContain("(1)");
+
+    await click(headerFor("Family")!);
+    expect(headerFor("Family")?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("piano-practice");
   });
 });

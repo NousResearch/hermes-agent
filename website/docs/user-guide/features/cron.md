@@ -207,8 +207,9 @@ affect when or whether a job runs.
 When at least one job carries a label, the dashboard's **Cron → Jobs** list offers a grouping toggle
 next to the profile filter. Grouped, the list renders one heading per category — with the jobs that
 belong to it underneath, sorted alphabetically, and jobs with no label collected under
-*Uncategorised* last. Labels merge on an exact trimmed match, so `family` and `" family "` are one
-group.
+*Uncategorised* last. Click a heading to fold that category away; the heading and its job count stay
+visible, and unfolding restores it. Labels merge on an exact trimmed match, so `family` and
+`" family "` are one group.
 
 Setting it from the API is the same field name:
 

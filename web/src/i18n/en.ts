@@ -265,6 +265,8 @@ export const en: Translations = {
     groupNone: "Ungrouped",
     groupCategory: "By category",
     uncategorised: "Uncategorised",
+    collapseGroup: "Collapse this category",
+    expandGroup: "Expand this category",
     prompt: "Prompt",
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",

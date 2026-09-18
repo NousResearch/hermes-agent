@@ -3,7 +3,7 @@ import {
   type CronTriggerController,
   createCronTriggerController,
 } from "@hermes/shared";
-import { Clock, FolderTree, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, FolderTree, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -570,8 +570,17 @@ export default function CronPage() {
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
   // Group the Jobs list by each job's optional category. The toggle is only
-  // offered once some job actually carries one.
+  // offered once some job actually carries one. Groups start expanded; a
+  // collapsed group is remembered by its label for this visit only.
   const [groupByCategory, setGroupByCategory] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  const toggleGroup = useCallback((category: string) => {
+    setCollapsedGroups((prev) =>
+      prev.includes(category)
+        ? prev.filter((item) => item !== category)
+        : [...prev, category],
+    );
+  }, []);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
@@ -893,11 +902,17 @@ export default function CronPage() {
     if (!showsCategoryGroups) {
       return jobs.map((job) => ({ kind: "job" as const, job }));
     }
-    return groupCronJobsByCategory(jobs).flatMap((group) => [
-      { kind: "header" as const, category: group.category, size: group.jobs.length },
-      ...group.jobs.map((job) => ({ kind: "job" as const, job })),
-    ]);
-  }, [jobs, showsCategoryGroups]);
+    return groupCronJobsByCategory(jobs).flatMap((group) => {
+      const header = {
+        kind: "header" as const,
+        category: group.category,
+        size: group.jobs.length,
+      };
+      // Collapsed: the header row only — its jobs are simply not emitted.
+      if (collapsedGroups.includes(group.category)) return [header];
+      return [header, ...group.jobs.map((job) => ({ kind: "job" as const, job }))];
+    });
+  }, [jobs, showsCategoryGroups, collapsedGroups]);
 
   if (loading) {
     return (
@@ -1155,18 +1170,32 @@ export default function CronPage() {
 
         {jobRows.map((row) => {
           if (row.kind === "header") {
+            const collapsed = collapsedGroups.includes(row.category);
             return (
-              <div
+              <button
                 key={`category:${row.category}`}
-                className="flex items-center gap-2 pt-2 text-muted-foreground"
+                type="button"
+                onClick={() => toggleGroup(row.category)}
+                aria-expanded={!collapsed}
+                aria-label={
+                  collapsed
+                    ? t.cron.expandGroup ?? en.cron.expandGroup
+                    : t.cron.collapseGroup ?? en.cron.collapseGroup
+                }
+                className="flex w-full items-center gap-2 pt-2 text-left text-muted-foreground hover:text-foreground"
                 data-testid="cron-category-header"
               >
+                {collapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
                 <FolderTree className="h-4 w-4" />
                 <span className="text-sm font-medium">
                   {row.category || t.cron.uncategorised || en.cron.uncategorised}
                 </span>
                 <span className="text-xs">({row.size})</span>
-              </div>
+              </button>
             );
           }
           const job = row.job;

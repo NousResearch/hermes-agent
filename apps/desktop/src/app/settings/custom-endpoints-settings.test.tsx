@@ -10,13 +10,15 @@ const notify = vi.fn()
 const notifyError = vi.fn()
 const triggerHaptic = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   activateCustomEndpoint: vi.fn(),
   deleteCustomEndpoint: vi.fn(),
   getCustomEndpoints: (...args: unknown[]) => getCustomEndpoints(...args),
   saveCustomEndpoint: (...args: unknown[]) => saveCustomEndpoint(...args),
   validateCustomEndpoint: vi.fn()
 }))
+vi.mock('./profile-scope', () => ({ ActiveProfileNote: () => null }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: (...args: unknown[]) => triggerHaptic(...args) }))
 vi.mock('@/store/notifications', () => ({
   notify: (...args: unknown[]) => notify(...args),

@@ -18,7 +18,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.source_provenance_tools import issue_active_read_provenance
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (

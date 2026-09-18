@@ -63,6 +63,14 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any]
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
+def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
+    """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
+    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
+    with _core._lock:
+        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
+            (config or {}).get("trust"))
+
+
 def _track_mcp_tool_server(tool_name: str, server_name: str, *, key=None, scope=None) -> None:
     """Remember raw connection and public server provenance for *tool_name*."""
     with _core._lock:

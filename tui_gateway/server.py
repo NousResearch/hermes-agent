@@ -1553,10 +1553,10 @@ def _load_cfg_raw() -> dict:
 
 
 def _load_cfg() -> dict:
-    """Behavioral config read: the effective USER config (managed overlay, ``${VAR}`` expansion, model-key
-    canon) minus the DEFAULT_CONFIG merge — callers treat a missing key as "unset", so merging would break
-    ``_load_cfg() == {}`` sentinels. Fail-open to ``{}``. Never pass the result to ``_save_cfg`` (use
-    ``_load_cfg_raw()``)."""
+    """Behavioral config read: raw user file + managed overlay + ${VAR} expansion — ``load_config_readonly``
+    minus the DEFAULT_CONFIG merge (callers treat a missing key as "unset"; merging would break
+    ``_load_cfg() == {}`` sentinels). Never pass the result to ``_save_cfg`` (use ``_load_cfg_raw()``)."""
+    cfg = _apply_managed(_load_cfg_raw())
     with contextlib.suppress(Exception):
         cfg = _expand_cfg(cfg)
     return cfg

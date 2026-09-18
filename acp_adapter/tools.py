@@ -252,11 +252,9 @@ _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
 
 
 def build_tool_title(tool_name: str, args: Args) -> str:
-    """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
-    every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;
-    bare tool name when the arguments yield no preview."""
-    preview = build_tool_preview(tool_name, args, max_len=80)
-    return f"{tool_name}: {preview}" if preview else tool_name
+    """Build a human-readable title for a tool call (defaults to the tool name)."""
+    builder = _TITLE_BUILDERS.get(tool_name)
+    return builder(args) if builder is not None else tool_name
 
 
 # --- completion formatters; all share the signature (tool_name, result, args) --

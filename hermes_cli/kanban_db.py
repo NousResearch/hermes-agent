@@ -2614,7 +2614,9 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
     return run_id
 
 
-def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection, *, signal_fn=None, failure_limit: "Optional[int]" = None,
+) -> int:
     """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
 
     A host-local worker that is still alive gets its claim *extended* instead

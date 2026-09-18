@@ -4287,6 +4287,13 @@ def _try_main_agent_model_fallback(
                        base_url="", api_key="", api_mode="")
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
+    if task == "vision" and (
+            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
+        # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
+        # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
+        logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
+                    reason, failed_provider, main_provider)
+        return None, None, ""
     main_base_url = str(runtime.get("base_url") or "").strip() or _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
@@ -7346,6 +7353,8 @@ class _LadderStep(NamedTuple):
     kind: str
     args: tuple
 
+
+_RERAISE_ORIGINAL = object()
 
 # Ordered (predicate, reason) pairs for the provider-fallback rung: first match
 # wins, so a payment-flavoured 429 reads as "payment error", not "rate limit".

@@ -585,30 +585,41 @@ def _redact_approval_command(cmd: "str | None") -> str:
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
-    """Render the text fallback from approval capabilities, not platform names."""
+    """Render the text fallback from approval capabilities, not platform names. Same words as
+    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
+    steps a surface without buttons needs."""
+    from gateway.platforms.base_exec_approval import (
+        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
-               else "⚠️ **Dangerous command requires approval:**")
+               else f"⚠️ **{EA_HEADER_TEXT}**")
 
-    choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
+    choices = [f"Reply `{command_prefix}approve` to run it once"]
     if not smart_denied and allow_session:
-        choices.append(f"`{command_prefix}approve session` to approve this pattern for the session")
+        choices.append(f"`{command_prefix}approve session` to allow this pattern for the rest of this session")
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to approve permanently")
+            choices.append(f"`{command_prefix}approve always` to allow it permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}.")
+        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
+        + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
+        + format_approval_deadline_line(approval_timeout_seconds()))
 
 # Ordered: auth beats policy beats rate-limit beats connection; first match wins.
 _PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Provider authentication failed. Check the configured credentials; "
-                             "raw provider details are in the gateway logs."),
-    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The model provider rejected the request. I kept the raw provider "
-                                  "error out of chat; check gateway logs for details or try rephrasing."),
+    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
+                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
+    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
+                                  "message, or use /model to switch models."),
     (_GATEWAY_RATE_LIMIT_RE, "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The model server is not responding — it looks like the configured "
                                    "model endpoint is not running or is unreachable."))
+
+# Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
+# commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
+_CONTEXT_OVERFLOW_REPLY = (
+    "⚠️ This conversation has grown too long for me to read all at once. "
+    "Use /compress to shorten the history, or /new to start a fresh conversation.")
 
 
 def _gateway_provider_error_reply(text: str) -> str:
@@ -2367,11 +2378,15 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         context_length=context_length, context_source=context_source)
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Optional[str] = None) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override).
+
+    ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
+    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
+    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -2417,7 +2432,8 @@ def _try_resolve_fallback_provider() -> dict | None:
                 from hermes_cli.fallback_config import resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry))
+                    explicit_api_key=resolve_entry_api_key(entry),
+                    target_model=entry.get("model") or None)
                 # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
                 logger.info(
                     # Log the literal `provider` key from config, not the resolved runtime category — an
@@ -2566,6 +2582,9 @@ _INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
+# ``tool_reason`` for eviction / shutdown: these stops are system-issued, not user stops (#112647).
+_INTERRUPT_TOOL_REASON_EVICTED = "session evicted"
+_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 
 
 def _reap_gateway_turn_processes(
@@ -3002,6 +3021,8 @@ def _format_concise_process_notification(
             tail = tail[-500:]
         if tail:
             text += f"\n```\n{tail}\n```"
+    if not ok:
+        text += "\nAsk me to rerun it or show the full log."
     return text
 
 
@@ -4590,6 +4611,13 @@ def _housekeeping_deferred_fts_retry() -> None:
                     getattr(_sdb, "db_path", "state.db"))
 
 
+def _housekeeping_checkpoint_prune() -> None:
+    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
+    the presence of a configured store and skips itself when nothing was configured."""
+    from tools.checkpoint_manager import auto_prune_from_config
+    auto_prune_from_config()
+
+
 def _housekeeping_memory_trim() -> None:
     """Messaging-gateway counterpart to the TUI idle reaper; config-gated and rate-limited inside."""
     from hermes_cli.mem_trim import trim_memory
@@ -4645,7 +4673,8 @@ def _start_gateway_housekeeping(
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
-        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim)]
+        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0

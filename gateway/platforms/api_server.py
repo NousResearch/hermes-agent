@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
@@ -3187,6 +3187,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
         return "confirmed" if runtime else "accepted"
 
+    async def _admit_to_live_bot_chat(
+        self, session_id: str, message: Any, author: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[Path, Dict[str, Any]]]:
+        """Admit a turn aimed at the canonical Bot Chat to the Desktop session that holds it live.
+
+        ``(profile home, mailbox record)`` when a live owner took it; None when this process should
+        run the turn itself — the session is not the canonical Bot Chat's own lineage, or nobody
+        holds that chat. Both peer transports (``/api/sessions/{id}/chat`` for ``peer dm``,
+        ``/v1/runs`` for ``peer run``) go through here, so the two lanes cannot drift.
+        """
+        if not isinstance(message, str):
+            return None
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return None
+        home = Path(db.db_path).parent
+        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+
+        def _admit() -> Optional[Dict[str, Any]]:
+            owner = find_canonical_live_owner(home)
+            # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
+            if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
+                return None
+            return deliver_to_live_owner(home, owner, message, author=author)
+
+        record = await asyncio.to_thread(_admit)
+        return None if record is None else (home, record)
+
     async def _answer_through_live_bot_chat(self, ctx: Dict[str, Any]) -> Optional["web.Response"]:
         """Hand a turn aimed at a canonical Bot Chat that a Desktop holds live to that owner.
 
@@ -3197,27 +3225,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         (``tools/bot_mode_dm.py``, ``tui_gateway/methods_bot_relay.py``). This waits for the owner's
         receipt on the same budget as the local path, so the peer still gets the reply on this call.
         """
-        message = ctx["user_message"]
-        if not isinstance(message, str):
-            return None
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return None
-        home = Path(db.db_path).parent
         session_id = ctx["session_id"]
-        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
-
-        def _admit() -> Optional[Dict[str, Any]]:
-            owner = find_canonical_live_owner(home)
-            # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
-            if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
-                return None
-            return deliver_to_live_owner(home, owner, message, author=ctx["run_kwargs"]["turn_author"])
-
-        record = await asyncio.to_thread(_admit)
-        if record is None:
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        if admitted is None:
             return None
+        home, record = admitted
+        from tools.bot_live_delivery import read_delivery_result
+        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
         delivery_id = record["delivery_id"]
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
         while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:

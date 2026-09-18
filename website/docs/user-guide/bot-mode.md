@@ -252,7 +252,7 @@ open in its Desktop, the message is handed to that open chat and runs there as i
 whoever is watching sees it, and the reply still comes back on the call; if that turn is still going
 after five minutes, `peer dm` reports the message as queued in that chat rather than lost. For a long
 turn, `peer run` returns a
-`run_id` immediately; poll it with `peer status`. The run inherits the
+`run_id` immediately; poll it with `peer status`. If the peer's Bot Chat is open in its Desktop, the run is that chat's next turn and its status follows the chat's own receipt. The run inherits the
 canonical Bot Chat transcript, and a stable `--idempotency-key` makes a retry
 return the original run instead of starting duplicate work. Use `peer stop`
 with that exact run ID to interrupt it without targeting another turn.

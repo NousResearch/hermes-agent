@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import unauthorized_action_notice
+from gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
@@ -96,6 +96,32 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args.kwargs
         assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
         assert "&amp;&amp;" in kwargs["text"] and "&lt;reason&gt;" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_emoji_dense_approval_card_fits_in_utf16_units(self):
+        """Telegram counts UTF-16 code units (astral emoji = 2), like the adapter's chunker."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(chat_id="12345", command="😀" * 3000, session_key="s")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_slash_confirm_preview_fits_after_markdown_escaping(self):
+        """The slash-confirm card is measured after format_message (MarkdownV2 escaping expands
+        text), so a 3800-char raw message must still land under the 4096 cap."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_slash_confirm(
+            chat_id="12345", title="t", message="." * 3800, session_key="s", confirm_id="c1")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
         assert kwargs["reply_markup"] is not None
 
 

@@ -2585,18 +2585,20 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
-    def _ea_fit(self, text: str, budget: int, suffix: str = "...") -> str:
-        """``_truncate_preview`` measured after ``_ea_escape``: the platform cap applies to the
-        wire payload, and HTML escaping expands (``&`` → ``&amp;``), so a raw-length cut can
-        still overflow. Returns raw text (the caller escapes); ``suffix`` rides outside ``budget``
-        like ``_truncate_preview``."""
+    def _ea_fit(self, text: str, budget: int, suffix: str = "...", escape: Optional[Callable[[str], str]] = None) -> str:
+        """``_truncate_preview`` measured after ``escape`` (default ``_ea_escape``) in
+        ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
+        expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
+        caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
         text = str(text or "")
-        if len(self._ea_escape(text)) <= budget:
+        escape = escape or self._ea_escape
+        len_fn = self.message_len_fn
+        if len_fn(escape(text)) <= budget:
             return text
         lo, hi = 0, len(text)
         while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
             mid = (lo + hi + 1) // 2
-            if len(self._ea_escape(text[:mid])) <= budget:
+            if len_fn(escape(text[:mid])) <= budget:
                 lo = mid
             else:
                 hi = mid - 1

@@ -3930,9 +3930,10 @@ class TelegramAdapter(BasePlatformAdapter):
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to
         # the text /approve prompt, so budget the preview against what the framing leaves of the cap.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(self._ea_escape(description)) + len("...")
-                 + len(self._ea_deadline_line()) + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
+        fixed = utf16_len(  # UTF-16 units, like the 4096 chunker in send()
+            self._EA_HEADER + self._EA_CODE_OPEN + self._EA_CODE_CLOSE + self._EA_REASON_LABEL
+            + self._ea_escape(description) + "..." + self._ea_deadline_line()
+            + (self._EA_SMART_DENY_LINE if smart_denied else ""))
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
@@ -3965,7 +3966,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}")],
                 [InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}")],
            ])
-            preview = self.format_message(self._truncate_preview(message, 3800))
+            # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
+            preview = self.format_message(self._ea_fit(
+                message, self.MAX_MESSAGE_LENGTH - utf16_len(self.format_message("...")), escape=self.format_message))
             return preview, keyboard, lambda msg: self._slash_confirm_state.__setitem__(confirm_id, session_key)
         return await self._send_prompt(
             "send_slash_confirm", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)

@@ -174,11 +174,7 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     if snapshot_id:
         _record_update_step("pre_update_backup", True, f"snapshot={snapshot_id}")
         return
-    try:
-        mode = _resolve_pre_update_backup_mode(args)
-    except Exception:
-        mode = ""
-    if mode == "off":
+    if _resolve_pre_update_backup_mode(args) == "off":
         reason = ("disabled by --no-backup" if getattr(args, "no_backup", False)
                   else "disabled by updates.pre_update_backup (mode: off)")
         _record_update_skip("pre_update_backup", reason)

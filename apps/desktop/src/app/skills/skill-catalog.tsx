@@ -19,7 +19,10 @@ export function SkillCatalog({ installedNames, profile, query = '', onQueryChang
   const { t } = useI18n()
   const h = t.skills.hub
   const [installing, setInstalling] = useState<ReadonlySet<string>>(new Set())
-  const isInstalled = useCallback((entry: CatalogEntry) => installedNames.has(entry.name) || installedNames.has(entry.identifier), [installedNames])
+  const isInstalled = useCallback(
+    (entry: CatalogEntry) => installedNames.has(entry.name) || installedNames.has(entry.identifier),
+    [installedNames]
+  )
 
   const install = (entry: CatalogEntry) => {
     if (!entry.installIdentifier || isInstalled(entry) || installing.has(entry.id)) {

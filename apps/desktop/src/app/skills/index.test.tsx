@@ -292,13 +292,18 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     'disables catalog installation when the installed list contains %s',
     async installedName => {
       const { installHubSkill } = await import('@/store/hub-actions')
-      queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [{
-        name: 'web-research',
-        identifier: 'official/research/web-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research the web'
-      }]))
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          {
+            name: 'web-research',
+            identifier: 'official/research/web-research',
+            source: 'official',
+            category: 'research',
+            description: 'Research the web'
+          }
+        ])
+      )
 
       render(
         <QueryClientProvider client={queryClient}>
@@ -330,56 +335,70 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       identifier: 'clawhub/community-research',
       expectedIdentifier: 'clawhub/community-research'
     }
-  ])('installs $identifier with its source-qualified target in the pinned connection and profile', async ({ source, identifier, expectedIdentifier }) => {
-    const { installHubSkill } = await import('@/store/hub-actions')
-    const entry = {
-      name: 'community-research',
-      identifier,
-      source,
-      category: 'research',
-      description: 'Community research workflow'
-    }
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
-      entry
-    ]))
+  ])(
+    'installs $identifier with its source-qualified target in the pinned connection and profile',
+    async ({ source, identifier, expectedIdentifier }) => {
+      const { installHubSkill } = await import('@/store/hub-actions')
 
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
-          </MemoryRouter>
-        </QueryClientProvider>
+      const entry = {
+        name: 'community-research',
+        identifier,
+        source,
+        category: 'research',
+        description: 'Community research workflow'
+      }
+
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
+          entry
+        ])
       )
-    })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
-    expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-    })
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/skills']}>
+              <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
 
-    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
-      connectionId: 'homelab', profile: 'researcher'
-    })
-  })
+      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+      fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+      expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+      })
+
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
+        connectionId: 'homelab',
+        profile: 'researcher'
+      })
+    }
+  )
 
   it('keeps a pending install tied to its entry and scope when the pinned target changes', async () => {
     const { installHubSkill } = await import('@/store/hub-actions')
     const identifier = 'clawhub/community-research'
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
-      { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
-    ]))
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
+        { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
+      ])
+    )
     let finishFirst!: () => void
     let finishSecond!: () => void
-    const firstInstall = new Promise<void>(resolve => { finishFirst = resolve })
-    const secondInstall = new Promise<void>(resolve => { finishSecond = resolve })
-    vi.mocked(installHubSkill)
-      .mockReturnValueOnce(firstInstall)
-      .mockReturnValueOnce(secondInstall)
+    const firstInstall = new Promise<void>(resolve => {
+      finishFirst = resolve
+    })
+    const secondInstall = new Promise<void>(resolve => {
+      finishSecond = resolve
+    })
+    vi.mocked(installHubSkill).mockReturnValueOnce(firstInstall).mockReturnValueOnce(secondInstall)
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
@@ -388,6 +407,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         </MemoryRouter>
       </QueryClientProvider>
     )
+
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
@@ -397,7 +417,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
     fireEvent.click(pending)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
-      connectionId: 'homelab', profile: 'researcher'
+      connectionId: 'homelab',
+      profile: 'researcher'
     })
 
     fireEvent.click(screen.getByRole('button', { name: /^other-skill/ }))
@@ -411,7 +432,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(nextInstall.disabled).toBe(false)
     fireEvent.click(nextInstall)
     expect(installHubSkill).toHaveBeenNthCalledWith(2, identifier, {
-      connectionId: 'other-gateway', profile: 'writer'
+      connectionId: 'other-gateway',
+      profile: 'writer'
     })
 
     await act(async () => {
@@ -430,14 +452,17 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => [{
-        name: 'catalog-research',
-        identifier: 'official/research/catalog-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research from the public snapshot'
-      }]
+      json: async () => [
+        {
+          name: 'catalog-research',
+          identifier: 'official/research/catalog-research',
+          source: 'official',
+          category: 'research',
+          description: 'Research from the public snapshot'
+        }
+      ]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
 
     await renderSkills() // ?tab=toolsets
@@ -586,23 +611,26 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         provenance: 'bundled'
       }
     ])
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      {
-        name: 'gif-search',
-        description: 'Search GIFs',
-        source: 'optional',
-        installIdentifier: 'official/gifs/gif-search',
-        category: 'gifs',
-        tags: ['gifs']
-      },
-      {
-        name: 'web-research',
-        description: 'Research the web',
-        source: 'optional',
-        identifier: 'official/research/web-research',
-        category: 'research'
-      }
-    ]))
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        {
+          name: 'gif-search',
+          description: 'Search GIFs',
+          source: 'optional',
+          installIdentifier: 'official/gifs/gif-search',
+          category: 'gifs',
+          tags: ['gifs']
+        },
+        {
+          name: 'web-research',
+          description: 'Research the web',
+          source: 'optional',
+          identifier: 'official/research/web-research',
+          category: 'research'
+        }
+      ])
+    )
 
     await act(async () => {
       render(

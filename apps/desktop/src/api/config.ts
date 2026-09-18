@@ -14,13 +14,7 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import {
-  capabilityScoped,
-  hermesApi,
-  type ProfileScope,
-  profileScoped,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({

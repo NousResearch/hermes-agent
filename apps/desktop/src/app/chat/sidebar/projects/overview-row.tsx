@@ -225,8 +225,8 @@ export function ProjectOverviewRow({
       // The label is grab surface too, not just the lead's grabber — same
       // listeners, minus the controls that keep their own gestures. A project
       // row has no rival drag (its title navigates on CLICK), so the sortable
-      // owns the press outright.
-      {...dragHandleProps}
+      // owns the press outright. Pointer activator only — the keyboard
+      // activator stays on the grabber (#83617).
       onPointerDown={event => {
         if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
           return

@@ -1571,9 +1571,9 @@ def _stop_gateway_process(profile_dir: Path) -> None:
 
 # Active profile (sticky default)
 
-def get_active_profile() -> str:
-    """Read the sticky active profile name."""
-    path = _get_active_profile_path()
+def get_active_profile(root: Path | None = None) -> str:
+    """Read the sticky active profile name (of *root*, default: this process's Hermes root)."""
+    path = root / "active_profile" if root is not None else _get_active_profile_path()
     try:
         return path.read_text(encoding="utf-8").strip() or "default"
     except (UnicodeDecodeError, OSError):
@@ -1963,6 +1963,17 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
 # Profile env resolution (called from _apply_profile_override)
 
+def profile_root_for_env_home(env_home: str, default_root: Path) -> Path:
+    """Hermes root named by an exported ``HERMES_HOME``: the grandparent of a profile-shaped value
+    (``<root>/profiles/<name>``, mirrors ``get_default_hermes_root()``), the value itself otherwise,
+    *default_root* when unset. Pure: callers pass any process's env, not only ``os.environ``."""
+    env_home = env_home.strip()
+    if not env_home:
+        return default_root
+    env_path = Path(env_home)
+    return env_path.parent.parent if env_path.parent.name == "profiles" else env_path
+
+
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a HERMES_HOME path string. Called early in the CLI entry
     point, before hermes modules are imported, to set HERMES_HOME.
@@ -1974,14 +1985,7 @@ def resolve_profile_env(profile_name: str) -> str:
     (junction-transparent); only the spelling is preserved.
     """
     canon = _canon_valid(profile_name)
-    env_home = os.environ.get("HERMES_HOME", "").strip()
-    if env_home:
-        env_path = Path(env_home)
-        # A profile-shaped env value means the root is the grandparent (mirrors
-        # get_default_hermes_root()).
-        root = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    else:
-        root = _get_default_hermes_home()
+    root = profile_root_for_env_home(os.environ.get("HERMES_HOME", ""), _get_default_hermes_home())
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon

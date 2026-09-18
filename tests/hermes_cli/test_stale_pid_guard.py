@@ -243,19 +243,40 @@ class TestKillStaleDashboardProcesses:
 class TestHermesHomeForPid:
     """Tri-state owner resolution: a readable environment always names a home."""
 
-    def test_readable_env_without_var_resolves_to_that_process_default_home(self, monkeypatch):
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX default home is $HOME/.hermes")
+    def test_readable_env_without_var_resolves_to_that_process_default_home(self, monkeypatch, tmp_path):
         """The common install shape exports no HERMES_HOME: the backend lives in its user's
         platform default home, and a default-home ``--stop`` must still find it (#113978)."""
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {"HOME": "/home/alice"})
+        home = str(tmp_path / "alice")
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {"HOME": home})
         from hermes_cli import main_dashboard
         monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid",
                             lambda pid: ["hermes", "--profile", "work", "serve"] if pid == 2 else ["hermes", "serve"])
 
-        assert dashboard_procs._hermes_home_for_pid(1) == "/home/alice/.hermes"
+        assert dashboard_procs._hermes_home_for_pid(1) == f"{home}/.hermes"
         # ``-p``/``--profile`` is applied to os.environ after exec, invisible in /proc environ.
-        assert dashboard_procs._hermes_home_for_pid(2) == "/home/alice/.hermes/profiles/work"
-        assert dashboard_procs._pids_owned_by_hermes_home([1, 2], "/home/alice/.hermes") == [1]
+        assert dashboard_procs._hermes_home_for_pid(2) == f"{home}/.hermes/profiles/work"
+        assert dashboard_procs._pids_owned_by_hermes_home([1, 2], f"{home}/.hermes") == [1]
+
+    def test_root_shaped_hermes_home_follows_the_flag_and_the_sticky_active_profile(self, monkeypatch, tmp_path):
+        """Mirror ``_apply_profile_override``: an exported root ``HERMES_HOME`` is the root, not the
+        home — ``-p work`` and ``hermes profile use work`` both land in ``<root>/profiles/work``."""
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        monkeypatch.setattr(dashboard_procs, "_pid_environ",
+                            lambda pid: {"HOME": str(tmp_path), "HERMES_HOME": str(root)})
+        from hermes_cli import main_dashboard
+        monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid",
+                            lambda pid: ["hermes", "-p", "work", "serve"] if pid == 2 else ["hermes", "serve"])
+
+        assert dashboard_procs._hermes_home_for_pid(2) == str(root / "profiles" / "work")
+        assert dashboard_procs._hermes_home_for_pid(1) == str(root)  # no flag, no active_profile
+        (root / "active_profile").write_text("work", encoding="utf-8")
+        assert dashboard_procs._hermes_home_for_pid(1) == str(root / "profiles" / "work")
+        # A profile-shaped HERMES_HOME without a flag is the home itself (root = its grandparent).
+        monkeypatch.setattr(dashboard_procs, "_pid_environ",
+                            lambda pid: {"HERMES_HOME": str(root / "profiles" / "ops")})
+        assert dashboard_procs._hermes_home_for_pid(1) == str(root / "profiles" / "ops")
 
     def test_unreadable_env_is_none_and_spared(self, monkeypatch):
         monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: None)

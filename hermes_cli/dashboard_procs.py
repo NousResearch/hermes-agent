@@ -127,27 +127,39 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
     (another user, hardened ``/proc``) — callers spare those, never guess.
 
-    A readable environment always resolves: ``HERMES_HOME`` when exported at exec time, else the
-    platform default home of the process's own ``HOME`` / ``LOCALAPPDATA`` (the common install shape
-    exports nothing). ``hermes --profile X serve`` sets ``HERMES_HOME`` in ``os.environ`` AFTER
-    startup, which ``/proc/<pid>/environ`` never reflects, so a ``--profile``/``-p`` flag in the
-    argv selects ``<default root>/profiles/X`` — the home ``_apply_profile_override`` resolves.
+    A readable environment always resolves, replaying ``_apply_profile_override`` on the target's
+    exec-time env + argv (``hermes -p X serve`` rewrites ``HERMES_HOME`` in ``os.environ`` AFTER
+    startup, which ``/proc/<pid>/environ`` never reflects): a profile-shaped ``HERMES_HOME``
+    without a flag is the home; otherwise the root is ``HERMES_HOME`` (its grandparent when
+    profile-shaped) or the platform default of the process's own ``HOME`` / ``LOCALAPPDATA``, and
+    the profile is the ``--profile``/``-p`` flag, else the root's sticky ``active_profile`` unless
+    the process has a fixed identity (supervised child, post-swap updater, Desktop SSH backend).
     """
     env = _pid_environ(pid)
     if env is None:
         return None
-    if home := env.get("HERMES_HOME", "").strip():
-        return home
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    argv = _dashboard_cmdline_for_pid(pid) or []
+    env_home = env.get("HERMES_HOME", "").strip()
+    profile = _profile_flag_value(argv)
+    if profile is None and env_home and (
+        Path(env_home).parent.name == "profiles" or env.get("HERMES_UPDATE_POST_SWAP") == "1"
+    ):
+        return env_home
     if sys.platform == "win32":
         local_appdata = env.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
         default_home = base / "hermes"
     else:
         default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
-    if profile := _profile_flag_value(_dashboard_cmdline_for_pid(pid) or []):
-        return str(default_home / "profiles" / profile)
-    return str(default_home)
+    root = profile_root_for_env_home(env_home, default_home)
+    fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv
+    if profile is None and not fixed_identity:
+        profile = get_active_profile(root)
+    canon = normalize_profile_name(profile) if profile else "default"
+    return str(root) if canon == "default" else str(root / "profiles" / canon)
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:

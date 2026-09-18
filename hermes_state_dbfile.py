@@ -176,20 +176,38 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
 
-def _iter_proc_fd_targets():
+def _scan_process_is_ours(pid: int) -> bool:
+    """A failed scan of a live same-user process is unknown, not an empty fd table."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).uids().effective == os.geteuid()
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _iter_proc_fd_targets(*, strict: bool = False):
     """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
     for pid_str in os.listdir("/proc"):
         if not pid_str.isdigit():
             continue
-        fd_dir = f"/proc/{pid_str}/fd"
+        pid = int(pid_str)
+        fd_dir = f"/proc/{pid}/fd"
         try:
             fds = os.listdir(fd_dir)
-        except OSError:
-            continue  # process gone or not ours
+        except OSError as exc:
+            if strict and exc.errno not in (errno.ENOENT, errno.ESRCH) and _scan_process_is_ours(pid):
+                raise
+            continue
         for fd in fds:
-            with contextlib.suppress(OSError):
-                fd_path = f"{fd_dir}/{fd}"
-                yield int(pid_str), os.readlink(fd_path), fd_path
+            fd_path = f"{fd_dir}/{fd}"
+            try:
+                target = os.readlink(fd_path)
+            except OSError as exc:
+                if strict and exc.errno not in (errno.ENOENT, errno.ESRCH) and _scan_process_is_ours(pid):
+                    raise
+                continue
+            yield pid, target, fd_path
 
 
 # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
@@ -249,13 +267,13 @@ def _darwin_all_pids(lib) -> List[int]:
         buffer = ctypes.create_string_buffer(size)
         used = lib.proc_listpids(_DARWIN_ALL_PIDS, 0, buffer, size)
         if used <= 0:
-            return []
+            raise OSError("libproc process scan failed")
         if used < size:
             return [pid for pid in struct.unpack_from(f"<{used // 4}i", buffer.raw) if pid > 0]
         size *= 2
 
 
-def _iter_darwin_fd_targets():
+def _iter_darwin_fd_targets(*, strict: bool = False):
     """Yield ``(pid, fd, last pathname, (st_dev, st_ino))`` for every vnode fd libproc reports.
 
     The pathname and the identity both stay readable after the path is unlinked, which is what
@@ -268,19 +286,29 @@ def _iter_darwin_fd_targets():
         size = 4096
         while True:
             listing = ctypes.create_string_buffer(size)
+            ctypes.set_errno(0)
             used = lib.proc_pidinfo(pid, _DARWIN_PIDLISTFDS, 0, listing, size)
             if used <= 0:
-                break  # process gone, or not ours to inspect
+                error = ctypes.get_errno()
+                if strict and (used < 0 or error) and error not in (errno.ENOENT, errno.ESRCH) and _scan_process_is_ours(pid):
+                    raise OSError(error, f"libproc fd scan failed for PID {pid}")
+                break  # no descriptors, process gone, or not ours to inspect
             if used < size:
                 break
             size *= 2
         else:
             continue
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
-            fd = struct.unpack_from("<i", listing.raw, offset)[0]
+            fd, kind = struct.unpack_from("<iI", listing.raw, offset)
+            if kind != 1:  # PROX_FDTYPE_VNODE
+                continue
             record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
-            if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
-                                  _DARWIN_FD_RECORD_SIZE) <= 0:
+            ctypes.set_errno(0)
+            size_read = lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record, _DARWIN_FD_RECORD_SIZE)
+            if size_read != _DARWIN_FD_RECORD_SIZE:
+                error = ctypes.get_errno()
+                if strict and error not in (errno.ENOENT, errno.ESRCH, errno.EBADF) and _scan_process_is_ours(pid):
+                    raise OSError(error, f"libproc vnode scan failed for PID {pid}, fd {fd}")
                 continue
             raw = record.raw
             identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
@@ -289,7 +317,7 @@ def _iter_darwin_fd_targets():
             yield pid, fd, target, identity
 
 
-def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
+def _iter_darwin_sidecar_holders(db_path, *, include_main: bool = False, strict: bool = False) -> List[Tuple[int, str]]:
     """The macOS leg of :func:`iter_deleted_sqlite_sidecar_holders`: libproc enumeration matched
     against the watched sidecar paths, judged by identity.
 
@@ -299,16 +327,19 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
     # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
     # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
-    watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
+    paths = (base, base + "-wal", base + "-shm") if include_main else (base + "-wal", base + "-shm")
+    watched = {path.casefold(): path for path in paths}
     holders: List[Tuple[int, str]] = []
-    for pid, _fd, target, identity in _iter_darwin_fd_targets():
+    missing_main = include_main and not os.path.exists(base)
+    targets = _iter_darwin_fd_targets(strict=True) if strict else _iter_darwin_fd_targets()
+    for pid, _fd, target, identity in targets:
         literal = watched.get(target.casefold())
-        if literal is not None and _identity_is_truly_unlinked(identity, literal):
+        if literal is not None and (missing_main or _identity_is_truly_unlinked(identity, literal)):
             holders.append((pid, target))
     return holders
 
 
-def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
+def iter_deleted_sqlite_sidecar_holders(db_path, *, include_main: bool = False, strict: bool = False) -> List[Tuple[int, str]]:
     """Return processes holding an unlinked ``state.db-wal`` / ``-shm`` sidecar for *db_path*.
 
     Linux enumerates ``/proc/<pid>/fd`` (using the `` (deleted)`` suffix as a cheap pre-filter);
@@ -318,6 +349,8 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     that path holds.  Windows returns ``[]`` -- it cannot unlink a held sidecar, so no retired
     generation can exist; any other platform returns ``[]`` as before.
 
+    ``include_main`` also watches the main database for missing-target restore.
+    ``strict`` raises on an unavailable/failed scan rather than treating it as empty.
     Includes this process: on the open/write refuse path the in-process writer holding the orphan
     inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
     if sys.platform == "win32":
@@ -325,15 +358,24 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     holders: List[Tuple[int, str]] = []
     try:
         if sys.platform == "darwin":
-            holders = _iter_darwin_sidecar_holders(db_path)
+            holders = _iter_darwin_sidecar_holders(db_path, include_main=include_main, strict=strict)
         elif sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(db_path)
-            for pid, target, fd_path in _iter_proc_fd_targets():
+            if include_main:
+                main = os.path.realpath(os.fspath(db_path))
+                watched[canonical_sqlite_path(main)] = main
+            missing_main = include_main and not os.path.exists(db_path)
+            targets = _iter_proc_fd_targets(strict=True) if strict else _iter_proc_fd_targets()
+            for pid, target, fd_path in targets:
                 canonical = canonical_sqlite_path(target)
-                if (" (deleted)" in target and canonical in watched
-                        and _fd_is_truly_unlinked(fd_path, watched[canonical])):
+                if (canonical in watched and (missing_main or (" (deleted)" in target
+                        and _fd_is_truly_unlinked(fd_path, watched[canonical])))):
                     holders.append((pid, target))
+        elif strict:
+            raise OSError(f"deleted SQLite holder scan unavailable on {sys.platform}")
     except Exception as exc:
+        if strict:
+            raise OSError(f"deleted SQLite holder scan failed for {db_path}: {exc}") from exc
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
     return holders
 

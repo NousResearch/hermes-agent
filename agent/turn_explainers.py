@@ -114,30 +114,19 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "please send it again in a moment."
     ),
     "replaced": (
-        "the turn was stopped because the state database file "
-        "was replaced underneath this process. Do not run "
-        "`hermes doctor --fix` or in-place FTS repair — stop "
-        "the process, restore the intended state.db, then "
-        "restart. Unwritten messages were diverted to "
-        "{diverted_path} and, on the gateway, "
-        "pending_messages/pending-*.json. Replay with "
-        "`hermes sessions import --from diverted`."
+        "the session database file was replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept at {diverted_path}). Stop Hermes "
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
+        "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
+        "then start it again and send your message once more. Advanced recovery steps are "
+        "in the log. Replay the saved copy with `hermes {profile_arg}sessions import --from diverted`."
     ),
     "deleted_wal": (
-        "the turn was stopped because a live Hermes process held a retired "
-        "state.db-wal generation after its pathname was deleted or "
-        "replaced. Stop the gateway, dashboard, and cron writers; "
-        "do not overwrite the current state.db or delete its sidecars. "
-        "Check the logs for whether Hermes captured the retired generation, "
-        "then read the adjacent state.db.retired-wal-*/manifest.json. If "
-        "manifest.main.mode is `copied`, inspect that artifact with `hermes "
-        "sessions recover --source <state.db.retired-wal-*/state.db> "
-        "--inspect-only` before deciding whether its committed frames belong "
-        "on the current database. A `header_only` artifact is forensic and "
-        "does not contain a copied state.db to inspect. Unwritten messages "
-        "were diverted to {diverted_path} and, on the gateway, "
-        "pending_messages/pending-*.json. Replay with "
-        "`hermes sessions import --from diverted`."
+        "the session database was changed or replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept at {diverted_path}). Stop Hermes "
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start "
+        "it again and send your message once more. Advanced recovery steps are in the log. "
+        "Replay the saved copy with `hermes {profile_arg}sessions import --from diverted`."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -360,7 +349,7 @@ class TurnExplainersMixin:
     @staticmethod
     def _format_turn_completion_explanation(
         turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None,
-        diverted_path=None, model: str = "",
+        model: str = "", diverted_path=None,
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 

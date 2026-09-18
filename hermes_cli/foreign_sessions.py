@@ -4,7 +4,9 @@ imported history must satisfy the provider role-alternation invariant (see ``_me
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -346,38 +348,30 @@ def _diverted_timestamp(record: Dict[str, Any]) -> Optional[float]:
         return None
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return 0.0 if result == 0.0 else result
+    return result if math.isfinite(result) else None
 
 
 def _same_diverted_row(dest: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-    """Content match; when the source row carries a timestamp it must match the dest row."""
-    if _diverted_content_identity(dest) != _diverted_content_identity(incoming):
-        return False
+    """Recovery identity is proof; legacy rows require a usable timestamp as well as content."""
+    identity = (dest.get("display_metadata") or {}).get("diverted_recovery_id")
+    incoming_identity = (incoming.get("display_metadata") or {}).get("diverted_recovery_id")
+    if identity is not None:
+        return identity == incoming_identity
     incoming_ts = _diverted_timestamp(incoming)
-    if incoming_ts is None:
-        return True
-    return _diverted_timestamp(dest) == incoming_ts
+    return (incoming_ts is not None
+            and _diverted_timestamp(dest) == incoming_ts
+            and _diverted_content_identity(dest) == _diverted_content_identity(incoming))
 
 
 def _longest_already_persisted(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> int:
     """How many leading source rows already exist in destination order (gaps allowed)."""
-    used = [False] * len(existing)
-    skip = 0
-    for rec in incoming:
-        found = None
-        for i, dest in enumerate(existing):
-            if used[i]:
-                continue
-            if _same_diverted_row(dest, rec):
-                found = i
-                break
-        if found is None:
-            break
-        used[found] = True
-        skip += 1
-    return skip
+    destination = iter(existing)
+    for index, record in enumerate(incoming):
+        if not any(_same_diverted_row(dest, record) for dest in destination):
+            return index
+    return len(incoming)
 
 
 def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None:
@@ -388,7 +382,8 @@ def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None
         tool_name=record.get("tool_name"),
         tool_calls=record.get("tool_calls"),
         tool_call_id=record.get("tool_call_id"),
-        timestamp=record.get("timestamp"),
+        timestamp=_diverted_timestamp(record),
+        display_metadata=record.get("display_metadata"),
     )
 
 
@@ -407,9 +402,9 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
 
     Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
     prints the path and non-empty line count. Skip is bound to the destination
-    transcript: a source prefix already persisted (same role/content/tool
-    graph, and the same timestamp when the source row has one) is not appended
-    again. Ordinary turns may sit between recovered runs. A rebuilt database
+    transcript: recovered rows carry an identity committed with the message.
+    Legacy destination rows match only with the same content and finite timestamp.
+    Ordinary turns may sit between recovered runs. A rebuilt database
     or another session can still restore the file. Native tool_calls /
     tool_call_id / timestamp rows are preserved. Empty unusable lines are skipped.
     """
@@ -439,6 +434,13 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
         if db.get_session(sid) is None:
             db.create_session(sid, "cli")
         incoming = [rec for obj in _read_json_lines(jsonl) if (rec := _diverted_jsonl_record(obj))]
+        # Prefix hashing keeps earlier identities stable as the source grows, while
+        # distinguishing repeated identical records. Progress lives only in this DB/session.
+        digest = hashlib.sha256(str(jsonl.resolve()).encode("utf-8"))
+        for record in incoming:
+            digest.update(b"\0")
+            digest.update(json.dumps(record, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+            record["display_metadata"] = {"diverted_recovery_id": digest.hexdigest()}
         skip = _longest_already_persisted(db.get_messages(sid), incoming)
         for record in incoming[skip:]:
             _append_diverted_record(db, sid, record)

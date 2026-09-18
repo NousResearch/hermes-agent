@@ -6,6 +6,8 @@ import json
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 
@@ -238,7 +240,7 @@ def test_import_into_empty_destination_ignores_source_sidecar():
         db2.close()
 
 
-def test_retry_after_partial_apply_does_not_duplicate():
+def test_retry_after_partial_apply_does_not_duplicate(monkeypatch):
     """Committed prefix plus a later source append must apply only the missing tail."""
     home = get_hermes_home()
     session_id = "sess-diverted-partial"
@@ -266,11 +268,22 @@ def test_retry_after_partial_apply_does_not_duplicate():
         ],
     )
     db = SessionDB()
+    original_append = db.append_message
+
+    def fail_after_commit(*args, **kwargs):
+        original_append(*args, **kwargs)
+        raise OSError("injected failure after committed append")
+
     try:
-        db.append_message(session_id, "user", "C")
+        with monkeypatch.context() as patch:
+            patch.setattr(db, "append_message", fail_after_commit)
+            assert _apply_diverted(jsonl, session_id, db=db) is None
     finally:
         db.close()
 
+    with jsonl.open("a", encoding="utf-8") as source:
+        source.write(json.dumps({"role": "user", "content": "E"}) + "\n")
+    assert _apply_diverted(jsonl, session_id) == session_id
     assert _apply_diverted(jsonl, session_id) == session_id
     db = SessionDB()
     try:
@@ -280,6 +293,7 @@ def test_retry_after_partial_apply_does_not_duplicate():
             ("assistant", "B"),
             ("user", "C"),
             ("assistant", "D"),
+            ("user", "E"),
         ]
     finally:
         db.close()
@@ -372,5 +386,50 @@ def test_import_keeps_new_turn_that_reuses_historical_content():
             ("user", "status", 200),
             ("assistant", "done", 201),
         ]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", float("nan"), float("inf"), -float("inf")])
+def test_identityless_collision_retries_and_growth(timestamp):
+    """An older identical event is not proof of recovery, even across failed retries."""
+    home = get_hermes_home()
+    sid = "reload-collision"
+    record = {"role": "system", "content": "MCP tools reloaded", "timestamp": timestamp}
+    jsonl = _write_diverted(home / "sessions" / f"{sid}.jsonl", [record])
+    db = SessionDB()
+    try:
+        db.create_session(sid, "cli")
+        db.append_message(sid, "system", record["content"], timestamp=100)
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 2
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 2
+        _write_diverted(jsonl, [record, record])
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 3
+    finally:
+        db.close()
+
+
+def test_recovery_match_moves_forward_in_destination():
+    home = get_hermes_home()
+    sid = "reversed-recovery"
+    records = [
+        {"role": "user", "content": "status", "timestamp": 200},
+        {"role": "assistant", "content": "done", "timestamp": 201},
+    ]
+    jsonl = _write_diverted(home / "sessions" / f"{sid}.jsonl", records)
+    db = SessionDB()
+    try:
+        db.create_session(sid, "cli")
+        for record in reversed(records):
+            db.append_message(sid, **record)
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        rows = db.get_messages(sid)
+        assert [row["content"] for row in rows] == ["done", "status", "done"]
+        assert _apply_diverted(jsonl, sid, db=db) == sid
+        assert len(db.get_messages(sid)) == 3
     finally:
         db.close()

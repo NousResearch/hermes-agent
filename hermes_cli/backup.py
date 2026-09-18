@@ -847,13 +847,15 @@ def _import_db_member(
     nothing fails, the sessions are simply gone (#100960). Route the member through the same
     ``_safe_restore_db`` page copy ``/snapshot restore`` uses, so the live inode is preserved and
     every open connection converges. A missing pathname is not proof of no holders: an unlinked
-    WAL/SHM/main can still be open. On Linux, refuse atomic publish when the holder scan returns
-    any PID. Off-Linux (scan unavailable) keep the ordinary atomic publish. Raises ``OSError``
+    WAL/SHM/main can still be open. Refuse atomic publish when the cross-platform deleted
+    generation scan finds any holder or cannot establish safety. Raises ``OSError``
     when the database could not be replaced safely, so the caller reports a skipped file instead
     of a silent success.
     """
     if not target.exists():
-        holders = _foreign_db_holder_pids(target)
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+
+        holders = iter_deleted_sqlite_sidecar_holders(target, include_main=True, strict=True)
         if holders:
             raise OSError(
                 "live-safe restore refused: a missing database path still has holders "

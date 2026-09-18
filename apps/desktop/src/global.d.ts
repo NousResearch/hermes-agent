@@ -44,6 +44,7 @@ declare global {
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
       getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      relayOwnerId?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer

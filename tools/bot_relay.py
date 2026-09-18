@@ -120,9 +120,22 @@ def _bot_mode_cfg(key: str, *, loader: str) -> Any:
         return None
 
 
-def _normalize_roster_row(row: Any) -> Optional[dict]:
+#: A Desktop's relay identity: ``sha256(installationId\\0"bot_relay")[:32]``, minted by the Desktop
+#: (apps/desktop/electron/desktop-installation.ts) and sent with roster.sync / outbox.drain. Empty
+#: for a Desktop that predates the field, which keeps that install on the old single-Desktop path.
+_OWNER_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def relay_owner(value: Any) -> str:
+    """The sender's relay identity, or "" when absent or malformed (never raises)."""
+    owner = str(value or "").strip().lower()
+    return owner if _OWNER_RE.match(owner) else ""
+
+
+def _normalize_roster_row(row: Any, owner: Optional[str] = None) -> Optional[dict]:
     """Validated, minimal roster row or None. Rows come from the Desktop over
-    RPC — treat as untrusted input."""
+    RPC — treat as untrusted input. ``owner`` (the write path) stamps the publishing Desktop and
+    overrides anything the row claims; the read path passes None and keeps what was stored."""
     if not isinstance(row, dict):
         return None
     profile = str(row.get("profile") or "").strip()
@@ -132,6 +145,7 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         return None
     out = {
         "profile": profile, "handle": handle, "connection_id": connection_id,
+        "desktop": relay_owner(owner if owner is not None else row.get("desktop")),
         "connection_label": str(row.get("connection_label") or "").strip()[:80],
         "title": str(row.get("title") or "").strip()[:120],
         "description": " ".join(str(row.get("description") or "").split())[:160],
@@ -142,15 +156,29 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     return out
 
 
-def write_remote_roster(root: Path | str, rows: Any) -> int:
-    """Atomically persist the Desktop-pushed remote roster. Returns count."""
+def write_remote_roster(root: Path | str, rows: Any, owner: str = "") -> int:
+    """Atomically persist one Desktop's remote roster; returns the count IT published.
+
+    Several Desktops may hold a line to one gateway — a shared team machine is the ordinary case —
+    and each publishes the agents on ITS OWN other connections, named with ITS OWN registry ids
+    (every Desktop calls its own machine ``local``). Replacing the whole file therefore let the
+    second Desktop erase the first's fleet, and the bots here saw whichever roster landed last.
+    Rows are keyed by (publishing Desktop, connection, profile) so both survive; a Desktop that
+    sends no identity keeps the single-owner behaviour, replacing only the unowned rows."""
     base = _ensure_dirs(root)
-    by_key: dict[tuple[str, str], dict] = {}
-    for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
-        by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
+    mine = relay_owner(owner)
+    by_key: dict[tuple[str, str, str], dict] = {
+        (row["desktop"], row["connection_id"], row["profile"]): row
+        for row in read_remote_roster(root) if row["desktop"] != mine}
+    published = 0
+    for norm in filter(None, (_normalize_roster_row(row, mine) for row in (rows if isinstance(rows, list) else []))):
+        key = (norm["desktop"], norm["connection_id"], norm["profile"])
+        if key not in by_key:
+            published += 1
+        by_key.setdefault(key, norm)
     cleaned = [by_key[k] for k in sorted(by_key)]
     _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned}, sort_keys=True)
-    return len(cleaned)
+    return published
 
 
 def read_remote_roster(root: Path | str) -> list[dict]:
@@ -206,8 +234,9 @@ def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
         roster = read_remote_roster(root) if age <= ROSTER_FRESH_SECONDS else []
         if not roster:
             return None
-        key = (str(target.get("connection_id") or ""), str(target.get("profile") or ""))
-        row = next((r for r in roster if (r["connection_id"], r["profile"]) == key), None)
+        key = (relay_owner(target.get("desktop")), str(target.get("connection_id") or ""),
+               str(target.get("profile") or ""))
+        row = next((r for r in roster if (r["desktop"], r["connection_id"], r["profile"]) == key), None)
         if row is None:
             return False  # fresh roster no longer lists the target — offline
         return row["online"] if isinstance(row.get("online"), bool) else None
@@ -231,6 +260,10 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
         "from_profile": sender_profile, "from_handle": sender_handle,
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
+        # Connection ids are each Desktop's own registry names — every Desktop calls its own
+        # machine ``local`` — so the id alone does not say WHICH machine. Carry the Desktop whose
+        # roster resolved this target; only that Desktop may claim the envelope.
+        **({"target_desktop": relay_owner(target.get("desktop"))} if relay_owner(target.get("desktop")) else {}),
     }
     _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope)
     return envelope
@@ -265,9 +298,14 @@ def _queued_at(path: Path) -> tuple[float, str]:
     return (0.0, path.name)
 
 
-def claim_pending_envelopes(root: Path | str) -> list[dict]:
-    """Drain the outbox (rename → claimed/ so a second drain can't double-deliver).
-    TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
+def claim_pending_envelopes(root: Path | str, owner: str = "") -> list[dict]:
+    """Drain the envelopes THIS Desktop addressed (rename → claimed/ so a second drain can't
+    double-deliver). TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
+
+    An envelope stamped with another Desktop's identity is left queued: its connection id means
+    something only inside that Desktop's registry, so delivering it here would run the turn on
+    whatever machine happens to share the name (``local`` on both). Unstamped envelopes — a Desktop
+    that predates the field — stay claimable by anyone, which is the single-Desktop behaviour.
 
     Envelopes older than ``bot_mode.envelope_ttl_seconds`` are NOT delivered: each gets an error reply
     (reason ``'queued_expired'``) so the sender's waiter resolves, and its outbox file is removed (#93091
@@ -281,18 +319,26 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
+    mine = relay_owner(owner)
     for path in sorted((base / OUTBOX_DIR).glob("*.json"), key=_queued_at):
         if ttl > 0 and _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()
             continue
-        claimed = base / CLAIMED_DIR / path.name
-        with contextlib.suppress(OSError, ValueError):
-            os.replace(path, claimed)  # atomic claim
-            envelope = json.loads(claimed.read_text(encoding="utf-8"))
-            if not isinstance(envelope, dict):
-                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
-            out.append(envelope)
+        try:
+            queued = json.loads(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue  # gone mid-drain (a concurrent claim)
+        except ValueError:
+            queued = None  # unparseable or not an object: never a Desktop's, quarantined below
+        if isinstance(queued, dict) and relay_owner(queued.get("target_desktop")) not in ("", mine):
+            continue  # addressed through another Desktop; it drains its own
+        with contextlib.suppress(OSError):
+            # Atomic claim. Garbage is claimed too, so it leaves the outbox and the stale sweep
+            # removes it instead of every drain re-reading it.
+            os.replace(path, base / CLAIMED_DIR / path.name)
+            if isinstance(queued, dict):
+                out.append(queued)
     return out
 
 

@@ -464,6 +464,45 @@ class TestPrompt:
 
         assert state.history == []
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("executor_raises", [False, True])
+    async def test_prompt_fails_tool_calls_left_open_before_responding(self, agent, mock_manager, executor_raises):
+        """A ``tool.started`` that never sees ``tool.completed`` (blocked/denied/crashed turn) must
+        reach the client as a terminal ``failed`` update BEFORE the PromptResponse — on the normal
+        return path and when the executor body itself raises."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openrouter"
+        events: list = []
+        mock_conn = MagicMock(spec=acp.Client)
+
+        async def _record(_sid, update):
+            events.append(update)
+
+        mock_conn.session_update = _record
+        agent._conn = mock_conn
+
+        def _turn(*args, **kwargs):
+            state.agent.tool_progress_callback("tool.started", "terminal", "ls", {"command": "ls"})
+            if executor_raises:
+                raise RuntimeError("executor blew up")
+            return {"final_response": "ok", "messages": []}
+
+        with patch.object(HermesACPAgent, "_run_agent_turn", side_effect=_turn):
+            started = asyncio.get_running_loop().time()
+            response = await asyncio.wait_for(
+                agent.prompt(prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id),
+                timeout=3,
+            )
+            seen_before_response = list(events)
+            # Flushing on the loop thread stalled the loop for ``_send_update``'s 5s wait per call.
+            assert asyncio.get_running_loop().time() - started < 4
+
+        assert isinstance(response, PromptResponse)
+        start = next(e for e in seen_before_response if isinstance(e, ToolCallStart))
+        closes = [e for e in seen_before_response if isinstance(e, ToolCallProgress) and e.tool_call_id == start.tool_call_id]
+        assert [e.status for e in closes] == ["failed"]
+
 
 
 

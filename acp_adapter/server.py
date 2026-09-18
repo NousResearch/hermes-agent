@@ -819,10 +819,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
 
         def _run_agent() -> dict:
-            return self._run_agent_turn(
-                state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
-                loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
-            )
+            try:
+                return self._run_agent_turn(
+                    state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
+                    loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
+                )
+            finally:
+                # Still on the executor thread: ``_send_update`` blocks on the loop, so flushing
+                # here (not after ``run_in_executor``) lands the update before the response.
+                self._flush_turn_tool_calls(cbs, session_id, conn, loop)
 
         try:
             # ACP `session_id` is the stable handle; agent.session_id is the internal head that
@@ -833,13 +838,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
         except Exception:
             logger.exception("Executor error for session %s", session_id)
-            self._flush_turn_tool_calls(cbs, session_id, conn, loop)
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
-        self._flush_turn_tool_calls(cbs, session_id, conn, loop)
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
     def _flush_turn_tool_calls(

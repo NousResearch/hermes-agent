@@ -191,8 +191,15 @@ transport tests. It uses native custom room events of type
 authenticated event sender. “Private” here describes an internal control signal:
 **these events are not encrypted or private from room members. Custom events
 avoid ordinary chat bubbles; they do not provide confidentiality.** Do not put
-secrets in coordination notes. This section does not claim a live Matrix test
-has been completed.
+secrets in coordination notes. Matrix timestamps use a decimal string on the
+wire because canonical JSON forbids floating-point numbers.
+
+Controlled live tests with two model-backed Matrix agents passed on 2026-09-18:
+separate named assignments continued in parallel after coordination notices;
+role-based handoff produced one final answer; and explicit mutual yield woke
+only the first-started agent once. Restart recovery is additionally covered by
+automated tests. **Live validation is exclusively Matrix**, not other transports.
+These tests do not guarantee semantic task allocation for every model or request.
 
 ### Coordination logging
 

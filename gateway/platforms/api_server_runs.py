@@ -126,6 +126,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # outlive the request, hence the separate stopping set), pollable statuses, and
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
+    self._recovery_started_run_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
     (
@@ -147,7 +148,11 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
-        "retention_seconds": store_type.RETENTION_SECONDS}
+        "retention_seconds": store_type.RETENTION_SECONDS,
+        "event_replay": self._run_idempotency_store.durable,
+        "approval_receipts": self._run_idempotency_store.durable,
+        "approval_recovery": self._run_idempotency_store.durable,
+    }
 
 
 def _close_run_state(self) -> None:
@@ -158,7 +163,9 @@ def _close_run_state(self) -> None:
         logger.debug("Failed to close run idempotency store for %s", self.name, exc_info=True)
 
 
-def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
+def _set_run_status(
+    self, run_id: str, status: str, *, _persist: bool = True, **fields: Any
+) -> Dict[str, Any]:
     """Update pollable run status without exposing private agent objects."""
     now = time.time()
     current = self._run_statuses.get(run_id, {})
@@ -174,7 +181,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
-    if run_id in self._run_idempotency_ids and should_persist:
+    if _persist and run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
         except Exception:
@@ -189,10 +196,7 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     def _push(event: Dict[str, Any]) -> None:
         self._set_run_status(
             run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            with suppress(Exception):
-                loop.call_soon_threadsafe(q.put_nowait, event)
+        _publish_run_event(self, run_id, event, loop=loop)
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
@@ -217,6 +221,24 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
             _push(event)
 
     return _callback
+
+
+def _make_durable_tool_complete_callback(self, run_id: str):
+    """Commit a native tool result after SessionDB has made it canonical."""
+    def _completed(tool_call_id: str, _tool_name: str, _args: dict, result: Any) -> None:
+        payload = {
+            "output": result
+            if isinstance(result, str)
+            else json.dumps(result, ensure_ascii=False, default=str)
+        }
+        try:
+            self._run_idempotency_store.mark_tool_completed(
+                run_id, str(tool_call_id or ""), payload
+            )
+        except Exception:
+            logger.exception("[api_server] failed to persist tool result for run %s", run_id)
+
+    return _completed
 
 
 def _room_permission_for(request: "web.Request") -> str:
@@ -277,10 +299,26 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     status = dict(record["status"])
     if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
         int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
-        status.update(
-            status="interrupted", error="The gateway restarted before this run settled.",
-            last_event="run.interrupted", updated_at=time.time())
-        self._run_idempotency_store.update_status(run_id, status)
+        pending = (
+            self._run_idempotency_store.pending_approval(scope, run_id)
+            if status.get("status") == "waiting_for_approval"
+            else None
+        )
+        if pending is not None:
+            status.update(owner_lost=True, recovery_available=True, updated_at=time.time())
+        else:
+            status.update(
+                status="interrupted", error="The gateway restarted before this run settled.",
+                last_event="run.interrupted", updated_at=time.time())
+            self._run_idempotency_store.update_status_and_append_event(
+                run_id,
+                status,
+                _run_event(
+                    run_id,
+                    "run.interrupted",
+                    error="The gateway restarted before this run settled.",
+                ),
+            )
     self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
@@ -537,6 +575,40 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
+    if idempotency_key:
+        try:
+            self._run_idempotency_store.save_run_launch(
+                run_id,
+                {
+                    "session_id": session_id,
+                    "agent_kwargs": {
+                        key: value
+                        for key, value in launch.agent_kwargs.items()
+                        if key != "gateway_session_key"
+                    },
+                    "request_profile": launch.request_profile,
+                },
+            )
+        except Exception as exc:
+            logger.exception("[api_server] failed to freeze durable run launch %s", run_id)
+            failed = self._set_run_status(
+                run_id,
+                "failed",
+                error=_api_server._redact_api_error_text(exc),
+                last_event="run.failed",
+            )
+            with suppress(Exception):
+                self._run_idempotency_store.update_status_and_append_event(
+                    run_id,
+                    failed,
+                    _run_event(run_id, "run.failed", error="Durable run launch could not be saved."),
+                )
+            return _json_error(
+                _openai_error,
+                "Durable run launch could not be saved.",
+                code="run_launch_persistence_failed",
+                status=500,
+            )
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -586,7 +658,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
-            if run.agent_kwargs["room_dispatch"] is not None:
+            if run.agent_kwargs.get("room_dispatch") is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
             register_gateway_notify(run.approval_session_key, approval_notify)
@@ -616,7 +688,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
     """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         event = dict(approval_data or {})
@@ -631,8 +703,27 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
             smart_denied=bool(event.get("smart_denied")),
             allow_session=event.get("allow_session") is not False,
             allow_permanent=event.get("allow_permanent") is not False)))
-        self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-        with suppress(Exception):
+        durable = run_id in self._run_idempotency_ids
+        current = self._set_run_status(
+            run_id,
+            "waiting_for_approval",
+            _persist=not durable,
+            last_event="approval.request",
+            approval=event,
+        )
+        if durable:
+            try:
+                from tools.approval_context import get_current_tool_context
+                event = self._run_idempotency_store.record_approval_request(
+                    run_id, current, event, tool=get_current_tool_context()
+                )
+            except Exception:
+                logger.exception("[api_server] failed to persist run approval %s", run_id)
+                return
+        # Approval persistence is complete above. Keep this egress explicit so
+        # redaction remains structurally verifiable before the queue boundary.
+        q = self._run_streams.get(run_id)
+        if q is not None:
             loop.call_soon_threadsafe(q.put_nowait, event)
 
     return _approval_notify
@@ -644,17 +735,37 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _text_cb(delta: Optional[str]) -> None:
-        if delta is None or run_id not in self._run_streams:
+        if delta is None or (
+            run_id not in self._run_streams and run_id not in self._run_idempotency_ids
+        ):
             return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            _publish_run_event(
+                self,
+                run_id,
+                _run_event(run_id, "message.delta", delta=delta),
+                loop=loop,
+            )
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
-        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
+        durable = run_id in self._run_idempotency_ids
+        current = self._set_run_status(
+            run_id,
+            status,
+            _persist=not durable,
+            **fields,
+            last_event=f"run.{status}",
+            **extra,
+        )
         with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+            event = _run_event(run_id, f"run.{status}", **fields, **extra)
+            if durable:
+                event = self._run_idempotency_store.update_status_and_append_event(
+                    run_id, current, event
+                )
+            _publish_run_event(self, run_id, event, persist=not durable)
 
     try:
         self._set_run_status(run_id, "running")
@@ -664,6 +775,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                tool_complete_callback=(
+                    _make_durable_tool_complete_callback(self, run_id)
+                    if run_id in self._run_idempotency_ids
+                    else None
+                ),
                 **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
@@ -702,7 +818,13 @@ def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
     """Best-effort release of a run's approval waiter (no-op without a key)."""
     with suppress(Exception):
         from tools.approval import unregister_gateway_notify
-        if approval_session_key:
+        should_deliver = bool(
+            approval_session_key
+            and self._run_idempotency_store.approval_dispatch_state(
+                scope, run_id, receipt_request_id
+            ) == "pending"
+        )
+        if should_deliver:
             unregister_gateway_notify(approval_session_key)
 
 
@@ -764,6 +886,44 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     run_id = request.match_info["run_id"]
     if not self._request_owns_run(request, run_id):
         return _run_not_found(_api_server._openai_error, run_id)
+    raw_cursor = request.headers.get("Last-Event-ID") or request.query.get("after") or "0"
+    try:
+        cursor = int(raw_cursor)
+        if cursor < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return _json_error(
+            _api_server._openai_error,
+            "Event cursor must be a non-negative integer.",
+            code="invalid_event_cursor",
+            status=400,
+        )
+    scope = self._run_idempotency_scope(request)
+    if self._run_idempotency_store.owns_run(scope, run_id):
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        await response.prepare(request)
+        last_write = time.monotonic()
+        try:
+            while True:
+                status = _durable_run_status(self, request, run_id)
+                events = self._run_idempotency_store.events_after(scope, run_id, cursor)
+                for event in events:
+                    cursor = int(event["sequence"])
+                    await response.write(
+                        f"id: {cursor}\n".encode() + _api_server._sse_frame(event)
+                    )
+                    last_write = time.monotonic()
+                if status is None or status.get("status") in TERMINAL_STATUSES:
+                    await response.write(b": stream closed\n\n")
+                    break
+                if time.monotonic() - last_write >= 30:
+                    await response.write(b": keepalive\n\n")
+                    last_write = time.monotonic()
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.debug("[api_server] durable SSE stream error for run %s: %s", run_id, exc)
+        return response
     # Allow subscribing slightly before the run is registered (race window).
     # Confirm the force-kill actually reaped the process before we clear its PID file / scoped locks.
     # SIGKILL can fail to take (e.g. an uninterruptible-sleep or zombie-reaping parent), and if we blindly
@@ -803,13 +963,361 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
     self._set_run_status(run_id, "running", last_event=name)
+    _publish_run_event(self, run_id, _run_event(run_id, name, **fields))
+
+
+def _publish_run_event(
+    self,
+    run_id: str,
+    event: Dict[str, Any],
+    *,
+    loop: Optional["asyncio.AbstractEventLoop"] = None,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """Persist before fan-out, then enqueue the same cursor-stamped payload."""
+    published = event
+    if persist and run_id in self._run_idempotency_ids:
+        try:
+            published = self._run_idempotency_store.append_event(run_id, event)
+        except Exception:
+            logger.exception("[api_server] failed to persist run event %s", run_id)
+            return event
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):
-            q.put_nowait(_run_event(run_id, name, **fields))
+            if loop is None:
+                q.put_nowait(published)
+            else:
+                loop.call_soon_threadsafe(q.put_nowait, published)
+    return published
 
 
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
+
+
+def _schedule_recovery_run(self, plan: Dict[str, Any], *, _api_server) -> bool:
+    """Start a reserved successor at most once in this gateway process."""
+    run_id = str(plan.get("successor_run_id") or "")
+    if (
+        not run_id
+        or plan.get("state") == "unrecoverable"
+        or run_id in self._recovery_started_run_ids
+    ):
+        return False
+    stored = self._run_idempotency_store.status_for_run(str(plan.get("scope") or ""), run_id)
+    if stored is not None and (stored.get("status") or {}).get("status") in TERMINAL_STATUSES:
+        return False
+    existing = self._active_run_tasks.get(run_id)
+    if existing is not None and not existing.done():
+        return False
+    q = self._run_streams.setdefault(run_id, asyncio.Queue())
+    self._recovery_started_run_ids.add(run_id)
+    self._run_streams_created.setdefault(run_id, time.time())
+    self._run_idempotency_ids.add(run_id)
+    task = asyncio.create_task(
+        _execute_recovery_run(self, plan, q=q, _api_server=_api_server)
+    )
+    self._active_run_tasks[run_id] = task
+    with suppress(TypeError):
+        self._background_tasks.add(task)
+    if hasattr(task, "add_done_callback"):
+        task.add_done_callback(self._background_tasks.discard)
+    return True
+
+
+async def _reconcile_session_tool_receipt(self, scope: str, run_id: str) -> bool:
+    """Commit a canonical SessionDB result left behind by a gateway crash."""
+    snapshot = self._run_idempotency_store.recovery_snapshot(scope, run_id)
+    if (
+        snapshot is None
+        or snapshot.get("dispatch_state") != "dispatching"
+        or snapshot.get("tool_result") is not None
+    ):
+        return False
+    launch = dict(snapshot.get("launch") or {})
+    tool = dict(snapshot.get("tool") or {})
+    session_id = str(launch.get("session_id") or run_id)
+    tool_call_id = str(tool.get("tool_call_id") or "")
+    if not tool_call_id:
+        return False
+    db = await self._ensure_session_db_async()
+    if db is None:
+        return False
+    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+    message = next(
+        (
+            item
+            for item in reversed(history)
+            if item.get("role") == "tool"
+            and str(item.get("tool_call_id") or "") == tool_call_id
+        ),
+        None,
+    )
+    if message is None:
+        return False
+    output = message.get("content")
+    if not isinstance(output, str):
+        output = json.dumps(output, ensure_ascii=False, default=str)
+    return self._run_idempotency_store.mark_tool_completed(
+        run_id, tool_call_id, {"output": output}
+    )
+
+
+async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -> None:
+    """Execute the frozen call once, restore its transcript result, then finish tool-free."""
+    run_id = str(plan["successor_run_id"])
+    parent_run_id = str(plan["parent_run_id"])
+    scope = str(plan["scope"])
+    launch = dict(plan["launch"])
+    tool = dict(plan["tool"])
+    decision = dict(plan["decision"])
+    session_id = str(launch.get("session_id") or parent_run_id)
+    request_profile = launch.get("request_profile")
+    loop = asyncio.get_running_loop()
+    record = self._run_idempotency_store.status_for_run(scope, run_id)
+    self._run_owners[run_id] = scope
+    self._run_statuses[run_id] = dict((record or {}).get("status") or {
+        "object": "hermes.run",
+        "run_id": run_id,
+        "status": "recovery_pending",
+        "parent_run_id": parent_run_id,
+    })
+
+    def _transition(status: str, event_name: str, **fields: Any) -> None:
+        current = self._set_run_status(
+            run_id,
+            status,
+            _persist=False,
+            parent_run_id=parent_run_id,
+            last_event=event_name,
+            **fields,
+        )
+        event = self._run_idempotency_store.update_status_and_append_event(
+            run_id, current, _run_event(run_id, event_name, parent_run_id=parent_run_id, **fields)
+        )
+        _publish_run_event(self, run_id, event, persist=False)
+
+    def _text_cb(delta: Optional[str]) -> None:
+        if delta is not None:
+            _publish_run_event(
+                self,
+                run_id,
+                _run_event(run_id, "message.delta", delta=delta),
+                loop=loop,
+            )
+
+    def _invoke_frozen_tool(agent, history):
+        from agent.agent_runtime_helpers import invoke_tool
+        from gateway.session_context import clear_session_vars
+        resets = []
+        with self._profile_scope(request_profile):
+            try:
+                session_tokens = self._bind_api_server_session(
+                    chat_id=session_id,
+                    session_key=run_id,
+                    session_id=session_id,
+                    profile=request_profile or "",
+                    browser_control_principal=None,
+                    browser_control_transport_family=None,
+                    session_history_delivery="",
+                )
+                if session_tokens:
+                    resets.append(session_tokens)
+                _api_server._publish_turn_process_ownership(agent, session_id)
+                return invoke_tool(
+                    agent,
+                    str(tool["tool_name"]),
+                    dict(tool["tool_args"]),
+                    session_id,
+                    tool_call_id=str(tool["tool_call_id"]),
+                    messages=history,
+                    pre_tool_block_checked=True,
+                    skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True,
+                    approved_recovery=True,
+                )
+            finally:
+                _api_server._clear_turn_process_ownership(agent)
+                for tokens in reversed(resets):
+                    with suppress(Exception):
+                        clear_session_vars(tokens)
+
+    dispatched = False
+    effect_committed = bool(plan.get("tool_result") is not None)
+    try:
+        db = await self._ensure_session_db_async()
+        if db is None:
+            raise RuntimeError("Session storage is unavailable for durable recovery")
+        history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        result_receipt = plan.get("tool_result")
+        if result_receipt is None:
+            if decision.get("choice") == "deny":
+                result_receipt = {
+                    "output": "[Tool execution denied by the user during durable recovery.]",
+                    "denied": True,
+                }
+                if not self._run_idempotency_store.mark_tool_skipped(
+                    parent_run_id, str(decision["request_id"]), result_receipt
+                ):
+                    raise RuntimeError("Denied recovery result could not be committed")
+                effect_committed = True
+            else:
+                agent_kwargs = dict(launch.get("agent_kwargs") or {})
+                agent_kwargs["session_id"] = session_id
+                with self._profile_scope(request_profile):
+                    tool_agent = self._create_agent(**agent_kwargs)
+                if not self._run_idempotency_store.mark_approval_applied(
+                    parent_run_id, str(decision["request_id"]), resolved=1
+                ):
+                    raise RuntimeError("Durable approval could not be marked applied")
+                if not self._run_idempotency_store.mark_tool_dispatching(
+                    parent_run_id, str(decision["request_id"])
+                ):
+                    raise RuntimeError("Durable tool dispatch fence could not be acquired")
+                dispatched = True
+                _transition(
+                    "running",
+                    "tool.started",
+                    tool=str(tool["tool_name"]),
+                    tool_call_id=str(tool["tool_call_id"]),
+                )
+                raw_result = await loop.run_in_executor(
+                    None, lambda: _invoke_frozen_tool(tool_agent, history)
+                )
+                output = (
+                    raw_result
+                    if isinstance(raw_result, str)
+                    else json.dumps(raw_result, ensure_ascii=False, default=str)
+                )
+                try:
+                    parsed_output = json.loads(output)
+                except (TypeError, ValueError):
+                    parsed_output = None
+                if isinstance(parsed_output, dict) and (
+                    parsed_output.get("approval_pending") is True
+                    or parsed_output.get("status") == "pending_approval"
+                ):
+                    raise RuntimeError(
+                        "Approved recovery tool returned a second pending approval"
+                    )
+                result_receipt = {"output": output}
+                if not self._run_idempotency_store.mark_tool_completed(
+                    parent_run_id, str(tool["tool_call_id"]), result_receipt
+                ):
+                    raise RuntimeError("Durable tool result could not be committed")
+                effect_committed = True
+        output = str((result_receipt or {}).get("output") or "")
+        if not any(
+            message.get("role") == "tool"
+            and str(message.get("tool_call_id") or "") == str(tool["tool_call_id"])
+            for message in history
+        ):
+            await asyncio.to_thread(
+                db.append_message,
+                session_id,
+                "tool",
+                output,
+                str(tool["tool_name"]),
+                None,
+                str(tool["tool_call_id"]),
+            )
+        _transition(
+            "resuming",
+            "tool.completed",
+            tool=str(tool["tool_name"]),
+            tool_call_id=str(tool["tool_call_id"]),
+            recovered=True,
+        )
+        history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        _transition(
+            "resuming",
+            "run.resumed",
+            tool_call_id=str(tool["tool_call_id"]),
+            recovered=True,
+        )
+        tool_index = max(
+            (
+                index
+                for index, message in enumerate(history)
+                if message.get("role") == "tool"
+                and str(message.get("tool_call_id") or "") == str(tool["tool_call_id"])
+            ),
+            default=-1,
+        )
+        existing_final = next(
+            (
+                str(message.get("content") or "")
+                for message in history[tool_index + 1 :]
+                if message.get("role") == "assistant"
+                and not message.get("tool_calls")
+                and message.get("content")
+            ),
+            "",
+        )
+        usage = {key: 0 for key, _ in _USAGE_FIELDS}
+        final_output = existing_final
+        if not final_output:
+            final_kwargs = dict(launch.get("agent_kwargs") or {})
+            final_kwargs.update(session_id=session_id, enabled_toolsets_override=[])
+            final_run = _RunLaunch(
+                self,
+                run_id,
+                q,
+                session_id,
+                None,
+                False,
+                "Continue from the completed approved tool result and provide the final answer. Do not call tools.",
+                history,
+                False,
+                final_kwargs,
+                request_profile,
+                None,
+                None,
+            )
+            with self._profile_scope(request_profile):
+                final_agent = self._create_agent(
+                    stream_delta_callback=_text_cb,
+                    tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                    **final_kwargs,
+                )
+            self._active_run_agents[run_id] = final_agent
+            final_approval_notify = _make_approval_notify(
+                self, final_run, _api_server=_api_server
+            )
+            result, usage = await loop.run_in_executor(
+                None,
+                lambda: _run_agent_sync(
+                    self,
+                    final_run,
+                    final_agent,
+                    final_approval_notify,
+                    _api_server=_api_server,
+                ),
+            )
+            if not isinstance(result, dict) or result.get("failed") or result.get("partial"):
+                raise RuntimeError(
+                    str((result or {}).get("error") or "Recovered final continuation did not complete")
+                )
+            final_output = str(result.get("final_response") or "")
+        _transition("completed", "run.completed", output=final_output, usage=usage, completed=True)
+    except asyncio.CancelledError:
+        _transition("cancelled", "run.cancelled", completed=False)
+        raise
+    except Exception as exc:
+        logger.exception("[api_server] durable recovery %s failed", run_id)
+        if dispatched and not effect_committed:
+            _transition(
+                "unrecoverable",
+                "run.unrecoverable",
+                error=_api_server._redact_api_error_text(exc),
+                intervention_reason="tool_effect_uncertain",
+            )
+        else:
+            _transition("failed", "run.failed", error=_api_server._redact_api_error_text(exc))
+    finally:
+        with suppress(Exception):
+            q.put_nowait(None)
+        _retire_live_run(self, run_id)
 
 
 async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -832,6 +1340,16 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
     allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
     resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
     approval_session_key = self._run_approval_sessions.get(run_id)
+    scope = (
+        self._run_idempotency_scope(request)
+        if run_id in self._run_idempotency_ids
+        else ""
+    )
+    durable_approval = self._run_idempotency_store.approval_for_run(
+        scope, run_id, request_id
+    ) if run_id in self._run_idempotency_ids else None
+    durable_pending = durable_approval if (durable_approval or {}).get("state") == "pending" else None
+    durable_request_id = str((durable_approval or {}).get("request_id") or "")
     for failed, message, code, status in (
         (raw_request_id is not None and (not request_id or len(request_id) > 256),
          "Approval request_id is invalid.", "invalid_approval_request", 400),
@@ -842,20 +1360,135 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
          "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
         (room_scoped and not request_id,
          "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
+        (not approval_session_key and durable_approval is None,
          f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
-    try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return _json_error(_openai_error, str(exc), status=500)
-    if resolved <= 0:
-        return _json_error(
-            _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
+    receipt_request_id = request_id or durable_request_id
+    if run_id in self._run_idempotency_ids and receipt_request_id:
+        # The durable choice is the authority fence. It must commit before a live
+        # waiter can wake and before a replacement can reserve continuation work.
+        outcome, receipt = self._run_idempotency_store.resolve_approval(
+            scope,
+            run_id,
+            receipt_request_id,
+            choice,
+            applied=False,
+            resolved=0,
+        )
+        if outcome == "conflict":
+            return _json_error(
+                _openai_error,
+                "Approval request already has a different decision.",
+                code="approval_decision_conflict",
+                status=409,
+            )
+        if outcome == "missing" or receipt is None:
+            return _json_error(
+                _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
+        resolved = 0
+        if approval_session_key:
+            dispatch_fenced = False
+            try:
+                if choice != "deny":
+                    dispatch_fenced = self._run_idempotency_store.mark_tool_dispatching(
+                        run_id, receipt_request_id
+                    )
+                    if not dispatch_fenced:
+                        return _json_error(
+                            _openai_error,
+                            "Approval dispatch fence could not be acquired.",
+                            code="approval_dispatch_fence_failed",
+                            status=409,
+                        )
+                from tools.approval import resolve_gateway_approval
+                resolved = resolve_gateway_approval(
+                    approval_session_key,
+                    choice,
+                    resolve_all=resolve_all,
+                    request_id=receipt_request_id,
+                )
+            except Exception as exc:
+                logger.exception("[api_server] approval resolution failed for run %s", run_id)
+                return _json_error(_openai_error, str(exc), status=500)
+            if resolved > 0:
+                self._run_idempotency_store.mark_approval_applied(
+                    run_id, receipt_request_id, resolved=resolved
+                )
+                if choice == "deny":
+                    self._run_idempotency_store.mark_tool_skipped(
+                        run_id,
+                        receipt_request_id,
+                        {
+                            "output": "[Tool execution denied by the user.]",
+                            "denied": True,
+                        },
+                    )
+                receipt = {**receipt, "applied": True, "resolved": resolved}
+            elif durable_pending is not None:
+                if dispatch_fenced:
+                    self._run_idempotency_store.reset_tool_dispatching(
+                        run_id, receipt_request_id
+                    )
+                return _json_error(
+                    _openai_error,
+                    f"Run has no pending approval: {run_id}",
+                    code="approval_not_pending",
+                    status=409,
+                )
+        if outcome == "created":
+            fields = {
+                "choice": choice,
+                "request_id": receipt_request_id,
+                "resolved": resolved,
+                "applied": resolved > 0,
+            }
+            _publish_run_event(
+                self, run_id, _run_event(run_id, "approval.responded", **fields)
+            )
+        recovery = None
+        if not approval_session_key:
+            try:
+                await _reconcile_session_tool_receipt(self, scope, run_id)
+                recovery = self._run_idempotency_store.reserve_recovery_successor(
+                    scope,
+                    run_id,
+                    successor_run_id=f"run_{uuid.uuid4().hex}",
+                    owner_pid=self._run_owner_pid,
+                    owner_started=self._run_owner_started,
+                )
+            except ValueError:
+                # Compatibility for receipts written before frozen tool recovery
+                # shipped: retain conflict-safe replay without inventing a tool.
+                recovery = None
+            if recovery is not None and recovery.get("state") != "unrecoverable":
+                parent_record = self._run_idempotency_store.status_for_run(scope, run_id)
+                if parent_record is not None:
+                    self._run_statuses[run_id] = dict(parent_record["status"])
+                _schedule_recovery_run(self, recovery, _api_server=_api_server)
+        response = {
+            "object": "hermes.run.approval_response",
+            **receipt,
+            "replayed": outcome == "replayed",
+        }
+        if recovery is not None:
+            response.update(
+                successor_run_id=recovery.get("successor_run_id"),
+                recovery_status=recovery.get("state"),
+            )
+        return web.json_response(response)
+    resolved = 0
+    if approval_session_key:
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+        except Exception as exc:
+            logger.exception("[api_server] approval resolution failed for run %s", run_id)
+            return _json_error(_openai_error, str(exc), status=500)
+        if resolved <= 0:
+            return _json_error(
+                _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
     request_id_field = {"request_id": request_id} if request_id else {}
     _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
     return web.json_response({

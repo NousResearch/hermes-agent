@@ -1406,6 +1406,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        force=bool(kw.get("approved_recovery", False)),
     )
 
 

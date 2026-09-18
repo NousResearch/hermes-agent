@@ -155,6 +155,9 @@ def test_run_capability_metadata_is_shard_owned():
         "supported": True,
         "durable": True,
         "retention_seconds": 123,
+        "event_replay": True,
+        "approval_receipts": True,
+        "approval_recovery": True,
     }
 
 

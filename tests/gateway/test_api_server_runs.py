@@ -466,6 +466,507 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_event_cursor_replays_only_missed_events_after_adapter_restart(self, tmp_path):
+        """Contract: Last-Event-ID resumes a durable idempotent run after replacement."""
+        path = tmp_path / "idem.db"
+        first = _make_adapter()
+        _use_idempotency_db(first, path)
+        app = _create_runs_app(first)
+
+        def make_agent(**kwargs):
+            agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                kwargs["tool_progress_callback"]("tool.started", "shell", "inspect")
+                return {"final_response": "done"}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(first, "_create_agent", side_effect=make_agent):
+                started = await cli.post(
+                    "/v1/runs",
+                    json={"input": "same"},
+                    headers={"Idempotency-Key": "restart-events"},
+                )
+                run_id = (await started.json())["run_id"]
+                for _ in range(40):
+                    status = await cli.get(f"/v1/runs/{run_id}")
+                    if (await status.json()).get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+        first._run_idempotency_store.close()
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, path)
+        restarted_app = _create_runs_app(restarted)
+        async with TestClient(TestServer(restarted_app)) as cli:
+            replay = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": "1"},
+            )
+            body = await replay.text()
+
+        assert replay.status == 200
+        assert "id: 1\n" not in body
+        assert "id: 2\n" in body
+        assert '"event": "run.completed"' in body
+        assert '"event": "tool.started"' not in body
+
+    @pytest.mark.asyncio
+    async def test_pending_approval_decision_is_readable_after_adapter_restart(self, tmp_path):
+        """Contract: replacement preserves one exact, conflict-safe decision receipt."""
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        path = tmp_path / "idem.db"
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(path))
+        store.reserve(
+            scope,
+            "approval-restart",
+            "fingerprint",
+            "run_approval_restart",
+            {
+                "run_id": "run_approval_restart",
+                "status": "waiting_for_approval",
+                "approval": {"request_id": "approval-a"},
+            },
+            owner_pid=999_999_999,
+            owner_started=1,
+        )
+        store.save_approval_request(
+            "run_approval_restart",
+            {"request_id": "approval-a", "command": "redacted"},
+        )
+        store.close()
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, path)
+        app = _create_runs_app(restarted)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "deny", "request_id": "approval-a"},
+            )
+            replay = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "deny", "request_id": "approval-a"},
+            )
+            conflict = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "once", "request_id": "approval-a"},
+            )
+            first_body = await first.json()
+            replay_body = await replay.json()
+            conflict_body = await conflict.json()
+
+        assert first.status == 200
+        assert first_body == {
+            "object": "hermes.run.approval_response",
+            "run_id": "run_approval_restart",
+            "request_id": "approval-a",
+            "choice": "deny",
+            "resolved": 0,
+            "applied": False,
+            "replayed": False,
+        }
+        assert replay.status == 200
+        assert replay_body == {**first_body, "replayed": True}
+        assert conflict.status == 409
+        assert conflict_body["error"]["code"] == "approval_decision_conflict"
+
+    @pytest.mark.asyncio
+    async def test_approved_dead_owner_creates_one_recovery_successor(self, tmp_path):
+        """A replacement gateway turns a durable decision into live continuation work."""
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        path = tmp_path / "idem.db"
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(path))
+        store.reserve(
+            scope,
+            "approval-restart",
+            "fingerprint",
+            "run_approval_restart",
+            {"run_id": "run_approval_restart", "status": "waiting_for_approval"},
+            owner_pid=999_999_999,
+            owner_started=1,
+        )
+        store.save_run_launch(
+            "run_approval_restart",
+            {"session_id": "session-a", "agent_kwargs": {}, "request_profile": "default"},
+        )
+        store.record_approval_request(
+            "run_approval_restart",
+            {"run_id": "run_approval_restart", "status": "waiting_for_approval"},
+            {"event": "approval.request", "run_id": "run_approval_restart", "request_id": "approval-a"},
+            tool={
+                "tool_call_id": "call-a",
+                "tool_name": "terminal",
+                "tool_args": {"command": "printf recovered"},
+            },
+        )
+        store.close()
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, path)
+        app = _create_runs_app(restarted)
+        with patch(
+            "gateway.platforms.api_server_runs._execute_recovery_run",
+            new_callable=AsyncMock,
+        ) as execute_recovery:
+            async with TestClient(TestServer(app)) as cli:
+                first = await cli.post(
+                    "/v1/runs/run_approval_restart/approval",
+                    json={"choice": "once", "request_id": "approval-a"},
+                )
+                first_body = await first.json()
+                replay = await cli.post(
+                    "/v1/runs/run_approval_restart/approval",
+                    json={"choice": "once", "request_id": "approval-a"},
+                )
+                replay_body = await replay.json()
+                await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert first_body["applied"] is False
+        assert first_body["recovery_status"] == "recovery_pending"
+        assert first_body["successor_run_id"].startswith("run_")
+        assert replay.status == 200
+        assert replay_body["successor_run_id"] == first_body["successor_run_id"]
+        assert execute_recovery.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_recovery_executes_frozen_tool_once_then_finishes_without_tools(self, tmp_path):
+        """The successor commits the tool receipt before producing one final answer."""
+        import gateway.platforms.api_server as api_server_module
+        from gateway.platforms.api_server_runs import _execute_recovery_run
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        path = tmp_path / "idem.db"
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(path))
+        store.reserve(
+            scope,
+            "key-a",
+            "fingerprint-a",
+            "run-parent",
+            {"run_id": "run-parent", "status": "waiting_for_approval"},
+        )
+        store.save_run_launch(
+            "run-parent",
+            {"session_id": "session-a", "agent_kwargs": {}, "request_profile": "default"},
+        )
+        store.record_approval_request(
+            "run-parent",
+            {"run_id": "run-parent", "status": "waiting_for_approval"},
+            {"event": "approval.request", "run_id": "run-parent", "request_id": "approval-a"},
+            tool={
+                "tool_call_id": "call-a",
+                "tool_name": "terminal",
+                "tool_args": {"command": "printf recovered"},
+            },
+        )
+        store.resolve_approval(scope, "run-parent", "approval-a", "once", applied=False, resolved=0)
+        plan = store.reserve_recovery_successor(
+            scope,
+            "run-parent",
+            successor_run_id="run-successor",
+            owner_pid=101,
+            owner_started=202,
+        )
+
+        class FakeDB:
+            def __init__(self):
+                self.messages = [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-a",
+                                "type": "function",
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": '{"command":"printf recovered"}',
+                                },
+                            }
+                        ],
+                    }
+                ]
+                self.appended = []
+
+            def get_messages_as_conversation(self, _session_id):
+                return [dict(message) for message in self.messages]
+
+            def append_message(
+                self,
+                _session_id,
+                role,
+                content=None,
+                tool_name=None,
+                tool_calls=None,
+                tool_call_id=None,
+                **_kwargs,
+            ):
+                message = {
+                    "role": role,
+                    "content": content,
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                }
+                self.messages.append(message)
+                self.appended.append(message)
+                return len(self.messages)
+
+        fake_db = FakeDB()
+        adapter = _make_adapter()
+        adapter._run_idempotency_store.close()
+        adapter._run_idempotency_store = store
+        adapter._ensure_session_db_async = AsyncMock(return_value=fake_db)
+        tool_agent = MagicMock(session_id="session-a")
+        final_agent = MagicMock(session_id="session-a")
+        final_agent.run_conversation.return_value = {"final_response": "recovered final"}
+        final_agent.session_prompt_tokens = 3
+        final_agent.session_completion_tokens = 4
+        final_agent.session_total_tokens = 7
+        adapter._create_agent = MagicMock(side_effect=[tool_agent, final_agent])
+
+        with (
+            patch("agent.agent_runtime_helpers.invoke_tool", return_value="recovered output") as invoke,
+            patch.object(api_server_module, "_publish_turn_process_ownership"),
+            patch.object(api_server_module, "_clear_turn_process_ownership"),
+        ):
+            await _execute_recovery_run(
+                adapter,
+                plan,
+                q=asyncio.Queue(),
+                _api_server=api_server_module,
+            )
+
+        invoke.assert_called_once()
+        assert invoke.call_args.args[2] == {"command": "printf recovered"}
+        assert invoke.call_args.kwargs["approved_recovery"] is True
+        assert [message["tool_call_id"] for message in fake_db.appended] == ["call-a"]
+        status = store.status_for_run(scope, "run-successor")["status"]
+        assert status["status"] == "completed"
+        assert status["output"] == "recovered final"
+        assert [event["event"] for event in store.events_after(scope, "run-successor", 0)] == [
+            "run.recovery_pending",
+            "tool.started",
+            "tool.completed",
+            "run.resumed",
+            "run.completed",
+        ]
+        replay = store.reserve_recovery_successor(
+            scope,
+            "run-parent",
+            successor_run_id="run-other",
+        )
+        assert replay["successor_run_id"] == "run-successor"
+        assert replay["state"] == "tool_completed"
+        assert replay["tool_result"] == {"output": "recovered output"}
+
+    @pytest.mark.asyncio
+    async def test_approval_notification_freezes_exact_post_middleware_tool_input(self, tmp_path):
+        """The public approval stays redacted while recovery retains exact execution input."""
+        from types import SimpleNamespace
+
+        import gateway.platforms.api_server as api_server_module
+        from gateway.platforms.api_server_runs import _make_approval_notify
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from tools.approval_context import reset_current_tool_context, set_current_tool_context
+
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        store.reserve(
+            scope,
+            "key-a",
+            "fingerprint-a",
+            "run-a",
+            {"run_id": "run-a", "status": "running"},
+        )
+        store.save_run_launch(
+            "run-a",
+            {"session_id": "session-a", "agent_kwargs": {}, "request_profile": "default"},
+        )
+        adapter = _make_adapter()
+        adapter._run_idempotency_store.close()
+        adapter._run_idempotency_store = store
+        adapter._run_idempotency_ids.add("run-a")
+        adapter._run_statuses["run-a"] = {"run_id": "run-a", "status": "running"}
+        notify = _make_approval_notify(
+            adapter,
+            SimpleNamespace(run_id="run-a"),
+            _api_server=api_server_module,
+        )
+        token = set_current_tool_context(
+            "terminal",
+            "call-a",
+            {"command": "printf '雪 secret-value'"},
+        )
+        try:
+            notify(
+                {
+                    "request_id": "approval-a",
+                    "command": "printf '<redacted>'",
+                    "description": "confirm",
+                }
+            )
+        finally:
+            reset_current_tool_context(token)
+        store.resolve_approval(scope, "run-a", "approval-a", "once", applied=False, resolved=0)
+        plan = store.reserve_recovery_successor(
+            scope,
+            "run-a",
+            successor_run_id="run-successor",
+        )
+
+        assert plan["tool"] == {
+            "tool_name": "terminal",
+            "tool_call_id": "call-a",
+            "tool_args": {"command": "printf '雪 secret-value'"},
+        }
+        public_request = store.approval_for_run(scope, "run-a", "approval-a")["request"]
+        assert "secret-value" not in public_request["command"]
+
+    @pytest.mark.asyncio
+    async def test_recovery_reuses_sessiondb_result_committed_before_gateway_loss(
+        self, tmp_path
+    ):
+        """A canonical tool row closes the dispatch uncertainty without re-execution."""
+        from gateway.platforms.api_server_runs import _reconcile_session_tool_receipt
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        store.reserve(
+            scope,
+            "key-a",
+            "fingerprint-a",
+            "run-parent",
+            {"run_id": "run-parent", "status": "waiting_for_approval"},
+        )
+        store.save_run_launch(
+            "run-parent",
+            {"session_id": "session-a", "agent_kwargs": {}, "request_profile": "default"},
+        )
+        store.record_approval_request(
+            "run-parent",
+            {"run_id": "run-parent", "status": "waiting_for_approval"},
+            {"event": "approval.request", "request_id": "approval-a"},
+            tool={
+                "tool_call_id": "call-a",
+                "tool_name": "terminal",
+                "tool_args": {"command": "printf recovered"},
+            },
+        )
+        store.resolve_approval(
+            scope, "run-parent", "approval-a", "once", applied=True, resolved=1
+        )
+        assert store.mark_tool_dispatching("run-parent", "approval-a")
+
+        class FakeDB:
+            def get_messages_as_conversation(self, session_id):
+                assert session_id == "session-a"
+                return [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call-a",
+                        "content": "recovered output 雪",
+                    }
+                ]
+
+        adapter = _make_adapter()
+        adapter._run_idempotency_store.close()
+        adapter._run_idempotency_store = store
+        adapter._ensure_session_db_async = AsyncMock(return_value=FakeDB())
+
+        assert await _reconcile_session_tool_receipt(adapter, scope, "run-parent")
+        plan = store.reserve_recovery_successor(
+            scope, "run-parent", successor_run_id="run-successor"
+        )
+        assert plan["state"] == "tool_completed"
+        assert plan["tool_result"] == {"output": "recovered output 雪"}
+
+    @pytest.mark.asyncio
+    async def test_live_approval_fences_dispatch_before_waking_waiter(self, tmp_path):
+        """A hard loss after wake can never make the exact tool look replay-safe."""
+        from gateway.platforms.api_server_runs import _make_durable_tool_complete_callback
+
+        adapter = _make_adapter()
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        request = MagicMock(headers={})
+        scope = adapter._run_idempotency_scope(request)
+        run_id = "run-live-approval"
+        adapter._run_idempotency_store.reserve(
+            scope,
+            "key-a",
+            "fingerprint-a",
+            run_id,
+            {"run_id": run_id, "status": "waiting_for_approval"},
+            owner_pid=adapter._run_owner_pid,
+            owner_started=adapter._run_owner_started,
+        )
+        adapter._run_idempotency_store.save_run_launch(
+            run_id,
+            {"session_id": "session-a", "agent_kwargs": {}, "request_profile": "default"},
+        )
+        adapter._run_idempotency_store.record_approval_request(
+            run_id,
+            {"run_id": run_id, "status": "waiting_for_approval"},
+            {"event": "approval.request", "run_id": run_id, "request_id": "approval-a"},
+            tool={
+                "tool_call_id": "call-a",
+                "tool_name": "terminal",
+                "tool_args": {"command": "printf live"},
+            },
+        )
+        adapter._run_idempotency_ids.add(run_id)
+        adapter._run_owners[run_id] = scope
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+
+        def wake_waiter(*_args, **_kwargs):
+            assert adapter._run_idempotency_store.approval_dispatch_state(
+                scope, run_id, "approval-a"
+            ) == "dispatching"
+            return 1
+
+        app = _create_runs_app(adapter)
+        with patch("tools.approval.resolve_gateway_approval", side_effect=wake_waiter):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "request_id": "approval-a"},
+                )
+                body = await response.json()
+
+        assert response.status == 200
+        assert body["applied"] is True
+        completed = _make_durable_tool_complete_callback(adapter, run_id)
+        completed("call-a", "terminal", {"command": "<redacted>"}, "live output")
+        recovery = adapter._run_idempotency_store.reserve_recovery_successor(
+            scope,
+            run_id,
+            successor_run_id="run-successor",
+        )
+        assert recovery["state"] == "tool_completed"
+        assert recovery["tool_result"] == {"output": "live output"}
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -1515,9 +2016,14 @@ class TestRunIdempotency:
         async with TestClient(TestServer(app)) as cli:
             response = await cli.get("/v1/runs/run_stale")
             body = await response.json()
+            events = await cli.get("/v1/runs/run_stale/events")
+            event_body = await events.text()
         assert response.status == 200
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
+        assert events.status == 200
+        assert "id: 1\n" in event_body
+        assert '"event": "run.interrupted"' in event_body
 
     def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
         adapter._run_statuses["run_progress"] = {

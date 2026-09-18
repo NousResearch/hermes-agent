@@ -48,4 +48,20 @@ test('auth expiry retries with a fresh ticket without reload churn; cleanup canc
   assert.equal(x.timers.size,0,'no orphan retry after unmount');
 });
 
+test('empty columns hide, watched columns remain and new tasks restore columns', async () => {
+  const x=harness(), page=x.mount(x.Page);
+  page.render(); await x.flush();
+  const boardNode=x.nodes(page.render()).find(n=>n.type?.name==='BoardColumns');
+  assert.ok(boardNode);
+  const board=x.mount(boardNode.type,boardNode.props);
+  const columns=tree=>x.nodes(tree).filter(n=>n.type?.name==='Column');
+  assert.deepEqual(columns(board.render()).map(n=>n.props.column.name),['running','blocked']);
+  for (const node of columns(board.render())) {
+    const tree=x.mount(node.type,node.props).render();
+    assert.equal(x.nodes(tree).find(n=>n.props?.className==='hermes-kanban-column-count').props.children[0],'—');
+  }
+  const populated={...boardNode.props,board:{...boardNode.props.board,columns:boardNode.props.board.columns.map(c=>c.name==='ready'?{...c,tasks:[{id:'new'}]}:c)}};
+  assert.deepEqual(columns(board.render(populated)).map(n=>n.props.column.name),['ready','running','blocked']);
+});
+
 module.exports = {harness};

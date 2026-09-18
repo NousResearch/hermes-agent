@@ -831,6 +831,19 @@ prompt_caching:
 # uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
 # Other providers pick a sensible default automatically.
 #
+# Native vision embeds (vision_analyze / browser screenshots when the MAIN model
+# is vision-capable) ride conversation history and are re-sent on every later
+# API call, so both knobs below bound recurring cost:
+#
+# vision:
+#   # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for
+#   # dense phone screenshots of tables that read as "unreadable" at 256 KB.
+#   embed_target_bytes: 262144
+#   # How often vision_analyze may embed the SAME image (region crops included)
+#   # per session. Unset = 3 inside delegated subagents, unlimited for the main
+#   # agent; a number applies everywhere; 0 = unlimited.
+#   max_calls_per_image: 3
+#
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
@@ -862,6 +875,7 @@ prompt_caching:
 #   # Automatic session title generation after the first exchange
 #   title_generation:
 #     enabled: true          # set false to disable auto-title generation
+#     model_upgrade_enabled: true  # set false to keep the instant derived title and skip the model call
 #     provider: "auto"
 #     model: ""
 #     timeout: 30
@@ -1381,6 +1395,7 @@ platform_toolsets:
 #
 # discord:
 #   require_mention: true            # Require @mention in server channels (default: true)
+#   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
@@ -1466,10 +1481,12 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
-#   keepalive_interval: liveness ping cadence in seconds (default: 180).
-#     Lower it below the server's session TTL for servers that expire idle
-#     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
-#     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   keepalive_interval: liveness ping cadence in seconds (floored at 5s).
+#     HTTP servers default to 180s; lower it below the server's session TTL for
+#     servers that expire idle sessions quickly (e.g. Unreal Engine editor MCP,
+#     ~15s), otherwise idle tool calls hit an expired session and pay a slow
+#     reconnect. Stdio servers disable keepalive by default; set this explicitly
+#     to opt a stdio server in.
 #   lazy: register the server's tools from the on-disk schema cache at startup
 #     and only spawn/connect it on the first tool call (default: false). Saves
 #     one child process per server in processes that rarely call tools. Needs
@@ -1780,6 +1797,14 @@ display:
   #   true:  Keep/send mid-turn assistant updates (default)
   #   false: Only keep/send the final response
   interim_assistant_messages: true
+
+  # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
+  # and fallback notices, credit/subagent failure lines, inactivity and watchdog
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # Requested results, approvals, clarifications and command outcomes are never
+  # hidden, and nothing is removed from the logs. Per-platform override under
+  # display.platforms.<platform>.suppress_warning_notifications.
+  suppress_warning_notifications: false
 
   # Gateway-only long-running status heartbeats.
   # When false, the platform does not receive periodic "⏳ Working — N min"

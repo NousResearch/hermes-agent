@@ -63,14 +63,29 @@ export const $stampTitlePrefs = atom<StampTitlePrefs>(loadTitlePrefs())
 export const $deletedStampPresets = computed([$stampTitlePrefs], prefs => prefs.deleted)
 
 /** Every title the Stamp submenu offers, in order: the stock presets the user
- *  kept, then the ones they added. */
+ *  kept, then the ones they added.
+ *
+ *  Keyed by LOWERCASE label, so one label is one row however it is spelled: a
+ *  title the user added takes the slot of a stock preset with the same name
+ *  (their spelling is the one on screen — retyping "hold" after taking "Hold"
+ *  off the menu shows the row they just typed, not the old one), and a title
+ *  they took off is gone for whatever else names it. */
 export const $stampPresets = computed([$stampTitlePrefs], prefs => {
-  const gone = new Set(prefs.deleted.map(label => label.toLowerCase()))
+  const rows = new Map<string, string>()
 
-  return [
-    ...SESSION_STAMP_PRESETS.filter(preset => !gone.has(preset.toLowerCase())),
-    ...prefs.added.filter(title => !gone.has(title.toLowerCase()))
-  ]
+  for (const preset of SESSION_STAMP_PRESETS) {
+    rows.set(preset.toLowerCase(), preset)
+  }
+
+  for (const title of prefs.added) {
+    rows.set(title.toLowerCase(), title)
+  }
+
+  for (const gone of prefs.deleted) {
+    rows.delete(gone.toLowerCase())
+  }
+
+  return [...rows.values()]
 })
 
 const sameTitle = (one: string, other: string) => one.toLowerCase() === other.toLowerCase()
@@ -85,8 +100,9 @@ function saveTitlePrefs(prefs: StampTitlePrefs): void {
 
 /**
  * Add a title to the Stamp submenu, where it stays for the next session too.
- * Adding back a title the user had taken off un-deletes it rather than appending
- * a duplicate, and a title already on the list is a no-op.
+ * A title already on the menu is a no-op. A title the user had REMOVED is added
+ * as they just typed it: the removal marker goes with it, so the menu shows
+ * their spelling instead of resurrecting the row they deleted.
  */
 export function addStampTitle(label: string): void {
   const target = normalizeSessionStamp(label)
@@ -101,13 +117,12 @@ export function addStampTitle(label: string): void {
     return
   }
 
-  if (prefs.deleted.some(title => sameTitle(title, target))) {
-    saveTitlePrefs({ ...prefs, deleted: prefs.deleted.filter(title => !sameTitle(title, target)) })
-
-    return
-  }
-
-  saveTitlePrefs({ ...prefs, added: [...prefs.added, target] })
+  saveTitlePrefs({
+    // At the END of their own titles, minus any stale copy of this label — a
+    // title that was taken off and typed again is ONE entry, not two.
+    added: [...prefs.added.filter(title => !sameTitle(title, target)), target],
+    deleted: prefs.deleted.filter(title => !sameTitle(title, target))
+  })
 }
 
 /** Take one title off the Stamp submenu. Idempotent, case-insensitive. */
@@ -170,6 +185,17 @@ export function setStampColor(label: string, color: null | string): void {
     $stampColorOverrides.set(next)
   }
 }
+
+/** The stamp color panel's swatches: FINER than the profile rail's twelve
+ *  (lib/profile-color), because two stamps share one screen and 30° steps made
+ *  "red" and "orange" the same pick. Same saturation/lightness as that palette,
+ *  so a stamp still wears an app color, and every one of its hues sits on this
+ *  wheel at the same value — a color picked before this existed still shows its
+ *  own swatch as the current one. */
+export const STAMP_SWATCHES: readonly string[] = Array.from(
+  { length: 24 },
+  (_, index) => `hsl(${index * 15} 68% 58%)`
+)
 
 /** Cap on a stamp's length: long enough for "Waiting on CI", short enough to
  *  stay a label beside a title. Mirrors the backend's own limit, which rejects

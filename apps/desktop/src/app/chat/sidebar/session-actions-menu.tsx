@@ -62,6 +62,7 @@ import {
   SESSION_STAMP_LIMIT,
   SESSION_STAMP_MAX_LENGTH,
   setStampColor,
+  STAMP_SWATCHES,
   stampColorFor,
   stampLabels,
   toggleSessionStamp
@@ -398,7 +399,7 @@ function SessionStampItems({
                 <ColorSwatches
                   clearLabel={r.stampColorReset}
                   onChange={next => setStampColor(preset, next)}
-                  swatches={PROFILE_SWATCHES}
+                  swatches={STAMP_SWATCHES}
                   value={color}
                 />
               </div>

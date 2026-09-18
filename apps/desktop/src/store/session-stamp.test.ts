@@ -13,6 +13,7 @@ vi.mock('@/hermes', () => ({
   setSessionStampsRemote: (id: string, stamps: string[], profile?: null | string) => patch(id, stamps, profile)
 }))
 
+import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
@@ -33,6 +34,7 @@ import {
   SESSION_STAMP_LIMIT,
   SESSION_STAMP_PRESETS,
   setStampColor,
+  STAMP_SWATCHES,
   stampColorFor,
   stampLabels,
   toggleSessionStamp
@@ -296,20 +298,35 @@ describe('the titles the Stamp submenu offers', () => {
     )
   })
 
-  it('is idempotent and case-insensitive, and adding back a deleted title un-deletes it', () => {
+  it('is idempotent and case-insensitive, and a title taken off stays off until it is typed again', () => {
     deleteStampPreset('wip')
     deleteStampPreset('WIP')
     addStampTitle('   ')
 
     expect($deletedStampPresets.get()).toEqual(['wip'])
     expect($stampPresets.get()).not.toContain('WIP')
+    // None of those three calls added a title of their own.
+    expect($stampPresets.get()).toEqual(['Merged', 'Review', 'Handoff', 'Hold'])
 
-    addStampTitle('WIP')
+    // Typing it again is what brings a row back — as the user's own title, in
+    // the casing they typed, and only once.
+    addStampTitle('wip')
 
     expect($deletedStampPresets.get()).toEqual([])
-    expect($stampPresets.get()).toContain('WIP')
-    // One "WIP", not two.
-    expect($stampPresets.get().filter(title => title.toLowerCase() === 'wip')).toHaveLength(1)
+    expect($stampPresets.get().filter(title => title.toLowerCase() === 'wip')).toEqual(['wip'])
+  })
+
+  it('re-creates a removed title with the spelling the user typed, never the old row', () => {
+    // Reported: taking "Hold" off the menu and adding "hold" used to un-delete
+    // the stock title, so the menu showed "Hold" again. Deleted means gone, and
+    // the title that comes back is the one the user just wrote.
+    deleteStampPreset('Hold')
+    expect($stampPresets.get()).not.toContain('Hold')
+
+    addStampTitle('hold')
+
+    expect($stampPresets.get().filter(title => title.toLowerCase() === 'hold')).toEqual(['hold'])
+    expect($stampPresets.get()).not.toContain('Hold')
   })
 
   it('restores a deleted title the user added as well as a stock one', () => {
@@ -337,5 +354,13 @@ describe('stamp colours', () => {
     setStampColor('Merged', null)
 
     expect(stampColorFor('Merged', $stampColorOverrides.get())).toBeNull()
+  })
+
+  it('offers a finer wheel than the profile rail, on the profile palette’s own saturation', () => {
+    expect(STAMP_SWATCHES.length).toBeGreaterThan(PROFILE_SWATCHES.length)
+    // Every hue at the profile palette's saturation/lightness, so a color picked
+    // before the panel widened still rings its own swatch as the current one.
+    expect(STAMP_SWATCHES.every(swatch => /^hsl\(\d+ 68% 58%\)$/.test(swatch))).toBe(true)
+    expect(PROFILE_SWATCHES.every(swatch => STAMP_SWATCHES.includes(swatch))).toBe(true)
   })
 })

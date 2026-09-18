@@ -8,7 +8,7 @@ vi.mock('@/hermes', () => ({
   setSessionStampsRemote: vi.fn()
 }))
 
-import { $cronSessions, $sessions } from '@/store/session'
+import { $cronSessions, $selectedStoredSessionId, $sessions } from '@/store/session'
 
 import { SessionStamp, SessionStamps, SessionTabStamp } from './session-stamp'
 
@@ -17,6 +17,7 @@ afterEach(cleanup)
 beforeEach(() => {
   $sessions.set([])
   $cronSessions.set([])
+  $selectedStoredSessionId.set(null)
 })
 
 const chip = (container: HTMLElement, label: string) => container.querySelector<HTMLElement>(`[data-session-stamp="${label}"]`)
@@ -85,6 +86,23 @@ describe('SessionTabStamp', () => {
 
     expect(render(<SessionTabStamp paneId="workspace" />).container.firstChild).toBeNull()
     expect(render(<SessionTabStamp paneId="session-tile:tip" />).container.firstChild).toBeNull()
+    expect(render(<SessionTabStamp paneId="terminal" />).container.firstChild).toBeNull()
+  })
+
+  it('resolves the MAIN tab to the window’s primary session', () => {
+    // The main tab's pane id carries no session of its own: it IS whichever
+    // session the window is showing, which is why it was the one tab whose
+    // stamps never painted.
+    $sessions.set([row('primary', { stamps: ['WIP', 'Hold'] })])
+    $selectedStoredSessionId.set('primary')
+
+    const main = render(<SessionTabStamp paneId="workspace" />).container
+
+    expect(chip(main, 'WIP')).toBeTruthy()
+    expect(chip(main, 'Hold')).toBeTruthy()
+    // A fresh draft is a main tab with no session behind it — nothing to wear.
+    $selectedStoredSessionId.set(null)
+    expect(render(<SessionTabStamp paneId="workspace" />).container.firstChild).toBeNull()
   })
 
   it('still shows a row that carries only the older single label', () => {

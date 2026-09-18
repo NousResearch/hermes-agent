@@ -15,7 +15,7 @@ import { useStore } from '@nanostores/react'
 
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 import {
   $sessionStamps,
   $stampColorOverrides,
@@ -113,17 +113,34 @@ export function stampHueClass(label: string): string {
 // appear in a label (the normalizer strips control characters server-side).
 const LABEL_KEY_SEP = '\u0000'
 
+/** The MAIN tab's pane id (app/contrib/controller). It is not one tile among
+ *  others but the window's PRIMARY session, which is why it carries no id of
+ *  its own — see `SessionTabStamp`. */
+const MAIN_PANE_ID = 'workspace'
+
 /**
  * The stamps for a PANE, for the tab strip.
  *
  * The strip passes the pane id and this resolves the session behind it — a
- * `session-tile:<storedId>` pane IS that session (store/session-states) — so no
- * title plumbing is needed and any other tab renders nothing. The id may be an
- * older segment of a compression chain, which is why the lookup goes through the
- * lineage-aware stamp map rather than the live id.
+ * `session-tile:<storedId>` pane IS that session (store/session-states), and the
+ * `workspace` pane is the window's primary session — so no title plumbing is
+ * needed and any other tab renders nothing. The id may be an older segment of a
+ * compression chain, which is why the lookup goes through the lineage-aware
+ * stamp map rather than the live id.
  */
 export function SessionTabStamp({ className, paneId }: { className?: string; paneId: string }) {
-  const storedSessionId = paneId.startsWith(TILE_PANE_PREFIX) ? paneId.slice(TILE_PANE_PREFIX.length) : null
+  // The primary session belongs to the WINDOW, not to a pane: the main tab is
+  // titled and dotted off `$selectedStoredSessionId`
+  // (app/contrib/controller -> syncWorkspaceTitle), so its chips read the same
+  // source and cannot disagree with the tab they sit on. Null on a fresh draft,
+  // which is a tab with no session behind it and therefore no chips.
+  const primaryStoredId = useStore($selectedStoredSessionId)
+
+  const storedSessionId = paneId.startsWith(TILE_PANE_PREFIX)
+    ? paneId.slice(TILE_PANE_PREFIX.length)
+    : paneId === MAIN_PANE_ID
+      ? primaryStoredId
+      : null
 
   // The LIST's own row first: that is the exact list the sidebar paints, so a tab
   // can never disagree with the session list (including a label's CASE). The

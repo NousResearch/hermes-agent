@@ -570,7 +570,7 @@ def _validate_truncation_before_materializing(rid, sid, session, params):
 
 def _admit_prompt_submit(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids,
-    hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface=""):
+    hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface="", display_kind=None):
     """Serialize admission, validation, materialization, and turn claim per session."""
     raw_turn_author = params.get("_turn_author")
     turn_author = None
@@ -610,7 +610,7 @@ def _admit_prompt_submit(
                     rid, sid, session, params)) is not None:
                 return err, None
         err, survivor_fields = _lock_in_submit_turn(
-            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
         if err is not None:
             return err, None
         if (err := _persist_session_row_for_submit(rid, session)) is not None:
@@ -675,7 +675,8 @@ def _(rid, params: dict) -> dict:
             params.get("surface")
             if params.get("surface") in {"hud", "voice-live"}
             else ""
-        ))
+        ),
+        display_kind=display_kind)
     if err is not None:
         return err
     turn_author = session.pop("_accepted_turn_author", None)

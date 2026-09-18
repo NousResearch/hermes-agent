@@ -79,6 +79,7 @@ def _retry_failed_conversation_root_leases() -> None:
             logger.warning("Failed to retry TUI conversation root lease release", exc_info=True)
 
 _hermes_home = get_hermes_home()
+_HERMES_HOME_AT_IMPORT = _hermes_home
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
 

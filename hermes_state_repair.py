@@ -589,9 +589,7 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     """
     from hermes_cli.sqlite_safe_read import connect_tracked
 
-    # Through THIS module's sqlite3.connect so tests patching it keep control of the fd.
-    conn = connect_tracked(db_path, tracking_path=db_path, connect_fn=sqlite3.connect,
-                           timeout=timeout, isolation_level=None)
+    conn = connect_tracked(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 

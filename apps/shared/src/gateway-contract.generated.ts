@@ -1447,6 +1447,7 @@ export interface InboxRequestSessionDetail {
   live_session_ids?: string[]
   approvals?: InboxRequestApproval[]
   clarifications?: InboxRequestClarification[]
+  context?: InboxRequestContext
 }
 export interface InboxRequestApproval {
   request_id?: string
@@ -1475,6 +1476,17 @@ export interface InboxRequestClarifyQuestion {
   question?: string
   choices?: string[] | null
   multi_select?: boolean
+}
+/** Bounded, redacted excerpt of the owning session's recent turns. ``available=False`` is a real state, not an empty transcript: the reason names why (no displayable rows, or a failed read) so the panel can say "unavailable" instead of implying an all-clear. */
+export interface InboxRequestContext {
+  available?: boolean
+  reason?: string | null
+  messages?: InboxRequestContextMessage[]
+}
+export interface InboxRequestContextMessage {
+  role?: string
+  text?: string
+  timestamp?: number | null
 }
 export interface InboxRequestsCoverage {
   profile?: string

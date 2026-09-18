@@ -13257,6 +13257,68 @@
         "title": "InboxRequestClarifyQuestion",
         "type": "object"
       },
+      "InboxRequestContext": {
+        "additionalProperties": false,
+        "description": "Bounded, redacted excerpt of the owning session's recent turns.\n\n``available=False`` is a real state, not an empty transcript: the reason names\nwhy (no displayable rows, or a failed read) so the panel can say \"unavailable\"\ninstead of implying an all-clear.",
+        "properties": {
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxRequestContextMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "title": "InboxRequestContext",
+        "type": "object"
+      },
+      "InboxRequestContextMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timestamp"
+          }
+        },
+        "title": "InboxRequestContextMessage",
+        "type": "object"
+      },
       "InboxRequestSessionDetail": {
         "additionalProperties": false,
         "properties": {
@@ -13283,6 +13345,14 @@
             },
             "title": "Clarifications",
             "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/InboxRequestContext",
+            "default": {
+              "available": false,
+              "reason": null,
+              "messages": []
+            }
           }
         },
         "title": "InboxRequestSessionDetail",

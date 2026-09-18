@@ -87,8 +87,17 @@ const SNAPSHOT = {
   },
 }
 
+const DETAIL_CONTEXT = {
+  available: true,
+  reason: null,
+  messages: [
+    { role: 'user', text: 'Clean up the stale build cache before the staging deploy finishes.', timestamp: 1789765000 },
+    { role: 'assistant', text: 'Staging is green. I want to clear /tmp/build-cache, then finish the deploy.', timestamp: 1789765060 },
+  ],
+}
+
 const DETAIL_APPROVAL = {
-  sessions: [{ live_session_ids: ['live-1'], approvals: [{ allow_permanent: true, allow_session: true, choices: ['once', 'session', 'always', 'deny'], command: 'rm -rf /tmp/build-cache', description: 'Delete build cache directory', request_id: 'req-approval-1', smart_denied: null, tool_name: 'terminal' }], clarifications: [] }],
+  sessions: [{ live_session_ids: ['live-1'], context: DETAIL_CONTEXT, approvals: [{ allow_permanent: true, allow_session: true, choices: ['once', 'session', 'always', 'deny'], command: 'rm -rf /tmp/build-cache', description: 'Delete build cache directory', request_id: 'req-approval-1', smart_denied: null, tool_name: 'terminal' }], clarifications: [] }],
   coverage: { approval_count: 1, clarification_count: 0, context_anchor: 'unavailable: open chat for context', errors: [], live_session_count: 1, profile: 'default', session_key: 'gallery-goals' },
 }
 
@@ -207,6 +216,30 @@ async function setupPage(cfg: Record<string, unknown>): Promise<MockBackendFixtu
 }
 
 // ── Deferred interaction evidence ──────────────────────────────────────────
+test('expanded request shows the session context above the response controls', async () => {
+  const f = await setupPage({ fixtureData: SNAPSHOT, detailFixture: DETAIL_APPROVAL })
+  try {
+    const p = f.page
+    await openInbox(p)
+    await p.locator('[data-panel-row="gallery-goals"]').click()
+    await expect(p.getByText('Recent messages')).toBeVisible()
+    await expect(p.getByText('Clean up the stale build cache before the staging deploy finishes.')).toBeVisible()
+    await expect(p.getByRole('button', { name: 'Approve once', exact: true })).toBeVisible()
+    await shot(p, 'detail-context.png', 'detail', 'Recent messages render above the approval controls, so the request is answered in place')
+  } finally { await f.cleanup() }
+})
+
+test('expanded request with no transcript reports the absence honestly', async () => {
+  const f = await setupPage({ fixtureData: SNAPSHOT, detailFixture: DETAIL_SINGLE_CLARIFY })
+  try {
+    const p = f.page
+    await openInbox(p)
+    await p.locator('[data-panel-row="gallery-loops"]').click()
+    await expect(p.getByText('No recent transcript available.')).toBeVisible()
+    await shot(p, 'detail-context-absent.png', 'detail', 'Missing excerpt is a named state, never an all-clear')
+  } finally { await f.cleanup() }
+})
+
 test('request detail loading is visible until response arrives', async () => {
   const f = await setupPage({ fixtureData: SNAPSHOT, detailFixture: DETAIL_APPROVAL, deferMethod: 'inbox.requests' })
   try {

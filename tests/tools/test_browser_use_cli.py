@@ -982,6 +982,21 @@ class TestBrowserExec:
         assert 'got:print("hi")' in result["output"]
         assert "session" not in result
 
+    def test_installs_snapshot_helper_into_workspace(self, tmp_path, monkeypatch):
+        """The digest names snapshot(); the hook has to actually put it on disk."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        monkeypatch.setenv("BH_AGENT_WORKSPACE", str(workspace))
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho ok\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert result["success"] is True
+        helper = workspace / "hermes_browser_snapshot.py"
+        agent = workspace / "agent_helpers.py"
+        assert helper.is_file()
+        compile(helper.read_text(encoding="utf-8"), str(helper), "exec")
+        assert "from hermes_browser_snapshot import" in agent.read_text(encoding="utf-8")
+
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])

@@ -989,13 +989,16 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 
-# Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
-# mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
-# routes are always mounted — the gate middleware decides enforcement.
+# Plugin API routes, plugin dashboard pages (/p/<slug>) and the dashboard auth
+# routes (/login, /auth/*, /api/auth/*) mount before the SPA catch-all so
+# /{full_path:path} doesn't swallow them. Auth routes are always mounted — the
+# gate middleware decides enforcement.
 _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+from hermes_cli.dashboard_pages import mount_pages as _mount_plugin_pages  # noqa: E402
 
 app.include_router(_dashboard_auth_router)
+_mount_plugin_pages(app)
 mount_spa(app)
 
 

@@ -790,6 +790,47 @@ class PluginContext:
         return handle
 
     @_serialized_replacement
+    def register_dashboard_page(
+        self, slug: str, title: str, router: Any,
+    ) -> Optional[PluginRegistration]:
+        """Serve a plugin-owned web page at ``/p/<slug>`` on the dashboard's own port.
+
+        ``router`` is any ASGI app exposing ``.routes`` (``fastapi.APIRouter``, a nested
+        ``FastAPI``, a Starlette app); its paths are relative to ``/p/<slug>`` and may include
+        WebSockets. The plugin inherits the dashboard's auth gate, Host/Origin guard and
+        supervision instead of re-implementing them behind a second port — that is the entire
+        point of the surface (see ``hermes_cli/dashboard_pages.py``).
+
+        A bad slug (malformed, path-traversal shaped, or colliding with a reserved core route)
+        and a non-ASGI router warn and are ignored, never raised — a broken page must not abort
+        the plugin's ``register()``.
+        """
+        from hermes_cli.dashboard_pages import (
+            DashboardPage, PageSlugError, register_page, unregister_page)
+        try:
+            page = DashboardPage(
+                slug=slug, title=str(title or slug), router=router, plugin=self.manifest.name)
+            register_page(page)
+        except (PageSlugError, TypeError, ValueError) as e:
+            logger.warning("Plugin '%s' failed to register dashboard page %r: %s",
+                           self.manifest.name, slug, e)
+            return None
+        # Same lifetime question as ``register_dashboard_auth_provider`` (#91701): the page
+        # registry is process-global and lives as long as the web server, so disposing it on a
+        # ROUTINE per-home manager teardown would blank the page for the whole process until
+        # restart. ``persistent=True`` keeps it out of unload-all's reverse-order teardown; a
+        # targeted unload still disposes the handle, and a forced re-discovery evicts it when the
+        # plugin stops supplying the page (``_evict_stale_persistent_registrations``). The
+        # unregister is identity-conditional, so an older generation cannot evict a newer page.
+        def _release() -> None:
+            unregister_page(page.slug, page)
+
+        handle = self._track("dashboard_page", page.slug, _release, persistent=True)
+        logger.info("Plugin '%s' registered dashboard page: /p/%s (%s)",
+                    self.manifest.name, page.slug, page.title)
+        return handle
+
+    @_serialized_replacement
     def register_platform(
         self, name: str, label: str, adapter_factory: Callable, check_fn: Callable,
         validate_config: Callable | None = None, required_env: list | None = None,
@@ -1583,6 +1624,14 @@ def _reset_plugin_managers_for_tests() -> None:
         clear_providers()
     except Exception:
         logger.debug("dashboard-auth registry clear failed", exc_info=True)
+
+    # Same for plugin dashboard pages: persistent registrations are not in _registration_order,
+    # so an unload-all leaves /p/<slug> live for the process without this.
+    try:
+        from hermes_cli.dashboard_pages import clear_pages
+        clear_pages()
+    except Exception:
+        logger.debug("dashboard page registry clear failed", exc_info=True)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:

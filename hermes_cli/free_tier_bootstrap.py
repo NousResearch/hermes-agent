@@ -90,10 +90,15 @@ def reconcile_record() -> Optional[SetupRecord]:
     and its retries mint. A record that already says ``True`` is never re-probed, so the answer
     only moves false -> true here. Every write path that assigns the main model (the Models page,
     a picker key save) calls this for the immediate broadcast; ``setup.status`` calls it for
-    writes this process never saw (``hermes setup`` / ``hermes model`` from a shell, a hand edit)."""
+    writes this process never saw (``hermes setup`` / ``hermes model`` from a shell, a hand edit).
+    The record is the LAUNCH profile's: a call scoped to another profile's home (a dashboard
+    write with ``?profile=B``) leaves it alone, or B's providers would open the launch gate."""
     global _record
     record = _record
-    if record is None or record.provider_configured or _inventory_stamp == _config_stamp():
+    if record is None or record.provider_configured:
+        return record
+    from hermes_constants import get_process_hermes_home, hermes_home_key
+    if hermes_home_key() != hermes_home_key(get_process_hermes_home()) or _inventory_stamp == _config_stamp():
         return record
     if not _inventory_other_providers():
         return _record

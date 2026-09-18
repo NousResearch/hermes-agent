@@ -33,14 +33,16 @@ _PROPERTIES: Dict[str, Any] = {
             "list_windows",
             "focus_app",
             "decide",
+            "run_goal",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). `decide` asks the "
             "System-One lane (rules → reranker → aux → Jev) for the next typed action without a "
-            "frontier-model round trip; fail-open to the planner when uncertain. All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "frontier-model round trip; fail-open to the planner when uncertain. `run_goal` loops "
+            "decide→act until done, fail-open, or max_steps — still no frontier model in the loop. "
+            "All other actions require approval unless auto-approved. Use `set_value` for select/popup "
+            "elements and sliders — it selects the matching option directly without opening the native "
+            "menu (no focus steal)."
         ),
     },
     "mode": {
@@ -147,9 +149,13 @@ _PROPERTIES: Dict[str, Any] = {
     "goal": {
         "type": "string",
         "description": (
-            "For action='decide': the task the System-One lane should advance. Semantic AX "
-            "state is captured automatically; no screenshot is sent."
+            "For action='decide' or 'run_goal': the task the System-One lane should advance. "
+            "Semantic AX state is captured automatically; no screenshot is sent."
         ),
+    },
+    "max_steps": {
+        "type": "integer",
+        "description": "For action='run_goal': max decide→act iterations (default 8, cap 20).",
     },
     "keys": {
         "type": "string",

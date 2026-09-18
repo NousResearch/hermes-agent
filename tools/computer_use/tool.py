@@ -469,6 +469,55 @@ def _do_decide(backend, action, args, session_id=None, **_):
     return json.dumps(payload)
 
 
+def _do_run_goal(backend, action, args, session_id=None, **_):
+    """Decide→act loop. Fail-open to the planner; no frontier model in the loop."""
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "run_goal requires `goal`"})
+    from tools.computer_use.decide_loop import run_decide_loop
+
+    def handle(inner: Dict[str, Any]) -> Any:
+        act = inner.get("action")
+        if act == "decide":
+            return _do_decide(backend, "decide", inner, session_id=session_id)
+        if act == "type":
+            blocked = _reject_unsafe("type", inner)
+            if blocked is not None:
+                return blocked
+            res = backend.type_text(inner.get("text", ""))
+            return {"ok": res.ok, "error": None if res.ok else res.message}
+        if act == "key":
+            blocked = _reject_unsafe("key", inner)
+            if blocked is not None:
+                return blocked
+            res = backend.key(inner.get("keys", ""))
+            return {"ok": res.ok, "error": None if res.ok else res.message}
+        if act == "click":
+            res = backend.click(element=inner.get("element"))
+            return {"ok": res.ok, "error": None if res.ok else res.message}
+        if act == "scroll":
+            res = backend.scroll(direction=inner.get("direction", "down"))
+            return {"ok": res.ok, "error": None if res.ok else res.message}
+        if act == "wait":
+            res = backend.wait(float(inner.get("seconds", 0.3)))
+            return {"ok": res.ok, "error": None if res.ok else res.message}
+        return {"ok": False, "error": f"unsupported loop action {act!r}"}
+
+    result = run_decide_loop(
+        goal, handle, app=args.get("app"),
+        max_steps=int(args.get("max_steps") or 8),
+        text=args.get("text"),
+    )
+    payload = result.to_dict()
+    payload["action"] = "run_goal"
+    payload["verdict"] = {
+        "decision": "done" if result.ok else "escalate",
+        "hint": "Goal completed without a frontier-model round trip." if result.ok
+        else "Decision lane fail-opened — continue with capture + planner.",
+    }
+    return json.dumps(payload)
+
+
 def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
@@ -502,6 +551,10 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
     "capture": _ActionSpec(_do_capture),
     "decide": _ActionSpec(_do_decide, summarize=lambda a, args, fg: f"decide {args.get('goal', '')[:80]!r}{fg}"),
+    "run_goal": _ActionSpec(
+        _do_run_goal, destructive=True,
+        summarize=lambda a, args, fg: f"run_goal {args.get('goal', '')[:80]!r}{fg}",
+    ),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),

@@ -1720,6 +1720,15 @@ DEFAULT_CONFIG = {
             # silent, no-push deliveries.
             "notify": True,
         },
+        # Where this profile's cron FAILURE notices go (run failed, escaped scheduler exception,
+        # blocked-config/drift alerts). Same value grammar as a job's `deliver`; a per-job
+        # `failure_deliver` always wins over it. "local" = record the incident and the run output
+        # only, never send a notice to chat — the way to keep a user-facing channel (a family
+        # group) free of operational noise while failures stay visible in the ledger. "" = failures
+        # follow each job's own `deliver` (the pre-feature behavior). Validated at preflight like
+        # `deliver`: an unknown or unconfigured platform here blocks the profile's jobs rather than
+        # silently swallowing the notices they would have sent.
+        "failure_notice_deliver": "",
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
         # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per

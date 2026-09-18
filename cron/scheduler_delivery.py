@@ -939,14 +939,34 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return [p for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
 
 
+def _cron_failure_notice_deliver() -> str:
+    """Profile-level failure-notice lane: ``cron.failure_notice_deliver`` (config.yaml).
+
+    "" = no profile override. Same value grammar as ``deliver``; ``local`` suppresses
+    failure notices for every job in the profile. Read at fire time (never cached into the
+    job), and any config-read failure degrades to "unset" rather than breaking delivery.
+    """
+    try:
+        cron_cfg = (_sched.load_config() or {}).get("cron")
+        value = cron_cfg.get("failure_notice_deliver") if isinstance(cron_cfg, dict) else None
+    except Exception:
+        return ""
+    return str(value).strip() if value is not None else ""
+
+
 def _delivery_lane_value(job: dict, *, for_failure: bool = False):
     """Raw deliver-lane value for a run outcome: the failure lane when ``for_failure`` and the job
-    overrides it, else ``deliver``. Bookkeeping (outcome classification, unresolved-origin, incident
-    'alerted' marking) must read the SAME lane the notice was routed through (NS-788)."""
+    or profile overrides it, else ``deliver``. Failure-lane precedence: per-job
+    ``failure_deliver`` → profile ``cron.failure_notice_deliver`` → the job's ``deliver``.
+    Bookkeeping (outcome classification, unresolved-origin, incident 'alerted' marking) must read
+    the SAME lane the notice was routed through (NS-788)."""
     if for_failure:
         failure_deliver = job.get("failure_deliver")
         if failure_deliver is not None and str(failure_deliver).strip():
             return failure_deliver
+        profile_deliver = _cron_failure_notice_deliver()
+        if profile_deliver:
+            return profile_deliver
     return job.get("deliver", "local")
 
 
@@ -954,8 +974,9 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
-    alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
-    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
+    alerts) resolves from ``failure_deliver`` / profile ``cron.failure_notice_deliver`` INSTEAD
+    when either is set — ``local`` there is the structural opt-out; absent, failures follow
+    ``deliver``."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
         return []

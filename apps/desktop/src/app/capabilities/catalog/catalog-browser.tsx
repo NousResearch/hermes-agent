@@ -15,13 +15,13 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
-import { DetailColumn, ListColumn, ListStrip, ListStripLabel, MasterDetail, ToolChip } from '../master-detail'
-import { PanelEmpty } from '../overlays/panel'
-import { prettyName } from '../settings/helpers'
+import { DetailColumn, ListColumn, ListStrip, ListStripLabel, MasterDetail, ToolChip } from '../../master-detail'
+import { PanelEmpty } from '../../overlays/panel'
+import { prettyName } from '../../settings/helpers'
+import type { CapabilityView } from '../capability-tabs'
+import { $catalogCardView } from '../store'
 
-import type { CapabilityView } from './capability-tabs'
 import { type CatalogEntry, type CatalogKind, useCatalog } from './catalog-data'
-import { $catalogCardView } from './store'
 
 interface CatalogBrowserProps {
   kind: CatalogKind

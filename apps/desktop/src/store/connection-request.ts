@@ -105,7 +105,10 @@ const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
+/** One wire target as the renderer holds it. Exported because an ACCOUNT
+ *  operation (the Connectors page, no chat session) reads the same frames and
+ *  must read them the same way; only the cache it lands in differs. */
+export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
 
   if (!name) {
@@ -135,7 +138,9 @@ export function normalizeConnectionRequest(
     return null
   }
 
-  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
+  const targets = payload.targets
+    .map(parseConnectionTarget)
+    .filter((target): target is ConnectionTarget => target !== null)
 
   if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
     return null

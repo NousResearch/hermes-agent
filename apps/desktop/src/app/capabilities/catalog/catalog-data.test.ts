@@ -17,6 +17,7 @@ describe('public catalog data', () => {
       tags: [`${source}-tag`],
       envVars: [`${source.toUpperCase()}_KEY`]
     }))
+
     // Same source, different identifier is also a distinct install target.
     rows.push({ ...rows[0], identifier: 'official/alternate/research' })
 
@@ -106,6 +107,7 @@ describe('public catalog data', () => {
       repo: 'https://github.com/example/weather',
       sourceUrl: 'https://github.com/example/weather/blob/main/SKILL.md'
     }]
+
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => rows })
     vi.stubGlobal('fetch', fetch)
 
@@ -118,6 +120,7 @@ describe('public catalog data', () => {
 
   it('only renders plugin images hosted on GitHub so the browser never fans out to third-party hosts', () => {
     const base = { name: 'x', tier: 'community', repo: 'https://github.com/o/r', sha: 'a'.repeat(40), version: '1.4.0' }
+
     const [github, offhost, http] = parseCatalog('plugins', [
       { ...base, name: 'github', image: 'https://raw.githubusercontent.com/o/r/abc/banner.png' },
       { ...base, name: 'offhost', image: 'https://cdn.example.com/banner.png' },

@@ -76,7 +76,7 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   it('keeps the app clusters on a first-party workspace page', () => {
-    renderControls('/skills')
+    renderControls('/capabilities')
 
     expect(windowControls()).not.toBeNull()
     expect(appControls()).not.toBeNull()

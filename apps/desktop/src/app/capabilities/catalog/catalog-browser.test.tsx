@@ -5,11 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
 
-import { PageSearchShell } from '../page-search-shell'
+import { PageSearchShell } from '../../page-search-shell'
+import { $catalogCardView } from '../store'
 
 import { CatalogBrowser } from './catalog-browser'
 import { type CatalogKind, parseCatalog } from './catalog-data'
-import { $catalogCardView } from './store'
 
 beforeEach(() => {
   $catalogCardView.set(true)

@@ -98,11 +98,10 @@ let offGatewayState: (() => void) | null = null
 let offProfile: (() => void) | null = null
 
 // Navigation only — never auto-launch an OAuth flow from the background. The
-// server query param routes through useDeepLinkHighlight on the MCP tab, which
-// scrolls to and focuses the server so its ServerConfig pane (with the
-// Authenticate button) is one click away.
+// server query param opens that server's dialog on the Connectors tab, where
+// Authenticate is one click away.
 function openMcpServerPage(name: string): void {
-  window.location.hash = `#/skills?tab=mcp&server=${encodeURIComponent(name)}`
+  window.location.hash = `#/capabilities?tab=connectors&server=${encodeURIComponent(name)}`
 }
 
 // "Disable" from the toast: `enabled: false` in config.yaml (the server stays

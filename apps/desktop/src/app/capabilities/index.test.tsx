@@ -9,8 +9,8 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
-import { parseCatalog } from './catalog-data'
-import { SkillCatalog } from './skill-catalog'
+import { parseCatalog } from './catalog/catalog-data'
+import { SkillCatalog } from './skills/skill-catalog'
 import { $catalogCardView } from './store'
 
 const getSkills = vi.fn()
@@ -23,7 +23,7 @@ const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
 
-// Partial mock: keep the real module (SkillsView pulls in @/store/profile,
+// Partial mock: keep the real module (CapabilitiesView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
 // calls we assert on. Args are forwarded so the per-profile scope arg is
 // observable.
@@ -48,7 +48,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 // The catalog Install button routes through the hub action pipeline — stub the
-// action entrypoint (real module kept: SkillsView reads $hubActions and the
+// action entrypoint (real module kept: CapabilitiesView reads $hubActions and the
 // query keys from it).
 vi.mock('@/store/hub-actions', async importOriginal => ({
   ...(await importOriginal<typeof HubActions>()),
@@ -67,7 +67,7 @@ vi.mock('react-router', async importOriginal => ({
 // Import at module scope (after the hoisted vi.mock calls) so the heavy
 // component-tree transform is paid during collection, not billed against the
 // first test's testTimeout — same flake class as messaging/index.test.tsx.
-const { SkillsView } = await import('./index')
+const { CapabilitiesView } = await import('./index')
 
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
@@ -86,10 +86,10 @@ async function renderSkills() {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
-      // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
+      // CapabilitiesView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
-          <SkillsView />
+        <MemoryRouter initialEntries={['/capabilities?tab=toolsets']}>
+          <CapabilitiesView />
         </MemoryRouter>
       </QueryClientProvider>
     )
@@ -124,12 +124,12 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// SkillsView is a heavy module (import cost now paid at module scope above,
+// CapabilitiesView is a heavy module (import cost now paid at module scope above,
 // during collection) but the file still legitimately runs ~14s on CI runners —
 // right against the global 15s per-test budget, so slow runners cascade-fail
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
-describe('SkillsView toolset management', { timeout: 60_000 }, () => {
+describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
@@ -184,8 +184,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
-            <SkillsView />
+          <MemoryRouter initialEntries={['/capabilities?tab=toolsets']}>
+            <CapabilitiesView />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -229,8 +229,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills?tab=skills']}>
-            <SkillsView />
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -272,8 +272,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills?tab=skills']}>
-            <SkillsView />
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -332,6 +332,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     }
   ])('installs $identifier with its source-qualified target in the pinned connection and profile', async ({ source, identifier, expectedIdentifier }) => {
     const { installHubSkill } = await import('@/store/hub-actions')
+
     const entry = {
       name: 'community-research',
       identifier,
@@ -339,6 +340,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       category: 'research',
       description: 'Community research workflow'
     }
+
     queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
       { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
       entry
@@ -347,8 +349,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
+          <MemoryRouter initialEntries={['/capabilities']}>
+            <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="researcher" />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -383,11 +385,12 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills']}>
-          <SkillsView embedded fixedConnection={connectionId} fixedProfile={profile} />
+        <MemoryRouter initialEntries={['/capabilities']}>
+          <CapabilitiesView embedded fixedConnection={connectionId} fixedProfile={profile} />
         </MemoryRouter>
       </QueryClientProvider>
     )
+
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
@@ -438,6 +441,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         description: 'Research from the public snapshot'
       }]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
 
     await renderSkills() // ?tab=toolsets
@@ -448,8 +452,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <SkillsView embedded />
+          <MemoryRouter initialEntries={['/capabilities']}>
+            <CapabilitiesView embedded />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -510,8 +514,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <SkillsView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
+          <MemoryRouter initialEntries={['/capabilities']}>
+            <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -607,8 +611,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills?tab=skills']}>
-            <SkillsView fixedProfile="researcher" />
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView fixedProfile="researcher" />
           </MemoryRouter>
         </QueryClientProvider>
       )

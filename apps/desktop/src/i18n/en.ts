@@ -70,6 +70,207 @@ export const en: Translations = {
     execution: 'Connector tools'
   },
 
+  // The Connectors page: the directory of apps, and the dialog that opens on one.
+  // `connectors.*` above stays the onboarding/chat vocabulary; these strings are
+  // the page's own, and the two are deliberately not shared.
+  connectorsPage: {
+    title: 'Connectors',
+    searchPlaceholder: (count: number) => `Search ${count} apps`,
+    inventory: (hosted: number, local: number) => `${hosted} hosted · ${local} on this Mac`,
+    addYourOwn: 'Add your own',
+    accountNote: 'Nous apps follow your account, not the profile.',
+    filterWhere: 'Where it runs',
+    filterCategory: 'Category',
+    whereAll: 'Hosted and local',
+    whereHosted: 'Hosted',
+    whereLocal: 'On this Mac',
+    categoryAll: 'All categories',
+    uncategorised: 'Uncategorised',
+
+    pill: {
+      all: 'All',
+      attention: 'Needs attention',
+      available: 'Available',
+      connected: 'Connected',
+      local: 'On this Mac',
+      off: 'Turned off'
+    },
+
+    group: {
+      connected: 'Connected',
+      connectedNote: 'Broken connections first.',
+      local: 'On this Mac',
+      localConfiguring: 'Configuring:',
+      localAddServer: 'Add a server',
+      available: 'Available',
+      availableShowAll: (count: number) => `Show all ${count}`,
+      availableShowFewer: 'Show fewer',
+      off: 'Turned off',
+      offNote: 'Sign-ins are kept.'
+    },
+
+    card: {
+      hosted: 'Hosted',
+      inCatalog: 'In the Hermes catalog',
+      hostedTwin: 'Hosted version available',
+      open: (name: string) => `Open ${name}`,
+      turnServerOn: (name: string) => `Turn ${name} on`,
+      turnServerOff: (name: string) => `Turn ${name} off`,
+      state: {
+        accessExpired: 'Access expired',
+        available: 'Available',
+        connected: 'Connected',
+        connecting: 'Connecting',
+        couldNotConnect: 'Could not connect',
+        offByYourOrganisation: 'Off by your organisation',
+        offForYou: 'Off for you',
+        serverConnecting: 'Connecting…',
+        serverError: 'Error',
+        serverNeedsAuth: 'Needs authentication',
+        serverOff: 'Off',
+        serverOn: 'On',
+        serverOnUnused: 'On, unused'
+      },
+      fact: {
+        tools: (count: number) => `${count} tool${count === 1 ? '' : 's'}`,
+        toolsOff: (count: number) => `${count} tool${count === 1 ? '' : 's'} off`,
+        toolsOn: (count: number) => `${count} tool${count === 1 ? '' : 's'} on`,
+        toolsSomeOn: (total: number, on: number) => `${total} tools, ${on} on`
+      },
+      verb: {
+        authenticate: 'Authenticate',
+        connect: 'Connect',
+        openLogs: 'Open logs',
+        reconnect: 'Reconnect',
+        stopWaiting: 'Stop waiting',
+        tryAgain: 'Try again',
+        turnBackOn: 'Turn back on'
+      },
+      reason: {
+        finishSignIn: 'Finish the sign-in in your browser.',
+        reconnect: 'Reconnect to keep this app working.',
+        serverError: 'The server refused the connection.',
+        serverNeedsAuth: 'Sign in again to let this server answer.'
+      }
+    },
+
+    page: {
+      loading: 'Reading the catalog and the servers on this Mac',
+      emptyTitle: 'No apps in the catalog yet.',
+      emptyBody: 'Point Hermes at an MCP server and it appears here.',
+      noMatchTitle: 'No matching apps',
+      noMatchBody: 'Nothing here matches. Point Hermes at its own MCP server to add it.',
+      clearSearch: 'Clear the search',
+      hostedFailedTitle: 'Could not reach your Nous apps.',
+      hostedFailedBody: 'The servers on this Mac are unaffected and still running. Nothing was turned off.',
+      retry: 'Retry',
+      signedOutNote: 'Connections stay on this Mac until you sign in.',
+      signIn: 'Sign in',
+      writeFailed: 'That change was not saved.'
+    },
+
+    dialog: {
+      actsAs: (account: string) => `Hermes acts as ${account}`,
+      connectedOn: (date: string) => `Connected ${date}`,
+      disconnect: 'Disconnect',
+      disconnectTitle: (name: string) => `Disconnect ${name}?`,
+      disconnectBody: 'Hermes stops acting as this account. You can connect again at any time.',
+      menuRefreshTools: 'Refresh tools',
+      moreActions: 'More actions',
+      removeServerTitle: (name: string) => `Remove ${name}?`,
+      removeServerBody: 'The entry leaves mcp.json on this Mac. Nothing else is deleted.',
+      onForMe: 'On for me',
+      onForMeHint: 'Your sign-in stays either way.',
+      orgNote: (count: number) => `Your organisation turned ${count} tools off.`,
+      orgLink: 'Open the connectors admin',
+      residencyHosted: 'Hosted. Nothing is installed on this Mac.',
+      whereItLives: 'Where it lives',
+      localUrlBody:
+        'This Mac reaches the server over HTTP. Nous is not involved, and this server follows the profile, not your account.',
+      localProgramBody:
+        'This server runs a local process on your machine. It starts with the profile and stops when the profile does.',
+      configuring: (profile: string) => `Configuring: ${profile}`,
+      whatItCosts: 'What it costs',
+      tokensPerCall: 'tok/call',
+      usesPerMonth: 'uses/30d',
+      advanced: 'Advanced',
+      advancedHint: 'the mcp.json entry, logs, Remove',
+      serverSwitch: (name: string) => `Turn ${name} on or off`,
+      transportProgram: 'Program',
+      transportUrl: 'URL'
+    },
+
+    tools: {
+      title: 'Tools',
+      searchPlaceholder: 'Search tools',
+      searchCountPlaceholder: (count: number) => `Search ${count} tools`,
+      freshnessJustNow: 'Updated just now',
+      freshnessHours: (hours: number) => `Updated ${hours} h ago`,
+      freshnessDays: (days: number) => `Updated ${days} d ago`,
+      refresh: 'Refresh',
+      categorySelect: (count: number) => `${count} categories`,
+      showDeprecated: (count: number) => `Show ${count} deprecated`,
+      hideDeprecated: (count: number) => `Hide ${count} deprecated`,
+      quickReadOnly: 'Read only',
+      quickNoDestructive: 'Turn off destructive',
+      quickEverythingOn: 'Everything on',
+      lockedHint: 'off by your organisation',
+      turnToolOn: (tool: string) => `Turn ${tool} on`,
+      turnToolOff: (tool: string) => `Turn ${tool} off`,
+      showDetails: (tool: string) => `Show what ${tool} does`,
+      hideDetails: (tool: string) => `Hide what ${tool} does`,
+      noMatch: 'No tool matches these filters.',
+      loading: 'Reading the tool list',
+      unavailableTitle: 'Could not load the tool list.',
+      unavailableBody: 'Nothing is cached, so no rule is shown. Your saved rule is still in force.',
+      retry: 'Retry',
+      goneTitle: (name: string) => `${name} left the catalog.`,
+      goneBody: 'Hermes cannot call it any more. The row stays until you remove it, so nothing vanishes.',
+      remove: 'Remove',
+      signedOutTitle: 'Sign in to Nous to read the tool list.',
+      signedOutBody: 'Your servers on this Mac are unaffected.',
+      signIn: 'Sign in to Nous',
+      conflictTitle: 'Someone changed this rule while you were editing.',
+      // Two sentences at most: what the other version does, then the one fact
+      // that makes this recoverable — the work is still here and nothing landed.
+      conflictBody: (theyOff: number, theyOn: number) => {
+        const they = [
+          theyOff > 0 ? `turned off ${theyOff} tool${theyOff === 1 ? '' : 's'} you have on` : '',
+          theyOn > 0 ? `left ${theyOn} tool${theyOn === 1 ? '' : 's'} on that you turned off` : ''
+        ].filter(Boolean)
+
+        return `${they.length > 0 ? `They ${they.join(', and ')}. ` : ''}Your edits stay on screen; nothing was written.`
+      },
+      conflictReload: 'Reload their version',
+      conflictSave: 'Save over their version',
+      // "9 tools off, none back on" — the zero side is a word, not a digit, so the
+      // two halves never read as one four-digit number.
+      footerDirty: (off: number, backOn: number) =>
+        `${off === 0 ? 'none off' : `${off} tool${off === 1 ? '' : 's'} off`}, ${
+          backOn === 0 ? 'none back on' : `${backOn} back on`
+        }`,
+      discard: 'Discard',
+      save: 'Save changes',
+      saving: 'Saving...'
+    },
+
+    // One word and one sentence per facet and per hint. The label rides in a fixed
+    // lane in every tool row, so it stays short enough not to widen it.
+    vocabulary: {
+      facetRead: { label: 'Read', long: 'Reads data out of this app. It changes nothing.' },
+      facetWrite: { label: 'Write', long: 'Creates or changes something in this app.' },
+      facetDestructive: { label: 'Destructive', long: 'Can remove something in this app for good.' },
+      facetUnclassified: { label: 'Unknown effect', long: 'The app never said what this tool does.' },
+      hintReadOnly: { label: 'Read only', long: 'The tool declares that it only reads.' },
+      hintCreate: { label: 'Creates', long: 'Makes something new.' },
+      hintUpdate: { label: 'Updates', long: 'Changes something that already exists.' },
+      hintDelete: { label: 'Deletes', long: 'Removes something.' },
+      hintDestructive: { label: 'Destructive', long: 'The change it makes cannot be undone here.' },
+      hintIdempotent: { label: 'Repeatable', long: 'Running it twice does what running it once does.' },
+      hintOpenWorld: { label: 'External', long: 'Reaches something outside this app.' }
+    }
+  },
+
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -415,7 +616,7 @@ export const en: Translations = {
       'nav.commandCenter': 'Open command center',
       'nav.settings': 'Open settings',
       'nav.profiles': 'Open profiles',
-      'nav.skills': 'Open skills',
+      'nav.capabilities': 'Open skills',
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
@@ -1718,7 +1919,6 @@ export const en: Translations = {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Configuring:',
-    tabMcp: 'MCP',
     all: 'All',
     searchSkills: 'Search skills...',
     searchToolsets: 'Search tools...',
@@ -2037,7 +2237,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
+      capabilities: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -2755,7 +2955,7 @@ export const en: Translations = {
     profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
-      skills: 'Capabilities',
+      capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
       cron: 'Scheduled jobs'

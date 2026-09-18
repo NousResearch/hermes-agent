@@ -26,15 +26,15 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 
-import { Pill } from '../settings/primitives'
-import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
+import { Pill } from '../../settings/primitives'
+import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
+import type { CapabilityView } from '../capability-tabs'
+import { CatalogBrowser } from '../catalog/catalog-browser'
+import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 
-import type { CapabilityView } from './capability-tabs'
-import { CatalogBrowser } from './catalog-browser'
-import { type CatalogEntry, parseCatalog } from './catalog-data'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
-/** Deep-link anchor for a package row (`/skills?tab=plugins&plugin=<key>`).
+/** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
 export const pluginElementId = (target: string) => `plugin-${target}`
 
@@ -370,6 +370,7 @@ export const PluginsTab = memo(function PluginsTab({
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+
   const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
     name: pkg.name,
     identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
@@ -380,10 +381,13 @@ export const PluginsTab = memo(function PluginsTab({
     sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
     version: pkg.agent?.version ?? ''
   }))).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })), [packages])
+
   const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
+
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id) || agentRows.some(row =>
     (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available
   )
+
   const install = (entry: CatalogEntry) => openPluginInstallRequest({
     catalogName: entry.name,
     profile: scope,

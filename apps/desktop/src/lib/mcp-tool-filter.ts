@@ -65,5 +65,44 @@ export function toggleToolInServer(server: ServerConfig, name: string): ServerCo
   return next
 }
 
+// Write a whole off-list in one go, preserving the config's mode (include if
+// the key is present, even empty, else an exclude denylist). The Connectors
+// dialog edits every tool of a server and saves once, so toggling one at a time
+// would be one config write per switch.
+export function setDisabledTools(server: ServerConfig, disabled: string[], discovered: string[]): ServerConfig {
+  const { exclude, include } = readToolsFilter(server)
+  const off = new Set(disabled)
+  const seen = new Set(discovered)
+  const tools = { ...toolsObject(server) }
+  // A probe can come back short — the server was restarted, a tool is gated
+  // behind a scope, the fetch half-failed. The edit only knows the tools it was
+  // shown, so a stored name the probe did not return keeps its rule instead of
+  // being dropped out of the list (which would silently turn a denied tool back
+  // on). `toggleToolInServer` above preserves the stored list the same way.
+  const kept = (stored: string[] | undefined) => (stored ?? []).filter(name => !seen.has(name))
+
+  if (include !== undefined) {
+    tools.include = [...discovered.filter(name => !off.has(name)), ...kept(include)]
+  } else {
+    const names = [...discovered.filter(name => off.has(name)), ...kept(exclude)]
+
+    if (names.length) {
+      tools.exclude = names
+    } else {
+      delete tools.exclude
+    }
+  }
+
+  const next = { ...server }
+
+  if (Object.keys(tools).length) {
+    next.tools = tools
+  } else {
+    delete next.tools
+  }
+
+  return next
+}
+
 export const countEnabledTools = (server: ServerConfig | null | undefined, names: string[]): number =>
   names.filter(name => isToolEnabled(server, name)).length

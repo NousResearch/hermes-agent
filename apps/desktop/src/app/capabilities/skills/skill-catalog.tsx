@@ -5,8 +5,8 @@ import { useI18n } from '@/i18n'
 import { installHubSkill, notifyHubActionFailed } from '@/store/hub-actions'
 import { notify } from '@/store/notifications'
 
-import { CatalogBrowser } from './catalog-browser'
-import type { CatalogEntry } from './catalog-data'
+import { CatalogBrowser } from '../catalog/catalog-browser'
+import type { CatalogEntry } from '../catalog/catalog-data'
 
 interface SkillCatalogProps {
   installedNames: ReadonlySet<string>

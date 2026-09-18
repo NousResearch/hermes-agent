@@ -67,13 +67,15 @@ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) ->
         _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
-def _capture_origin() -> tuple[str, str, Any, Any, bool]:
+def _capture_origin(parent_agent=None) -> tuple[str, str, Any, Any, bool]:
     """``(wake_sid, ui_session_id, owner_transport, owner_session_record, session_history_delivery)`` of the
     ORIGINATING session, captured BEFORE building any child: AIAgent construction
     clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id.  The wake-
     capability flag rides the same request-scoped binding and is captured here for the same
     reason — and fails closed: a binding that never declared it (or a read error) leaves the
-    session treated as non-wake-capable (#98619)."""
+    session treated as non-wake-capable. Gateway authority prefers the request scope; when a
+    tool-worker hop lost that scope, only the positive marker stamped by the live prompt thread
+    on this exact parent agent can recover it (#98619)."""
     from tools.async_delegation import _current_origin_session_id
     _origin_wake_sid = _current_origin_session_id()
     _origin_ui_session_id = ""
@@ -82,7 +84,15 @@ def _capture_origin() -> tuple[str, str, Any, Any, bool]:
         from gateway.session_context import get_session_env, session_history_delivery_supported
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
         _origin_session_history_delivery = session_history_delivery_supported()
-    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id), _origin_session_history_delivery)
+    owner_transport, owner_record = _capture_gateway_steer_authority(_origin_ui_session_id)
+    if owner_transport is None or owner_record is None:
+        marker = getattr(parent_agent, "_delegate_gateway_authority", None)
+        if (isinstance(marker, tuple) and len(marker) == 3 and isinstance(marker[0], str) and marker[0]
+                and marker[1] is not None and isinstance(marker[2], dict)
+                and marker[2].get("agent") is parent_agent):
+            _origin_ui_session_id, owner_transport, owner_record = marker
+    return (_origin_wake_sid, _origin_ui_session_id, owner_transport, owner_record,
+            _origin_session_history_delivery)
 
 def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tasks, remaining) -> None:
     """Print one completion line for a finished child and refresh the spinner text. Failed/errored/timed-out children

@@ -491,7 +491,7 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
+    origin = _capture_origin(parent_agent)
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,

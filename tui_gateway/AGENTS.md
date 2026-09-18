@@ -96,11 +96,12 @@ record and transport. Child authority is resolved at RPC time against the owning
 LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
 resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
 per-record transport sync at an attach site; foreign or retired generations remain inaccessible.
-A child registered after a background tool worker lost its request ContextVars can have an exact
-`owner_session_id` and durable `owner_agent_session_id` but no captured session-record/transport
-objects. That case recovers only when the RPC caller is attached to the exact live UI session and
-`_owns_subagent_record` proves the child's durable parent identity/lineage matches that live owner.
-A non-`None` captured record from another generation always fails closed. `last_tool` is the last
+A gateway/TUI prompt stamps positive authority (UI id + transport + exact session record) on the
+live parent agent before the model/tool worker runs; `delegate_task` copies that marker into `_Batch`
+before child construction, so later background worker hops do not need request ContextVars. Restore
+the parent's previous marker in the turn finally. Never reconstruct RPC authority from ambient
+`HERMES_UI_SESSION_ID` or durable lineage alone: `owner_transport is None` remains "no RPC authority
+ever". A captured record from another generation always fails closed. `last_tool` is the last
 started tool, not an in-flight indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot

@@ -695,13 +695,18 @@ def _skill_view_with_bump(args, **kw):
     session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
-    if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
+    # The background-review fork shares the parent's task_id (prefix-cache parity), so its views
+    # would hit stubs for content that is in the PARENT's context, not the fork's — and the stub
+    # path never marks the read the fork's write guard requires (#95976). No dedup in the fork.
+    from tools.skill_provenance import is_background_review
+    dedup_task_id = None if is_background_review() else task_id
+    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(task_id, name, args.get("file_path"), parsed)
+            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

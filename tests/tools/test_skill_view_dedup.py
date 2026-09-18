@@ -88,6 +88,47 @@ class TestSkillViewDedup:
         r2 = json.loads(_skill_view_with_bump(args, task_id=None))
         assert "Step one" in r2.get("content", "")
 
+    def test_background_review_has_its_own_dedup_namespace(self, skills_home):
+        from tools.skill_provenance import (
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        _view("demo-dedup-skill")
+
+        token = set_current_write_origin("background_review")
+        try:
+            review = _view("demo-dedup-skill")
+        finally:
+            reset_current_write_origin(token)
+
+        assert review["success"] is True
+        assert "Step one" in review.get("content", "")
+        assert review.get("dedup") is None
+        assert review.get("content_returned") is None
+        # The real read marks the file, so the fork's read-before-write guard now admits the patch.
+        from tools.skill_manager_guards import _background_review_has_read
+        assert _background_review_has_read(skills_home / "skills" / "demo-dedup-skill" / "SKILL.md")
+
+    def test_background_review_does_not_pollute_foreground_cache(self, skills_home):
+        from tools.skill_provenance import (
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin("background_review")
+        try:
+            _view("demo-dedup-skill")
+        finally:
+            reset_current_write_origin(token)
+
+        foreground = _view("demo-dedup-skill")
+        assert "Step one" in foreground.get("content", "")
+
+        repeat = _view("demo-dedup-skill")
+        assert repeat.get("dedup") is True
+        assert repeat.get("content_returned") is False
+
     def test_compression_hook_importable(self):
         # conversation_compression imports this lazily; keep the seam stable.
         from tools.skills_tool import reset_skill_view_dedup as f

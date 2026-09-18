@@ -257,9 +257,10 @@ export function ChatRuntimeBoundary({
   const ownerConnection = ownerRoute?.connectionId
   const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
 
-  const tailProfile = useMemo(() => ownerProfile
-    ? { connectionId: ownerConnection, profile: ownerProfile }
-    : undefined, [ownerConnection, ownerProfile])
+  const tailProfile = useMemo(
+    () => (ownerProfile ? { connectionId: ownerConnection, profile: ownerProfile } : undefined),
+    [ownerConnection, ownerProfile]
+  )
 
   const history = useHistoryWindow({
     scopeKey: JSON.stringify([runtimeId, storedId, tailProfile, connectionId, activeProfile, suppressMessages]),
@@ -321,7 +322,9 @@ export function ChatRuntimeBoundary({
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: never backfill into its store.
-      if (history.page) {return false}
+      if (history.page) {
+        return false
+      }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -377,9 +380,18 @@ export function ChatRuntimeBoundary({
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
 
-  const transcriptWindow = useMemo(() => ({
-    olderAvailable, expandWindow, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable
-  }), [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable])
+  const transcriptWindow = useMemo(
+    () => ({
+      olderAvailable,
+      expandWindow,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      isHistorical,
+      newerAvailable
+    }),
+    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+  )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,

@@ -911,6 +911,11 @@ hermes doctor [--fix]
 
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 
+Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
+
+- `custom_providers` that is not a YAML list (for example a string left by a bad `config set`) is reported as an error naming the key and the received type — the runtime ignores every custom endpoint until it is a list again.
+- A legacy `custom_providers` list entry with no matching `providers:` entry (same endpoint URL) is reported with the move to make: such an entry shows up in the model picker but has no row on the Custom Endpoints settings page, and the one-shot v12 migration that moved the list into `providers:` does not run again.
+
 ## `hermes dump`
 
 ```bash

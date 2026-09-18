@@ -1217,13 +1217,14 @@ def _validate_entry_list(
             _require_fields(issues, entry, f"{label}[{i}]", fields)
 
 
+_CP_LIST_HINT = "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n      api_key: ..."
+
+
 def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
-    """custom_providers must be a list of dicts, not a dict."""
+    """custom_providers must be a list of dicts — a dict or a scalar is silently dropped by the runtime."""
     if isinstance(cp, dict):
         _issue(issues, "error",
-               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
-               "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n"
-               "      api_key: ...")
+               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')", _CP_LIST_HINT)
         suspicious = set(cp.keys()) & _CUSTOM_PROVIDER_LIKE_FIELDS
         if suspicious:
             _issue(issues, "warning",
@@ -1233,6 +1234,12 @@ def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
         _validate_entry_list(cp, "custom_providers", issues, _CP_REQUIRED_FIELDS, non_dict=(
             "warning", "custom_providers[{i}] is not a dict (got {type})",
             "Each entry should have at minimum: name, base_url"))
+    else:
+        # get_compatible_custom_providers() returns [] for any non-list: every endpoint vanishes
+        # ("0 endpoints") with nothing naming the cause.
+        _issue(issues, "error",
+               f"custom_providers is a {type(cp).__name__} — it must be a YAML list (items prefixed with '-'); "
+               "every custom endpoint is ignored until it is", _CP_LIST_HINT)
 
 
 def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:

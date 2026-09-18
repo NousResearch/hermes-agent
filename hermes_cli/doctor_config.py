@@ -387,8 +387,40 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
         f.issues.append(ci.message)
 
 
+def _endpoint_url(entry: dict) -> str:
+    """Comparable endpoint URL of a legacy list entry (``base_url``/``url``) or a ``providers:`` entry (``api``)."""
+    url = entry.get("api") or entry.get("base_url") or entry.get("url") or ""
+    return str(url).strip().rstrip("/").lower()
+
+
+def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) -> None:
+    """Legacy ``custom_providers`` list entries with no ``providers:`` twin (raw-file diagnostic).
+
+    The v11→v12 migration (config_migrations._migrate_to_12) moves the list into ``providers:`` ONCE, at
+    the version bump; an entry hand-written afterwards is served by the chat picker (dual-read) but has no
+    row on the Custom Endpoints settings pages, which list only ``providers:`` — deletable nowhere.
+    """
+    from hermes_cli.config import read_user_config_raw
+    raw_config = read_user_config_raw(config_path)
+    legacy = raw_config.get("custom_providers")
+    if not isinstance(legacy, list):
+        return
+    providers = raw_config.get("providers")
+    twins = {_endpoint_url(e) for e in (providers.values() if isinstance(providers, dict) else ()) if isinstance(e, dict)}
+    for entry in legacy:
+        if not isinstance(entry, dict) or not _endpoint_url(entry) or _endpoint_url(entry) in twins:
+            continue
+        label = str(entry.get("name") or "").strip() or _endpoint_url(entry)
+        check_warn(f"Legacy custom_providers entry '{label}' has no providers: twin",
+                   "(shown in the model picker, missing from the Custom Endpoints settings page)")
+        f.manual_issues.append(
+            f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.api: "
+            f"{_endpoint_url(entry)}` and delete it from the list — the v12 list migration ran once and does not re-fire")
+
+
 _CONFIG_DRIFT_STEPS = (
     _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
+    _drift_legacy_custom_providers,
 )
 
 

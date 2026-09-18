@@ -20,7 +20,7 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -35,30 +35,35 @@ def _key_namespace(key: str) -> str:
     return ":".join(key.split(":")[:2])
 
 
+def _tail_has_slot(tail: str, slot: str) -> bool:
+    """True when ``tail``'s FIRST slot is ``slot`` (``tail`` is ``""`` when the key ends at the
+    chat id). Mirrors ``build_session_key``'s ``key == prefix or key.startswith(prefix + ":")``
+    discipline, so an id that merely starts with another never matches."""
+    return tail == slot or tail.startswith(slot + ":")
+
+
 def _same_chat_key_slots(
     key: str, *, namespace: str, platform: str, chat_id: str, scope_id: Optional[str],
-) -> Optional[tuple]:
-    """``(chat_type, trailing_slots)`` when ``key`` names the SAME chat, else None.
+) -> Optional[Tuple[str, str]]:
+    """``(chat_type, tail)`` when ``key`` names the SAME chat, else None.
 
     Key layout: ``agent:<profile>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
-    The namespace occupies the first two slots (``agent:main`` is byte-identical to every legacy
-    key). ``scope_id`` is Slack's workspace slot; it may be absent from either side (an older source
-    without the slot still names the same chat), but a key carrying a DIFFERENT known scope is
-    another workspace's chat.
+    Only that fixed-shape head is split into slots (the namespace is always the first two); the chat
+    id and everything after it are matched as TEXT, because ids may themselves contain ``:`` (Matrix
+    ``!room:example.org``). ``scope_id`` is Slack's workspace slot — ``build_session_key`` emits it
+    there alone — and it may be absent from either side, since a key without it still names the same
+    chat; a key carrying a DIFFERENT known scope is another workspace's chat. ``tail`` is ``""`` when
+    the key ends at the chat id.
     """
-    slots = key.split(":")
-    if len(slots) < 5 or ":".join(slots[:2]) != namespace or slots[2] != platform:
+    head = key.split(":", 3)
+    if len(head) < 4 or ":".join(head[:2]) != namespace or head[2] != platform:
         return None
-    rest = slots[3:]
-    if rest[1] == chat_id:
-        return rest[0], rest[2:]
-    # Only Slack ever carries the scope slot (``build_session_key``). Tolerating it on other
-    # platforms would let a group key's trailing participant id alias a chat_id: a Telegram DM
-    # keys ``chat_id`` as the USER id, so ``group:<chat>:<user>`` would read as "<user>'s chat".
-    if platform == Platform.SLACK.value and len(rest) >= 3 and rest[2] == chat_id:
-        if scope_id and rest[1] != str(scope_id):
-            return None
-        return rest[0], rest[3:]
+    chat_type, _, rem = head[3].partition(":")
+    for prefix in ((f"{scope_id}:{chat_id}", chat_id) if scope_id else (chat_id,)):
+        if rem == prefix:
+            return chat_type, ""
+        if rem.startswith(prefix + ":"):
+            return chat_type, rem[len(prefix) + 1:]
     return None
 
 
@@ -1064,7 +1069,8 @@ class GatewayBusySessionMixin:
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
     def _same_chat_runs(self, source: SessionSource, own_key: str) -> list:
-        """``(key, chat_type, trailing_slots)`` for every OTHER running turn in the caller's chat.
+        """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
+        the key text after the chat id, ``""`` when the key ends there).
 
         The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
         stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
@@ -1092,14 +1098,14 @@ class GatewayBusySessionMixin:
         """Running-agent keys of OTHER participants in the caller's own thread (per-user thread mode
         keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's
         own ``/stop``). Callers still gate on authz."""
-        thread_id = getattr(source, "thread_id", None)
+        thread_id = str(getattr(source, "thread_id", None) or "")
         chat_type = getattr(source, "chat_type", None) or ""
         if not thread_id or not chat_type:
             return []
         return [
             key
             for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
-            if key_chat_type == chat_type and tail[:1] == [str(thread_id)]
+            if key_chat_type == chat_type and _tail_has_slot(tail, thread_id)
         ]
 
     def _chat_scoped_run_keys(self, source: SessionSource, own_key: str) -> list:
@@ -1121,7 +1127,7 @@ class GatewayBusySessionMixin:
         return [
             key
             for key, _key_chat_type, tail in self._same_chat_runs(source, own_key)
-            if not (thread_id and tail and tail[0] != thread_id)
+            if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:

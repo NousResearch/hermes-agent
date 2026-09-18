@@ -436,10 +436,9 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
-        # shaped key. Narrowest tier first — another participant's run in the caller's own thread
-        # (per-user thread mode) — then any run in the chat (a top-level channel turn vs an in-thread
-        # /stop, a rolling-DM run that keys without the stop's thread slot, a peer's per-sender group
-        # run). Both tiers are authorization-gated; the helpers carry the isolation bounds.
+        # shaped key. Narrowest tier first (another participant's run in the caller's own thread),
+        # then any run in the chat; both are authorization-gated. See `_chat_scoped_run_keys` for the
+        # shapes it covers and its isolation bounds.
         fallback_keys = self._sibling_thread_run_keys(source, session_key)
         reason = "stop_command_thread_sibling"
         if not fallback_keys:

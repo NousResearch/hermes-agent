@@ -2347,7 +2347,8 @@ export const ru = defineLocale({
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: 'Email'
+      email: 'Email',
+      all: 'Все подключённые каналы'
     },
     scheduleLabels: {
       daily: 'Ежедневно',

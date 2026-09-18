@@ -230,10 +230,16 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 
 @router.get("/api/cron/delivery-targets")
 async def get_cron_delivery_targets():
-    """Delivery targets for the cron dropdown: implicit ``local`` plus the
-    configured gateway platforms (a platform without a cron home channel is
-    still listed with ``home_target_set: false`` so the UI can say so)."""
-    targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
+    """Delivery targets for the cron dropdown: the implicit ``local`` and
+    ``all`` pseudo-targets plus the configured gateway platforms (a platform
+    without a cron home channel is still listed with ``home_target_set: false``
+    so the UI can say so). ``all`` fans out to every connected home channel at
+    fire time (documented deliver value), surfaced here so the UI can offer it
+    without duplicating the routing-token grammar."""
+    targets = [
+        {"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None},
+        {"id": "all", "name": "All connected channels", "home_target_set": True, "home_env_var": None},
+    ]
     try:
         from cron.scheduler_delivery import cron_delivery_targets
 

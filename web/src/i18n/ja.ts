@@ -282,6 +282,7 @@ export const ja: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "接続中のすべてのチャンネル",
     },
   },
 

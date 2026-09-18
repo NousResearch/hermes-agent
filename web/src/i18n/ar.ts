@@ -229,6 +229,7 @@ export const ar = defineLocale({
       discord: "Discord",
       slack: "Slack",
       email: "البريد الإلكتروني",
+      all: "جميع القنوات المتصلة",
     },
   },
 

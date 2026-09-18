@@ -2073,7 +2073,8 @@ export const zhHant = defineLocale({
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: '電子郵件'
+      email: '電子郵件',
+      all: '所有已連線頻道'
     },
     scheduleLabels: {
       daily: '每天',

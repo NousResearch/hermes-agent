@@ -125,6 +125,27 @@ def test_release_qualification_runner_stops_after_first_failed_stage(tmp_path):
     assert [stage.name for stage in report.stages] == calls
 
 
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_release_smoke_uses_isolated_runner_without_retry(tmp_path, exit_code):
+    import json
+    from workstation.release_qualification import ReleaseQualificationRunner
+
+    script = tmp_path / "scripts" / "run_tests_parallel.py"
+    script.parent.mkdir()
+    script.write_text(
+        "import json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(" + str(exit_code) + ")\n",
+        encoding="utf-8",
+    )
+    runner = ReleaseQualificationRunner(tmp_path, timeout_seconds=12.5)
+    result = runner._check_workstation_smoke()
+    args = json.loads(result.stdout)
+    assert args[0] == "workstation/tests"
+    assert args[args.index("-j") + 1] == "4"
+    assert float(args[args.index("--file-timeout") + 1]) == runner.timeout_seconds
+    assert args[args.index("--file-retries") + 1] == "0"
+    assert result.passed is (exit_code == 0)
+
+
 def test_clean_install_evidence_must_match_candidate_revision(tmp_path):
     from workstation.release_qualification import ReleaseQualificationRunner
 

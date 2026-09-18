@@ -259,7 +259,9 @@ class ReleaseQualificationRunner:
 
     def _check_workstation_smoke(self) -> StageCheck:
         return self._run_command(
-            [self.python_executable, "-m", "pytest", "workstation/tests", "-q", "-p", "no:cacheprovider"]
+            [self.python_executable, str(self.root / "scripts" / "run_tests_parallel.py"),
+             "workstation/tests", "-j", "4", "--file-timeout", str(self.timeout_seconds),
+             "--file-retries", "0", "--", "-p", "no:cacheprovider"]
         )
 
     def _check_native_smoke(self) -> StageCheck:

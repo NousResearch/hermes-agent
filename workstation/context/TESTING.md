@@ -720,6 +720,9 @@ security probes. A different `sort` implementation does not establish GNU option
 behavior. The canonical per-file runner retains isolated temporary roots and
 uses a short prefix so AF_UNIX socket paths fit the operating-system limit.
 Work100 uses the shared Hermes Node resolver, including managed installations.
+Release qualification runs the complete Workstation suite through the same
+per-file runner with four workers and zero retries. Its configured aggregate
+timeout is unchanged; every file also receives that timeout as a hard bound.
 
 A red gate is investigated, not disabled. Never make CI green by deleting coverage, weakening a valid expectation, or turning a baseline-equivalent failure into a claimed pass. Record what failed, establish causality, and use the smallest test that corresponds to the actual risk.
 

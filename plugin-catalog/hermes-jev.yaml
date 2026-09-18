@@ -1,0 +1,20 @@
+name: hermes-jev
+repo: https://github.com/keeltrace/hermes-jev
+sha: a3c3eee20ea11336b2b5b9c9f94f0cf1add11edb
+description: Typed System One decisions, ranking, verification, receipts, and an opt-in pre-tool gate using TypeSafe Jev.
+maintainer: keeltrace
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/keeltrace/hermes-jev#readme
+version: "0.1.3"
+capabilities:
+  provides_tools:
+  - jev_decide
+  - jev_rank
+  - jev_verify
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env:
+  - TYPESAFE_API_KEY

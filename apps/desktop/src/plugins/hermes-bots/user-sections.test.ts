@@ -43,6 +43,7 @@ import type { RosterRow } from './types'
 import {
   $botSections,
   adoptBotSectionsFromMeta,
+  backfillBotSectionNames,
   createBotSection,
   deleteBotSection,
   groupRowsBySection,
@@ -148,6 +149,28 @@ describe('user sections', () => {
       scout: { sectionId: 'sec-clients', sectionName: 'Customers' }
     })
     expect($botSections.get()).toEqual([{ id: 'sec-clients', name: 'Customers' }])
+  })
+
+  it('the desktop that knows a section backfills the name onto members filed before names rode along', async () => {
+    // This machine made "Clients" before sectionName existed: the record is
+    // local, the members carry only the id. Another desktop cannot rebuild
+    // the section from that — so stamp the name here, once per member.
+    $botSections.set([{ id: 'sec-clients', name: 'Clients' }])
+    const meta = {
+      nanox: { sectionId: 'sec-clients' },
+      scout: { sectionId: 'sec-clients', sectionName: 'Clients' }, // already stamped
+      ghost: { sectionId: 'sec-unknown' } // nobody here knows that section: nothing to stamp
+    }
+    $botMeta.set(meta)
+
+    expect(backfillBotSectionNames([bot('nanox'), bot('scout'), bot('ghost')], meta).map(b => b.name)).toEqual(['nanox'])
+    await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(1))
+    expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: 'sec-clients', sectionName: 'Clients' })
+
+    // The write set the name, so the next roster pass has nothing left to do.
+    saveBotMeta.mockClear()
+    expect(backfillBotSectionNames([bot('nanox'), bot('scout'), bot('ghost')], $botMeta.get())).toEqual([])
+    expect(saveBotMeta).not.toHaveBeenCalled()
   })
 
   it('renaming re-stamps the members so the new name reaches other desktops', async () => {

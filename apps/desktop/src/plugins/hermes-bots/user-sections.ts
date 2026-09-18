@@ -173,6 +173,36 @@ export function adoptBotSectionsFromMeta(roster: RosterRow[], metaByName: Record
 }
 
 /**
+ * The other half of adoptBotSectionsFromMeta: bots filed before the name rode
+ * along carry only `sectionId`, and a desktop that never made that section
+ * has nothing to rebuild it from. So the desktop that DOES know the section —
+ * usually the one that created it — stamps the name onto every such member
+ * through the same one-write-per-profile path filing uses. Returns the members
+ * being stamped. Runs once per member: the write sets `sectionName`, so the
+ * next roster pass finds nothing to do. Members of a section nobody here
+ * knows are left alone — there is no name to give them.
+ */
+export function backfillBotSectionNames(roster: RosterRow[], metaByName: Record<string, BotMeta>): RosterRow[] {
+  const known = new Set($botSections.get().map(s => s.id))
+  const bySection = new Map<string, RosterRow[]>()
+
+  for (const bot of roster || []) {
+    const meta = bot ? botRosterMeta(bot, metaByName) : null
+    const id = meta?.sectionId ? String(meta.sectionId) : null
+
+    if (id && known.has(id) && !String(meta?.sectionName || '').trim()) {
+      bySection.set(id, [...(bySection.get(id) || []), bot])
+    }
+  }
+
+  for (const [id, members] of bySection) {
+    void moveBotsToSection(members, id)
+  }
+
+  return [...bySection.values()].flat()
+}
+
+/**
  * Delete the section only. Its members are not deleted and not hidden — they
  * fall back to Unassigned, which is the whole reason membership lives on the
  * bot rather than on the section. Returns an undo that puts the section back

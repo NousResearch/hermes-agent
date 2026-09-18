@@ -909,6 +909,8 @@ hermes doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
+The report opens with an **Installation** section that answers the questions to settle before filing a bug or updating: the installed version, how Hermes was installed (`git`, `docker`, `apt`, `nix`, …), how many commits upstream `main` is ahead (checked through the GitHub API, so it is accurate even on a checkout that never ran `git fetch`), whether the source checkout carries local modifications or untracked files, and the exact update command for that install method. Docker and Termux installs have no working tree to compare and show the check as not applicable; `updates.check: false` in `config.yaml` is reported rather than silently probed around.
+
 ## `hermes dump`
 
 ```bash

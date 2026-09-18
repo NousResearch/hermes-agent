@@ -32,6 +32,7 @@ from hermes_cli.doctor_config import (
     _check_xai_retirement,
     _check_plugin_compat,
 )
+from hermes_cli.doctor_install import _check_installation
 from hermes_cli.doctor_platform import (
     _check_certificates,
     _check_command_installation,
@@ -109,7 +110,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
-    ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
+    ('Installation', _check_installation), ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),

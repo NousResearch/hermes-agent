@@ -219,10 +219,34 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
+# Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
+# LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
+# so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
+# the stale fallback and Anthropic 400s with "Claude Code X does not support this model".
+# These are additive: on Windows none resolve to a file and detection falls back to the PATH
+# lookup (which handles PATHEXT), leaving current behaviour there unchanged.
+_CLAUDE_CODE_PREFIXES = (
+    "~/.local/bin", "~/.claude/local", "~/bin", "~/.npm-global/bin", "~/.bun/bin",
+    "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin",
+)
+
+
+def _claude_code_candidates() -> List[str]:
+    """Executable paths to try, PATH hit first, deduped and filtered to files that exist."""
+    import os.path
+    import shutil
+
+    seen: Dict[str, None] = {}
+    for name in ("claude", "claude-code"):
+        for cmd in (shutil.which(name), *(f"{p}/{name}" for p in _CLAUDE_CODE_PREFIXES)):
+            if cmd and os.path.isfile(path := os.path.expanduser(cmd)):
+                seen.setdefault(path)
+    return list(seen)
+
 
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
-    for cmd in ("claude", "claude-code"):
+    for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
